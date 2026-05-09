@@ -30,6 +30,7 @@ pub mod renderer;
 pub mod shell;
 pub mod testing;
 pub mod theme;
+pub mod tooltips;
 
 pub use assets::{
     AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
@@ -73,6 +74,10 @@ pub use testing::{
     diff_rgba8, DirtyFlags, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
     FrameTiming, FrameTimingSection, LayoutAssertions, PaintAssertions, PaintKindSelector,
     PixelDiffReport, PixelDiffTolerance, ReplayInput, RgbaImageView, TestFailure, TestResult,
+};
+pub use tooltips::{
+    CommandTooltip, CommandTooltipResolver, ShortcutDisplayPlatform, ShortcutFormatter,
+    TooltipAnchor, TooltipContent, TooltipPlacement, TooltipRequest,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
