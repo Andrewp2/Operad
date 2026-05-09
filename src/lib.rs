@@ -73,7 +73,8 @@ pub use shell::{
 pub use testing::{
     diff_rgba8, DirtyFlags, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
     FrameTiming, FrameTimingSection, LayoutAssertions, PaintAssertions, PaintKindSelector,
-    PixelDiffReport, PixelDiffTolerance, ReplayInput, RgbaImageView, TestFailure, TestResult,
+    PixelDiffReport, PixelDiffTolerance, PlatformAssertions, ReplayInput, RgbaImageView,
+    TestFailure, TestResult,
 };
 pub use tooltips::{
     CommandTooltip, CommandTooltipResolver, ShortcutDisplayPlatform, ShortcutFormatter,

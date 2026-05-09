@@ -184,8 +184,9 @@ The branch starts from Operad 2.0.0 plus:
   state, active tabs, focus restore, and synchronized track/arrangement scroll
   offsets.
 - Renderer-neutral testing helpers in `src/testing.rs` for event replay, raw
-  input conversion checks, stable-name layout assertions, paint-list assertions,
-  RGBA pixel diffs with tolerances, dirty flags, and frame timing sections.
+  input conversion checks, platform-output assertions, stable-name layout
+  assertions, paint-list assertions, RGBA pixel diffs with tolerances, dirty
+  flags, and frame timing sections.
 - Renderer/backend adapter contracts in `src/renderer.rs` for render targets,
   resource deltas, dirty regions, paint batching, deterministic snapshots, and
   backend capability negotiation.

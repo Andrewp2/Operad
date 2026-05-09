@@ -8,9 +8,15 @@
 use std::fmt;
 use std::time::Duration;
 
+use crate::platform::{
+    ClipboardResponse, CursorResponse, DragDropResponse, FileDialogResponse, NotificationResponse,
+    OpenUrlResponse, PlatformResponse, PlatformServiceError, PlatformServiceKind,
+    PlatformServiceRequest, PlatformServiceResponse, RepaintResponse, ScreenshotResponse,
+    TextImeResponse,
+};
 use crate::{
-    PaintItem, PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent, UiInputResult,
-    UiNode, UiNodeId, UiRect, UiSize,
+    HostFrameOutput, PaintItem, PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent,
+    UiInputResult, UiNode, UiNodeId, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,6 +312,134 @@ impl<'a> PaintAssertions<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PlatformAssertions<'a> {
+    requests: &'a [PlatformServiceRequest],
+    responses: &'a [PlatformServiceResponse],
+}
+
+impl<'a> PlatformAssertions<'a> {
+    pub const fn new(
+        requests: &'a [PlatformServiceRequest],
+        responses: &'a [PlatformServiceResponse],
+    ) -> Self {
+        Self {
+            requests,
+            responses,
+        }
+    }
+
+    pub fn from_host_frame(output: &'a HostFrameOutput) -> Self {
+        Self::new(&output.platform_requests, &output.platform_responses)
+    }
+
+    pub fn requests(&self) -> &'a [PlatformServiceRequest] {
+        self.requests
+    }
+
+    pub fn responses(&self) -> &'a [PlatformServiceResponse] {
+        self.responses
+    }
+
+    pub fn request_count(&self, kind: PlatformServiceKind) -> usize {
+        self.requests
+            .iter()
+            .filter(|request| request.kind() == kind)
+            .count()
+    }
+
+    pub fn response_count(&self, kind: PlatformServiceKind) -> usize {
+        self.responses
+            .iter()
+            .filter(|response| response.kind() == kind)
+            .count()
+    }
+
+    pub fn require_request_kind(
+        &self,
+        kind: PlatformServiceKind,
+    ) -> TestResult<&'a PlatformServiceRequest> {
+        self.requests
+            .iter()
+            .find(|request| request.kind() == kind)
+            .ok_or_else(|| TestFailure::new(format!("missing platform request kind {kind:?}")))
+    }
+
+    pub fn require_response_kind(
+        &self,
+        kind: PlatformServiceKind,
+    ) -> TestResult<&'a PlatformServiceResponse> {
+        self.responses
+            .iter()
+            .find(|response| response.kind() == kind)
+            .ok_or_else(|| TestFailure::new(format!("missing platform response kind {kind:?}")))
+    }
+
+    pub fn require_response_for(
+        &self,
+        request: &PlatformServiceRequest,
+    ) -> TestResult<&'a PlatformServiceResponse> {
+        self.responses
+            .iter()
+            .find(|response| response.is_for(request) && response.kind() == request.kind())
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing {:?} response for platform request id {}",
+                    request.kind(),
+                    request.id.0
+                ))
+            })
+    }
+
+    pub fn require_all_responses_match_requests(&self) -> TestResult {
+        for response in self.responses {
+            if !self
+                .requests
+                .iter()
+                .any(|request| response.is_for(request) && response.kind() == request.kind())
+            {
+                return Err(TestFailure::new(format!(
+                    "platform response id {} kind {:?} has no matching request",
+                    response.id.0,
+                    response.kind()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn require_no_error_responses(&self) -> TestResult {
+        if let Some((response, error)) = self.responses.iter().find_map(|response| {
+            platform_response_error(&response.response).map(|error| (response, error))
+        }) {
+            Err(TestFailure::new(format!(
+                "platform response id {} kind {:?} returned {:?}: {}",
+                response.id.0,
+                response.kind(),
+                error.code,
+                error.message
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn platform_response_error(response: &PlatformResponse) -> Option<&PlatformServiceError> {
+    match response {
+        PlatformResponse::Clipboard(ClipboardResponse::Error(error))
+        | PlatformResponse::FileDialog(FileDialogResponse::Error(error))
+        | PlatformResponse::OpenUrl(OpenUrlResponse::Error(error))
+        | PlatformResponse::Notification(NotificationResponse::Error(error))
+        | PlatformResponse::Screenshot(ScreenshotResponse::Error(error))
+        | PlatformResponse::TextIme(TextImeResponse::Error(error))
+        | PlatformResponse::DragDrop(DragDropResponse::Error(error))
+        | PlatformResponse::Cursor(CursorResponse::Error(error))
+        | PlatformResponse::Repaint(RepaintResponse::Error(error)) => Some(error),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RgbaImageView<'a> {
     pub width: usize,
@@ -492,10 +626,15 @@ impl FrameTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::{
+        ClipboardRequest, ClipboardResponse, PlatformErrorCode, PlatformRequest, PlatformRequestId,
+        PlatformResponse, PlatformServiceError, PlatformServiceKind, RepaintRequest,
+        RepaintResponse,
+    };
     use crate::{
-        length, root_style, ApproxTextMeasurer, ClipBehavior, ColorRgba, ImageContent,
-        InputBehavior, RawKeyboardEvent, RawPointerEvent, RawWheelEvent, StrokeStyle, TextStyle,
-        UiNode, UiNodeStyle, UiPoint, UiVisual,
+        length, root_style, ApproxTextMeasurer, ClipBehavior, ColorRgba, HostFrameOutput,
+        HostInteractionState, ImageContent, InputBehavior, RawKeyboardEvent, RawPointerEvent,
+        RawWheelEvent, StrokeStyle, TextStyle, UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -614,6 +753,73 @@ mod tests {
         paint
             .require_node_kind("panel.label", PaintKindSelector::Text)
             .expect("text paint");
+    }
+
+    #[test]
+    fn platform_assertions_match_requests_responses_and_errors() {
+        let clipboard_id = PlatformRequestId::new(10);
+        let repaint_id = PlatformRequestId::new(11);
+        let output = HostFrameOutput::new(HostInteractionState::default())
+            .request(
+                clipboard_id,
+                PlatformRequest::Clipboard(ClipboardRequest::ReadText),
+            )
+            .request(
+                repaint_id,
+                PlatformRequest::Repaint(RepaintRequest::NextFrame),
+            )
+            .response(
+                clipboard_id,
+                PlatformResponse::Clipboard(ClipboardResponse::Text(Some("copied".into()))),
+            )
+            .response(
+                repaint_id,
+                PlatformResponse::Repaint(RepaintResponse::Scheduled {
+                    delay: Duration::from_millis(16),
+                }),
+            );
+
+        let platform = PlatformAssertions::from_host_frame(&output);
+        assert_eq!(platform.request_count(PlatformServiceKind::Clipboard), 1);
+        assert_eq!(platform.response_count(PlatformServiceKind::Repaint), 1);
+        let clipboard_request = platform
+            .require_request_kind(PlatformServiceKind::Clipboard)
+            .expect("clipboard request");
+        let clipboard_response = platform
+            .require_response_for(clipboard_request)
+            .expect("clipboard response");
+        assert!(matches!(
+            clipboard_response.response,
+            PlatformResponse::Clipboard(ClipboardResponse::Text(Some(_)))
+        ));
+        platform
+            .require_all_responses_match_requests()
+            .expect("matched responses");
+        platform.require_no_error_responses().expect("no errors");
+
+        let unmatched = HostFrameOutput::new(HostInteractionState::default()).response(
+            PlatformRequestId::new(99),
+            PlatformResponse::Repaint(RepaintResponse::Coalesced),
+        );
+        assert!(PlatformAssertions::from_host_frame(&unmatched)
+            .require_all_responses_match_requests()
+            .is_err());
+
+        let error_output = HostFrameOutput::new(HostInteractionState::default())
+            .request(
+                clipboard_id,
+                PlatformRequest::Clipboard(ClipboardRequest::ReadText),
+            )
+            .response(
+                clipboard_id,
+                PlatformResponse::Clipboard(ClipboardResponse::Error(PlatformServiceError::new(
+                    PlatformErrorCode::Denied,
+                    "clipboard blocked",
+                ))),
+            );
+        assert!(PlatformAssertions::from_host_frame(&error_output)
+            .require_no_error_responses()
+            .is_err());
     }
 
     #[test]
