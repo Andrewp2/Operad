@@ -297,6 +297,130 @@ impl CanvasContent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageContent {
+    pub key: String,
+    pub tint: Option<ColorRgba>,
+}
+
+impl ImageContent {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            tint: None,
+        }
+    }
+
+    pub fn tinted(mut self, tint: ColorRgba) -> Self {
+        self.tint = Some(tint);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShaderEffect {
+    pub key: String,
+    pub uniforms: Vec<ShaderUniform>,
+}
+
+impl ShaderEffect {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            uniforms: Vec::new(),
+        }
+    }
+
+    pub fn uniform(mut self, name: impl Into<String>, value: f32) -> Self {
+        self.uniforms.push(ShaderUniform {
+            name: name.into(),
+            value,
+        });
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShaderUniform {
+    pub name: String,
+    pub value: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityRole {
+    Application,
+    Button,
+    Checkbox,
+    ComboBox,
+    Dialog,
+    Grid,
+    GridCell,
+    Image,
+    Label,
+    List,
+    ListItem,
+    Menu,
+    MenuBar,
+    MenuItem,
+    ProgressBar,
+    Slider,
+    Tab,
+    TabList,
+    TabPanel,
+    TextBox,
+    Tree,
+    TreeItem,
+    Window,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibilityMeta {
+    pub role: AccessibilityRole,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub hint: Option<String>,
+    pub enabled: bool,
+    pub focusable: bool,
+}
+
+impl AccessibilityMeta {
+    pub fn new(role: AccessibilityRole) -> Self {
+        Self {
+            role,
+            label: None,
+            value: None,
+            hint: None,
+            enabled: true,
+            focusable: false,
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    pub fn focusable(mut self) -> Self {
+        self.focusable = true;
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScenePrimitive {
     Line {
@@ -327,6 +451,7 @@ pub enum UiContent {
     Empty,
     Text(TextContent),
     Canvas(CanvasContent),
+    Image(ImageContent),
     Scene(Vec<ScenePrimitive>),
 }
 
@@ -445,6 +570,8 @@ pub struct UiNode {
     pub input: InputBehavior,
     pub scroll: Option<ScrollState>,
     pub animation: Option<AnimationMachine>,
+    pub accessibility: Option<AccessibilityMeta>,
+    pub shader: Option<ShaderEffect>,
     pub layout: ComputedLayout,
 }
 
@@ -460,6 +587,8 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             animation: None,
+            accessibility: None,
+            shader: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -483,6 +612,8 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             animation: None,
+            accessibility: None,
+            shader: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -506,6 +637,28 @@ impl UiNode {
             },
             scroll: None,
             animation: None,
+            accessibility: None,
+            shader: None,
+            layout: ComputedLayout::default(),
+        }
+    }
+
+    pub fn image(name: impl Into<String>, image: ImageContent, layout: Style) -> Self {
+        Self {
+            name: name.into(),
+            parent: None,
+            children: Vec::new(),
+            style: UiNodeStyle {
+                layout,
+                ..Default::default()
+            },
+            visual: UiVisual::default(),
+            content: UiContent::Image(image),
+            input: InputBehavior::NONE,
+            scroll: None,
+            animation: None,
+            accessibility: None,
+            shader: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -525,6 +678,8 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             animation: None,
+            accessibility: None,
+            shader: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -547,6 +702,16 @@ impl UiNode {
 
     pub fn with_animation(mut self, animation: AnimationMachine) -> Self {
         self.animation = Some(animation);
+        self
+    }
+
+    pub fn with_accessibility(mut self, accessibility: AccessibilityMeta) -> Self {
+        self.accessibility = Some(accessibility);
+        self
+    }
+
+    pub fn with_shader(mut self, shader: ShaderEffect) -> Self {
+        self.shader = Some(shader);
         self
     }
 }
@@ -1066,9 +1231,10 @@ impl UiDocument {
                     node.style.layout.clone(),
                     MeasureContext::Text(text.clone()),
                 )?,
-                UiContent::Empty | UiContent::Canvas(_) | UiContent::Scene(_) => {
-                    taffy.new_leaf(node.style.layout.clone())?
-                }
+                UiContent::Empty
+                | UiContent::Canvas(_)
+                | UiContent::Image(_)
+                | UiContent::Scene(_) => taffy.new_leaf(node.style.layout.clone())?,
             }
         } else {
             let children = node
@@ -1314,6 +1480,7 @@ impl UiDocument {
                     z_index,
                     opacity,
                     transform,
+                    shader: node.shader.clone(),
                     kind: PaintKind::Rect {
                         fill: node.visual.fill,
                         stroke: node.visual.stroke,
@@ -1330,6 +1497,7 @@ impl UiDocument {
                     z_index,
                     opacity,
                     transform,
+                    shader: node.shader.clone(),
                     kind: PaintKind::Text(text.clone()),
                 }),
                 UiContent::Canvas(canvas) => list.items.push(PaintItem {
@@ -1339,7 +1507,21 @@ impl UiDocument {
                     z_index,
                     opacity,
                     transform,
+                    shader: node.shader.clone(),
                     kind: PaintKind::Canvas(canvas.clone()),
+                }),
+                UiContent::Image(image) => list.items.push(PaintItem {
+                    node: id,
+                    rect: node.layout.rect,
+                    clip_rect: node.layout.clip_rect,
+                    z_index,
+                    opacity,
+                    transform,
+                    shader: node.shader.clone(),
+                    kind: PaintKind::Image {
+                        key: image.key.clone(),
+                        tint: image.tint,
+                    },
                 }),
                 UiContent::Scene(primitives) => {
                     for primitive in primitives {
@@ -1350,6 +1532,7 @@ impl UiDocument {
                             z_index,
                             opacity,
                             transform,
+                            node.shader.clone(),
                             primitive,
                         ));
                     }
@@ -1395,6 +1578,7 @@ fn scene_primitive_to_paint_item(
     z_index: i16,
     opacity: f32,
     transform: PaintTransform,
+    shader: Option<ShaderEffect>,
     primitive: &ScenePrimitive,
 ) -> PaintItem {
     match primitive {
@@ -1408,6 +1592,7 @@ fn scene_primitive_to_paint_item(
                 z_index,
                 opacity,
                 transform,
+                shader: shader.clone(),
                 kind: PaintKind::Line {
                     from,
                     to,
@@ -1434,6 +1619,7 @@ fn scene_primitive_to_paint_item(
                 z_index,
                 opacity,
                 transform,
+                shader: shader.clone(),
                 kind: PaintKind::Circle {
                     center,
                     radius: *radius,
@@ -1458,6 +1644,7 @@ fn scene_primitive_to_paint_item(
                 z_index,
                 opacity,
                 transform,
+                shader: shader.clone(),
                 kind: PaintKind::Polygon {
                     points,
                     fill: *fill,
@@ -1477,6 +1664,7 @@ fn scene_primitive_to_paint_item(
             z_index,
             opacity,
             transform,
+            shader,
             kind: PaintKind::Image {
                 key: key.clone(),
                 tint: *tint,
@@ -1525,6 +1713,7 @@ pub struct PaintItem {
     pub z_index: i16,
     pub opacity: f32,
     pub transform: PaintTransform,
+    pub shader: Option<ShaderEffect>,
     pub kind: PaintKind,
 }
 
@@ -1588,6 +1777,19 @@ pub struct LayoutSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityNode {
+    pub id: UiNodeId,
+    pub parent: Option<UiNodeId>,
+    pub role: AccessibilityRole,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub hint: Option<String>,
+    pub rect: UiRect,
+    pub enabled: bool,
+    pub focusable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum AuditWarning {
     NonFiniteRect {
         node: UiNodeId,
@@ -1628,6 +1830,27 @@ pub enum AuditWarning {
 impl UiDocument {
     pub fn layout_snapshot(&self) -> LayoutSnapshot {
         self.layout_snapshot_subtree(self.root)
+    }
+
+    pub fn accessibility_tree(&self) -> Vec<AccessibilityNode> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let accessibility = node.accessibility.as_ref()?;
+                Some(AccessibilityNode {
+                    id: UiNodeId(index),
+                    parent: node.parent,
+                    role: accessibility.role,
+                    label: accessibility.label.clone(),
+                    value: accessibility.value.clone(),
+                    hint: accessibility.hint.clone(),
+                    rect: node.layout.rect,
+                    enabled: accessibility.enabled,
+                    focusable: accessibility.focusable || node.input.focusable,
+                })
+            })
+            .collect()
     }
 
     fn layout_snapshot_subtree(&self, id: UiNodeId) -> LayoutSnapshot {
@@ -1765,6 +1988,8 @@ pub mod widgets {
         pub layout: Style,
         pub visual: UiVisual,
         pub text_style: TextStyle,
+        pub leading_image: Option<ImageContent>,
+        pub image_size: UiSize,
     }
 
     impl ButtonOptions {
@@ -1795,6 +2020,8 @@ pub mod widgets {
                     4.0,
                 ),
                 text_style: TextStyle::default(),
+                leading_image: None,
+                image_size: UiSize::new(18.0, 18.0),
             }
         }
     }
@@ -1807,6 +2034,7 @@ pub mod widgets {
         options: ButtonOptions,
     ) -> UiNodeId {
         let name = name.into();
+        let label = label.into();
         let button = document.add_child(
             parent,
             UiNode::container(
@@ -1818,8 +2046,36 @@ pub mod widgets {
                 },
             )
             .with_input(InputBehavior::BUTTON)
-            .with_visual(options.visual),
+            .with_visual(options.visual)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label(label.clone())
+                    .focusable(),
+            ),
         );
+        if let Some(image) = options.leading_image {
+            document.add_child(
+                button,
+                UiNode::image(
+                    format!("{name}.image"),
+                    image,
+                    Style {
+                        size: TaffySize {
+                            width: length(options.image_size.width),
+                            height: length(options.image_size.height),
+                        },
+                        margin: taffy::prelude::Rect {
+                            right: taffy::prelude::LengthPercentageAuto::length(6.0),
+                            ..taffy::prelude::Rect::length(0.0)
+                        },
+                        ..Default::default()
+                    },
+                )
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Image).label(label.clone()),
+                ),
+            );
+        }
         document.add_child(
             button,
             UiNode::text(
@@ -1911,6 +2167,7 @@ pub mod widgets {
         options: CheckboxOptions,
     ) -> UiNodeId {
         let name = name.into();
+        let label_text = label_text.into();
         let root = document.add_child(
             parent,
             UiNode::container(
@@ -1921,7 +2178,13 @@ pub mod widgets {
                     ..Default::default()
                 },
             )
-            .with_input(InputBehavior::BUTTON),
+            .with_input(InputBehavior::BUTTON)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Checkbox)
+                    .label(label_text.clone())
+                    .value(if checked { "checked" } else { "unchecked" })
+                    .focusable(),
+            ),
         );
         let box_node = document.add_child(
             root,
@@ -2042,7 +2305,13 @@ pub mod widgets {
                     ..Default::default()
                 },
             )
-            .with_input(InputBehavior::BUTTON),
+            .with_input(InputBehavior::BUTTON)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Slider)
+                    .label(name.clone())
+                    .value(format!("{value}"))
+                    .focusable(),
+            ),
         );
         let track = document.add_child(
             root,
@@ -2164,6 +2433,26 @@ pub mod widgets {
 
         pub fn insert_text(&mut self, text: &str) {
             self.replace_selection(text);
+        }
+
+        pub fn copy_selection(&self) -> Option<String> {
+            self.selected_range()
+                .map(|range| self.text[range].to_string())
+        }
+
+        pub fn cut_selection(&mut self) -> Option<String> {
+            let copied = self.copy_selection()?;
+            self.replace_selection("");
+            Some(copied)
+        }
+
+        pub fn paste_text(&mut self, text: &str) {
+            let filtered = if self.multiline {
+                text.to_string()
+            } else {
+                text.replace(['\r', '\n'], " ")
+            };
+            self.replace_selection(&filtered);
         }
 
         pub fn replace_selection(&mut self, text: &str) {
@@ -2341,7 +2630,13 @@ pub mod widgets {
                 },
             )
             .with_input(InputBehavior::BUTTON)
-            .with_visual(options.visual),
+            .with_visual(options.visual)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::TextBox)
+                    .label(name.clone())
+                    .value(state.text.clone())
+                    .focusable(),
+            ),
         );
         let display_text = if state.text.is_empty() {
             options.placeholder
@@ -2434,16 +2729,25 @@ pub mod widgets {
         options: ComboBoxOptions,
     ) -> UiNodeId {
         let name = name.into();
+        let selected_label = selected_label.into();
         let root = button(
             document,
             parent,
             name.clone(),
-            selected_label,
+            selected_label.clone(),
             ButtonOptions {
                 layout: options.layout,
                 visual: options.visual,
                 text_style: options.text_style,
+                leading_image: None,
+                image_size: UiSize::new(18.0, 18.0),
             },
+        );
+        document.node_mut(root).accessibility = Some(
+            AccessibilityMeta::new(AccessibilityRole::ComboBox)
+                .label(name)
+                .value(selected_label)
+                .focusable(),
         );
         if open {
             document.node_mut(root).style.z_index = 20;
@@ -3663,6 +3967,69 @@ mod tests {
     }
 
     #[test]
+    fn paint_list_exposes_image_and_shader_metadata() {
+        let mut doc = UiDocument::new(root_style(120.0, 80.0));
+        let image = doc.add_child(
+            doc.root,
+            UiNode::image(
+                "icon",
+                ImageContent::new("icons.play").tinted(ColorRgba::new(120, 180, 255, 255)),
+                Style {
+                    size: TaffySize {
+                        width: length(24.0),
+                        height: length(24.0),
+                    },
+                    ..Default::default()
+                },
+            )
+            .with_shader(ShaderEffect::new("ui.glow").uniform("intensity", 0.5)),
+        );
+        doc.compute_layout(UiSize::new(120.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let item = doc
+            .paint_list()
+            .items
+            .into_iter()
+            .find(|item| item.node == image)
+            .expect("image paint item");
+        assert!(matches!(
+            item.kind,
+            PaintKind::Image {
+                ref key,
+                tint: Some(_)
+            } if key == "icons.play"
+        ));
+        assert_eq!(item.shader.unwrap().key, "ui.glow");
+    }
+
+    #[test]
+    fn accessibility_tree_exports_explicit_node_metadata() {
+        let mut doc = UiDocument::new(root_style(180.0, 80.0));
+        let button = doc.add_child(
+            doc.root,
+            UiNode::container("play", button_style(80.0, 32.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Play")
+                        .hint("Starts transport")
+                        .focusable(),
+                ),
+        );
+        doc.compute_layout(UiSize::new(180.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let tree = doc.accessibility_tree();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].id, button);
+        assert_eq!(tree[0].role, AccessibilityRole::Button);
+        assert_eq!(tree[0].label.as_deref(), Some("Play"));
+        assert!(tree[0].focusable);
+        assert_eq!(tree[0].rect.width, 80.0);
+    }
+
+    #[test]
     fn pointer_and_keyboard_focus_are_tracked() {
         let mut doc = UiDocument::new(root_style(400.0, 200.0));
         let first = doc.add_child(
@@ -3862,6 +4229,22 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(outcome.committed);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_supports_clipboard_edit_primitives() {
+        let mut state = widgets::TextInputState::new("wet dry");
+        state.move_caret(widgets::CaretMovement::Start, false);
+        state.move_caret(widgets::CaretMovement::Right, true);
+        state.move_caret(widgets::CaretMovement::Right, true);
+        state.move_caret(widgets::CaretMovement::Right, true);
+
+        assert_eq!(state.copy_selection().as_deref(), Some("wet"));
+        assert_eq!(state.cut_selection().as_deref(), Some("wet"));
+        assert_eq!(state.text, " dry");
+        state.paste_text("very\nwet");
+        assert_eq!(state.text, "very wet dry");
     }
 
     #[cfg(feature = "widgets")]
