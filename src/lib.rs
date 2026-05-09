@@ -22,6 +22,7 @@ pub mod commands;
 pub mod input;
 pub mod paint;
 pub mod platform;
+pub mod shell;
 pub mod theme;
 
 pub use input::{
@@ -35,6 +36,10 @@ pub use paint::{
     AlignedStroke, CornerRadii, GradientStop, ImageAlignment, ImageFit, LinearGradient, PaintBrush,
     PaintEffect, PaintEffectKind, PaintImage, PaintPath, PaintRect, PaintText, PathVerb,
     StrokeAlignment, TextHorizontalAlign, TextOverflow, TextVerticalAlign,
+};
+pub use shell::{
+    DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup, ScrollSyncMember,
+    ShellExtent, ShellPanelState, ShellRegion, ShellWorkspaceState, SplitPaneSide,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -179,3 +179,7 @@ The branch starts from Operad 2.0.0 plus:
   identity/buttons, high-resolution wheel units, keyboard/text conversion,
   pointer capture, drag thresholds, double-click counting, cancellation, and
   gesture-to-edit phases.
+- Persistable app-shell state contracts in `src/shell.rs` for docked/floating
+  panel visibility, saved extents, collapse/restore, keyboard-resizable split
+  state, active tabs, focus restore, and synchronized track/arrangement scroll
+  offsets.
