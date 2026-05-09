@@ -949,6 +949,7 @@ pub struct MenuOutcome {
     pub selected: Option<MenuSelection>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn context_menu(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -2098,18 +2099,13 @@ fn menu_row_count_for_scroll(items: &[MenuItem]) -> usize {
 }
 
 fn visible_menu_height(items: &[MenuItem], options: &MenuListOptions) -> f32 {
-    let mut visible_rows = 0usize;
     let mut height = 0.0;
-    for item in items {
-        if visible_rows >= options.max_visible_rows {
-            break;
-        }
+    for item in items.iter().take(options.max_visible_rows) {
         height += if item.is_separator() {
             options.separator_height
         } else {
             options.row_height
         };
-        visible_rows += 1;
     }
     height
 }
@@ -2189,6 +2185,7 @@ fn button_like(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn button_like_with_input(
     document: &mut UiDocument,
     parent: UiNodeId,

@@ -887,11 +887,11 @@ impl TabGroupState {
         (selected < tabs.len()).then_some(selected)
     }
 
-    pub fn selected_tab<'a>(self, tabs: &'a [TabItem]) -> Option<&'a TabItem> {
+    pub fn selected_tab(self, tabs: &[TabItem]) -> Option<&TabItem> {
         tabs.get(self.clamped_selected_index(tabs)?)
     }
 
-    pub fn selected_tab_id<'a>(self, tabs: &'a [TabItem]) -> Option<&'a str> {
+    pub fn selected_tab_id(self, tabs: &[TabItem]) -> Option<&str> {
         Some(self.selected_tab(tabs)?.id.as_str())
     }
 

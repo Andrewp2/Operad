@@ -165,6 +165,7 @@ pub struct SplitPaneNodes {
     pub second: UiNodeId,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn split_pane(
     document: &mut UiDocument,
     parent: UiNodeId,
