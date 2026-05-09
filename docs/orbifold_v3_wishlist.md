@@ -468,3 +468,131 @@ Orbifold can keep integrating the current stable Operad baseline by:
 The main thing I want from Operad 3.0 is not "a DAW framework." I want a robust,
 themeable, testable UI toolkit where Orbifold can build a DAW without fighting
 layout, rendering, focus, and gesture infrastructure every step of the way.
+
+## V2 Integration Audit From Orbifold
+
+After pinning Orbifold to Operad 2.0.0 at commit `07061e2`, these surfaces are
+now using Operad documents or Operad scene primitives:
+
+- Toolbar button/label row, with Operad hit testing for Test A4 and All Notes
+  Off.
+- Status bar.
+- Transport action/toggle row: play/stop, record, clear clip, quantize clip,
+  quantize-grid cycling, overdub, quantize-on-record, and metronome.
+- Clip editor action row: add, delete, duplicate, nudge, transpose, and resize.
+- Workspace scale and Lumatone status headers.
+- Scale library and audio asset browser action rows and selectable rows.
+- Piano-roll grid/note/playhead background drawing through scene primitives.
+- Lumatone key-grid drawing through scene primitives.
+
+Orbifold still needs egui as the host and fallback renderer for several important
+areas. These are not places where I want Orbifold to hand-roll more one-off
+bridge code; they are the useful v3 requirements that fell out of the migration.
+
+### App Shell Hosting
+
+Orbifold still uses egui `TopBottomPanel`, `SidePanel`, `CentralPanel`, and
+`ScrollArea` for window regions, resizable sidebars, and scrolling. Operad v2 has
+useful layout pieces, but Orbifold needs a higher-level shell host that can own:
+
+- top menu/transport/status bars
+- left/right/bottom resizable panels
+- central workspace
+- scroll containers with wheel capture and persisted offsets
+- panel visibility, resizing, docking, and saved layout state
+
+Until Operad owns that host boundary, egui remains the primary application
+surface manager even when the content inside a region is rendered by Operad.
+
+### Menu, Popup, And Command Routing
+
+The main menu and nested option menus are still egui. Orbifold needs Operad menus
+to be more than renderable document fragments:
+
+- open/close state
+- submenu traversal
+- keyboard navigation
+- shortcut labels and command enablement
+- outside-click and escape dismissal
+- command IDs returned as typed events
+- integration with platform services such as file dialogs, quit, screenshot, and
+  clipboard
+
+The menu API should produce commands, not require Orbifold to inspect ad hoc node
+names.
+
+### Numeric Editors And Parameter Controls
+
+The remaining egui `DragValue` and slider controls are there because Orbifold
+needs DAW-style numeric editing:
+
+- BPM and loop length
+- selected-note velocity
+- tuning root/base frequency
+- synth parameters, including log-scaled filter frequency
+- parameter units, prefixes, suffixes, clamping, fine adjustment, and commit vs.
+  preview semantics
+
+Operad v2 sliders are useful, but Orbifold needs numeric fields/drag controls and
+parameter widgets that can be edited precisely from the keyboard and adjusted
+fluidly with the pointer.
+
+### Text Inside Custom Editor Surfaces
+
+The piano roll and Lumatone grid now draw geometry with Operad scene primitives,
+but their labels are still egui painter calls. Orbifold needs text to work inside
+custom scenes:
+
+- anchored text at a point or rect
+- center/left/right and baseline alignment
+- multiline labels
+- text elision and clipping
+- text color chosen from backing color contrast
+- text included in scene/display-list snapshots
+
+Without this, every dense editor surface still needs an escape hatch for labels.
+
+### Tables, Logs, And Capture Views
+
+The recent MIDI table and mapping capture table still use egui grids. Operad v3
+should make this kind of data view straightforward:
+
+- virtualized rows
+- selectable rows/cells
+- fixed or resizable columns
+- copy/export commands
+- compact monospace cell text
+- empty states and sticky headers
+
+These do not need to know about MIDI; they just need to be good dense data-grid
+building blocks.
+
+### Input Bridge And Widget State
+
+Orbifold's current bridge can paint an Operad document and ask which node was
+clicked. That is enough for simple button rows, but not enough for primary UI:
+
+- hover/pressed/focused state needs to flow through Operad before paint
+- pointer drag capture is needed for sliders, splitters, note handles, and
+  automation curves
+- keyboard focus and shortcuts need scoped command routing
+- scroll wheels need to target Operad scroll nodes
+- text input/IME needs a host adapter
+
+V3 should make the host adapter an explicit boundary so the app does not rebuild
+one-off hit-testing logic for every control family.
+
+### Visual Polish
+
+The v2 widgets are usable, but the reference Orbifold UI needs a tighter visual
+system:
+
+- semantic theme tokens for the full workstation shell
+- icon buttons instead of text buttons for dense action strips
+- rounded rects, gradients, shadows/glows, and stroke alignment
+- active/hover/pressed/disabled state tokens
+- high-density list and toolbar variants
+- stable pixel snapping for grid/editor lines
+
+This is not decorative. The UI has to pack a lot of musical state into small
+areas without becoming visually noisy.

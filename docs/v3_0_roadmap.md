@@ -49,6 +49,10 @@ Add a first-class theme model with semantic tokens:
 - Scoped theme inheritance so editor surfaces can use musical colors while shell
   widgets remain visually consistent.
 - One excellent dark theme before broad light-theme work.
+- High-density visual variants for toolbars, lists, data grids, and DAW/editor
+  controls.
+- Stable active, hover, pressed, disabled, invalid, warning, changed, pending,
+  selected, and focused state tokens.
 
 ## Paint And Asset Track
 
@@ -59,6 +63,9 @@ surfaces possible without leaking backend types into consumer state:
 - Linear gradients and simple multi-stop gradients.
 - Shadows, glows, inset borders, and clear fallback semantics.
 - Text alignment, baseline positioning, clipping, and elision.
+- Text primitives inside custom scene/display-list surfaces, including anchored
+  text at a point or rect, multiline labels, contrast-aware color selection, and
+  snapshot coverage.
 - Icon/image registry handles with sizing, tint, and alignment.
 - App-owned image, icon, texture, and thumbnail handles that can be resolved by
   egui, wgpu, a game renderer, or an offscreen snapshot renderer.
@@ -75,6 +82,8 @@ models, tests, input conversion, texture handles, and styling:
   and drag/drop service requests.
 - Backend adapter traits for egui, future wgpu, CPU snapshot rendering, and
   app-owned renderers.
+- Host adapter contracts for hover, pressed, focused, drag-captured, text/IME,
+  wheel-targeted, and shortcut-routed state before paint.
 - Texture/image delta abstraction for application-owned resources such as game
   menu thumbnails.
 - Explicit layer and z-order policy for mixed host/debug/app UI, so debug UI can
@@ -90,20 +99,43 @@ Add app-owned command routing without importing app semantics:
 - Platform-aware shortcuts and scope hierarchy.
 - Conflict detection, debug dumps, menu integration, command palette integration,
   and tooltip shortcut display.
+- Menu and popup APIs should emit command IDs or typed outcomes instead of
+  requiring consumers to inspect node names.
+- Platform service command hooks for file dialogs, quit, screenshot, clipboard,
+  and other app-owned effects.
 - Pointer capture, drag thresholds, double-click timing, cancellation, modifiers,
   high-resolution wheel deltas, and edit phase coalescing.
+- Drag capture for sliders, splitters, note handles, clip handles, automation
+  curves, and host-embedded editor surfaces.
 
 ## Shell And Editor Track
 
 Make common DAW layouts easier to assemble:
 
 - Persistent top, left, track, arrangement, editor, right, and status regions.
+- Higher-level shell host for menu/transport/status bars, left/right/bottom
+  resizable panels, central workspace, scroll containers, visibility, docking,
+  saved layout state, and persisted offsets.
 - Split pane collapse/restore, min/max sizes, and keyboard accessible resizing.
 - Dock panel visibility and persisted size state.
 - Tab strips for inspector/editor panels.
 - Track list and arrangement scroll synchronization.
 - Editor surfaces with world/view transforms, hover, hit testing, drag capture,
   marquee selection, snapping, cursor override, tool mode, and overlay layers.
+- Scene/editor text should not require an egui painter escape hatch.
+
+## Data And Editing Track
+
+Move beyond renderable controls toward production editing workflows:
+
+- Numeric fields, drag values, and parameter widgets with units, prefixes,
+  suffixes, clamping, fine adjustment, logarithmic scaling, keyboard precision,
+  and commit versus preview phases.
+- Dense data views for logs and capture tables with virtualized rows, selectable
+  rows/cells, fixed/resizable columns, copy/export commands, compact monospace
+  text, empty states, and sticky headers.
+- Property controls should surface invalid, changed, pending, read-only, and
+  disabled state consistently through theme and accessibility metadata.
 
 ## Testing And Performance Track
 
