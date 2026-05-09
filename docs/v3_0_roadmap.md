@@ -1,9 +1,9 @@
 # Operad 3.0 Roadmap
 
-This roadmap translates the Orbifold 3.0 wishlist into reusable Operad work.
-Orbifold should continue to own musical state and commands; Operad should own
-the themeable, testable, accessible UI machinery that projects app snapshots
-into documents, editor surfaces, and command intents.
+This roadmap translates the Orbifold and game-agent 3.0 wishlists into reusable
+Operad work. Consumers should continue to own product semantics; Operad should
+own the themeable, testable, accessible UI machinery that projects app snapshots
+into documents, editor surfaces, backend paint, and command intents.
 
 ## Release Direction
 
@@ -16,7 +16,8 @@ Operad 3.0 should focus on workstation-grade UI infrastructure:
 5. Gesture phases, pointer capture, and editor-surface hit testing.
 6. App shell helpers for persisted split, dock, tab, and scroll-sync state.
 7. Property, numeric, text, tree, table, and browser polish.
-8. Screenshot, layout, interaction, and performance tooling.
+8. Backend-neutral input, platform output, image handles, and layer policy.
+9. Screenshot, layout, interaction, and performance tooling.
 
 ## Accessibility Track
 
@@ -51,15 +52,35 @@ Add a first-class theme model with semantic tokens:
 
 ## Paint And Asset Track
 
-Add renderer-neutral primitives that make dense DAW surfaces possible:
+Add renderer-neutral primitives and resource handles that make dense app
+surfaces possible without leaking backend types into consumer state:
 
 - Rounded rectangles with stroke alignment.
 - Linear gradients and simple multi-stop gradients.
 - Shadows, glows, inset borders, and clear fallback semantics.
 - Text alignment, baseline positioning, clipping, and elision.
 - Icon/image registry handles with sizing, tint, and alignment.
+- App-owned image, icon, texture, and thumbnail handles that can be resolved by
+  egui, wgpu, a game renderer, or an offscreen snapshot renderer.
 - Paths for automation curves, waveforms, and custom editor display lists.
 - Pixel snapping policy for hairlines and grids.
+
+## Backend And Platform Track
+
+Make egui one optional adapter rather than a type that leaks into consumer UI
+models, tests, input conversion, texture handles, and styling:
+
+- Renderer-neutral raw input events, platform-output responses, cursor changes,
+  repaint requests, file dialogs, clipboard, open-URL, screenshots, text/IME,
+  and drag/drop service requests.
+- Backend adapter traits for egui, future wgpu, CPU snapshot rendering, and
+  app-owned renderers.
+- Texture/image delta abstraction for application-owned resources such as game
+  menu thumbnails.
+- Explicit layer and z-order policy for mixed host/debug/app UI, so debug UI can
+  stay above app UI without relying on backend-specific ordering.
+- A richer paint-list/backend contract that supports batching, resource
+  resolution, partial updates, and deterministic tests.
 
 ## Commands And Gestures Track
 
@@ -89,7 +110,9 @@ Make common DAW layouts easier to assemble:
 Build on the v2 snapshot/perf smoke harness:
 
 - Pixel-diff tooling with tolerances.
-- Event replay for menus, row selection, drag gestures, scrolling, and shortcuts.
+- Event replay for menus, row selection, drag gestures, scrolling, shortcuts,
+  raw input conversion, and platform-output assertions.
+- Snapshot and event-test utilities that do not require egui harness types.
 - Layout assertions by stable node name.
 - Paint-list assertions for editor primitives.
 - Dirty flags for layout, paint, input, theme, and text measurement.
@@ -106,3 +129,4 @@ The branch starts from Operad 2.0.0 plus:
   scope.
 - Existing core widgets and major widget families wired to richer accessibility
   states where the current APIs already expose that information.
+- Orbifold and game-agent v3 wishlist documents preserved under `docs/`.
