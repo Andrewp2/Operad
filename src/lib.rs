@@ -19,6 +19,7 @@ use taffy::prelude::{
 
 pub mod accessibility;
 pub mod commands;
+pub mod display;
 pub mod editor;
 pub mod host;
 pub mod input;
@@ -29,6 +30,10 @@ pub mod shell;
 pub mod testing;
 pub mod theme;
 
+pub use display::{
+    DisplayListId, DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKey,
+    DisplayListKind, DisplayListScope, RetainedDisplayList, RetainedDisplayListCache,
+};
 pub use editor::{
     EditorCursor, EditorHitId, EditorHitKind, EditorHitTarget, EditorHitTest, EditorHitTester,
     EditorOverlay, EditorOverlayStack, EditorSurfaceId, EditorSurfaceState, EditorToolId,

@@ -195,3 +195,6 @@ The branch starts from Operad 2.0.0 plus:
 - Editor-surface helpers in `src/editor.rs` for world/view transforms, hit
   testing, snapping, cursor/tool modes, marquee selection, drag capture, and
   overlay ordering.
+- Retained display-list cache contracts in `src/display.rs` for static editor
+  backgrounds, snapshot/display-list reuse, dirty-flag invalidation, and bounded
+  cache eviction.
