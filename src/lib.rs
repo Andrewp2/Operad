@@ -19,8 +19,15 @@ use taffy::prelude::{
 
 pub mod accessibility;
 pub mod commands;
+pub mod paint;
 pub mod platform;
 pub mod theme;
+
+pub use paint::{
+    AlignedStroke, CornerRadii, GradientStop, ImageAlignment, ImageFit, LinearGradient, PaintBrush,
+    PaintEffect, PaintEffectKind, PaintImage, PaintPath, PaintRect, PaintText, PathVerb,
+    StrokeAlignment, TextHorizontalAlign, TextOverflow, TextVerticalAlign,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UiPoint {
@@ -684,6 +691,10 @@ pub enum ScenePrimitive {
         rect: UiRect,
         tint: Option<ColorRgba>,
     },
+    Rect(PaintRect),
+    Text(PaintText),
+    Path(PaintPath),
+    ImagePlacement(PaintImage),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1916,6 +1927,66 @@ fn scene_primitive_to_paint_item(
                 tint: *tint,
             },
         },
+        ScenePrimitive::Rect(rect) => {
+            let rect = rect
+                .clone()
+                .translated(UiPoint::new(context.node_rect.x, context.node_rect.y));
+            PaintItem {
+                node: context.node,
+                rect: rect.rect,
+                clip_rect: context.clip_rect,
+                z_index: context.z_index,
+                opacity: context.opacity,
+                transform: context.transform,
+                shader: context.shader.clone(),
+                kind: PaintKind::RichRect(rect),
+            }
+        }
+        ScenePrimitive::Text(text) => {
+            let text = text
+                .clone()
+                .translated(UiPoint::new(context.node_rect.x, context.node_rect.y));
+            PaintItem {
+                node: context.node,
+                rect: text.rect,
+                clip_rect: context.clip_rect,
+                z_index: context.z_index,
+                opacity: context.opacity,
+                transform: context.transform,
+                shader: context.shader.clone(),
+                kind: PaintKind::SceneText(text),
+            }
+        }
+        ScenePrimitive::Path(path) => {
+            let path = path
+                .clone()
+                .translated(UiPoint::new(context.node_rect.x, context.node_rect.y));
+            PaintItem {
+                node: context.node,
+                rect: path.bounds(),
+                clip_rect: context.clip_rect,
+                z_index: context.z_index,
+                opacity: context.opacity,
+                transform: context.transform,
+                shader: context.shader.clone(),
+                kind: PaintKind::Path(path),
+            }
+        }
+        ScenePrimitive::ImagePlacement(image) => {
+            let image = image
+                .clone()
+                .translated(UiPoint::new(context.node_rect.x, context.node_rect.y));
+            PaintItem {
+                node: context.node,
+                rect: image.rect,
+                clip_rect: context.clip_rect,
+                z_index: context.z_index,
+                opacity: context.opacity,
+                transform: context.transform,
+                shader: context.shader.clone(),
+                kind: PaintKind::ImagePlacement(image),
+            }
+        }
     }
 }
 
@@ -2007,6 +2078,10 @@ pub enum PaintKind {
         key: String,
         tint: Option<ColorRgba>,
     },
+    RichRect(PaintRect),
+    SceneText(PaintText),
+    Path(PaintPath),
+    ImagePlacement(PaintImage),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4176,12 +4251,33 @@ fn paint_document_egui_impl(
                     );
                 }
             }
+            PaintKind::RichRect(rect_primitive) => {
+                simple_rect_batch.flush(&painter, outer_clip);
+                paint_rich_rect_egui(
+                    &painter.with_clip_rect(clip_rect),
+                    rect,
+                    rect_primitive,
+                    item.opacity,
+                );
+            }
             PaintKind::Text(text) => {
                 simple_rect_batch.flush(&painter, outer_clip);
                 painter.with_clip_rect(clip_rect).text(
                     egui::Pos2::new(rect.min.x, rect.min.y),
                     egui::Align2::LEFT_TOP,
                     &text.text,
+                    egui_font_id(&text.style, item.transform.scale),
+                    egui_color(text.style.color, item.opacity),
+                );
+            }
+            PaintKind::SceneText(text) => {
+                simple_rect_batch.flush(&painter, outer_clip);
+                let node_painter = painter.with_clip_rect(clip_rect);
+                let text_rect = egui_rect(transform_rect(text.rect, item.transform));
+                node_painter.text(
+                    scene_text_pos(text_rect, text),
+                    scene_text_align(text),
+                    scene_text_content(text),
                     egui_font_id(&text.style, item.transform.scale),
                     egui_color(text.style.color, item.opacity),
                 );
@@ -4253,9 +4349,150 @@ fn paint_document_egui_impl(
             PaintKind::Image { .. } => {
                 simple_rect_batch.flush(&painter, outer_clip);
             }
+            PaintKind::Path(path) => {
+                simple_rect_batch.flush(&painter, outer_clip);
+                let points = paint_path_points(path)
+                    .into_iter()
+                    .map(|point| egui_pos(transform_point(point, item.transform)))
+                    .collect::<Vec<_>>();
+                if let Some(fill) = &path.fill {
+                    if points.len() >= 3 {
+                        painter
+                            .with_clip_rect(clip_rect)
+                            .add(egui::Shape::convex_polygon(
+                                points.clone(),
+                                egui_color(fill.fallback_color(), item.opacity),
+                                egui::Stroke::NONE,
+                            ));
+                    }
+                }
+                if let Some(stroke) = path.stroke {
+                    if points.len() >= 2 {
+                        painter.with_clip_rect(clip_rect).add(egui::Shape::line(
+                            points,
+                            egui::Stroke::new(
+                                stroke.style.width,
+                                egui_color(stroke.style.color, item.opacity),
+                            ),
+                        ));
+                    }
+                }
+            }
+            PaintKind::ImagePlacement(_) => {
+                simple_rect_batch.flush(&painter, outer_clip);
+            }
         }
     }
     simple_rect_batch.flush(&painter, outer_clip);
+}
+
+#[cfg(feature = "egui")]
+fn paint_rich_rect_egui(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    rect_primitive: &PaintRect,
+    opacity: f32,
+) {
+    let radius = rect_primitive.corner_radii.max_radius();
+    for effect in &rect_primitive.effects {
+        let color = egui_color(effect.color, opacity);
+        match effect.kind {
+            PaintEffectKind::Shadow | PaintEffectKind::Glow => {
+                let spread = effect.spread.max(0.0) + effect.blur_radius.max(0.0) * 0.25;
+                let effect_rect = rect
+                    .expand(spread)
+                    .translate(egui::vec2(effect.offset.x, effect.offset.y));
+                painter.rect_filled(effect_rect, radius + spread, color);
+            }
+            PaintEffectKind::InsetShadow => {
+                painter.rect_stroke(
+                    rect.shrink(effect.spread.max(0.0)),
+                    radius,
+                    egui::Stroke::new(effect.blur_radius.max(1.0), color),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+    }
+
+    let fill = rect_primitive.fill.fallback_color();
+    if fill.a > 0 {
+        painter.rect_filled(rect, radius, egui_color(fill, opacity));
+    }
+    if let Some(stroke) = rect_primitive.stroke {
+        painter.rect_stroke(
+            rect,
+            radius,
+            egui::Stroke::new(stroke.style.width, egui_color(stroke.style.color, opacity)),
+            egui_stroke_kind(stroke.alignment),
+        );
+    }
+}
+
+#[cfg(feature = "egui")]
+fn egui_stroke_kind(alignment: StrokeAlignment) -> egui::StrokeKind {
+    match alignment {
+        StrokeAlignment::Inside => egui::StrokeKind::Inside,
+        StrokeAlignment::Center => egui::StrokeKind::Middle,
+        StrokeAlignment::Outside => egui::StrokeKind::Outside,
+    }
+}
+
+#[cfg(feature = "egui")]
+fn scene_text_pos(rect: egui::Rect, text: &PaintText) -> egui::Pos2 {
+    let x = match text.horizontal_align {
+        TextHorizontalAlign::Start => rect.min.x,
+        TextHorizontalAlign::Center => rect.center().x,
+        TextHorizontalAlign::End => rect.max.x,
+    };
+    let y = match text.vertical_align {
+        TextVerticalAlign::Top | TextVerticalAlign::Baseline => rect.min.y,
+        TextVerticalAlign::Center => rect.center().y,
+        TextVerticalAlign::Bottom => rect.max.y,
+    };
+    egui::Pos2::new(x, y)
+}
+
+#[cfg(feature = "egui")]
+fn scene_text_align(text: &PaintText) -> egui::Align2 {
+    match (text.horizontal_align, text.vertical_align) {
+        (TextHorizontalAlign::Start, TextVerticalAlign::Top | TextVerticalAlign::Baseline) => {
+            egui::Align2::LEFT_TOP
+        }
+        (TextHorizontalAlign::Center, TextVerticalAlign::Top | TextVerticalAlign::Baseline) => {
+            egui::Align2::CENTER_TOP
+        }
+        (TextHorizontalAlign::End, TextVerticalAlign::Top | TextVerticalAlign::Baseline) => {
+            egui::Align2::RIGHT_TOP
+        }
+        (TextHorizontalAlign::Start, TextVerticalAlign::Center) => egui::Align2::LEFT_CENTER,
+        (TextHorizontalAlign::Center, TextVerticalAlign::Center) => egui::Align2::CENTER_CENTER,
+        (TextHorizontalAlign::End, TextVerticalAlign::Center) => egui::Align2::RIGHT_CENTER,
+        (TextHorizontalAlign::Start, TextVerticalAlign::Bottom) => egui::Align2::LEFT_BOTTOM,
+        (TextHorizontalAlign::Center, TextVerticalAlign::Bottom) => egui::Align2::CENTER_BOTTOM,
+        (TextHorizontalAlign::End, TextVerticalAlign::Bottom) => egui::Align2::RIGHT_BOTTOM,
+    }
+}
+
+#[cfg(feature = "egui")]
+fn scene_text_content(text: &PaintText) -> &str {
+    if text.multiline {
+        &text.text
+    } else {
+        text.text.lines().next().unwrap_or("")
+    }
+}
+
+#[cfg(feature = "egui")]
+fn paint_path_points(path: &PaintPath) -> Vec<UiPoint> {
+    path.verbs
+        .iter()
+        .filter_map(|verb| match *verb {
+            PathVerb::MoveTo(point) | PathVerb::LineTo(point) => Some(point),
+            PathVerb::QuadraticTo { to, .. } | PathVerb::CubicTo { to, .. } => Some(to),
+            PathVerb::Close => None,
+        })
+        .collect()
 }
 
 #[cfg(feature = "egui")]
@@ -4851,6 +5088,146 @@ mod tests {
             .items
             .iter()
             .any(|item| matches!(item.kind, PaintKind::Circle { .. })));
+    }
+
+    #[test]
+    fn paint_list_exposes_rich_scene_display_list_primitives() {
+        let mut doc = UiDocument::new(root_style(140.0, 100.0));
+        doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "scene.rich",
+                vec![
+                    ScenePrimitive::Rect(
+                        PaintRect::new(
+                            UiRect::new(4.0, 6.0, 72.0, 26.0),
+                            PaintBrush::LinearGradient(
+                                LinearGradient::new(
+                                    UiPoint::new(4.0, 6.0),
+                                    UiPoint::new(76.0, 32.0),
+                                    ColorRgba::new(18, 30, 44, 255),
+                                    ColorRgba::new(42, 74, 105, 255),
+                                )
+                                .stop(0.45, ColorRgba::new(25, 48, 72, 255))
+                                .fallback(ColorRgba::new(20, 36, 54, 255)),
+                            ),
+                        )
+                        .stroke(AlignedStroke::inside(StrokeStyle::new(
+                            ColorRgba::new(120, 190, 255, 255),
+                            1.5,
+                        )))
+                        .corner_radii(CornerRadii::new(4.0, 8.0, 8.0, 4.0))
+                        .effect(PaintEffect::shadow(
+                            ColorRgba::new(0, 0, 0, 90),
+                            UiPoint::new(0.0, 3.0),
+                            10.0,
+                            1.0,
+                        )),
+                    ),
+                    ScenePrimitive::Text(
+                        PaintText::new(
+                            "Peak Level",
+                            UiRect::new(8.0, 10.0, 64.0, 16.0),
+                            TextStyle {
+                                color: ColorRgba::new(230, 240, 250, 255),
+                                ..Default::default()
+                            },
+                        )
+                        .horizontal_align(TextHorizontalAlign::Center)
+                        .vertical_align(TextVerticalAlign::Baseline)
+                        .overflow(TextOverflow::Ellipsis)
+                        .multiline(false),
+                    ),
+                    ScenePrimitive::Path(
+                        PaintPath::new()
+                            .move_to(UiPoint::new(8.0, 58.0))
+                            .cubic_to(
+                                UiPoint::new(30.0, 20.0),
+                                UiPoint::new(62.0, 84.0),
+                                UiPoint::new(96.0, 46.0),
+                            )
+                            .stroke(AlignedStroke::center(StrokeStyle::new(
+                                ColorRgba::new(242, 205, 96, 255),
+                                2.0,
+                            ))),
+                    ),
+                    ScenePrimitive::ImagePlacement(
+                        PaintImage::new("meters.peak", UiRect::new(82.0, 8.0, 24.0, 24.0))
+                            .tinted(ColorRgba::new(120, 210, 255, 255))
+                            .fit(ImageFit::Contain)
+                            .align(ImageAlignment::End, ImageAlignment::Start),
+                    ),
+                ],
+                Style {
+                    size: TaffySize {
+                        width: length(120.0),
+                        height: length(90.0),
+                    },
+                    ..Default::default()
+                },
+            ),
+        );
+        doc.compute_layout(UiSize::new(140.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let rich_rect = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::RichRect(rect) => Some(rect),
+                _ => None,
+            })
+            .expect("rich rect paint item");
+        assert_eq!(rich_rect.rect, UiRect::new(4.0, 6.0, 72.0, 26.0));
+        assert_eq!(
+            rich_rect.stroke.expect("stroke").alignment,
+            StrokeAlignment::Inside
+        );
+        assert_eq!(rich_rect.corner_radii.top_right, 8.0);
+        assert_eq!(rich_rect.effects[0].kind, PaintEffectKind::Shadow);
+        assert!(matches!(
+            rich_rect.fill,
+            PaintBrush::LinearGradient(ref gradient)
+                if gradient.stops.len() == 3
+                    && gradient.fallback == ColorRgba::new(20, 36, 54, 255)
+        ));
+
+        let text = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::SceneText(text) => Some(text),
+                _ => None,
+            })
+            .expect("scene text paint item");
+        assert_eq!(text.horizontal_align, TextHorizontalAlign::Center);
+        assert_eq!(text.vertical_align, TextVerticalAlign::Baseline);
+        assert_eq!(text.overflow, TextOverflow::Ellipsis);
+        assert!(!text.multiline);
+
+        let path = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::Path(path) => Some(path),
+                _ => None,
+            })
+            .expect("path paint item");
+        assert_eq!(path.verbs.len(), 2);
+        assert_eq!(path.bounds(), UiRect::new(8.0, 20.0, 88.0, 64.0));
+
+        let image = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::ImagePlacement(image) => Some(image),
+                _ => None,
+            })
+            .expect("image placement paint item");
+        assert_eq!(image.key, "meters.peak");
+        assert_eq!(image.fit, ImageFit::Contain);
+        assert_eq!(image.horizontal_align, ImageAlignment::End);
     }
 
     #[test]

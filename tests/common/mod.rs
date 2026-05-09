@@ -104,7 +104,39 @@ fn draw_item(image: &mut RasterImage, item: &PaintItem) {
                 stroke_rect(image, rect, clip, *stroke, item.opacity);
             }
         }
+        PaintKind::RichRect(rect_primitive) => {
+            let rect = transform_rect(rect_primitive.rect, item.transform);
+            for effect in &rect_primitive.effects {
+                let spread = effect.spread.max(0.0) + effect.blur_radius.max(0.0) * 0.25;
+                let effect_rect = UiRect::new(
+                    rect.x + effect.offset.x - spread,
+                    rect.y + effect.offset.y - spread,
+                    rect.width + spread * 2.0,
+                    rect.height + spread * 2.0,
+                );
+                fill_rect(image, effect_rect, clip, effect.color, item.opacity);
+            }
+            fill_rect(
+                image,
+                rect,
+                clip,
+                rect_primitive.fill.fallback_color(),
+                item.opacity,
+            );
+            if let Some(stroke) = rect_primitive.stroke {
+                stroke_rect(image, rect, clip, stroke.style, item.opacity);
+            }
+        }
         PaintKind::Text(text) => draw_text(image, item, text),
+        PaintKind::SceneText(text) => {
+            let text_content = TextContent::new(text.text.clone(), text.style.clone());
+            let item = PaintItem {
+                rect: text.rect,
+                kind: PaintKind::Text(text_content.clone()),
+                ..(*item).clone()
+            };
+            draw_text(image, &item, &text_content);
+        }
         PaintKind::Canvas(canvas) => draw_canvas(image, item, canvas),
         PaintKind::Line { from, to, stroke } => {
             draw_line(
@@ -163,6 +195,46 @@ fn draw_item(image: &mut RasterImage, item: &PaintItem) {
                 clip,
                 key,
                 *tint,
+            );
+        }
+        PaintKind::Path(path) => {
+            let points = path
+                .verbs
+                .iter()
+                .filter_map(|verb| match *verb {
+                    operad::PathVerb::MoveTo(point) | operad::PathVerb::LineTo(point) => {
+                        Some(transform_point(point, item.transform))
+                    }
+                    operad::PathVerb::QuadraticTo { to, .. }
+                    | operad::PathVerb::CubicTo { to, .. } => {
+                        Some(transform_point(to, item.transform))
+                    }
+                    operad::PathVerb::Close => None,
+                })
+                .collect::<Vec<_>>();
+            if let Some(fill) = &path.fill {
+                fill_polygon(image, &points, clip, fill.fallback_color(), item.opacity);
+            }
+            if let Some(stroke) = path.stroke {
+                for segment in points.windows(2) {
+                    draw_line(
+                        image,
+                        segment[0],
+                        segment[1],
+                        clip,
+                        stroke.style,
+                        item.opacity,
+                    );
+                }
+            }
+        }
+        PaintKind::ImagePlacement(image_placement) => {
+            draw_image_placeholder(
+                image,
+                transform_rect(image_placement.rect, item.transform),
+                clip,
+                &image_placement.key,
+                image_placement.tint,
             );
         }
     }

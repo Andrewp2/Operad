@@ -172,3 +172,6 @@ The branch starts from Operad 2.0.0 plus:
 - Existing core widgets and major widget families wired to richer accessibility
   states where the current APIs already expose that information.
 - Orbifold and game-agent v3 wishlist documents preserved under `docs/`.
+- Renderer-neutral paint extensions in `src/paint.rs` for gradient brushes,
+  stroke alignment, corner radii, shadows/glows/inset shadows, anchored scene
+  text with alignment and overflow policy, image placement, and path primitives.
