@@ -9,10 +9,10 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::platform::{
-    ClipboardResponse, CursorResponse, DragDropResponse, FileDialogResponse, NotificationResponse,
-    OpenUrlResponse, PlatformResponse, PlatformServiceError, PlatformServiceKind,
-    PlatformServiceRequest, PlatformServiceResponse, RepaintResponse, ScreenshotResponse,
-    TextImeResponse,
+    AppLifecycleResponse, ClipboardResponse, CursorResponse, DragDropResponse, FileDialogResponse,
+    NotificationResponse, OpenUrlResponse, PlatformResponse, PlatformServiceError,
+    PlatformServiceKind, PlatformServiceRequest, PlatformServiceResponse, RepaintResponse,
+    ScreenshotResponse, TextImeResponse,
 };
 use crate::{
     HostFrameOutput, PaintItem, PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent,
@@ -432,6 +432,7 @@ fn platform_response_error(response: &PlatformResponse) -> Option<&PlatformServi
         | PlatformResponse::OpenUrl(OpenUrlResponse::Error(error))
         | PlatformResponse::Notification(NotificationResponse::Error(error))
         | PlatformResponse::Screenshot(ScreenshotResponse::Error(error))
+        | PlatformResponse::AppLifecycle(AppLifecycleResponse::Error(error))
         | PlatformResponse::TextIme(TextImeResponse::Error(error))
         | PlatformResponse::DragDrop(DragDropResponse::Error(error))
         | PlatformResponse::Cursor(CursorResponse::Error(error))

@@ -8,6 +8,11 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use crate::platform::{
+    AppLifecycleRequest, ClipboardRequest, FileDialogRequest, NotificationRequest, OpenUrlRequest,
+    PlatformRequest, PlatformRequestId, PlatformServiceCapabilities, PlatformServiceKind,
+    PlatformServiceRequest, RepaintRequest, ScreenshotRequest,
+};
 use crate::{KeyCode, KeyModifiers};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -125,6 +130,75 @@ impl From<CommandMeta> for Command {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandEffect {
+    Platform(PlatformRequest),
+    Custom(String),
+}
+
+impl CommandEffect {
+    pub fn platform(request: PlatformRequest) -> Self {
+        Self::Platform(request)
+    }
+
+    pub fn custom(effect: impl Into<String>) -> Self {
+        Self::Custom(effect.into())
+    }
+
+    pub fn clipboard(request: ClipboardRequest) -> Self {
+        Self::Platform(PlatformRequest::Clipboard(request))
+    }
+
+    pub fn file_dialog(request: FileDialogRequest) -> Self {
+        Self::Platform(PlatformRequest::FileDialog(request))
+    }
+
+    pub fn open_url(request: OpenUrlRequest) -> Self {
+        Self::Platform(PlatformRequest::OpenUrl(request))
+    }
+
+    pub fn notification(request: NotificationRequest) -> Self {
+        Self::Platform(PlatformRequest::Notification(request))
+    }
+
+    pub fn screenshot(request: ScreenshotRequest) -> Self {
+        Self::Platform(PlatformRequest::Screenshot(request))
+    }
+
+    pub fn quit() -> Self {
+        Self::Platform(PlatformRequest::AppLifecycle(AppLifecycleRequest::Quit))
+    }
+
+    pub fn close_window(window_id: impl Into<String>) -> Self {
+        Self::Platform(PlatformRequest::AppLifecycle(
+            AppLifecycleRequest::close_window(window_id),
+        ))
+    }
+
+    pub fn close_active_window() -> Self {
+        Self::Platform(PlatformRequest::AppLifecycle(
+            AppLifecycleRequest::close_active_window(),
+        ))
+    }
+
+    pub fn repaint(request: RepaintRequest) -> Self {
+        Self::Platform(PlatformRequest::Repaint(request))
+    }
+
+    pub const fn platform_kind(&self) -> Option<PlatformServiceKind> {
+        match self {
+            Self::Platform(request) => Some(request.kind()),
+            Self::Custom(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandEffectInvocation {
+    Platform(PlatformServiceRequest),
+    Custom { command: CommandId, effect: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CommandScope {
     Global,
@@ -240,6 +314,12 @@ pub struct ShortcutConflict {
 pub enum CommandRegistryError {
     DuplicateCommand(CommandId),
     UnknownCommand(CommandId),
+    DisabledCommand(CommandId),
+    MissingCommandEffect(CommandId),
+    UnsupportedCommandEffect {
+        command: CommandId,
+        kind: PlatformServiceKind,
+    },
     ShortcutConflict(ShortcutConflict),
 }
 
@@ -248,6 +328,16 @@ impl fmt::Display for CommandRegistryError {
         match self {
             Self::DuplicateCommand(command) => write!(formatter, "duplicate command `{command}`"),
             Self::UnknownCommand(command) => write!(formatter, "unknown command `{command}`"),
+            Self::DisabledCommand(command) => write!(formatter, "disabled command `{command}`"),
+            Self::MissingCommandEffect(command) => {
+                write!(formatter, "missing command effect for `{command}`")
+            }
+            Self::UnsupportedCommandEffect { command, kind } => {
+                write!(
+                    formatter,
+                    "unsupported platform effect {kind:?} for `{command}`"
+                )
+            }
             Self::ShortcutConflict(conflict) => {
                 write!(
                     formatter,
@@ -265,6 +355,7 @@ impl std::error::Error for CommandRegistryError {}
 pub struct CommandRegistry {
     commands: HashMap<CommandId, Command>,
     bindings: Vec<ShortcutBinding>,
+    effects: HashMap<CommandId, CommandEffect>,
 }
 
 impl CommandRegistry {
@@ -295,6 +386,87 @@ impl CommandRegistry {
 
     pub fn bindings(&self) -> &[ShortcutBinding] {
         &self.bindings
+    }
+
+    pub fn effect(&self, command: impl Into<CommandId>) -> Option<&CommandEffect> {
+        let command = command.into();
+        self.effects.get(&command)
+    }
+
+    pub fn effects(&self) -> impl Iterator<Item = (&CommandId, &CommandEffect)> {
+        self.effects.iter()
+    }
+
+    pub fn bind_effect(
+        &mut self,
+        command: impl Into<CommandId>,
+        effect: CommandEffect,
+    ) -> Result<(), CommandRegistryError> {
+        let command = command.into();
+
+        if !self.commands.contains_key(&command) {
+            return Err(CommandRegistryError::UnknownCommand(command));
+        }
+
+        self.effects.insert(command, effect);
+        Ok(())
+    }
+
+    pub fn bind_platform_effect(
+        &mut self,
+        command: impl Into<CommandId>,
+        request: PlatformRequest,
+    ) -> Result<(), CommandRegistryError> {
+        self.bind_effect(command, CommandEffect::platform(request))
+    }
+
+    pub fn bind_custom_effect(
+        &mut self,
+        command: impl Into<CommandId>,
+        effect: impl Into<String>,
+    ) -> Result<(), CommandRegistryError> {
+        self.bind_effect(command, CommandEffect::custom(effect))
+    }
+
+    pub fn invoke_effect(
+        &self,
+        command: impl Into<CommandId>,
+        request_id: PlatformRequestId,
+        capabilities: PlatformServiceCapabilities,
+    ) -> Result<CommandEffectInvocation, CommandRegistryError> {
+        let command = command.into();
+        let registered = self
+            .commands
+            .get(&command)
+            .ok_or_else(|| CommandRegistryError::UnknownCommand(command.clone()))?;
+
+        if !registered.is_enabled() {
+            return Err(CommandRegistryError::DisabledCommand(command));
+        }
+
+        let effect = self
+            .effects
+            .get(&command)
+            .ok_or_else(|| CommandRegistryError::MissingCommandEffect(command.clone()))?;
+
+        match effect {
+            CommandEffect::Platform(request) => {
+                if !capabilities.supports(request) {
+                    return Err(CommandRegistryError::UnsupportedCommandEffect {
+                        command,
+                        kind: request.kind(),
+                    });
+                }
+
+                Ok(CommandEffectInvocation::Platform(
+                    PlatformServiceRequest::new(request_id, request.clone()),
+                ))
+            }
+            CommandEffect::Custom(effect) => Ok(CommandEffectInvocation::Custom {
+                command,
+                effect: effect.clone(),
+            }),
+        }
     }
 
     pub fn bind_shortcut(
@@ -701,6 +873,7 @@ mod tests {
                 ShortcutBinding::new(CommandScope::Panel, Shortcut::ctrl('k'), "focus.search"),
                 ShortcutBinding::new(CommandScope::Text, Shortcut::ctrl('k'), "insert.link"),
             ],
+            effects: HashMap::new(),
         };
 
         assert_eq!(
@@ -713,6 +886,148 @@ mod tests {
                     CommandId::from("open.palette")
                 ],
             }]
+        );
+    }
+
+    #[test]
+    fn command_effects_create_platform_requests_when_supported() {
+        let mut registry = registry_with(&["file.open", "app.quit", "capture.viewport"]);
+        let open_request =
+            FileDialogRequest::new(crate::platform::FileDialogMode::OpenFile).title("Open Project");
+        let screenshot_request =
+            ScreenshotRequest::new(crate::platform::ScreenshotTarget::Viewport);
+
+        registry
+            .bind_effect(
+                "file.open",
+                CommandEffect::file_dialog(open_request.clone()),
+            )
+            .unwrap();
+        registry
+            .bind_effect("app.quit", CommandEffect::quit())
+            .unwrap();
+        registry
+            .bind_effect(
+                "capture.viewport",
+                CommandEffect::screenshot(screenshot_request.clone()),
+            )
+            .unwrap();
+
+        let open = registry
+            .invoke_effect(
+                "file.open",
+                PlatformRequestId::new(7),
+                PlatformServiceCapabilities::DESKTOP,
+            )
+            .unwrap();
+        let quit = registry
+            .invoke_effect(
+                "app.quit",
+                PlatformRequestId::new(8),
+                PlatformServiceCapabilities::DESKTOP,
+            )
+            .unwrap();
+
+        assert_eq!(
+            open,
+            CommandEffectInvocation::Platform(PlatformServiceRequest::new(
+                PlatformRequestId::new(7),
+                PlatformRequest::FileDialog(open_request)
+            ))
+        );
+        assert_eq!(
+            quit,
+            CommandEffectInvocation::Platform(PlatformServiceRequest::new(
+                PlatformRequestId::new(8),
+                PlatformRequest::AppLifecycle(AppLifecycleRequest::Quit)
+            ))
+        );
+        assert_eq!(
+            registry.effect("capture.viewport").unwrap().platform_kind(),
+            Some(PlatformServiceKind::Screenshot)
+        );
+    }
+
+    #[test]
+    fn command_effect_invocation_checks_command_state_and_capabilities() {
+        let mut registry = registry_with(&["capture.viewport", "disabled", "no.effect"]);
+        registry
+            .bind_effect(
+                "capture.viewport",
+                CommandEffect::screenshot(ScreenshotRequest::new(
+                    crate::platform::ScreenshotTarget::Viewport,
+                )),
+            )
+            .unwrap();
+        registry
+            .bind_effect(
+                "disabled",
+                CommandEffect::clipboard(ClipboardRequest::ReadText),
+            )
+            .unwrap();
+        registry.disable("disabled", "Unavailable").unwrap();
+
+        assert_eq!(
+            registry
+                .invoke_effect(
+                    "capture.viewport",
+                    PlatformRequestId::new(1),
+                    PlatformServiceCapabilities::NONE
+                )
+                .unwrap_err(),
+            CommandRegistryError::UnsupportedCommandEffect {
+                command: CommandId::from("capture.viewport"),
+                kind: PlatformServiceKind::Screenshot,
+            }
+        );
+        assert_eq!(
+            registry
+                .invoke_effect(
+                    "disabled",
+                    PlatformRequestId::new(2),
+                    PlatformServiceCapabilities::DESKTOP
+                )
+                .unwrap_err(),
+            CommandRegistryError::DisabledCommand(CommandId::from("disabled"))
+        );
+        assert_eq!(
+            registry
+                .invoke_effect(
+                    "no.effect",
+                    PlatformRequestId::new(3),
+                    PlatformServiceCapabilities::DESKTOP
+                )
+                .unwrap_err(),
+            CommandRegistryError::MissingCommandEffect(CommandId::from("no.effect"))
+        );
+        assert_eq!(
+            registry
+                .bind_effect("missing", CommandEffect::quit())
+                .unwrap_err(),
+            CommandRegistryError::UnknownCommand(CommandId::from("missing"))
+        );
+    }
+
+    #[test]
+    fn custom_command_effects_round_trip_without_platform_capabilities() {
+        let mut registry = registry_with(&["orbifold.quantize"]);
+
+        registry
+            .bind_custom_effect("orbifold.quantize", "orbifold.quantize:selected")
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .invoke_effect(
+                    "orbifold.quantize",
+                    PlatformRequestId::new(42),
+                    PlatformServiceCapabilities::NONE
+                )
+                .unwrap(),
+            CommandEffectInvocation::Custom {
+                command: CommandId::from("orbifold.quantize"),
+                effect: "orbifold.quantize:selected".to_string(),
+            }
         );
     }
 }

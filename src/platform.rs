@@ -367,6 +367,7 @@ pub enum PlatformServiceKind {
     OpenUrl,
     Notification,
     Screenshot,
+    AppLifecycle,
     TextIme,
     DragDrop,
     Cursor,
@@ -668,6 +669,32 @@ pub enum ScreenshotResponse {
     Error(PlatformServiceError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppLifecycleRequest {
+    Quit,
+    CloseWindow { window_id: Option<String> },
+}
+
+impl AppLifecycleRequest {
+    pub fn close_window(window_id: impl Into<String>) -> Self {
+        Self::CloseWindow {
+            window_id: Some(window_id.into()),
+        }
+    }
+
+    pub const fn close_active_window() -> Self {
+        Self::CloseWindow { window_id: None }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppLifecycleResponse {
+    Applied,
+    Cancelled,
+    Unsupported,
+    Error(PlatformServiceError),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TextInputId(pub String);
 
@@ -950,6 +977,7 @@ pub enum PlatformRequest {
     OpenUrl(OpenUrlRequest),
     Notification(NotificationRequest),
     Screenshot(ScreenshotRequest),
+    AppLifecycle(AppLifecycleRequest),
     TextIme(TextImeRequest),
     DragDrop(DragDropRequest),
     Cursor(CursorRequest),
@@ -964,6 +992,7 @@ impl PlatformRequest {
             Self::OpenUrl(_) => PlatformServiceKind::OpenUrl,
             Self::Notification(_) => PlatformServiceKind::Notification,
             Self::Screenshot(_) => PlatformServiceKind::Screenshot,
+            Self::AppLifecycle(_) => PlatformServiceKind::AppLifecycle,
             Self::TextIme(_) => PlatformServiceKind::TextIme,
             Self::DragDrop(_) => PlatformServiceKind::DragDrop,
             Self::Cursor(_) => PlatformServiceKind::Cursor,
@@ -979,6 +1008,7 @@ pub enum PlatformResponse {
     OpenUrl(OpenUrlResponse),
     Notification(NotificationResponse),
     Screenshot(ScreenshotResponse),
+    AppLifecycle(AppLifecycleResponse),
     TextIme(TextImeResponse),
     DragDrop(DragDropResponse),
     Cursor(CursorResponse),
@@ -993,6 +1023,7 @@ impl PlatformResponse {
             Self::OpenUrl(_) => PlatformServiceKind::OpenUrl,
             Self::Notification(_) => PlatformServiceKind::Notification,
             Self::Screenshot(_) => PlatformServiceKind::Screenshot,
+            Self::AppLifecycle(_) => PlatformServiceKind::AppLifecycle,
             Self::TextIme(_) => PlatformServiceKind::TextIme,
             Self::DragDrop(_) => PlatformServiceKind::DragDrop,
             Self::Cursor(_) => PlatformServiceKind::Cursor,
@@ -1142,6 +1173,8 @@ pub struct PlatformServiceCapabilities {
     pub open_url: bool,
     pub notifications: bool,
     pub screenshots: bool,
+    pub app_quit: bool,
+    pub window_close: bool,
     pub text_ime: bool,
     pub drag_drop: bool,
     pub cursor_shape: bool,
@@ -1160,6 +1193,8 @@ impl PlatformServiceCapabilities {
         open_url: false,
         notifications: false,
         screenshots: false,
+        app_quit: false,
+        window_close: false,
         text_ime: false,
         drag_drop: false,
         cursor_shape: false,
@@ -1177,6 +1212,8 @@ impl PlatformServiceCapabilities {
         open_url: true,
         notifications: true,
         screenshots: true,
+        app_quit: true,
+        window_close: true,
         text_ime: true,
         drag_drop: true,
         cursor_shape: true,
@@ -1201,6 +1238,10 @@ impl PlatformServiceCapabilities {
             PlatformRequest::OpenUrl(_) => self.open_url,
             PlatformRequest::Notification(_) => self.notifications,
             PlatformRequest::Screenshot(_) => self.screenshots,
+            PlatformRequest::AppLifecycle(request) => match request {
+                AppLifecycleRequest::Quit => self.app_quit,
+                AppLifecycleRequest::CloseWindow { .. } => self.window_close,
+            },
             PlatformRequest::TextIme(_) => self.text_ime,
             PlatformRequest::DragDrop(_) => self.drag_drop,
             PlatformRequest::Cursor(request) => match request {
@@ -1375,6 +1416,7 @@ mod tests {
             .services(PlatformServiceCapabilities {
                 clipboard_read: true,
                 file_save_dialog: true,
+                app_quit: true,
                 repaint: true,
                 ..PlatformServiceCapabilities::NONE
             })
@@ -1386,6 +1428,9 @@ mod tests {
             PlatformRequest::FileDialog(FileDialogRequest::new(FileDialogMode::SaveFile));
         let open_file =
             PlatformRequest::FileDialog(FileDialogRequest::new(FileDialogMode::OpenFile));
+        let quit = PlatformRequest::AppLifecycle(AppLifecycleRequest::Quit);
+        let close_window =
+            PlatformRequest::AppLifecycle(AppLifecycleRequest::close_active_window());
 
         assert!(backend.supports_resource(ResourceKind::Image));
         assert!(!backend.supports_resource(ResourceKind::Texture));
@@ -1394,6 +1439,8 @@ mod tests {
         assert!(!backend.supports_request(&write_clipboard));
         assert!(backend.supports_request(&save_file));
         assert!(!backend.supports_request(&open_file));
+        assert!(backend.supports_request(&quit));
+        assert!(!backend.supports_request(&close_window));
         assert!(backend.supports_accessibility(AccessibilityRequestKind::PublishTree));
         assert!(!backend.accessibility.screenshots);
     }

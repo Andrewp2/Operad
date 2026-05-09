@@ -35,6 +35,10 @@ pub mod tooltips;
 pub use assets::{
     AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
 };
+pub use commands::{
+    Command, CommandEffect, CommandEffectInvocation, CommandId, CommandMeta, CommandRegistry,
+    CommandRegistryError, CommandScope, Shortcut, ShortcutBinding, ShortcutConflict,
+};
 pub use display::{
     DisplayListId, DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKey,
     DisplayListKind, DisplayListScope, RetainedDisplayList, RetainedDisplayListCache,
