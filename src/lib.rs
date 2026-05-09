@@ -17,6 +17,7 @@ use taffy::prelude::{
     Style, TaffyTree,
 };
 
+pub mod accessibility;
 pub mod commands;
 pub mod platform;
 pub mod theme;
@@ -2104,6 +2105,15 @@ impl UiDocument {
     }
 
     pub fn accessibility_snapshot(&self) -> AccessibilityTree {
+        let accessible_nodes = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let accessibility = node.accessibility.as_ref()?;
+                (!accessibility.hidden).then_some(index)
+            })
+            .collect::<HashSet<_>>();
         let nodes = self
             .nodes
             .iter()
@@ -2115,7 +2125,7 @@ impl UiDocument {
                 }
                 Some(AccessibilityNode {
                     id: UiNodeId(index),
-                    parent: node.parent,
+                    parent: nearest_accessible_parent(&self.nodes, node.parent, &accessible_nodes),
                     role: accessibility.role,
                     label: accessibility.label.clone(),
                     value: accessibility.value.clone(),
@@ -2268,6 +2278,21 @@ impl UiDocument {
         }
         false
     }
+}
+
+fn nearest_accessible_parent(
+    nodes: &[UiNode],
+    mut parent: Option<UiNodeId>,
+    accessible_nodes: &HashSet<usize>,
+) -> Option<UiNodeId> {
+    while let Some(id) = parent {
+        if accessible_nodes.contains(&id.0) {
+            return Some(id);
+        }
+        parent = nodes.get(id.0).and_then(|node| node.parent);
+    }
+
+    None
 }
 
 fn accessibility_focus_order(nodes: &[AccessibilityNode]) -> Vec<UiNodeId> {

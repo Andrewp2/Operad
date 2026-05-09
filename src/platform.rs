@@ -8,6 +8,8 @@ use std::cmp::Ordering;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::accessibility::{AccessibilityCapabilities, AccessibilityRequestKind};
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LogicalPoint {
     pub x: f32,
@@ -1243,6 +1245,7 @@ pub struct BackendCapabilities {
     pub layers: LayerCapabilities,
     pub services: PlatformServiceCapabilities,
     pub rendering: RenderingCapabilities,
+    pub accessibility: AccessibilityCapabilities,
 }
 
 impl BackendCapabilities {
@@ -1254,6 +1257,7 @@ impl BackendCapabilities {
             layers: LayerCapabilities::NONE,
             services: PlatformServiceCapabilities::NONE,
             rendering: RenderingCapabilities::NONE,
+            accessibility: AccessibilityCapabilities::NONE,
         }
     }
 
@@ -1282,6 +1286,11 @@ impl BackendCapabilities {
         self
     }
 
+    pub const fn accessibility(mut self, accessibility: AccessibilityCapabilities) -> Self {
+        self.accessibility = accessibility;
+        self
+    }
+
     pub const fn supports_resource(&self, kind: ResourceKind) -> bool {
         self.resources.supports(kind)
     }
@@ -1292,6 +1301,10 @@ impl BackendCapabilities {
 
     pub const fn supports_request(&self, request: &PlatformRequest) -> bool {
         self.services.supports(request)
+    }
+
+    pub const fn supports_accessibility(&self, request: AccessibilityRequestKind) -> bool {
+        self.accessibility.supports(request)
     }
 }
 
@@ -1364,7 +1377,8 @@ mod tests {
                 file_save_dialog: true,
                 repaint: true,
                 ..PlatformServiceCapabilities::NONE
-            });
+            })
+            .accessibility(AccessibilityCapabilities::SCREEN_READER);
 
         let read_clipboard = PlatformRequest::Clipboard(ClipboardRequest::ReadText);
         let write_clipboard = PlatformRequest::Clipboard(ClipboardRequest::WriteText("x".into()));
@@ -1380,6 +1394,8 @@ mod tests {
         assert!(!backend.supports_request(&write_clipboard));
         assert!(backend.supports_request(&save_file));
         assert!(!backend.supports_request(&open_file));
+        assert!(backend.supports_accessibility(AccessibilityRequestKind::PublishTree));
+        assert!(!backend.accessibility.screenshots);
     }
 
     #[test]

@@ -39,6 +39,11 @@ Next accessibility work should define backend/platform adapter traits for
 screen-reader trees, focus restore, focus traps, reduced motion, high contrast,
 clipboard, text/IME, drag/drop, and screenshots.
 
+The branch now includes `src/accessibility.rs` as the backend-facing
+accessibility contract: screen-reader tree publishing requests, focus movement,
+focus traps, focus restore targets, live announcements, host preference flags,
+and accessibility capabilities integrated into backend capability descriptors.
+
 ## Theme Track
 
 Add a first-class theme model with semantic tokens:
@@ -159,6 +164,11 @@ The branch starts from Operad 2.0.0 plus:
 - Expanded accessibility primitives in core.
 - `UiDocument::accessibility_snapshot()` with nodes, focus order, and modal
   scope.
+- Accessibility tree helpers for nearest accessible parents, focusable nodes,
+  live regions, and modal/focus-trap traversal.
+- Backend-facing accessibility adapter request/response contracts and host
+  preference flags for screen reader, reduced motion, high contrast, forced
+  colors, transparency, and text scaling.
 - Existing core widgets and major widget families wired to richer accessibility
   states where the current APIs already expose that information.
 - Orbifold and game-agent v3 wishlist documents preserved under `docs/`.
