@@ -1524,17 +1524,18 @@ impl UiDocument {
                     },
                 }),
                 UiContent::Scene(primitives) => {
+                    let context = ScenePaintContext {
+                        node: id,
+                        node_rect: node.layout.rect,
+                        clip_rect: node.layout.clip_rect,
+                        z_index,
+                        opacity,
+                        transform,
+                        shader: node.shader.clone(),
+                    };
                     for primitive in primitives {
-                        list.items.push(scene_primitive_to_paint_item(
-                            id,
-                            node.layout.rect,
-                            node.layout.clip_rect,
-                            z_index,
-                            opacity,
-                            transform,
-                            node.shader.clone(),
-                            primitive,
-                        ));
+                        list.items
+                            .push(scene_primitive_to_paint_item(&context, primitive));
                     }
                 }
             }
@@ -1571,7 +1572,8 @@ impl UiDocument {
     }
 }
 
-fn scene_primitive_to_paint_item(
+#[derive(Debug, Clone)]
+struct ScenePaintContext {
     node: UiNodeId,
     node_rect: UiRect,
     clip_rect: UiRect,
@@ -1579,20 +1581,24 @@ fn scene_primitive_to_paint_item(
     opacity: f32,
     transform: PaintTransform,
     shader: Option<ShaderEffect>,
+}
+
+fn scene_primitive_to_paint_item(
+    context: &ScenePaintContext,
     primitive: &ScenePrimitive,
 ) -> PaintItem {
     match primitive {
         ScenePrimitive::Line { from, to, stroke } => {
-            let from = point_in_rect(node_rect, *from);
-            let to = point_in_rect(node_rect, *to);
+            let from = point_in_rect(context.node_rect, *from);
+            let to = point_in_rect(context.node_rect, *to);
             PaintItem {
-                node,
+                node: context.node,
                 rect: rect_from_points(&[from, to]),
-                clip_rect,
-                z_index,
-                opacity,
-                transform,
-                shader: shader.clone(),
+                clip_rect: context.clip_rect,
+                z_index: context.z_index,
+                opacity: context.opacity,
+                transform: context.transform,
+                shader: context.shader.clone(),
                 kind: PaintKind::Line {
                     from,
                     to,
@@ -1606,20 +1612,20 @@ fn scene_primitive_to_paint_item(
             fill,
             stroke,
         } => {
-            let center = point_in_rect(node_rect, *center);
+            let center = point_in_rect(context.node_rect, *center);
             PaintItem {
-                node,
+                node: context.node,
                 rect: UiRect::new(
                     center.x - radius,
                     center.y - radius,
                     radius * 2.0,
                     radius * 2.0,
                 ),
-                clip_rect,
-                z_index,
-                opacity,
-                transform,
-                shader: shader.clone(),
+                clip_rect: context.clip_rect,
+                z_index: context.z_index,
+                opacity: context.opacity,
+                transform: context.transform,
+                shader: context.shader.clone(),
                 kind: PaintKind::Circle {
                     center,
                     radius: *radius,
@@ -1635,16 +1641,16 @@ fn scene_primitive_to_paint_item(
         } => {
             let points = points
                 .iter()
-                .map(|point| point_in_rect(node_rect, *point))
+                .map(|point| point_in_rect(context.node_rect, *point))
                 .collect::<Vec<_>>();
             PaintItem {
-                node,
+                node: context.node,
                 rect: rect_from_points(&points),
-                clip_rect,
-                z_index,
-                opacity,
-                transform,
-                shader: shader.clone(),
+                clip_rect: context.clip_rect,
+                z_index: context.z_index,
+                opacity: context.opacity,
+                transform: context.transform,
+                shader: context.shader.clone(),
                 kind: PaintKind::Polygon {
                     points,
                     fill: *fill,
@@ -1653,18 +1659,18 @@ fn scene_primitive_to_paint_item(
             }
         }
         ScenePrimitive::Image { key, rect, tint } => PaintItem {
-            node,
+            node: context.node,
             rect: UiRect::new(
-                node_rect.x + rect.x,
-                node_rect.y + rect.y,
+                context.node_rect.x + rect.x,
+                context.node_rect.y + rect.y,
                 rect.width,
                 rect.height,
             ),
-            clip_rect,
-            z_index,
-            opacity,
-            transform,
-            shader,
+            clip_rect: context.clip_rect,
+            z_index: context.z_index,
+            opacity: context.opacity,
+            transform: context.transform,
+            shader: context.shader.clone(),
             kind: PaintKind::Image {
                 key: key.clone(),
                 tint: *tint,
@@ -1987,9 +1993,20 @@ pub mod widgets {
     pub struct ButtonOptions {
         pub layout: Style,
         pub visual: UiVisual,
+        pub pressed_visual: Option<UiVisual>,
+        pub focused_visual: Option<UiVisual>,
+        pub disabled_visual: Option<UiVisual>,
         pub text_style: TextStyle,
         pub leading_image: Option<ImageContent>,
         pub image_size: UiSize,
+        pub image_shader: Option<ShaderEffect>,
+        pub shader: Option<ShaderEffect>,
+        pub animation: Option<AnimationMachine>,
+        pub enabled: bool,
+        pub pressed: bool,
+        pub focused: bool,
+        pub accessibility_label: Option<String>,
+        pub accessibility_hint: Option<String>,
     }
 
     impl ButtonOptions {
@@ -2019,9 +2036,46 @@ pub mod widgets {
                     Some(StrokeStyle::new(ColorRgba::new(74, 85, 104, 255), 1.0)),
                     4.0,
                 ),
+                pressed_visual: Some(UiVisual::panel(
+                    ColorRgba::new(22, 27, 35, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(104, 128, 156, 255), 1.0)),
+                    4.0,
+                )),
+                focused_visual: Some(UiVisual::panel(
+                    ColorRgba::new(40, 49, 61, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(120, 170, 230, 255), 1.5)),
+                    4.0,
+                )),
+                disabled_visual: Some(UiVisual::panel(
+                    ColorRgba::new(30, 34, 40, 180),
+                    Some(StrokeStyle::new(ColorRgba::new(64, 72, 84, 180), 1.0)),
+                    4.0,
+                )),
                 text_style: TextStyle::default(),
                 leading_image: None,
                 image_size: UiSize::new(18.0, 18.0),
+                image_shader: None,
+                shader: None,
+                animation: None,
+                enabled: true,
+                pressed: false,
+                focused: false,
+                accessibility_label: None,
+                accessibility_hint: None,
+            }
+        }
+    }
+
+    impl ButtonOptions {
+        fn resolved_visual(&self) -> UiVisual {
+            if !self.enabled {
+                self.disabled_visual.unwrap_or(self.visual)
+            } else if self.pressed {
+                self.pressed_visual.unwrap_or(self.visual)
+            } else if self.focused {
+                self.focused_visual.unwrap_or(self.visual)
+            } else {
+                self.visual
             }
         }
     }
@@ -2035,46 +2089,66 @@ pub mod widgets {
     ) -> UiNodeId {
         let name = name.into();
         let label = label.into();
-        let button = document.add_child(
-            parent,
-            UiNode::container(
-                name.clone(),
-                UiNodeStyle {
-                    layout: options.layout,
-                    clip: ClipBehavior::Clip,
+        let accessibility_label = options
+            .accessibility_label
+            .clone()
+            .unwrap_or_else(|| label.clone());
+        let mut accessibility =
+            AccessibilityMeta::new(AccessibilityRole::Button).label(accessibility_label);
+        if let Some(hint) = options.accessibility_hint.clone() {
+            accessibility = accessibility.hint(hint);
+        }
+        if options.enabled {
+            accessibility = accessibility.focusable();
+        } else {
+            accessibility = accessibility.disabled();
+        }
+        let visual = options.resolved_visual();
+        let mut node = UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: options.layout,
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_input(if options.enabled {
+            InputBehavior::BUTTON
+        } else {
+            InputBehavior::NONE
+        })
+        .with_visual(visual)
+        .with_accessibility(accessibility);
+        if let Some(shader) = options.shader {
+            node = node.with_shader(shader);
+        }
+        if let Some(animation) = options.animation {
+            node = node.with_animation(animation);
+        }
+        let button = document.add_child(parent, node);
+        if let Some(image) = options.leading_image {
+            let mut image_node = UiNode::image(
+                format!("{name}.image"),
+                image,
+                Style {
+                    size: TaffySize {
+                        width: length(options.image_size.width),
+                        height: length(options.image_size.height),
+                    },
+                    margin: taffy::prelude::Rect {
+                        right: taffy::prelude::LengthPercentageAuto::length(6.0),
+                        ..taffy::prelude::Rect::length(0.0)
+                    },
                     ..Default::default()
                 },
             )
-            .with_input(InputBehavior::BUTTON)
-            .with_visual(options.visual)
             .with_accessibility(
-                AccessibilityMeta::new(AccessibilityRole::Button)
-                    .label(label.clone())
-                    .focusable(),
-            ),
-        );
-        if let Some(image) = options.leading_image {
-            document.add_child(
-                button,
-                UiNode::image(
-                    format!("{name}.image"),
-                    image,
-                    Style {
-                        size: TaffySize {
-                            width: length(options.image_size.width),
-                            height: length(options.image_size.height),
-                        },
-                        margin: taffy::prelude::Rect {
-                            right: taffy::prelude::LengthPercentageAuto::length(6.0),
-                            ..taffy::prelude::Rect::length(0.0)
-                        },
-                        ..Default::default()
-                    },
-                )
-                .with_accessibility(
-                    AccessibilityMeta::new(AccessibilityRole::Image).label(label.clone()),
-                ),
+                AccessibilityMeta::new(AccessibilityRole::Image).label(label.clone()),
             );
+            if let Some(shader) = options.image_shader {
+                image_node = image_node.with_shader(shader);
+            }
+            document.add_child(button, image_node);
         }
         document.add_child(
             button,
@@ -2102,7 +2176,12 @@ pub mod widgets {
         style: TextStyle,
         layout: Style,
     ) -> UiNodeId {
-        document.add_child(parent, UiNode::text(name, text, style, layout))
+        let text = text.into();
+        document.add_child(
+            parent,
+            UiNode::text(name, text.clone(), style, layout)
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label(text)),
+        )
     }
 
     pub fn scroll_area(
@@ -2112,26 +2191,62 @@ pub mod widgets {
         axes: ScrollAxes,
         layout: Style,
     ) -> UiNodeId {
+        let name = name.into();
         document.add_child(
             parent,
             UiNode::container(
-                name,
+                name.clone(),
                 UiNodeStyle {
                     layout,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
             )
-            .with_scroll(axes),
+            .with_scroll(axes)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::List)
+                    .label(name)
+                    .value(scroll_axes_value(axes)),
+            ),
         )
+    }
+
+    fn scroll_axes_value(axes: ScrollAxes) -> &'static str {
+        match axes {
+            ScrollAxes {
+                horizontal: false,
+                vertical: false,
+            } => "not scrollable",
+            ScrollAxes {
+                horizontal: true,
+                vertical: false,
+            } => "horizontal",
+            ScrollAxes {
+                horizontal: false,
+                vertical: true,
+            } => "vertical",
+            ScrollAxes {
+                horizontal: true,
+                vertical: true,
+            } => "horizontal and vertical",
+        }
     }
 
     #[derive(Debug, Clone)]
     pub struct CheckboxOptions {
         pub layout: Style,
         pub box_visual: UiVisual,
+        pub checked_box_visual: Option<UiVisual>,
+        pub disabled_box_visual: Option<UiVisual>,
         pub check_color: ColorRgba,
+        pub check_image: Option<ImageContent>,
+        pub check_shader: Option<ShaderEffect>,
         pub text_style: TextStyle,
+        pub shader: Option<ShaderEffect>,
+        pub animation: Option<AnimationMachine>,
+        pub enabled: bool,
+        pub accessibility_label: Option<String>,
+        pub accessibility_hint: Option<String>,
     }
 
     impl Default for CheckboxOptions {
@@ -2152,8 +2267,25 @@ pub mod widgets {
                     Some(StrokeStyle::new(ColorRgba::new(98, 113, 135, 255), 1.0)),
                     3.0,
                 ),
+                checked_box_visual: Some(UiVisual::panel(
+                    ColorRgba::new(21, 58, 92, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(108, 180, 255, 255), 1.0)),
+                    3.0,
+                )),
+                disabled_box_visual: Some(UiVisual::panel(
+                    ColorRgba::new(28, 32, 38, 160),
+                    Some(StrokeStyle::new(ColorRgba::new(67, 75, 88, 160), 1.0)),
+                    3.0,
+                )),
                 check_color: ColorRgba::new(108, 180, 255, 255),
+                check_image: None,
+                check_shader: None,
                 text_style: TextStyle::default(),
+                shader: None,
+                animation: None,
+                enabled: true,
+                accessibility_label: None,
+                accessibility_hint: None,
             }
         }
     }
@@ -2168,24 +2300,50 @@ pub mod widgets {
     ) -> UiNodeId {
         let name = name.into();
         let label_text = label_text.into();
-        let root = document.add_child(
-            parent,
-            UiNode::container(
-                name.clone(),
-                UiNodeStyle {
-                    layout: options.layout,
-                    clip: ClipBehavior::Clip,
-                    ..Default::default()
-                },
+        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Checkbox)
+            .label(
+                options
+                    .accessibility_label
+                    .clone()
+                    .unwrap_or_else(|| label_text.clone()),
             )
-            .with_input(InputBehavior::BUTTON)
-            .with_accessibility(
-                AccessibilityMeta::new(AccessibilityRole::Checkbox)
-                    .label(label_text.clone())
-                    .value(if checked { "checked" } else { "unchecked" })
-                    .focusable(),
-            ),
-        );
+            .value(if checked { "checked" } else { "unchecked" });
+        if let Some(hint) = options.accessibility_hint.clone() {
+            accessibility = accessibility.hint(hint);
+        }
+        if options.enabled {
+            accessibility = accessibility.focusable();
+        } else {
+            accessibility = accessibility.disabled();
+        }
+        let mut root_node = UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: options.layout,
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_input(if options.enabled {
+            InputBehavior::BUTTON
+        } else {
+            InputBehavior::NONE
+        })
+        .with_accessibility(accessibility);
+        if let Some(shader) = options.shader {
+            root_node = root_node.with_shader(shader);
+        }
+        if let Some(animation) = options.animation {
+            root_node = root_node.with_animation(animation);
+        }
+        let root = document.add_child(parent, root_node);
+        let box_visual = if !options.enabled {
+            options.disabled_box_visual.unwrap_or(options.box_visual)
+        } else if checked {
+            options.checked_box_visual.unwrap_or(options.box_visual)
+        } else {
+            options.box_visual
+        };
         let box_node = document.add_child(
             root,
             UiNode::container(
@@ -2207,12 +2365,27 @@ pub mod widgets {
                     ..Default::default()
                 },
             )
-            .with_visual(options.box_visual),
+            .with_visual(box_visual),
         );
         if checked {
-            document.add_child(
-                box_node,
-                UiNode::scene(
+            if let Some(image) = options.check_image {
+                let mut check_node = UiNode::image(
+                    format!("{name}.check"),
+                    image,
+                    Style {
+                        size: TaffySize {
+                            width: length(16.0),
+                            height: length(16.0),
+                        },
+                        ..Default::default()
+                    },
+                );
+                if let Some(shader) = options.check_shader {
+                    check_node = check_node.with_shader(shader);
+                }
+                document.add_child(box_node, check_node);
+            } else {
+                let mut check_node = UiNode::scene(
                     format!("{name}.check"),
                     vec![
                         ScenePrimitive::Line {
@@ -2233,8 +2406,12 @@ pub mod widgets {
                         },
                         ..Default::default()
                     },
-                ),
-            );
+                );
+                if let Some(shader) = options.check_shader {
+                    check_node = check_node.with_shader(shader);
+                }
+                document.add_child(box_node, check_node);
+            }
         }
         label(
             document,
@@ -2259,6 +2436,18 @@ pub mod widgets {
         pub track_visual: UiVisual,
         pub fill_color: ColorRgba,
         pub thumb_visual: UiVisual,
+        pub disabled_track_visual: Option<UiVisual>,
+        pub disabled_fill_color: Option<ColorRgba>,
+        pub disabled_thumb_visual: Option<UiVisual>,
+        pub track_shader: Option<ShaderEffect>,
+        pub fill_shader: Option<ShaderEffect>,
+        pub thumb_shader: Option<ShaderEffect>,
+        pub shader: Option<ShaderEffect>,
+        pub animation: Option<AnimationMachine>,
+        pub enabled: bool,
+        pub accessibility_label: Option<String>,
+        pub accessibility_value: Option<String>,
+        pub accessibility_hint: Option<String>,
     }
 
     impl Default for SliderOptions {
@@ -2281,6 +2470,26 @@ pub mod widgets {
                     Some(StrokeStyle::new(ColorRgba::new(79, 93, 113, 255), 1.0)),
                     6.0,
                 ),
+                disabled_track_visual: Some(UiVisual::panel(
+                    ColorRgba::new(35, 39, 45, 180),
+                    None,
+                    3.0,
+                )),
+                disabled_fill_color: Some(ColorRgba::new(92, 101, 114, 180)),
+                disabled_thumb_visual: Some(UiVisual::panel(
+                    ColorRgba::new(150, 158, 170, 180),
+                    Some(StrokeStyle::new(ColorRgba::new(81, 90, 104, 180), 1.0)),
+                    6.0,
+                )),
+                track_shader: None,
+                fill_shader: None,
+                thumb_shader: None,
+                shader: None,
+                animation: None,
+                enabled: true,
+                accessibility_label: None,
+                accessibility_value: None,
+                accessibility_hint: None,
             }
         }
     }
@@ -2295,84 +2504,135 @@ pub mod widgets {
     ) -> UiNodeId {
         let name = name.into();
         let t = normalized_value(value, range.clone());
-        let root = document.add_child(
-            parent,
-            UiNode::container(
-                name.clone(),
-                UiNodeStyle {
-                    layout: options.layout,
-                    clip: ClipBehavior::Clip,
-                    ..Default::default()
-                },
+        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Slider)
+            .label(
+                options
+                    .accessibility_label
+                    .clone()
+                    .unwrap_or_else(|| name.clone()),
             )
-            .with_input(InputBehavior::BUTTON)
-            .with_accessibility(
-                AccessibilityMeta::new(AccessibilityRole::Slider)
-                    .label(name.clone())
-                    .value(format!("{value}"))
-                    .focusable(),
-            ),
-        );
-        let track = document.add_child(
-            root,
-            UiNode::container(
-                format!("{name}.track"),
-                UiNodeStyle {
-                    layout: Style {
-                        size: TaffySize {
-                            width: Dimension::percent(1.0),
-                            height: length(6.0),
-                        },
-                        ..Default::default()
+            .value(
+                options
+                    .accessibility_value
+                    .clone()
+                    .unwrap_or_else(|| slider_accessibility_value(value, range.clone())),
+            );
+        if let Some(hint) = options.accessibility_hint.clone() {
+            accessibility = accessibility.hint(hint);
+        }
+        if options.enabled {
+            accessibility = accessibility.focusable();
+        } else {
+            accessibility = accessibility.disabled();
+        }
+        let mut root_node = UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: options.layout,
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_input(if options.enabled {
+            InputBehavior::BUTTON
+        } else {
+            InputBehavior::NONE
+        })
+        .with_accessibility(accessibility);
+        if let Some(shader) = options.shader {
+            root_node = root_node.with_shader(shader);
+        }
+        if let Some(animation) = options.animation {
+            root_node = root_node.with_animation(animation);
+        }
+        let root = document.add_child(parent, root_node);
+        let track_visual = if options.enabled {
+            options.track_visual
+        } else {
+            options
+                .disabled_track_visual
+                .unwrap_or(options.track_visual)
+        };
+        let fill_color = if options.enabled {
+            options.fill_color
+        } else {
+            options.disabled_fill_color.unwrap_or(options.fill_color)
+        };
+        let thumb_visual = if options.enabled {
+            options.thumb_visual
+        } else {
+            options
+                .disabled_thumb_visual
+                .unwrap_or(options.thumb_visual)
+        };
+        let mut track_node = UiNode::container(
+            format!("{name}.track"),
+            UiNodeStyle {
+                layout: Style {
+                    size: TaffySize {
+                        width: Dimension::percent(1.0),
+                        height: length(6.0),
                     },
-                    clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
-            )
-            .with_visual(options.track_visual),
-        );
-        document.add_child(
-            track,
-            UiNode::container(
-                format!("{name}.fill"),
-                UiNodeStyle {
-                    layout: Style {
-                        size: TaffySize {
-                            width: Dimension::percent(t),
-                            height: Dimension::percent(1.0),
-                        },
-                        ..Default::default()
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_visual(track_visual);
+        if let Some(shader) = options.track_shader {
+            track_node = track_node.with_shader(shader);
+        }
+        let track = document.add_child(root, track_node);
+        let mut fill_node = UiNode::container(
+            format!("{name}.fill"),
+            UiNodeStyle {
+                layout: Style {
+                    size: TaffySize {
+                        width: Dimension::percent(t),
+                        height: Dimension::percent(1.0),
                     },
                     ..Default::default()
                 },
-            )
-            .with_visual(UiVisual::panel(options.fill_color, None, 3.0)),
-        );
-        document.add_child(
-            root,
-            UiNode::container(
-                format!("{name}.thumb"),
-                UiNodeStyle {
-                    layout: Style {
-                        size: TaffySize {
-                            width: length(12.0),
-                            height: length(12.0),
-                        },
-                        margin: taffy::prelude::Rect {
-                            left: taffy::prelude::LengthPercentageAuto::length(-6.0),
-                            right: taffy::prelude::LengthPercentageAuto::length(0.0),
-                            top: taffy::prelude::LengthPercentageAuto::length(0.0),
-                            bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
-                        },
-                        ..Default::default()
+                ..Default::default()
+            },
+        )
+        .with_visual(UiVisual::panel(fill_color, None, 3.0));
+        if let Some(shader) = options.fill_shader {
+            fill_node = fill_node.with_shader(shader);
+        }
+        document.add_child(track, fill_node);
+        let mut thumb_node = UiNode::container(
+            format!("{name}.thumb"),
+            UiNodeStyle {
+                layout: Style {
+                    size: TaffySize {
+                        width: length(12.0),
+                        height: length(12.0),
                     },
-                    z_index: 1,
+                    margin: taffy::prelude::Rect {
+                        left: taffy::prelude::LengthPercentageAuto::length(-6.0),
+                        right: taffy::prelude::LengthPercentageAuto::length(0.0),
+                        top: taffy::prelude::LengthPercentageAuto::length(0.0),
+                        bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
+                    },
                     ..Default::default()
                 },
-            )
-            .with_visual(options.thumb_visual),
-        );
+                z_index: 1,
+                ..Default::default()
+            },
+        )
+        .with_visual(thumb_visual);
+        if let Some(shader) = options.thumb_shader {
+            thumb_node = thumb_node.with_shader(shader);
+        }
+        document.add_child(root, thumb_node);
         root
+    }
+
+    fn slider_accessibility_value(value: f32, range: Range<f32>) -> String {
+        let percent = normalized_value(value, range) * 100.0;
+        format!("{value} ({percent:.0}%)")
     }
 
     pub fn normalized_value(value: f32, range: Range<f32>) -> f32 {
@@ -2415,11 +2675,12 @@ pub mod widgets {
         }
 
         pub fn selected_range(&self) -> Option<Range<usize>> {
-            let anchor = self.selection_anchor?;
-            if anchor == self.caret {
+            let anchor = clamp_to_char_boundary(&self.text, self.selection_anchor?);
+            let caret = clamp_to_char_boundary(&self.text, self.caret);
+            if anchor == caret {
                 return None;
             }
-            Some(anchor.min(self.caret)..anchor.max(self.caret))
+            Some(anchor.min(caret)..anchor.max(caret))
         }
 
         pub fn select_all(&mut self) {
@@ -2432,7 +2693,8 @@ pub mod widgets {
         }
 
         pub fn insert_text(&mut self, text: &str) {
-            self.replace_selection(text);
+            let filtered = filter_text_input(text, self.multiline);
+            self.replace_selection(&filtered);
         }
 
         pub fn copy_selection(&self) -> Option<String> {
@@ -2447,15 +2709,18 @@ pub mod widgets {
         }
 
         pub fn paste_text(&mut self, text: &str) {
-            let filtered = if self.multiline {
-                text.to_string()
-            } else {
-                text.replace(['\r', '\n'], " ")
-            };
+            let filtered = filter_text_input(text, self.multiline);
             self.replace_selection(&filtered);
         }
 
+        pub fn paste_text_with_outcome(&mut self, text: &str) -> TextInputOutcome {
+            let before = self.text.clone();
+            self.paste_text(text);
+            TextInputOutcome::new(EditPhase::UpdateEdit, before != self.text, None)
+        }
+
         pub fn replace_selection(&mut self, text: &str) {
+            self.normalize_selection();
             if let Some(range) = self.selected_range() {
                 self.text.replace_range(range.clone(), text);
                 self.caret = range.start + text.len();
@@ -2468,6 +2733,7 @@ pub mod widgets {
         }
 
         pub fn backspace(&mut self) -> bool {
+            self.normalize_selection();
             if self.selected_range().is_some() {
                 self.replace_selection("");
                 return true;
@@ -2482,6 +2748,7 @@ pub mod widgets {
         }
 
         pub fn delete(&mut self) -> bool {
+            self.normalize_selection();
             if self.selected_range().is_some() {
                 self.replace_selection("");
                 return true;
@@ -2495,6 +2762,7 @@ pub mod widgets {
         }
 
         pub fn move_caret(&mut self, movement: CaretMovement, selecting: bool) {
+            self.normalize_selection();
             let anchor = self.selection_anchor.unwrap_or(self.caret);
             self.caret = match movement {
                 CaretMovement::Start => 0,
@@ -2509,14 +2777,31 @@ pub mod widgets {
         pub fn handle_event(&mut self, event: &UiInputEvent) -> TextInputOutcome {
             let before = self.text.clone();
             let mut phase = EditPhase::Preview;
+            let mut clipboard = None;
             match event {
                 UiInputEvent::TextInput(text) => {
                     self.insert_text(text);
                     phase = EditPhase::UpdateEdit;
                 }
                 UiInputEvent::Key { key, modifiers } => match key {
-                    KeyCode::Character('a') if modifiers.ctrl || modifiers.meta => {
-                        self.select_all();
+                    KeyCode::Character(character) if modifiers.ctrl || modifiers.meta => {
+                        match character.to_ascii_lowercase() {
+                            'a' => self.select_all(),
+                            'c' => {
+                                clipboard =
+                                    self.copy_selection().map(TextInputClipboardAction::Copy);
+                            }
+                            'x' => {
+                                clipboard = self.cut_selection().map(TextInputClipboardAction::Cut);
+                                if clipboard.is_some() {
+                                    phase = EditPhase::UpdateEdit;
+                                }
+                            }
+                            'v' => {
+                                clipboard = Some(TextInputClipboardAction::Paste);
+                            }
+                            _ => {}
+                        }
                     }
                     KeyCode::Backspace => {
                         if self.backspace() {
@@ -2550,12 +2835,14 @@ pub mod widgets {
                 },
                 _ => {}
             }
-            TextInputOutcome {
-                phase,
-                changed: before != self.text,
-                committed: phase == EditPhase::CommitEdit,
-                canceled: phase == EditPhase::CancelEdit,
-            }
+            TextInputOutcome::new(phase, before != self.text, clipboard)
+        }
+
+        fn normalize_selection(&mut self) {
+            self.caret = clamp_to_char_boundary(&self.text, self.caret);
+            self.selection_anchor = self
+                .selection_anchor
+                .map(|anchor| clamp_to_char_boundary(&self.text, anchor));
         }
     }
 
@@ -2567,21 +2854,53 @@ pub mod widgets {
         Right,
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum TextInputClipboardAction {
+        Copy(String),
+        Cut(String),
+        Paste,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct TextInputOutcome {
         pub phase: EditPhase,
         pub changed: bool,
         pub committed: bool,
         pub canceled: bool,
+        pub clipboard: Option<TextInputClipboardAction>,
+    }
+
+    impl TextInputOutcome {
+        fn new(
+            phase: EditPhase,
+            changed: bool,
+            clipboard: Option<TextInputClipboardAction>,
+        ) -> Self {
+            Self {
+                phase,
+                changed,
+                committed: phase == EditPhase::CommitEdit,
+                canceled: phase == EditPhase::CancelEdit,
+                clipboard,
+            }
+        }
     }
 
     #[derive(Debug, Clone)]
     pub struct TextInputOptions {
         pub layout: Style,
         pub visual: UiVisual,
+        pub focused_visual: Option<UiVisual>,
+        pub disabled_visual: Option<UiVisual>,
         pub text_style: TextStyle,
         pub placeholder_style: TextStyle,
         pub placeholder: String,
+        pub shader: Option<ShaderEffect>,
+        pub animation: Option<AnimationMachine>,
+        pub enabled: bool,
+        pub focused: bool,
+        pub accessibility_label: Option<String>,
+        pub accessibility_hint: Option<String>,
     }
 
     impl Default for TextInputOptions {
@@ -2604,9 +2923,25 @@ pub mod widgets {
                     Some(StrokeStyle::new(ColorRgba::new(72, 84, 104, 255), 1.0)),
                     4.0,
                 ),
+                focused_visual: Some(UiVisual::panel(
+                    ColorRgba::new(20, 27, 36, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(120, 170, 230, 255), 1.5)),
+                    4.0,
+                )),
+                disabled_visual: Some(UiVisual::panel(
+                    ColorRgba::new(25, 28, 34, 170),
+                    Some(StrokeStyle::new(ColorRgba::new(58, 66, 78, 170), 1.0)),
+                    4.0,
+                )),
                 text_style: TextStyle::default(),
                 placeholder_style,
                 placeholder: String::new(),
+                shader: None,
+                animation: None,
+                enabled: true,
+                focused: false,
+                accessibility_label: None,
+                accessibility_hint: None,
             }
         }
     }
@@ -2619,25 +2954,55 @@ pub mod widgets {
         options: TextInputOptions,
     ) -> UiNodeId {
         let name = name.into();
-        let root = document.add_child(
-            parent,
-            UiNode::container(
-                name.clone(),
-                UiNodeStyle {
-                    layout: options.layout,
-                    clip: ClipBehavior::Clip,
-                    ..Default::default()
-                },
+        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::TextBox)
+            .label(
+                options
+                    .accessibility_label
+                    .clone()
+                    .unwrap_or_else(|| name.clone()),
             )
-            .with_input(InputBehavior::BUTTON)
-            .with_visual(options.visual)
-            .with_accessibility(
-                AccessibilityMeta::new(AccessibilityRole::TextBox)
-                    .label(name.clone())
-                    .value(state.text.clone())
-                    .focusable(),
-            ),
-        );
+            .value(state.text.clone());
+        let hint = options
+            .accessibility_hint
+            .clone()
+            .or_else(|| (!options.placeholder.is_empty()).then(|| options.placeholder.clone()));
+        if let Some(hint) = hint {
+            accessibility = accessibility.hint(hint);
+        }
+        if options.enabled {
+            accessibility = accessibility.focusable();
+        } else {
+            accessibility = accessibility.disabled();
+        }
+        let visual = if !options.enabled {
+            options.disabled_visual.unwrap_or(options.visual)
+        } else if options.focused {
+            options.focused_visual.unwrap_or(options.visual)
+        } else {
+            options.visual
+        };
+        let mut root_node = UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: options.layout,
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_input(if options.enabled {
+            InputBehavior::BUTTON
+        } else {
+            InputBehavior::NONE
+        })
+        .with_visual(visual)
+        .with_accessibility(accessibility);
+        if let Some(shader) = options.shader {
+            root_node = root_node.with_shader(shader);
+        }
+        if let Some(animation) = options.animation {
+            root_node = root_node.with_animation(animation);
+        }
+        let root = document.add_child(parent, root_node);
         let display_text = if state.text.is_empty() {
             options.placeholder
         } else {
@@ -2663,6 +3028,39 @@ pub mod widgets {
             },
         );
         root
+    }
+
+    fn filter_text_input(text: &str, multiline: bool) -> String {
+        if multiline {
+            let mut filtered = String::with_capacity(text.len());
+            let mut chars = text.chars().peekable();
+            while let Some(character) = chars.next() {
+                if character == '\r' {
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                    filtered.push('\n');
+                } else {
+                    filtered.push(character);
+                }
+            }
+            return filtered;
+        }
+
+        let mut filtered = String::with_capacity(text.len());
+        let mut in_line_break = false;
+        for character in text.chars() {
+            if character == '\r' || character == '\n' {
+                if !in_line_break {
+                    filtered.push(' ');
+                    in_line_break = true;
+                }
+            } else {
+                filtered.push(character);
+                in_line_break = false;
+            }
+        }
+        filtered
     }
 
     fn previous_char_boundary(text: &str, index: usize) -> usize {
@@ -2693,7 +3091,16 @@ pub mod widgets {
     pub struct ComboBoxOptions {
         pub layout: Style,
         pub visual: UiVisual,
+        pub open_visual: Option<UiVisual>,
+        pub disabled_visual: Option<UiVisual>,
         pub text_style: TextStyle,
+        pub leading_image: Option<ImageContent>,
+        pub image_size: UiSize,
+        pub shader: Option<ShaderEffect>,
+        pub animation: Option<AnimationMachine>,
+        pub enabled: bool,
+        pub accessibility_label: Option<String>,
+        pub accessibility_hint: Option<String>,
     }
 
     impl Default for ComboBoxOptions {
@@ -2715,7 +3122,24 @@ pub mod widgets {
                     Some(StrokeStyle::new(ColorRgba::new(84, 98, 121, 255), 1.0)),
                     4.0,
                 ),
+                open_visual: Some(UiVisual::panel(
+                    ColorRgba::new(38, 48, 62, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(120, 170, 230, 255), 1.5)),
+                    4.0,
+                )),
+                disabled_visual: Some(UiVisual::panel(
+                    ColorRgba::new(29, 33, 40, 170),
+                    Some(StrokeStyle::new(ColorRgba::new(65, 73, 87, 170), 1.0)),
+                    4.0,
+                )),
                 text_style: TextStyle::default(),
+                leading_image: None,
+                image_size: UiSize::new(18.0, 18.0),
+                shader: None,
+                animation: None,
+                enabled: true,
+                accessibility_label: None,
+                accessibility_hint: None,
             }
         }
     }
@@ -2730,6 +3154,11 @@ pub mod widgets {
     ) -> UiNodeId {
         let name = name.into();
         let selected_label = selected_label.into();
+        let accessibility_label = options
+            .accessibility_label
+            .clone()
+            .unwrap_or_else(|| name.clone());
+        let accessibility_hint = options.accessibility_hint.clone();
         let root = button(
             document,
             parent,
@@ -2738,17 +3167,38 @@ pub mod widgets {
             ButtonOptions {
                 layout: options.layout,
                 visual: options.visual,
+                pressed_visual: options.open_visual,
+                focused_visual: None,
+                disabled_visual: options.disabled_visual,
                 text_style: options.text_style,
-                leading_image: None,
-                image_size: UiSize::new(18.0, 18.0),
+                leading_image: options.leading_image,
+                image_size: options.image_size,
+                image_shader: None,
+                shader: options.shader,
+                animation: options.animation,
+                enabled: options.enabled,
+                pressed: open,
+                focused: false,
+                accessibility_label: Some(accessibility_label.clone()),
+                accessibility_hint: accessibility_hint.clone(),
             },
         );
-        document.node_mut(root).accessibility = Some(
-            AccessibilityMeta::new(AccessibilityRole::ComboBox)
-                .label(name)
-                .value(selected_label)
-                .focusable(),
-        );
+        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::ComboBox)
+            .label(accessibility_label)
+            .value(if open {
+                format!("{selected_label} (open)")
+            } else {
+                selected_label
+            });
+        if let Some(hint) = accessibility_hint {
+            accessibility = accessibility.hint(hint);
+        }
+        if options.enabled {
+            accessibility = accessibility.focusable();
+        } else {
+            accessibility = accessibility.disabled();
+        }
+        document.node_mut(root).accessibility = Some(accessibility);
         if open {
             document.node_mut(root).style.z_index = 20;
         }
@@ -2803,6 +3253,11 @@ pub mod widgets {
                 },
                 ..Default::default()
             },
+        );
+        document.node_mut(list).accessibility = Some(
+            AccessibilityMeta::new(AccessibilityRole::List)
+                .label(name.clone())
+                .value(format!("{} items", spec.row_count)),
         );
         if let Some(scroll) = &mut document.nodes[list.0].scroll {
             scroll.offset.y = spec.scroll_offset.max(0.0);
@@ -2875,10 +3330,15 @@ pub mod widgets {
                 ColorRgba::new(34, 41, 50, 255),
                 Some(StrokeStyle::new(ColorRgba::new(67, 78, 95, 255), 1.0)),
                 0.0,
-            )),
+            ))
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Grid)
+                    .label(name.clone())
+                    .value(format!("{} columns", columns.len())),
+            ),
         );
         for column in columns {
-            label(
+            let cell = label(
                 document,
                 row,
                 format!("{name}.{}", column.id),
@@ -2893,6 +3353,11 @@ pub mod widgets {
                     ..Default::default()
                 },
             );
+            document.node_mut(cell).accessibility = Some(
+                AccessibilityMeta::new(AccessibilityRole::GridCell)
+                    .label(column.label.clone())
+                    .value(column.id.clone()),
+            );
         }
         row
     }
@@ -2900,21 +3365,71 @@ pub mod widgets {
     pub fn scrollbar_thumb(scroll: ScrollState, track: UiRect, axis: ScrollAxis) -> UiRect {
         match axis {
             ScrollAxis::Vertical => {
-                let content = scroll.content_size.height.max(scroll.viewport_size.height);
-                let ratio = (scroll.viewport_size.height / content).clamp(0.05, 1.0);
+                if track.height <= f32::EPSILON || track.width <= f32::EPSILON {
+                    return UiRect::new(track.x, track.y, 0.0, 0.0);
+                }
+                let ratio = scrollbar_viewport_ratio(
+                    scroll.viewport_size.height,
+                    scroll.content_size.height,
+                );
                 let height = track.height * ratio;
-                let max_offset = scroll.max_offset().y.max(1.0);
-                let y = track.y + (track.height - height) * (scroll.offset.y / max_offset);
+                let max_offset = scroll.max_offset().y;
+                let offset_ratio = if max_offset <= f32::EPSILON {
+                    0.0
+                } else {
+                    (scroll.offset.y / max_offset).clamp(0.0, 1.0)
+                };
+                let y = track.y + (track.height - height) * offset_ratio;
                 UiRect::new(track.x, y, track.width, height)
             }
             ScrollAxis::Horizontal => {
-                let content = scroll.content_size.width.max(scroll.viewport_size.width);
-                let ratio = (scroll.viewport_size.width / content).clamp(0.05, 1.0);
+                if track.width <= f32::EPSILON || track.height <= f32::EPSILON {
+                    return UiRect::new(track.x, track.y, 0.0, 0.0);
+                }
+                let ratio =
+                    scrollbar_viewport_ratio(scroll.viewport_size.width, scroll.content_size.width);
                 let width = track.width * ratio;
-                let max_offset = scroll.max_offset().x.max(1.0);
-                let x = track.x + (track.width - width) * (scroll.offset.x / max_offset);
+                let max_offset = scroll.max_offset().x;
+                let offset_ratio = if max_offset <= f32::EPSILON {
+                    0.0
+                } else {
+                    (scroll.offset.x / max_offset).clamp(0.0, 1.0)
+                };
+                let x = track.x + (track.width - width) * offset_ratio;
                 UiRect::new(x, track.y, width, track.height)
             }
+        }
+    }
+
+    pub fn scrollbar_accessibility(
+        label: impl Into<String>,
+        scroll: ScrollState,
+        axis: ScrollAxis,
+    ) -> AccessibilityMeta {
+        let (offset, max_offset) = match axis {
+            ScrollAxis::Vertical => (scroll.offset.y, scroll.max_offset().y),
+            ScrollAxis::Horizontal => (scroll.offset.x, scroll.max_offset().x),
+        };
+        let percent = if max_offset <= f32::EPSILON {
+            100.0
+        } else {
+            (offset / max_offset * 100.0).clamp(0.0, 100.0)
+        };
+        let accessibility = AccessibilityMeta::new(AccessibilityRole::Slider)
+            .label(label)
+            .value(format!("{percent:.0}%"));
+        if max_offset <= f32::EPSILON {
+            accessibility.disabled()
+        } else {
+            accessibility.focusable()
+        }
+    }
+
+    fn scrollbar_viewport_ratio(viewport: f32, content: f32) -> f32 {
+        if viewport <= f32::EPSILON || content <= viewport {
+            1.0
+        } else {
+            (viewport / content).clamp(0.05, 1.0)
         }
     }
 
@@ -4218,6 +4733,147 @@ mod tests {
 
     #[cfg(feature = "widgets")]
     #[test]
+    fn widget_button_options_apply_disabled_accessibility_and_media_hooks() {
+        let mut doc = UiDocument::new(root_style(200.0, 80.0));
+        let root = doc.root;
+        let disabled_visual = UiVisual::panel(ColorRgba::new(10, 11, 12, 180), None, 2.0);
+        let button = widgets::button(
+            &mut doc,
+            root,
+            "render",
+            "Render",
+            widgets::ButtonOptions {
+                layout: Style {
+                    size: TaffySize {
+                        width: length(96.0),
+                        height: length(32.0),
+                    },
+                    ..Default::default()
+                },
+                leading_image: Some(ImageContent::new("icons.render")),
+                image_shader: Some(ShaderEffect::new("ui.icon_mask")),
+                shader: Some(ShaderEffect::new("ui.disabled")),
+                disabled_visual: Some(disabled_visual),
+                enabled: false,
+                accessibility_hint: Some("Unavailable while exporting".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(doc.node(button).visual, disabled_visual);
+        assert_eq!(doc.node(button).shader.as_ref().unwrap().key, "ui.disabled");
+        assert!(!doc.node(button).input.pointer);
+        assert!(!doc.node(button).input.focusable);
+
+        let accessibility = doc.node(button).accessibility.as_ref().unwrap();
+        assert_eq!(accessibility.role, AccessibilityRole::Button);
+        assert_eq!(accessibility.label.as_deref(), Some("Render"));
+        assert_eq!(
+            accessibility.hint.as_deref(),
+            Some("Unavailable while exporting")
+        );
+        assert!(!accessibility.enabled);
+        assert!(!accessibility.focusable);
+
+        let image = doc.node(button).children[0];
+        assert!(matches!(doc.node(image).content, UiContent::Image(_)));
+        assert_eq!(doc.node(image).shader.as_ref().unwrap().key, "ui.icon_mask");
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_core_controls_export_accessibility_metadata() {
+        let mut doc = UiDocument::new(root_style(360.0, 240.0));
+        let root = doc.root;
+        let title = widgets::label(
+            &mut doc,
+            root,
+            "title",
+            "Oscillator",
+            TextStyle::default(),
+            Style {
+                size: TaffySize {
+                    width: Dimension::auto(),
+                    height: Dimension::auto(),
+                },
+                ..Default::default()
+            },
+        );
+        let scroll = widgets::scroll_area(
+            &mut doc,
+            root,
+            "modulation_matrix",
+            ScrollAxes::BOTH,
+            Style {
+                size: TaffySize {
+                    width: length(160.0),
+                    height: length(60.0),
+                },
+                ..Default::default()
+            },
+        );
+        let checkbox = widgets::checkbox(
+            &mut doc,
+            root,
+            "sync",
+            "Hard sync",
+            true,
+            widgets::CheckboxOptions::default(),
+        );
+        let slider = widgets::slider(
+            &mut doc,
+            root,
+            "volume",
+            0.25,
+            0.0..1.0,
+            widgets::SliderOptions {
+                accessibility_label: Some("Volume".to_string()),
+                ..Default::default()
+            },
+        );
+        let input_state = widgets::TextInputState::new("");
+        let input = widgets::text_input(
+            &mut doc,
+            root,
+            "preset_name",
+            &input_state,
+            widgets::TextInputOptions {
+                placeholder: "Preset name".to_string(),
+                ..Default::default()
+            },
+        );
+        let combo = widgets::combo_box(
+            &mut doc,
+            root,
+            "waveform",
+            "Sine",
+            true,
+            widgets::ComboBoxOptions::default(),
+        );
+
+        let tree = doc.accessibility_tree();
+        let node = |id| tree.iter().find(|node| node.id == id).unwrap();
+
+        assert_eq!(node(title).role, AccessibilityRole::Label);
+        assert_eq!(node(title).label.as_deref(), Some("Oscillator"));
+        assert_eq!(node(scroll).role, AccessibilityRole::List);
+        assert_eq!(
+            node(scroll).value.as_deref(),
+            Some("horizontal and vertical")
+        );
+        assert_eq!(node(checkbox).role, AccessibilityRole::Checkbox);
+        assert_eq!(node(checkbox).value.as_deref(), Some("checked"));
+        assert_eq!(node(slider).role, AccessibilityRole::Slider);
+        assert_eq!(node(slider).label.as_deref(), Some("Volume"));
+        assert_eq!(node(slider).value.as_deref(), Some("0.25 (25%)"));
+        assert_eq!(node(input).role, AccessibilityRole::TextBox);
+        assert_eq!(node(input).hint.as_deref(), Some("Preset name"));
+        assert_eq!(node(combo).role, AccessibilityRole::ComboBox);
+        assert_eq!(node(combo).value.as_deref(), Some("Sine (open)"));
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
     fn widget_text_input_edits_and_commits_state() {
         let mut state = widgets::TextInputState::new("gain");
         state.move_caret(widgets::CaretMovement::End, false);
@@ -4245,6 +4901,64 @@ mod tests {
         assert_eq!(state.text, " dry");
         state.paste_text("very\nwet");
         assert_eq!(state.text, "very wet dry");
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_reports_clipboard_key_commands_and_sanitizes_paste() {
+        let mut state = widgets::TextInputState::new("café");
+        state.caret = 4;
+        state.selection_anchor = Some(0);
+        assert_eq!(state.copy_selection().as_deref(), Some("caf"));
+
+        state.select_all();
+        let copy = state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::Character('c'),
+            modifiers: KeyModifiers {
+                ctrl: true,
+                ..KeyModifiers::NONE
+            },
+        });
+        assert_eq!(
+            copy.clipboard,
+            Some(widgets::TextInputClipboardAction::Copy("café".to_string()))
+        );
+        assert!(!copy.changed);
+
+        let cut = state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::Character('x'),
+            modifiers: KeyModifiers {
+                ctrl: true,
+                ..KeyModifiers::NONE
+            },
+        });
+        assert_eq!(
+            cut.clipboard,
+            Some(widgets::TextInputClipboardAction::Cut("café".to_string()))
+        );
+        assert!(cut.changed);
+        assert_eq!(state.text, "");
+
+        let paste_request = state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::Character('v'),
+            modifiers: KeyModifiers {
+                ctrl: true,
+                ..KeyModifiers::NONE
+            },
+        });
+        assert_eq!(
+            paste_request.clipboard,
+            Some(widgets::TextInputClipboardAction::Paste)
+        );
+        assert!(!paste_request.changed);
+
+        let paste = state.paste_text_with_outcome("dry\r\nwet\n");
+        assert!(paste.changed);
+        assert_eq!(state.text, "dry wet ");
+
+        let mut multiline = widgets::TextInputState::new("").multiline(true);
+        multiline.paste_text("a\r\nb\rc");
+        assert_eq!(multiline.text, "a\nb\nc");
     }
 
     #[cfg(feature = "widgets")]
@@ -4287,5 +5001,105 @@ mod tests {
 
         assert_eq!(doc.node(list).children.len(), 8);
         assert_eq!(doc.scroll_state(list).unwrap().content_size.height, 2000.0);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_table_virtual_list_and_scrollbar_helpers_expose_metadata() {
+        let mut doc = UiDocument::new(root_style(300.0, 200.0));
+        let root = doc.root;
+        let header = widgets::table_header(
+            &mut doc,
+            root,
+            "events.header",
+            &[
+                widgets::TableColumn {
+                    id: "time".to_string(),
+                    label: "Time".to_string(),
+                    width: 80.0,
+                },
+                widgets::TableColumn {
+                    id: "name".to_string(),
+                    label: "Name".to_string(),
+                    width: 160.0,
+                },
+            ],
+        );
+        let list = widgets::virtual_list(
+            &mut doc,
+            root,
+            "events",
+            widgets::VirtualListSpec {
+                row_count: 25,
+                row_height: 20.0,
+                viewport_height: 60.0,
+                scroll_offset: 40.0,
+                overscan: 0,
+            },
+            |document, parent, row| {
+                document.add_child(
+                    parent,
+                    UiNode::text(
+                        format!("row.{row}"),
+                        format!("Event {row}"),
+                        TextStyle::default(),
+                        Style {
+                            size: TaffySize {
+                                width: Dimension::percent(1.0),
+                                height: length(20.0),
+                            },
+                            ..Default::default()
+                        },
+                    ),
+                );
+            },
+        );
+
+        let tree = doc.accessibility_tree();
+        let header_node = tree.iter().find(|node| node.id == header).unwrap();
+        let list_node = tree.iter().find(|node| node.id == list).unwrap();
+        assert_eq!(header_node.role, AccessibilityRole::Grid);
+        assert_eq!(header_node.value.as_deref(), Some("2 columns"));
+        assert_eq!(list_node.role, AccessibilityRole::List);
+        assert_eq!(list_node.value.as_deref(), Some("25 items"));
+        assert!(tree.iter().any(|node| {
+            node.role == AccessibilityRole::GridCell && node.label.as_deref() == Some("Time")
+        }));
+
+        let scroll = ScrollState {
+            axes: ScrollAxes::VERTICAL,
+            offset: UiPoint::new(0.0, 999.0),
+            viewport_size: UiSize::new(10.0, 100.0),
+            content_size: UiSize::new(10.0, 300.0),
+        };
+        let thumb = widgets::scrollbar_thumb(
+            scroll,
+            UiRect::new(0.0, 0.0, 10.0, 100.0),
+            widgets::ScrollAxis::Vertical,
+        );
+        assert!((thumb.y - 66.66667).abs() < 0.01, "{thumb:?}");
+        assert!((thumb.height - 33.33333).abs() < 0.01, "{thumb:?}");
+
+        let accessibility = widgets::scrollbar_accessibility(
+            "Events scrollbar",
+            scroll,
+            widgets::ScrollAxis::Vertical,
+        );
+        assert_eq!(accessibility.role, AccessibilityRole::Slider);
+        assert_eq!(accessibility.value.as_deref(), Some("100%"));
+        assert!(accessibility.focusable);
+
+        let disabled_accessibility = widgets::scrollbar_accessibility(
+            "Empty scrollbar",
+            ScrollState {
+                axes: ScrollAxes::VERTICAL,
+                offset: UiPoint::new(0.0, 0.0),
+                viewport_size: UiSize::new(10.0, 100.0),
+                content_size: UiSize::new(10.0, 100.0),
+            },
+            widgets::ScrollAxis::Vertical,
+        );
+        assert!(!disabled_accessibility.enabled);
+        assert!(!disabled_accessibility.focusable);
     }
 }

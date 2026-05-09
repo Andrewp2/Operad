@@ -6,7 +6,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use crate::{ColorRgba, EditPhase};
+use crate::{
+    AccessibilityMeta, AccessibilityRole, ColorRgba, EditPhase, ImageContent, KeyCode,
+    KeyModifiers, ShaderEffect,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CalendarDate {
@@ -65,6 +68,14 @@ impl CalendarDate {
     pub fn add_months(self, months: i32) -> Self {
         let month = self.month().shifted(months);
         Self::clamp_day(month.year, month.month, self.day)
+    }
+
+    pub fn iso_string(self) -> String {
+        format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+
+    pub fn accessibility_label(self) -> String {
+        format!("{} {}, {}", month_name(self.month), self.day, self.year)
     }
 }
 
@@ -168,6 +179,36 @@ pub struct CalendarDayCell {
     pub disabled: bool,
 }
 
+impl CalendarDayCell {
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        let mut states = Vec::new();
+        if self.selected {
+            states.push("selected");
+        }
+        if self.today {
+            states.push("today");
+        }
+        if !self.in_visible_month {
+            states.push("outside visible month");
+        }
+        if self.disabled {
+            states.push("unavailable");
+        }
+
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::GridCell)
+            .label(self.date.accessibility_label())
+            .value(self.date.iso_string())
+            .focusable();
+        if !states.is_empty() {
+            meta = meta.hint(states.join(", "));
+        }
+        if self.disabled {
+            meta = meta.disabled();
+        }
+        meta
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatePickerModel {
     pub selected: Option<CalendarDate>,
@@ -189,6 +230,33 @@ impl DatePickerModel {
 
     pub fn can_select(&self, date: CalendarDate) -> bool {
         self.min.is_none_or(|min| date >= min) && self.max.is_none_or(|max| date <= max)
+    }
+
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::Grid)
+            .label(format_month_label(self.visible_month))
+            .value(
+                self.selected
+                    .map_or_else(|| "No date selected".to_string(), CalendarDate::iso_string),
+            )
+            .focusable();
+        if self.min.is_some() || self.max.is_some() {
+            meta = meta.hint(format_date_range_hint(self.min, self.max));
+        }
+        meta
+    }
+
+    pub fn control_accessibility_meta(&self, control: DatePickerControl) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::Button)
+            .label(control.label(self))
+            .focusable();
+        if let Some(value) = control.value(self) {
+            meta = meta.value(value);
+        }
+        if !control.enabled(self) {
+            meta = meta.disabled();
+        }
+        meta
     }
 
     pub fn select(&mut self, date: CalendarDate) -> DatePickerSelection {
@@ -241,6 +309,86 @@ impl DatePickerModel {
                 }
             })
             .collect()
+    }
+
+    pub fn nearest_selectable_date(&self, date: CalendarDate) -> Option<CalendarDate> {
+        let mut date = date;
+        if let Some(min) = self.min {
+            date = date.max(min);
+        }
+        if let Some(max) = self.max {
+            date = date.min(max);
+        }
+        self.can_select(date).then_some(date)
+    }
+
+    pub fn step_selection(&mut self, step: DatePickerKeyboardStep) -> DatePickerSelection {
+        let previous = self.selected;
+        let Some(anchor) = self.keyboard_anchor() else {
+            return DatePickerSelection {
+                previous,
+                selected: self.selected,
+                phase: EditPhase::Preview,
+                changed: false,
+            };
+        };
+
+        let target = self.keyboard_step_target(anchor, step);
+        let target = self.nearest_selectable_date(target).unwrap_or(anchor);
+        self.select(target)
+    }
+
+    pub fn handle_keyboard_step(
+        &mut self,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<DatePickerSelection> {
+        DatePickerKeyboardStep::from_key(key, modifiers).map(|step| self.step_selection(step))
+    }
+
+    fn keyboard_anchor(&self) -> Option<CalendarDate> {
+        let preferred = self
+            .selected
+            .or(self.today)
+            .unwrap_or_else(|| self.visible_month.first_day());
+        self.nearest_selectable_date(preferred)
+    }
+
+    fn keyboard_step_target(
+        &self,
+        anchor: CalendarDate,
+        step: DatePickerKeyboardStep,
+    ) -> CalendarDate {
+        match step {
+            DatePickerKeyboardStep::PreviousDay => anchor.add_days(-1),
+            DatePickerKeyboardStep::NextDay => anchor.add_days(1),
+            DatePickerKeyboardStep::PreviousWeek => anchor.add_days(-7),
+            DatePickerKeyboardStep::NextWeek => anchor.add_days(7),
+            DatePickerKeyboardStep::PreviousMonth => anchor.add_months(-1),
+            DatePickerKeyboardStep::NextMonth => anchor.add_months(1),
+            DatePickerKeyboardStep::PreviousYear => anchor.add_months(-12),
+            DatePickerKeyboardStep::NextYear => anchor.add_months(12),
+            DatePickerKeyboardStep::StartOfMonth => anchor.month().first_day(),
+            DatePickerKeyboardStep::EndOfMonth => {
+                let month = anchor.month();
+                CalendarDate {
+                    year: month.year,
+                    month: month.month,
+                    day: month.day_count(),
+                }
+            }
+            DatePickerKeyboardStep::FirstSelectable => {
+                self.min.unwrap_or_else(|| self.visible_month.first_day())
+            }
+            DatePickerKeyboardStep::LastSelectable => self.max.unwrap_or_else(|| {
+                let month = self.visible_month;
+                CalendarDate {
+                    year: month.year,
+                    month: month.month,
+                    day: month.day_count(),
+                }
+            }),
+        }
     }
 }
 
@@ -334,6 +482,218 @@ pub struct DatePickerSelection {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatePickerKeyboardStep {
+    PreviousDay,
+    NextDay,
+    PreviousWeek,
+    NextWeek,
+    PreviousMonth,
+    NextMonth,
+    PreviousYear,
+    NextYear,
+    StartOfMonth,
+    EndOfMonth,
+    FirstSelectable,
+    LastSelectable,
+}
+
+impl DatePickerKeyboardStep {
+    pub fn from_key(key: KeyCode, modifiers: KeyModifiers) -> Option<Self> {
+        let range_shortcut = modifiers.ctrl || modifiers.meta;
+        match key {
+            KeyCode::ArrowLeft => Some(if range_shortcut {
+                Self::PreviousMonth
+            } else {
+                Self::PreviousDay
+            }),
+            KeyCode::ArrowRight => Some(if range_shortcut {
+                Self::NextMonth
+            } else {
+                Self::NextDay
+            }),
+            KeyCode::ArrowUp => Some(if range_shortcut {
+                Self::PreviousYear
+            } else {
+                Self::PreviousWeek
+            }),
+            KeyCode::ArrowDown => Some(if range_shortcut {
+                Self::NextYear
+            } else {
+                Self::NextWeek
+            }),
+            KeyCode::Home => Some(if range_shortcut {
+                Self::FirstSelectable
+            } else {
+                Self::StartOfMonth
+            }),
+            KeyCode::End => Some(if range_shortcut {
+                Self::LastSelectable
+            } else {
+                Self::EndOfMonth
+            }),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatePickerControl {
+    PreviousMonth,
+    NextMonth,
+    Today,
+    Clear,
+}
+
+impl DatePickerControl {
+    fn label(self, picker: &DatePickerModel) -> String {
+        match self {
+            Self::PreviousMonth => format!(
+                "Previous month, {}",
+                format_month_label(picker.visible_month.previous())
+            ),
+            Self::NextMonth => format!(
+                "Next month, {}",
+                format_month_label(picker.visible_month.next())
+            ),
+            Self::Today => picker.today.map_or_else(
+                || "Today unavailable".to_string(),
+                |today| format!("Today, {}", today.accessibility_label()),
+            ),
+            Self::Clear => "Clear selected date".to_string(),
+        }
+    }
+
+    fn value(self, picker: &DatePickerModel) -> Option<String> {
+        match self {
+            Self::PreviousMonth | Self::NextMonth => Some(format_month_label(picker.visible_month)),
+            Self::Today => picker.today.map(CalendarDate::iso_string),
+            Self::Clear => picker.selected.map(CalendarDate::iso_string),
+        }
+    }
+
+    fn enabled(self, picker: &DatePickerModel) -> bool {
+        match self {
+            Self::PreviousMonth | Self::NextMonth => true,
+            Self::Today => picker.today.is_some_and(|today| picker.can_select(today)),
+            Self::Clear => picker.selected.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PickerAnimationMeta {
+    pub name: String,
+    pub duration_seconds: f32,
+}
+
+impl PickerAnimationMeta {
+    pub fn new(name: impl Into<String>, duration_seconds: f32) -> Self {
+        Self {
+            name: name.into(),
+            duration_seconds: finite_or_f32(duration_seconds, 0.0).max(0.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PickerElementStyle {
+    pub foreground: Option<ColorRgba>,
+    pub background: Option<ColorRgba>,
+    pub border: Option<ColorRgba>,
+    pub image: Option<ImageContent>,
+    pub shader: Option<ShaderEffect>,
+    pub animation: Option<PickerAnimationMeta>,
+}
+
+impl PickerElementStyle {
+    pub fn with_foreground(mut self, color: ColorRgba) -> Self {
+        self.foreground = Some(color);
+        self
+    }
+
+    pub fn with_background(mut self, color: ColorRgba) -> Self {
+        self.background = Some(color);
+        self
+    }
+
+    pub fn with_border(mut self, color: ColorRgba) -> Self {
+        self.border = Some(color);
+        self
+    }
+
+    pub fn with_image(mut self, image: ImageContent) -> Self {
+        self.image = Some(image);
+        self
+    }
+
+    pub fn with_shader(mut self, shader: ShaderEffect) -> Self {
+        self.shader = Some(shader);
+        self
+    }
+
+    pub fn with_animation(mut self, animation: PickerAnimationMeta) -> Self {
+        self.animation = Some(animation);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatePickerStyle {
+    pub day: PickerElementStyle,
+    pub outside_month_day: PickerElementStyle,
+    pub selected_day: PickerElementStyle,
+    pub today_day: PickerElementStyle,
+    pub disabled_day: PickerElementStyle,
+    pub error_day: PickerElementStyle,
+    pub navigation_button: PickerElementStyle,
+}
+
+impl DatePickerStyle {
+    pub fn style_for_cell(&self, cell: &CalendarDayCell) -> &PickerElementStyle {
+        if cell.disabled {
+            &self.disabled_day
+        } else if cell.selected {
+            &self.selected_day
+        } else if cell.today {
+            &self.today_day
+        } else if !cell.in_visible_month {
+            &self.outside_month_day
+        } else {
+            &self.day
+        }
+    }
+}
+
+impl Default for DatePickerStyle {
+    fn default() -> Self {
+        Self {
+            day: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(232, 236, 244, 255))
+                .with_background(ColorRgba::new(22, 27, 34, 255)),
+            outside_month_day: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(128, 138, 153, 255))
+                .with_background(ColorRgba::new(16, 20, 26, 255)),
+            selected_day: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(255, 255, 255, 255))
+                .with_background(ColorRgba::new(60, 125, 216, 255))
+                .with_animation(PickerAnimationMeta::new("date.selected", 0.12)),
+            today_day: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(255, 255, 255, 255))
+                .with_border(ColorRgba::new(106, 188, 137, 255)),
+            disabled_day: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(98, 105, 118, 255))
+                .with_background(ColorRgba::new(18, 21, 27, 255)),
+            error_day: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(255, 255, 255, 255))
+                .with_background(ColorRgba::new(157, 55, 67, 255)),
+            navigation_button: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(238, 242, 248, 255))
+                .with_background(ColorRgba::new(35, 42, 53, 255)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorHsv {
     pub hue: f32,
@@ -403,11 +763,14 @@ impl ColorHsv {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColorSwatch {
     pub id: String,
     pub label: String,
     pub color: ColorRgba,
+    pub image: Option<ImageContent>,
+    pub shader: Option<ShaderEffect>,
+    pub animation: Option<PickerAnimationMeta>,
 }
 
 impl ColorSwatch {
@@ -416,11 +779,40 @@ impl ColorSwatch {
             id: id.into(),
             label: label.into(),
             color,
+            image: None,
+            shader: None,
+            animation: None,
         }
+    }
+
+    pub fn with_image(mut self, image: ImageContent) -> Self {
+        self.image = Some(image);
+        self
+    }
+
+    pub fn with_shader(mut self, shader: ShaderEffect) -> Self {
+        self.shader = Some(shader);
+        self
+    }
+
+    pub fn with_animation(mut self, animation: PickerAnimationMeta) -> Self {
+        self.animation = Some(animation);
+        self
+    }
+
+    pub fn accessibility_meta(&self, selected: bool) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::Button)
+            .label(self.label.clone())
+            .value(format_hex_color(self.color, self.color.a < 255))
+            .focusable();
+        if selected {
+            meta = meta.hint("selected");
+        }
+        meta
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ColorPalette {
     pub swatches: Vec<ColorSwatch>,
 }
@@ -441,7 +833,7 @@ impl ColorPalette {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColorPickerState {
     pub value: ColorRgba,
     pub palette: ColorPalette,
@@ -476,6 +868,29 @@ impl ColorPickerState {
         ColorHsv::from_rgba(self.value)
     }
 
+    pub fn value_accessibility_meta(&self, label: impl Into<String>) -> AccessibilityMeta {
+        AccessibilityMeta::new(AccessibilityRole::TextBox)
+            .label(label)
+            .value(format_hex_color(self.value, self.value.a < 255))
+            .hint("Enter a hex color")
+            .focusable()
+    }
+
+    pub fn palette_accessibility_meta(&self) -> AccessibilityMeta {
+        AccessibilityMeta::new(AccessibilityRole::Grid)
+            .label("Color palette")
+            .value(format!("{} swatches", self.palette.swatches.len()))
+            .focusable()
+    }
+
+    pub fn channel_accessibility_meta(&self, channel: ColorChannel) -> AccessibilityMeta {
+        AccessibilityMeta::new(AccessibilityRole::Slider)
+            .label(channel.label())
+            .value(channel.format_value(self.hsv()))
+            .hint(channel.hint())
+            .focusable()
+    }
+
     pub fn set_rgba(&mut self, value: ColorRgba, phase: EditPhase) -> ColorPickerUpdate {
         let previous = self.value;
         self.value = value;
@@ -493,6 +908,33 @@ impl ColorPickerState {
 
     pub fn set_hsv(&mut self, value: ColorHsv, phase: EditPhase) -> ColorPickerUpdate {
         self.set_rgba(value.to_rgba(), phase)
+    }
+
+    pub fn set_channel(
+        &mut self,
+        channel: ColorChannel,
+        value: f32,
+        phase: EditPhase,
+    ) -> ColorPickerUpdate {
+        let mut hsv = self.hsv();
+        match channel {
+            ColorChannel::Hue => hsv.hue = normalize_hue(value),
+            ColorChannel::Saturation => hsv.saturation = unit(value),
+            ColorChannel::Value => hsv.value = unit(value),
+            ColorChannel::Alpha => hsv.alpha = unit(value),
+        }
+        self.set_hsv(hsv, phase)
+    }
+
+    pub fn nudge_channel(
+        &mut self,
+        channel: ColorChannel,
+        steps: i32,
+        speed: ColorChannelStep,
+    ) -> ColorPickerUpdate {
+        let hsv = self.hsv();
+        let value = channel.value(hsv) + channel.step(speed) * steps as f32;
+        self.set_channel(channel, value, EditPhase::UpdateEdit)
     }
 
     pub fn select_swatch(&mut self, id: &str) -> Option<ColorPickerUpdate> {
@@ -514,6 +956,115 @@ pub struct ColorPickerUpdate {
     pub hsv: ColorHsv,
     pub phase: EditPhase,
     pub changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorChannel {
+    Hue,
+    Saturation,
+    Value,
+    Alpha,
+}
+
+impl ColorChannel {
+    pub const ALL: [Self; 4] = [Self::Hue, Self::Saturation, Self::Value, Self::Alpha];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Hue => "Hue",
+            Self::Saturation => "Saturation",
+            Self::Value => "Value",
+            Self::Alpha => "Alpha",
+        }
+    }
+
+    pub const fn hint(self) -> &'static str {
+        match self {
+            Self::Hue => "Use arrow keys to adjust degrees",
+            Self::Saturation | Self::Value | Self::Alpha => "Use arrow keys to adjust percentage",
+        }
+    }
+
+    pub fn value(self, hsv: ColorHsv) -> f32 {
+        match self {
+            Self::Hue => hsv.hue,
+            Self::Saturation => hsv.saturation,
+            Self::Value => hsv.value,
+            Self::Alpha => hsv.alpha,
+        }
+    }
+
+    pub fn format_value(self, hsv: ColorHsv) -> String {
+        match self {
+            Self::Hue => format!("{} degrees", self.value(hsv).round() as i32),
+            Self::Saturation | Self::Value | Self::Alpha => {
+                format!("{}%", (self.value(hsv) * 100.0).round() as i32)
+            }
+        }
+    }
+
+    pub fn step(self, speed: ColorChannelStep) -> f32 {
+        match (self, speed) {
+            (Self::Hue, ColorChannelStep::Fine) => 1.0,
+            (Self::Hue, ColorChannelStep::Normal) => 5.0,
+            (Self::Hue, ColorChannelStep::Coarse) => 15.0,
+            (_, ColorChannelStep::Fine) => 0.01,
+            (_, ColorChannelStep::Normal) => 0.05,
+            (_, ColorChannelStep::Coarse) => 0.10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorChannelStep {
+    Fine,
+    Normal,
+    Coarse,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorPickerStyle {
+    pub text_field: PickerElementStyle,
+    pub invalid_text_field: PickerElementStyle,
+    pub swatch: PickerElementStyle,
+    pub selected_swatch: PickerElementStyle,
+    pub recent_swatch: PickerElementStyle,
+    pub channel_slider: PickerElementStyle,
+}
+
+impl ColorPickerStyle {
+    pub fn style_for_swatch(&self, selected: bool, recent: bool) -> &PickerElementStyle {
+        if selected {
+            &self.selected_swatch
+        } else if recent {
+            &self.recent_swatch
+        } else {
+            &self.swatch
+        }
+    }
+}
+
+impl Default for ColorPickerStyle {
+    fn default() -> Self {
+        Self {
+            text_field: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(235, 240, 247, 255))
+                .with_background(ColorRgba::new(18, 22, 28, 255)),
+            invalid_text_field: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(255, 238, 240, 255))
+                .with_border(ColorRgba::new(201, 74, 91, 255)),
+            swatch: PickerElementStyle::default()
+                .with_background(ColorRgba::new(28, 34, 43, 255))
+                .with_border(ColorRgba::new(70, 82, 102, 255)),
+            selected_swatch: PickerElementStyle::default()
+                .with_border(ColorRgba::new(255, 255, 255, 255))
+                .with_animation(PickerAnimationMeta::new("color.selected", 0.10)),
+            recent_swatch: PickerElementStyle::default()
+                .with_border(ColorRgba::new(106, 188, 137, 255)),
+            channel_slider: PickerElementStyle::default()
+                .with_background(ColorRgba::new(40, 47, 58, 255)),
+        }
+    }
 }
 
 pub fn format_hex_color(color: ColorRgba, include_alpha: bool) -> String {
@@ -635,6 +1186,59 @@ impl Default for NumericPrecision {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericValidationStatus {
+    Valid,
+    Empty,
+    InvalidNumber,
+    OutOfRange,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumericTextValidation {
+    pub status: NumericValidationStatus,
+    pub parsed: Option<f64>,
+    pub normalized: Option<f64>,
+    pub message: Option<String>,
+}
+
+impl NumericTextValidation {
+    pub fn is_valid(&self) -> bool {
+        self.status == NumericValidationStatus::Valid
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericKeyboardStep {
+    Decrement,
+    Increment,
+    LargeDecrement,
+    LargeIncrement,
+    Minimum,
+    Maximum,
+}
+
+impl NumericKeyboardStep {
+    pub fn from_key(key: KeyCode, modifiers: KeyModifiers) -> Option<Self> {
+        let large = modifiers.shift;
+        match key {
+            KeyCode::ArrowUp | KeyCode::ArrowRight => Some(if large {
+                Self::LargeIncrement
+            } else {
+                Self::Increment
+            }),
+            KeyCode::ArrowDown | KeyCode::ArrowLeft => Some(if large {
+                Self::LargeDecrement
+            } else {
+                Self::Decrement
+            }),
+            KeyCode::Home => Some(Self::Minimum),
+            KeyCode::End => Some(Self::Maximum),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NumericInputState {
     pub value: f64,
@@ -669,6 +1273,51 @@ impl NumericInputState {
         self.value = self.normalize_value(self.value);
         self.text = self.precision.format(self.value);
         self
+    }
+
+    pub fn validation(&self) -> NumericTextValidation {
+        self.validate_text_value(&self.text)
+    }
+
+    pub fn validate_text_value(&self, text: &str) -> NumericTextValidation {
+        validate_numeric_text(text, self.range, self.precision)
+    }
+
+    pub fn text_accessibility_meta(&self, label: impl Into<String>) -> AccessibilityMeta {
+        let validation = self.validation();
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::TextBox)
+            .label(label)
+            .value(self.text.clone())
+            .focusable();
+        if let Some(message) = validation.message {
+            meta = meta.hint(message);
+        } else if let Some(range) = self.range {
+            meta = meta.hint(numeric_range_hint(range, self.precision));
+        }
+        meta
+    }
+
+    pub fn slider_accessibility_meta(&self, label: impl Into<String>) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::Slider)
+            .label(label)
+            .value(self.precision.format(self.value))
+            .focusable();
+        if let Some(range) = self.range {
+            meta = meta.hint(numeric_range_hint(range, self.precision));
+        }
+        meta
+    }
+
+    pub fn copy_text(&self) -> String {
+        self.text.clone()
+    }
+
+    pub fn copy_value_text(&self) -> String {
+        self.precision.format(self.value)
+    }
+
+    pub fn paste_text(&mut self, text: &str) -> NumericInputOutcome {
+        self.update_text(normalize_numeric_clipboard_text(text))
     }
 
     pub fn begin_edit(&mut self) -> NumericInputOutcome {
@@ -722,6 +1371,39 @@ impl NumericInputState {
         )
     }
 
+    pub fn apply_keyboard_step(&mut self, step: NumericKeyboardStep) -> NumericInputOutcome {
+        match step {
+            NumericKeyboardStep::Decrement => self.nudge(-1),
+            NumericKeyboardStep::Increment => self.nudge(1),
+            NumericKeyboardStep::LargeDecrement => self.nudge(-10),
+            NumericKeyboardStep::LargeIncrement => self.nudge(10),
+            NumericKeyboardStep::Minimum => {
+                if let Some(range) = self.range {
+                    self.set_value(range.min, EditPhase::UpdateEdit)
+                } else {
+                    self.phase = EditPhase::Preview;
+                    self.outcome(self.value, false)
+                }
+            }
+            NumericKeyboardStep::Maximum => {
+                if let Some(range) = self.range {
+                    self.set_value(range.max, EditPhase::UpdateEdit)
+                } else {
+                    self.phase = EditPhase::Preview;
+                    self.outcome(self.value, false)
+                }
+            }
+        }
+    }
+
+    pub fn handle_keyboard_step(
+        &mut self,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<NumericInputOutcome> {
+        NumericKeyboardStep::from_key(key, modifiers).map(|step| self.apply_keyboard_step(step))
+    }
+
     pub fn apply_drag(
         &mut self,
         start_value: f64,
@@ -767,6 +1449,44 @@ pub struct NumericInputOutcome {
     pub text: String,
     pub phase: EditPhase,
     pub changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumericInputStyle {
+    pub text_field: PickerElementStyle,
+    pub error_text_field: PickerElementStyle,
+    pub drag_handle: PickerElementStyle,
+    pub slider: PickerElementStyle,
+}
+
+impl NumericInputStyle {
+    pub fn style_for_validation(&self, validation: &NumericTextValidation) -> &PickerElementStyle {
+        if validation.is_valid() {
+            &self.text_field
+        } else {
+            &self.error_text_field
+        }
+    }
+}
+
+impl Default for NumericInputStyle {
+    fn default() -> Self {
+        Self {
+            text_field: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(235, 240, 247, 255))
+                .with_background(ColorRgba::new(18, 22, 28, 255)),
+            error_text_field: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(255, 238, 240, 255))
+                .with_border(ColorRgba::new(201, 74, 91, 255))
+                .with_animation(PickerAnimationMeta::new("numeric.error", 0.14)),
+            drag_handle: PickerElementStyle::default()
+                .with_background(ColorRgba::new(46, 55, 68, 255))
+                .with_image(ImageContent::new("icons.drag-horizontal")),
+            slider: PickerElementStyle::default()
+                .with_background(ColorRgba::new(42, 49, 58, 255))
+                .with_shader(ShaderEffect::new("numeric.slider-fill")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -833,6 +1553,17 @@ pub enum PathPickerMode {
     Any,
 }
 
+impl PathPickerMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OpenFile => "Open file",
+            Self::SaveFile => "Save file",
+            Self::Directory => "Choose directory",
+            Self::Any => "Choose path",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathBreadcrumb {
     pub label: String,
@@ -840,11 +1571,21 @@ pub struct PathBreadcrumb {
     pub is_root: bool,
 }
 
+impl PathBreadcrumb {
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        AccessibilityMeta::new(AccessibilityRole::Button)
+            .label(format!("Go to {}", self.label))
+            .value(path_to_text(&self.path))
+            .focusable()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathPickerState {
     pub mode: PathPickerMode,
     pub current_path: PathBuf,
     pub selected_path: Option<PathBuf>,
+    pub text: String,
     pub recent_paths: Vec<PathBuf>,
     pub max_recent: usize,
 }
@@ -855,13 +1596,16 @@ impl PathPickerState {
             mode,
             current_path: current_path.into(),
             selected_path: None,
+            text: String::new(),
             recent_paths: Vec::new(),
             max_recent: 8,
         }
     }
 
     pub fn with_selected_path(mut self, selected_path: impl Into<PathBuf>) -> Self {
-        self.selected_path = Some(selected_path.into());
+        let selected_path = selected_path.into();
+        self.text = path_to_text(&selected_path);
+        self.selected_path = Some(selected_path);
         self
     }
 
@@ -877,6 +1621,90 @@ impl PathPickerState {
         path_breadcrumbs(&self.current_path)
     }
 
+    pub fn validation(&self) -> PathTextValidation {
+        validate_path_text(&self.text)
+    }
+
+    pub fn field_accessibility_meta(&self, label: impl Into<String>) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::TextBox)
+            .label(label)
+            .value(self.text.clone())
+            .hint(format!(
+                "{}. Current folder {}",
+                self.mode.label(),
+                path_to_text(&self.current_path)
+            ))
+            .focusable();
+        if !self.validation().is_valid() && !self.text.is_empty() {
+            meta = meta.hint("Enter a path");
+        }
+        meta
+    }
+
+    pub fn control_accessibility_meta(&self, control: PathPickerControl) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::Button)
+            .label(control.label(self))
+            .focusable();
+        if let Some(value) = control.value(self) {
+            meta = meta.value(value);
+        }
+        if !control.enabled(self) {
+            meta = meta.disabled();
+        }
+        meta
+    }
+
+    pub fn copy_current_path(&self) -> String {
+        path_to_text(&self.current_path)
+    }
+
+    pub fn copy_selected_path(&self) -> Option<String> {
+        self.selected_path.as_deref().map(path_to_text)
+    }
+
+    pub fn copy_text(&self) -> String {
+        if self.text.is_empty() {
+            self.copy_selected_path()
+                .unwrap_or_else(|| self.copy_current_path())
+        } else {
+            self.text.clone()
+        }
+    }
+
+    pub fn update_text(&mut self, text: impl Into<String>) -> PathPickerUpdate {
+        let previous = self.selected_path.clone();
+        let text = text.into();
+        let changed = self.text != text;
+        self.text = text;
+        PathPickerUpdate {
+            previous,
+            selected_path: self.selected_path.clone(),
+            current_path: self.current_path.clone(),
+            text: self.text.clone(),
+            phase: EditPhase::UpdateEdit,
+            changed,
+        }
+    }
+
+    pub fn paste_path_text(&mut self, text: &str) -> Option<PathPickerUpdate> {
+        parse_path_text(text).map(|path| self.select_path(path))
+    }
+
+    pub fn commit_text(&mut self) -> PathPickerUpdate {
+        let previous = self.selected_path.clone();
+        let Some(path) = parse_path_text(&self.text) else {
+            return PathPickerUpdate {
+                previous,
+                selected_path: self.selected_path.clone(),
+                current_path: self.current_path.clone(),
+                text: self.text.clone(),
+                phase: EditPhase::CancelEdit,
+                changed: false,
+            };
+        };
+        self.select_path(path)
+    }
+
     pub fn navigate_to(&mut self, path: impl Into<PathBuf>) -> PathPickerUpdate {
         let previous = self.selected_path.clone();
         let path = path.into();
@@ -886,6 +1714,7 @@ impl PathPickerState {
             previous,
             selected_path: self.selected_path.clone(),
             current_path: self.current_path.clone(),
+            text: self.text.clone(),
             phase: EditPhase::UpdateEdit,
             changed,
         }
@@ -894,6 +1723,7 @@ impl PathPickerState {
     pub fn select_path(&mut self, path: impl Into<PathBuf>) -> PathPickerUpdate {
         let previous = self.selected_path.clone();
         let path = path.into();
+        self.text = path_to_text(&path);
         self.selected_path = Some(path.clone());
         self.remember_recent(path);
         let changed = previous != self.selected_path;
@@ -901,6 +1731,7 @@ impl PathPickerState {
             previous,
             selected_path: self.selected_path.clone(),
             current_path: self.current_path.clone(),
+            text: self.text.clone(),
             phase: EditPhase::CommitEdit,
             changed,
         }
@@ -908,10 +1739,12 @@ impl PathPickerState {
 
     pub fn clear_selection(&mut self) -> PathPickerUpdate {
         let previous = self.selected_path.take();
+        self.text.clear();
         PathPickerUpdate {
             previous: previous.clone(),
             selected_path: None,
             current_path: self.current_path.clone(),
+            text: self.text.clone(),
             phase: EditPhase::CancelEdit,
             changed: previous.is_some(),
         }
@@ -930,8 +1763,106 @@ pub struct PathPickerUpdate {
     pub previous: Option<PathBuf>,
     pub selected_path: Option<PathBuf>,
     pub current_path: PathBuf,
+    pub text: String,
     pub phase: EditPhase,
     pub changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathTextValidationStatus {
+    Valid,
+    Empty,
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathTextValidation {
+    pub status: PathTextValidationStatus,
+    pub path: Option<PathBuf>,
+    pub message: Option<String>,
+}
+
+impl PathTextValidation {
+    pub fn is_valid(&self) -> bool {
+        self.status == PathTextValidationStatus::Valid
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathPickerControl {
+    Browse,
+    Clear,
+    Confirm,
+}
+
+impl PathPickerControl {
+    fn label(self, picker: &PathPickerState) -> String {
+        match self {
+            Self::Browse => picker.mode.label().to_string(),
+            Self::Clear => "Clear selected path".to_string(),
+            Self::Confirm => match picker.mode {
+                PathPickerMode::OpenFile => "Open selected path".to_string(),
+                PathPickerMode::SaveFile => "Save to selected path".to_string(),
+                PathPickerMode::Directory => "Choose selected directory".to_string(),
+                PathPickerMode::Any => "Choose selected path".to_string(),
+            },
+        }
+    }
+
+    fn value(self, picker: &PathPickerState) -> Option<String> {
+        match self {
+            Self::Browse => Some(path_to_text(&picker.current_path)),
+            Self::Clear | Self::Confirm => picker.selected_path.as_deref().map(path_to_text),
+        }
+    }
+
+    fn enabled(self, picker: &PathPickerState) -> bool {
+        match self {
+            Self::Browse => true,
+            Self::Clear | Self::Confirm => picker.selected_path.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathPickerStyle {
+    pub text_field: PickerElementStyle,
+    pub invalid_text_field: PickerElementStyle,
+    pub browse_button: PickerElementStyle,
+    pub breadcrumb_button: PickerElementStyle,
+    pub selected_path: PickerElementStyle,
+}
+
+impl PathPickerStyle {
+    pub fn style_for_validation(&self, validation: &PathTextValidation) -> &PickerElementStyle {
+        if validation.is_valid() || validation.status == PathTextValidationStatus::Empty {
+            &self.text_field
+        } else {
+            &self.invalid_text_field
+        }
+    }
+}
+
+impl Default for PathPickerStyle {
+    fn default() -> Self {
+        Self {
+            text_field: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(235, 240, 247, 255))
+                .with_background(ColorRgba::new(18, 22, 28, 255)),
+            invalid_text_field: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(255, 238, 240, 255))
+                .with_border(ColorRgba::new(201, 74, 91, 255)),
+            browse_button: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(238, 242, 248, 255))
+                .with_background(ColorRgba::new(35, 42, 53, 255))
+                .with_image(ImageContent::new("icons.folder")),
+            breadcrumb_button: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(199, 209, 223, 255)),
+            selected_path: PickerElementStyle::default()
+                .with_background(ColorRgba::new(47, 72, 103, 255))
+                .with_animation(PickerAnimationMeta::new("path.selected", 0.10)),
+        }
+    }
 }
 
 pub fn path_breadcrumbs(path: impl AsRef<Path>) -> Vec<PathBreadcrumb> {
@@ -985,6 +1916,159 @@ pub fn path_breadcrumbs(path: impl AsRef<Path>) -> Vec<PathBreadcrumb> {
     }
 
     crumbs
+}
+
+fn month_name(month: u8) -> &'static str {
+    match month {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "Unknown",
+    }
+}
+
+fn format_month_label(month: CalendarMonth) -> String {
+    format!("{} {} calendar", month_name(month.month), month.year)
+}
+
+fn format_date_range_hint(min: Option<CalendarDate>, max: Option<CalendarDate>) -> String {
+    match (min, max) {
+        (Some(min), Some(max)) => {
+            format!(
+                "Selectable dates {} through {}",
+                min.iso_string(),
+                max.iso_string()
+            )
+        }
+        (Some(min), None) => format!("Selectable dates from {}", min.iso_string()),
+        (None, Some(max)) => format!("Selectable dates through {}", max.iso_string()),
+        (None, None) => String::new(),
+    }
+}
+
+fn finite_or_f32(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn validate_numeric_text(
+    text: &str,
+    range: Option<NumericRange>,
+    precision: NumericPrecision,
+) -> NumericTextValidation {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return NumericTextValidation {
+            status: NumericValidationStatus::Empty,
+            parsed: None,
+            normalized: None,
+            message: Some("Enter a number".to_string()),
+        };
+    }
+
+    let Some(parsed) = parse_numeric_text(trimmed) else {
+        return NumericTextValidation {
+            status: NumericValidationStatus::InvalidNumber,
+            parsed: None,
+            normalized: None,
+            message: Some("Enter a finite number".to_string()),
+        };
+    };
+
+    let in_range = range.is_none_or(|range| range.contains(parsed));
+    let bounded = range.map_or(parsed, |range| range.clamp(parsed));
+    let normalized = precision.quantize(bounded);
+    NumericTextValidation {
+        status: if in_range {
+            NumericValidationStatus::Valid
+        } else {
+            NumericValidationStatus::OutOfRange
+        },
+        parsed: Some(parsed),
+        normalized: Some(normalized),
+        message: if in_range {
+            None
+        } else {
+            range.map(|range| numeric_range_hint(range, precision))
+        },
+    }
+}
+
+fn numeric_range_hint(range: NumericRange, precision: NumericPrecision) -> String {
+    format!(
+        "Range {} to {}; step {}",
+        precision.format(range.min),
+        precision.format(range.max),
+        precision.format(precision.step)
+    )
+}
+
+fn normalize_numeric_clipboard_text(text: &str) -> String {
+    let candidate = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .trim_matches(|ch| ch == '"' || ch == '\'')
+        .replace(['_', ','], "");
+    candidate.trim().to_string()
+}
+
+fn path_to_text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn parse_path_text(text: &str) -> Option<PathBuf> {
+    let text = normalize_path_clipboard_text(text);
+    (!text.is_empty() && !text.contains('\0')).then(|| PathBuf::from(text))
+}
+
+fn validate_path_text(text: &str) -> PathTextValidation {
+    let text = normalize_path_clipboard_text(text);
+    if text.is_empty() {
+        return PathTextValidation {
+            status: PathTextValidationStatus::Empty,
+            path: None,
+            message: Some("Enter a path".to_string()),
+        };
+    }
+    if text.contains('\0') {
+        return PathTextValidation {
+            status: PathTextValidationStatus::Invalid,
+            path: None,
+            message: Some("Path contains an invalid null byte".to_string()),
+        };
+    }
+    PathTextValidation {
+        status: PathTextValidationStatus::Valid,
+        path: Some(PathBuf::from(text)),
+        message: None,
+    }
+}
+
+fn normalize_path_clipboard_text(text: &str) -> String {
+    let text = text.trim();
+    let text = text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .or_else(|| {
+            text.strip_prefix('\'')
+                .and_then(|text| text.strip_suffix('\''))
+        })
+        .unwrap_or(text);
+    text.trim().to_string()
 }
 
 fn ordered_bounds(
@@ -1072,6 +2156,7 @@ fn parse_numeric_text(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AccessibilityRole, ImageContent, KeyCode, KeyModifiers, ShaderEffect};
 
     #[test]
     fn calendar_dates_validate_leap_years_and_weekdays() {
@@ -1145,6 +2230,71 @@ mod tests {
     }
 
     #[test]
+    fn date_picker_exposes_accessibility_style_and_keyboard_steps() {
+        let min = CalendarDate::new(2024, 5, 10).unwrap();
+        let max = CalendarDate::new(2024, 5, 20).unwrap();
+        let selected = CalendarDate::new(2024, 5, 15).unwrap();
+        let mut picker = DatePickerModel::builder()
+            .selected(Some(selected))
+            .bounds(Some(min), Some(max))
+            .today(Some(selected))
+            .build();
+
+        let calendar_meta = picker.accessibility_meta();
+        assert_eq!(calendar_meta.role, AccessibilityRole::Grid);
+        assert_eq!(calendar_meta.value.as_deref(), Some("2024-05-15"));
+        assert!(calendar_meta
+            .hint
+            .as_deref()
+            .unwrap()
+            .contains("2024-05-10"));
+
+        let selected_cell = picker
+            .grid()
+            .into_iter()
+            .find(|cell| cell.date == selected)
+            .unwrap();
+        let cell_meta = selected_cell.accessibility_meta();
+        assert_eq!(cell_meta.role, AccessibilityRole::GridCell);
+        assert_eq!(cell_meta.label.as_deref(), Some("May 15, 2024"));
+        assert_eq!(cell_meta.value.as_deref(), Some("2024-05-15"));
+        assert_eq!(cell_meta.hint.as_deref(), Some("selected, today"));
+
+        let style = DatePickerStyle::default();
+        assert_eq!(style.style_for_cell(&selected_cell), &style.selected_day);
+        assert!(style.selected_day.animation.is_some());
+
+        let moved = picker
+            .handle_keyboard_step(KeyCode::ArrowRight, KeyModifiers::NONE)
+            .unwrap();
+        assert_eq!(
+            moved.selected,
+            Some(CalendarDate::new(2024, 5, 16).unwrap())
+        );
+
+        let jumped = picker
+            .handle_keyboard_step(
+                KeyCode::End,
+                KeyModifiers {
+                    ctrl: true,
+                    ..KeyModifiers::NONE
+                },
+            )
+            .unwrap();
+        assert_eq!(jumped.selected, Some(max));
+
+        let clamped = picker
+            .handle_keyboard_step(KeyCode::ArrowRight, KeyModifiers::NONE)
+            .unwrap();
+        assert_eq!(clamped.selected, Some(max));
+        assert!(!clamped.changed);
+
+        let today = picker.control_accessibility_meta(DatePickerControl::Today);
+        assert_eq!(today.role, AccessibilityRole::Button);
+        assert_eq!(today.value.as_deref(), Some("2024-05-15"));
+    }
+
+    #[test]
     fn hsv_and_hex_helpers_round_trip_rgba() {
         let color = ColorRgba::new(51, 102, 153, 128);
         let hsv = ColorHsv::from_rgba(color);
@@ -1192,6 +2342,41 @@ mod tests {
     }
 
     #[test]
+    fn color_picker_exposes_swatch_media_and_channel_accessibility() {
+        let swatch = ColorSwatch::new("brand", "Brand", ColorRgba::new(10, 20, 30, 255))
+            .with_image(ImageContent::new("swatches.brand"))
+            .with_shader(ShaderEffect::new("swatch.checker").uniform("scale", 8.0))
+            .with_animation(PickerAnimationMeta::new("swatch.selected", 0.2));
+        assert_eq!(swatch.image.as_ref().unwrap().key, "swatches.brand");
+        assert_eq!(swatch.shader.as_ref().unwrap().key, "swatch.checker");
+
+        let meta = swatch.accessibility_meta(true);
+        assert_eq!(meta.role, AccessibilityRole::Button);
+        assert_eq!(meta.label.as_deref(), Some("Brand"));
+        assert_eq!(meta.value.as_deref(), Some("#0A141E"));
+        assert_eq!(meta.hint.as_deref(), Some("selected"));
+
+        let palette = ColorPalette::new([swatch.clone()]);
+        let mut picker =
+            ColorPickerState::new(ColorRgba::new(255, 0, 0, 255)).with_palette(palette);
+        let palette_meta = picker.palette_accessibility_meta();
+        assert_eq!(palette_meta.role, AccessibilityRole::Grid);
+        assert_eq!(palette_meta.value.as_deref(), Some("1 swatches"));
+
+        let alpha_meta = picker.channel_accessibility_meta(ColorChannel::Alpha);
+        assert_eq!(alpha_meta.role, AccessibilityRole::Slider);
+        assert_eq!(alpha_meta.value.as_deref(), Some("100%"));
+
+        let update = picker.nudge_channel(ColorChannel::Alpha, -1, ColorChannelStep::Coarse);
+        assert_eq!(update.phase, EditPhase::UpdateEdit);
+        assert_eq!(update.value.a, 230);
+
+        let style = ColorPickerStyle::default();
+        assert!(style.selected_swatch.animation.is_some());
+        assert_eq!(style.style_for_swatch(true, false), &style.selected_swatch);
+    }
+
+    #[test]
     fn numeric_input_clamps_quantizes_and_reports_phases() {
         let mut input = NumericInputState::new(0.0)
             .with_precision(NumericPrecision::decimals(2).with_step(0.25))
@@ -1214,6 +2399,52 @@ mod tests {
         let canceled = input.commit_text();
         assert_eq!(canceled.phase, EditPhase::CancelEdit);
         assert_eq!(canceled.text, "1.00");
+    }
+
+    #[test]
+    fn numeric_input_validates_keyboard_steps_and_clipboard_text() {
+        let mut input = NumericInputState::new(10.0)
+            .with_precision(NumericPrecision::decimals(1).with_step(0.5))
+            .with_range(NumericRange::new(0.0, 2000.0));
+
+        let out_of_range = input.validate_text_value("2001");
+        assert_eq!(out_of_range.status, NumericValidationStatus::OutOfRange);
+        assert_eq!(out_of_range.normalized, Some(2000.0));
+        assert!(out_of_range.message.as_deref().unwrap().contains("2000.0"));
+
+        let pasted = input.paste_text(" \"1,234.5\"\n");
+        assert_eq!(pasted.value, 1234.5);
+        assert_eq!(input.copy_text(), "1234.5");
+        assert_eq!(input.copy_value_text(), "1234.5");
+
+        let stepped = input
+            .handle_keyboard_step(
+                KeyCode::ArrowDown,
+                KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::NONE
+                },
+            )
+            .unwrap();
+        assert_eq!(stepped.value, 1229.5);
+
+        let min = input
+            .handle_keyboard_step(KeyCode::Home, KeyModifiers::NONE)
+            .unwrap();
+        assert_eq!(min.value, 0.0);
+
+        input.update_text("not numeric");
+        let meta = input.text_accessibility_meta("Amount");
+        assert_eq!(meta.role, AccessibilityRole::TextBox);
+        assert_eq!(meta.hint.as_deref(), Some("Enter a finite number"));
+
+        let style = NumericInputStyle::default();
+        assert_eq!(
+            style.style_for_validation(&input.validation()),
+            &style.error_text_field
+        );
+        assert!(style.drag_handle.image.is_some());
+        assert!(style.slider.shader.is_some());
     }
 
     #[test]
@@ -1261,9 +2492,57 @@ mod tests {
         assert_eq!(update.phase, EditPhase::CommitEdit);
         assert_eq!(picker.recent_paths[0], PathBuf::from("/b"));
         assert_eq!(picker.recent_paths.len(), 2);
+        assert_eq!(picker.text, "/b");
 
         let nav = picker.navigate_to("/var");
         assert_eq!(nav.phase, EditPhase::UpdateEdit);
         assert_eq!(picker.breadcrumbs().last().unwrap().label, "var");
+    }
+
+    #[test]
+    fn path_picker_tracks_text_clipboard_and_accessibility() {
+        let mut picker = PathPickerState::new(PathPickerMode::SaveFile, "/tmp")
+            .with_selected_path("/tmp/report.txt");
+        assert_eq!(picker.text, "/tmp/report.txt");
+        assert_eq!(
+            picker.copy_selected_path().as_deref(),
+            Some("/tmp/report.txt")
+        );
+        assert_eq!(picker.copy_current_path(), "/tmp");
+
+        let field = picker.field_accessibility_meta("Path");
+        assert_eq!(field.role, AccessibilityRole::TextBox);
+        assert_eq!(field.value.as_deref(), Some("/tmp/report.txt"));
+        assert!(field.hint.as_deref().unwrap().contains("Save file"));
+
+        let pasted = picker
+            .paste_path_text(" \"/var/tmp/output.txt\" ")
+            .expect("valid path");
+        assert_eq!(pasted.phase, EditPhase::CommitEdit);
+        assert_eq!(
+            picker.selected_path,
+            Some(PathBuf::from("/var/tmp/output.txt"))
+        );
+        assert_eq!(picker.text, "/var/tmp/output.txt");
+
+        let breadcrumb = picker.breadcrumbs().last().unwrap().accessibility_meta();
+        assert_eq!(breadcrumb.role, AccessibilityRole::Button);
+        assert_eq!(breadcrumb.label.as_deref(), Some("Go to tmp"));
+
+        picker.update_text("bad\0path");
+        let validation = picker.validation();
+        assert_eq!(validation.status, PathTextValidationStatus::Invalid);
+        let style = PathPickerStyle::default();
+        assert_eq!(
+            style.style_for_validation(&validation),
+            &style.invalid_text_field
+        );
+        assert!(style.browse_button.image.is_some());
+
+        let clear = picker.clear_selection();
+        assert_eq!(clear.phase, EditPhase::CancelEdit);
+        assert_eq!(picker.text, "");
+        let clear_meta = picker.control_accessibility_meta(PathPickerControl::Clear);
+        assert!(!clear_meta.enabled);
     }
 }

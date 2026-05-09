@@ -4,12 +4,14 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, JustifyContent, Size as TaffySize, Style,
+    AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentageAuto,
+    Size as TaffySize, Style,
 };
 
 use crate::{
-    ClipBehavior, ColorRgba, InputBehavior, ScrollAxes, StrokeStyle, TextStyle, TextWrap,
-    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiVisual,
+    AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, ImageContent, InputBehavior,
+    ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId,
+    UiNodeStyle, UiPoint, UiVisual,
 };
 
 /// Semantic hint for property value rendering and editing owned by the app.
@@ -37,6 +39,8 @@ pub struct PropertyGridRow {
     pub value: String,
     pub value_kind: PropertyValueKind,
     pub editable: bool,
+    pub disabled: bool,
+    pub leading_image: Option<ImageContent>,
 }
 
 impl PropertyGridRow {
@@ -47,6 +51,8 @@ impl PropertyGridRow {
             value: value.into(),
             value_kind: PropertyValueKind::Text,
             editable: true,
+            disabled: false,
+            leading_image: None,
         }
     }
 
@@ -59,6 +65,16 @@ impl PropertyGridRow {
         self.editable = false;
         self
     }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
+
+    pub fn with_leading_image(mut self, image: ImageContent) -> Self {
+        self.leading_image = Some(image);
+        self
+    }
 }
 
 /// Layout and styling knobs for [`property_inspector_grid`].
@@ -68,12 +84,17 @@ pub struct PropertyInspectorOptions {
     pub label_width: f32,
     pub row_height: f32,
     pub selected_index: Option<usize>,
+    pub focused_index: Option<usize>,
     pub background_visual: UiVisual,
     pub row_visual: UiVisual,
     pub selected_row_visual: UiVisual,
+    pub selected_row_shader: Option<ShaderEffect>,
+    pub focused_row_shader: Option<ShaderEffect>,
     pub label_style: TextStyle,
     pub value_style: TextStyle,
     pub read_only_value_style: TextStyle,
+    pub leading_image_size: f32,
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for PropertyInspectorOptions {
@@ -91,6 +112,7 @@ impl Default for PropertyInspectorOptions {
             label_width: 140.0,
             row_height: 28.0,
             selected_index: None,
+            focused_index: None,
             background_visual: UiVisual::panel(
                 ColorRgba::new(20, 24, 30, 255),
                 Some(StrokeStyle::new(ColorRgba::new(62, 72, 88, 255), 1.0)),
@@ -98,9 +120,13 @@ impl Default for PropertyInspectorOptions {
             ),
             row_visual: UiVisual::TRANSPARENT,
             selected_row_visual: UiVisual::panel(ColorRgba::new(43, 62, 86, 255), None, 0.0),
+            selected_row_shader: None,
+            focused_row_shader: None,
             label_style: muted_text_style(),
             value_style: TextStyle::default(),
             read_only_value_style: muted_text_style(),
+            leading_image_size: 16.0,
+            accessibility_label: None,
         }
     }
 }
@@ -124,17 +150,26 @@ pub fn property_inspector_grid(
                 ..Default::default()
             },
         )
-        .with_visual(options.background_visual),
+        .with_visual(options.background_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Grid)
+                .label(accessibility_label_or_name(
+                    &options.accessibility_label,
+                    &name,
+                ))
+                .value(format!("{} properties", rows.len())),
+        ),
     );
 
     for (index, row) in rows.iter().enumerate() {
-        let visual = if options.selected_index == Some(index) {
+        let selected = options.selected_index == Some(index);
+        let focused = options.focused_index == Some(index);
+        let visual = if selected {
             options.selected_row_visual
         } else {
             options.row_visual
         };
-        let row_node = document.add_child(
-            root,
+        let row_node = with_optional_shader(
             UiNode::container(
                 format!("{name}.row.{}", row.id),
                 UiNodeStyle {
@@ -152,9 +187,40 @@ pub fn property_inspector_grid(
                     ..Default::default()
                 },
             )
-            .with_input(InputBehavior::BUTTON)
-            .with_visual(visual),
+            .with_input(if row.disabled {
+                InputBehavior::NONE
+            } else {
+                InputBehavior::BUTTON
+            })
+            .with_visual(visual)
+            .with_accessibility(property_row_accessibility(
+                row,
+                index,
+                rows.len(),
+                selected,
+                focused,
+            )),
+            if selected {
+                options.selected_row_shader.as_ref()
+            } else if focused {
+                options.focused_row_shader.as_ref()
+            } else {
+                None
+            },
         );
+        let row_node = document.add_child(root, row_node);
+
+        if let Some(image) = row.leading_image.clone() {
+            document.add_child(
+                row_node,
+                leading_image_node(
+                    format!("{name}.row.{}.image", row.id),
+                    image,
+                    options.leading_image_size,
+                    Some(row.label.clone()),
+                ),
+            );
+        }
 
         document.add_child(
             row_node,
@@ -170,6 +236,9 @@ pub fn property_inspector_grid(
                     padding: taffy::prelude::Rect::length(6.0),
                     ..Default::default()
                 },
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Label).label(row.label.clone()),
             ),
         );
 
@@ -195,10 +264,15 @@ pub fn property_inspector_grid(
                 },
             )
             .with_input(if row.editable {
-                InputBehavior::BUTTON
+                if row.disabled {
+                    InputBehavior::NONE
+                } else {
+                    InputBehavior::BUTTON
+                }
             } else {
                 InputBehavior::NONE
-            }),
+            })
+            .with_accessibility(property_value_accessibility(row, selected, focused)),
         );
     }
 
@@ -227,6 +301,7 @@ pub struct DataTableColumn {
     pub min_width: f32,
     pub alignment: DataCellAlignment,
     pub resizable: bool,
+    pub leading_image: Option<ImageContent>,
 }
 
 impl DataTableColumn {
@@ -238,6 +313,7 @@ impl DataTableColumn {
             min_width: 24.0,
             alignment: DataCellAlignment::Start,
             resizable: true,
+            leading_image: None,
         }
     }
 
@@ -253,6 +329,11 @@ impl DataTableColumn {
 
     pub fn fixed(mut self) -> Self {
         self.resizable = false;
+        self
+    }
+
+    pub fn with_leading_image(mut self, image: ImageContent) -> Self {
+        self.leading_image = Some(image);
         self
     }
 
@@ -299,6 +380,51 @@ impl DataTableSelection {
     pub fn is_active_cell(&self, cell: DataTableCellIndex) -> bool {
         self.active_cell == Some(cell)
     }
+
+    pub fn set_active_cell_clamped(
+        &mut self,
+        row_count: usize,
+        column_count: usize,
+        cell: DataTableCellIndex,
+    ) -> Option<DataTableCellIndex> {
+        if row_count == 0 || column_count == 0 {
+            self.active_cell = None;
+            return None;
+        }
+
+        let cell = DataTableCellIndex::new(
+            cell.row.min(row_count - 1),
+            cell.column.min(column_count - 1),
+        );
+        self.active_cell = Some(cell);
+        self.selected_rows = vec![cell.row];
+        Some(cell)
+    }
+
+    pub fn move_active_cell_by(
+        &mut self,
+        row_count: usize,
+        column_count: usize,
+        row_delta: isize,
+        column_delta: isize,
+    ) -> Option<DataTableCellIndex> {
+        if row_count == 0 || column_count == 0 {
+            self.active_cell = None;
+            return None;
+        }
+
+        let base = self.active_cell.unwrap_or_else(|| {
+            DataTableCellIndex::new(self.selected_rows.first().copied().unwrap_or(0), 0)
+        });
+        self.set_active_cell_clamped(
+            row_count,
+            column_count,
+            DataTableCellIndex::new(
+                clamp_index_delta(base.row, row_delta, row_count),
+                clamp_index_delta(base.column, column_delta, column_count),
+            ),
+        )
+    }
 }
 
 /// Virtualization inputs for a data table body.
@@ -314,30 +440,58 @@ pub struct VirtualDataTableSpec {
 
 impl VirtualDataTableSpec {
     pub fn visible_rows(self) -> Range<usize> {
-        if self.row_count == 0 || self.row_height <= f32::EPSILON {
+        if self.row_count == 0
+            || !self.row_height.is_finite()
+            || self.row_height <= f32::EPSILON
+            || !self.viewport_height.is_finite()
+            || self.viewport_height <= f32::EPSILON
+        {
             return 0..0;
         }
-        let first = (self.scroll_offset.y.max(0.0) / self.row_height).floor() as usize;
+        let first = (self.clamped_scroll_offset(0.0).y / self.row_height).floor() as usize;
         let visible = (self.viewport_height.max(0.0) / self.row_height).ceil() as usize + 1;
         let start = first.saturating_sub(self.overscan_rows).min(self.row_count);
-        let end = (first + visible + self.overscan_rows).min(self.row_count);
+        let end = first
+            .saturating_add(visible)
+            .saturating_add(self.overscan_rows)
+            .min(self.row_count);
         start..end
     }
 
     pub fn total_height(self) -> f32 {
+        if !self.row_height.is_finite() {
+            return 0.0;
+        }
         self.row_count as f32 * self.row_height.max(0.0)
+    }
+
+    pub fn clamped_scroll_offset(self, content_width: f32) -> UiPoint {
+        let viewport_width = finite_nonnegative(self.viewport_width);
+        let viewport_height = finite_nonnegative(self.viewport_height);
+        let content_width = finite_nonnegative(content_width);
+        let total_height = finite_nonnegative(self.total_height());
+        let max_x = (content_width - viewport_width).max(0.0);
+        let max_y = (total_height - viewport_height).max(0.0);
+
+        UiPoint::new(
+            finite_nonnegative(self.scroll_offset.x).min(max_x),
+            finite_nonnegative(self.scroll_offset.y).min(max_y),
+        )
     }
 
     pub fn row_at_viewport_y(self, y: f32) -> Option<usize> {
         if self.row_count == 0
+            || !self.row_height.is_finite()
             || self.row_height <= f32::EPSILON
+            || !self.viewport_height.is_finite()
             || self.viewport_height <= f32::EPSILON
+            || !y.is_finite()
             || y < 0.0
             || y >= self.viewport_height
         {
             return None;
         }
-        let row = ((self.scroll_offset.y.max(0.0) + y) / self.row_height).floor() as usize;
+        let row = ((self.clamped_scroll_offset(0.0).y + y) / self.row_height).floor() as usize;
         (row < self.row_count).then_some(row)
     }
 }
@@ -352,8 +506,12 @@ pub struct DataTableOptions {
     pub row_visual: UiVisual,
     pub selected_row_visual: UiVisual,
     pub active_cell_visual: UiVisual,
+    pub selected_row_shader: Option<ShaderEffect>,
+    pub active_cell_shader: Option<ShaderEffect>,
     pub header_text_style: TextStyle,
     pub cell_text_style: TextStyle,
+    pub leading_image_size: f32,
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for DataTableOptions {
@@ -383,8 +541,12 @@ impl Default for DataTableOptions {
                 Some(StrokeStyle::new(ColorRgba::new(108, 180, 255, 255), 1.0)),
                 0.0,
             ),
+            selected_row_shader: None,
+            active_cell_shader: None,
             header_text_style: muted_text_style(),
             cell_text_style: TextStyle::default(),
+            leading_image_size: 16.0,
+            accessibility_label: None,
         }
     }
 }
@@ -401,6 +563,7 @@ pub fn virtualized_data_table(
 ) -> UiNodeId {
     let name = name.into();
     let table_width = data_table_width(columns).max(spec.viewport_width);
+    let scroll_offset = spec.clamped_scroll_offset(table_width);
     let root = document.add_child(
         parent,
         UiNode::container(
@@ -411,7 +574,20 @@ pub fn virtualized_data_table(
                 ..Default::default()
             },
         )
-        .with_visual(options.background_visual),
+        .with_visual(options.background_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Grid)
+                .label(accessibility_label_or_name(
+                    &options.accessibility_label,
+                    &name,
+                ))
+                .value(format!(
+                    "{} rows; {} columns",
+                    spec.row_count,
+                    columns.len()
+                ))
+                .focusable(),
+        ),
     );
 
     data_table_header(document, root, format!("{name}.header"), columns, &options);
@@ -438,7 +614,7 @@ pub fn virtualized_data_table(
     );
 
     if let Some(scroll) = &mut document.node_mut(body).scroll {
-        scroll.offset = UiPoint::new(spec.scroll_offset.x.max(0.0), spec.scroll_offset.y.max(0.0));
+        scroll.offset = scroll_offset;
     }
 
     let visible_rows = spec.visible_rows();
@@ -451,13 +627,13 @@ pub fn virtualized_data_table(
     }
 
     for row in visible_rows.clone() {
-        let visual = if options.selection.contains_row(row) {
+        let selected = options.selection.contains_row(row);
+        let visual = if selected {
             options.selected_row_visual
         } else {
             options.row_visual
         };
-        let row_node = document.add_child(
-            body,
+        let row_node = with_optional_shader(
             UiNode::container(
                 format!("{name}.row.{row}"),
                 UiNodeStyle {
@@ -476,11 +652,17 @@ pub fn virtualized_data_table(
                 },
             )
             .with_input(InputBehavior::BUTTON)
-            .with_visual(visual),
+            .with_visual(visual)
+            .with_accessibility(data_table_row_accessibility(row, spec.row_count, selected)),
+            selected
+                .then_some(())
+                .and(options.selected_row_shader.as_ref()),
         );
+        let row_node = document.add_child(body, row_node);
 
         for (column_index, column) in columns.iter().enumerate() {
             let cell_index = DataTableCellIndex::new(row, column_index);
+            let active = options.selection.is_active_cell(cell_index);
             let mut cell = UiNode::container(
                 format!("{name}.row.{row}.cell.{}", column.id),
                 UiNodeStyle {
@@ -500,10 +682,17 @@ pub fn virtualized_data_table(
                     ..Default::default()
                 },
             )
-            .with_input(InputBehavior::BUTTON);
+            .with_input(InputBehavior::BUTTON)
+            .with_accessibility(data_table_cell_accessibility(
+                cell_index,
+                spec.row_count,
+                columns,
+                active,
+            ));
 
-            if options.selection.is_active_cell(cell_index) {
+            if active {
                 cell = cell.with_visual(options.active_cell_visual);
+                cell = with_optional_shader(cell, options.active_cell_shader.as_ref());
             }
 
             let cell_node = document.add_child(row_node, cell);
@@ -545,11 +734,19 @@ pub fn data_table_cell_at_point(
     spec: VirtualDataTableSpec,
     point: UiPoint,
 ) -> Option<DataTableCellIndex> {
-    if spec.viewport_width <= f32::EPSILON || point.x < 0.0 || point.x >= spec.viewport_width {
+    if !spec.viewport_width.is_finite()
+        || spec.viewport_width <= f32::EPSILON
+        || !point.x.is_finite()
+        || point.x < 0.0
+        || point.x >= spec.viewport_width
+    {
         return None;
     }
     let row = spec.row_at_viewport_y(point.y)?;
-    let column = data_table_column_at_x(columns, spec.scroll_offset.x.max(0.0) + point.x)?;
+    let column = data_table_column_at_x(
+        columns,
+        spec.clamped_scroll_offset(data_table_width(columns)).x + point.x,
+    )?;
     Some(DataTableCellIndex::new(row, column))
 }
 
@@ -559,6 +756,7 @@ pub struct TreeItem {
     pub label: String,
     pub children: Vec<TreeItem>,
     pub disabled: bool,
+    pub leading_image: Option<ImageContent>,
 }
 
 impl TreeItem {
@@ -568,6 +766,7 @@ impl TreeItem {
             label: label.into(),
             children: Vec::new(),
             disabled: false,
+            leading_image: None,
         }
     }
 
@@ -580,6 +779,11 @@ impl TreeItem {
         self.disabled = true;
         self
     }
+
+    pub fn with_leading_image(mut self, image: ImageContent) -> Self {
+        self.leading_image = Some(image);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -587,6 +791,7 @@ pub struct TreeVisibleItem {
     pub index: usize,
     pub id: String,
     pub label: String,
+    pub leading_image: Option<ImageContent>,
     pub depth: usize,
     pub parent_id: Option<String>,
     pub child_count: usize,
@@ -653,6 +858,29 @@ impl TreeViewState {
             .into_iter()
             .find(|item| item.index == selected_index)
     }
+
+    pub fn select_next_visible(&mut self, roots: &[TreeItem]) -> Option<usize> {
+        let visible = self.visible_items(roots);
+        let current = self.selected_index;
+        let index = next_enabled_visible_index(&visible, current)?;
+        self.select(Some(index));
+        Some(index)
+    }
+
+    pub fn select_previous_visible(&mut self, roots: &[TreeItem]) -> Option<usize> {
+        let visible = self.visible_items(roots);
+        let current = self.selected_index;
+        let index = previous_enabled_visible_index(&visible, current)?;
+        self.select(Some(index));
+        Some(index)
+    }
+
+    pub fn toggle_selected_expansion(&mut self, roots: &[TreeItem]) -> Option<bool> {
+        let selected = self.selected_visible_item(roots)?;
+        selected
+            .has_children()
+            .then(|| self.toggle_expanded(selected.id))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -661,11 +889,16 @@ pub struct TreeViewOptions {
     pub row_height: f32,
     pub indent_width: f32,
     pub disclosure_width: f32,
+    pub focused_index: Option<usize>,
     pub background_visual: UiVisual,
     pub row_visual: UiVisual,
     pub selected_row_visual: UiVisual,
+    pub selected_row_shader: Option<ShaderEffect>,
+    pub focused_row_shader: Option<ShaderEffect>,
     pub text_style: TextStyle,
     pub muted_text_style: TextStyle,
+    pub leading_image_size: f32,
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for TreeViewOptions {
@@ -683,6 +916,7 @@ impl Default for TreeViewOptions {
             row_height: 26.0,
             indent_width: 16.0,
             disclosure_width: 18.0,
+            focused_index: None,
             background_visual: UiVisual::panel(
                 ColorRgba::new(18, 22, 28, 255),
                 Some(StrokeStyle::new(ColorRgba::new(58, 69, 84, 255), 1.0)),
@@ -690,8 +924,12 @@ impl Default for TreeViewOptions {
             ),
             row_visual: UiVisual::TRANSPARENT,
             selected_row_visual: UiVisual::panel(ColorRgba::new(41, 59, 82, 255), None, 0.0),
+            selected_row_shader: None,
+            focused_row_shader: None,
             text_style: TextStyle::default(),
             muted_text_style: muted_text_style(),
+            leading_image_size: 16.0,
+            accessibility_label: None,
         }
     }
 }
@@ -716,17 +954,32 @@ pub fn tree_view(
                 ..Default::default()
             },
         )
-        .with_visual(options.background_visual),
+        .with_visual(options.background_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Tree)
+                .label(accessibility_label_or_name(
+                    &options.accessibility_label,
+                    &name,
+                ))
+                .value(format!(
+                    "{} visible items",
+                    state.visible_items(roots).len()
+                ))
+                .focusable(),
+        ),
     );
 
-    for item in state.visible_items(roots) {
-        let visual = if state.selected_index == Some(item.index) {
+    let visible_items = state.visible_items(roots);
+    let visible_count = visible_items.len();
+    for item in visible_items {
+        let selected = state.selected_index == Some(item.index);
+        let focused = options.focused_index == Some(item.index);
+        let visual = if selected {
             options.selected_row_visual
         } else {
             options.row_visual
         };
-        let row = document.add_child(
-            root,
+        let row = with_optional_shader(
             UiNode::container(
                 format!("{name}.row.{}", item.id),
                 UiNodeStyle {
@@ -749,8 +1002,22 @@ pub fn tree_view(
             } else {
                 InputBehavior::BUTTON
             })
-            .with_visual(visual),
+            .with_visual(visual)
+            .with_accessibility(tree_item_accessibility(
+                &item,
+                visible_count,
+                selected,
+                focused,
+            )),
+            if selected {
+                options.selected_row_shader.as_ref()
+            } else if focused {
+                options.focused_row_shader.as_ref()
+            } else {
+                None
+            },
         );
+        let row = document.add_child(root, row);
 
         if item.depth > 0 {
             document.add_child(
@@ -797,6 +1064,18 @@ pub fn tree_view(
             ),
         );
 
+        if let Some(image) = item.leading_image.clone() {
+            document.add_child(
+                row,
+                leading_image_node(
+                    format!("{name}.row.{}.image", item.id),
+                    image,
+                    options.leading_image_size,
+                    Some(item.label.clone()),
+                ),
+            );
+        }
+
         let style = if item.disabled {
             options.muted_text_style.clone()
         } else {
@@ -841,6 +1120,7 @@ pub struct TabItem {
     pub disabled: bool,
     pub closable: bool,
     pub dirty: bool,
+    pub leading_image: Option<ImageContent>,
 }
 
 impl TabItem {
@@ -851,6 +1131,7 @@ impl TabItem {
             disabled: false,
             closable: false,
             dirty: false,
+            leading_image: None,
         }
     }
 
@@ -868,17 +1149,24 @@ impl TabItem {
         self.dirty = true;
         self
     }
+
+    pub fn with_leading_image(mut self, image: ImageContent) -> Self {
+        self.leading_image = Some(image);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TabGroupState {
     pub selected_index: Option<usize>,
+    pub focused_index: Option<usize>,
 }
 
 impl TabGroupState {
     pub const fn selected(selected_index: usize) -> Self {
         Self {
             selected_index: Some(selected_index),
+            focused_index: Some(selected_index),
         }
     }
 
@@ -895,42 +1183,52 @@ impl TabGroupState {
         Some(self.selected_tab(tabs)?.id.as_str())
     }
 
+    pub fn clamped_focused_index(self, tabs: &[TabItem]) -> Option<usize> {
+        let focused = self.focused_index?;
+        (focused < tabs.len()).then_some(focused)
+    }
+
+    pub fn focus_next(&mut self, tabs: &[TabItem]) -> Option<usize> {
+        let index = next_enabled_tab_index(tabs, self.focused_index.or(self.selected_index))?;
+        self.focused_index = Some(index);
+        Some(index)
+    }
+
+    pub fn focus_previous(&mut self, tabs: &[TabItem]) -> Option<usize> {
+        let index = previous_enabled_tab_index(tabs, self.focused_index.or(self.selected_index))?;
+        self.focused_index = Some(index);
+        Some(index)
+    }
+
+    pub fn select_focused(&mut self, tabs: &[TabItem]) -> Option<usize> {
+        let focused = self.clamped_focused_index(tabs)?;
+        if tabs[focused].disabled {
+            return None;
+        }
+        self.selected_index = Some(focused);
+        Some(focused)
+    }
+
     pub fn select_next(&mut self, tabs: &[TabItem]) -> Option<usize> {
         if tabs.is_empty() {
             self.selected_index = None;
+            self.focused_index = None;
             return None;
         }
-        let start = self
-            .selected_index
-            .map(|index| (index.min(tabs.len() - 1) + 1) % tabs.len())
-            .unwrap_or(0);
-        for offset in 0..tabs.len() {
-            let index = (start + offset) % tabs.len();
-            if !tabs[index].disabled {
-                self.selected_index = Some(index);
-                return Some(index);
-            }
-        }
-        None
+        let index = self.focus_next(tabs)?;
+        self.selected_index = Some(index);
+        Some(index)
     }
 
     pub fn select_previous(&mut self, tabs: &[TabItem]) -> Option<usize> {
         if tabs.is_empty() {
             self.selected_index = None;
+            self.focused_index = None;
             return None;
         }
-        let start = self
-            .selected_index
-            .map(|index| (index.min(tabs.len() - 1) + tabs.len() - 1) % tabs.len())
-            .unwrap_or(tabs.len() - 1);
-        for offset in 0..tabs.len() {
-            let index = (start + tabs.len() - offset) % tabs.len();
-            if !tabs[index].disabled {
-                self.selected_index = Some(index);
-                return Some(index);
-            }
-        }
-        None
+        let index = self.focus_previous(tabs)?;
+        self.selected_index = Some(index);
+        Some(index)
     }
 }
 
@@ -943,8 +1241,13 @@ pub struct TabGroupOptions {
     pub tab_visual: UiVisual,
     pub selected_tab_visual: UiVisual,
     pub panel_visual: UiVisual,
+    pub selected_tab_shader: Option<ShaderEffect>,
+    pub focused_tab_shader: Option<ShaderEffect>,
+    pub panel_shader: Option<ShaderEffect>,
     pub text_style: TextStyle,
     pub muted_text_style: TextStyle,
+    pub leading_image_size: f32,
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for TabGroupOptions {
@@ -969,8 +1272,13 @@ impl Default for TabGroupOptions {
             tab_visual: UiVisual::panel(ColorRgba::new(28, 34, 43, 255), None, 0.0),
             selected_tab_visual: UiVisual::panel(ColorRgba::new(43, 52, 65, 255), None, 0.0),
             panel_visual: UiVisual::TRANSPARENT,
+            selected_tab_shader: None,
+            focused_tab_shader: None,
+            panel_shader: None,
             text_style: TextStyle::default(),
             muted_text_style: muted_text_style(),
+            leading_image_size: 16.0,
+            accessibility_label: None,
         }
     }
 }
@@ -1017,19 +1325,29 @@ pub fn tab_group(
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::TabList)
+                .label(accessibility_label_or_name(
+                    &options.accessibility_label,
+                    &name,
+                ))
+                .value(format!("{} tabs", tabs.len()))
+                .focusable(),
         ),
     );
 
     let selected_index = state.clamped_selected_index(tabs);
+    let focused_index = state.clamped_focused_index(tabs);
     for (index, tab) in tabs.iter().enumerate() {
         let selected = selected_index == Some(index);
+        let focused = focused_index == Some(index);
         let style = if tab.disabled {
             options.muted_text_style.clone()
         } else {
             options.text_style.clone()
         };
-        let tab_node = document.add_child(
-            strip,
+        let tab_node = with_optional_shader(
             UiNode::container(
                 format!("{name}.tab.{}", tab.id),
                 UiNodeStyle {
@@ -1059,14 +1377,40 @@ pub fn tab_group(
                 options.selected_tab_visual
             } else {
                 options.tab_visual
-            }),
+            })
+            .with_accessibility(tab_accessibility(
+                tab,
+                index,
+                tabs.len(),
+                selected,
+                focused,
+            )),
+            if selected {
+                options.selected_tab_shader.as_ref()
+            } else if focused {
+                options.focused_tab_shader.as_ref()
+            } else {
+                None
+            },
         );
+        let tab_node = document.add_child(strip, tab_node);
 
         let label = if tab.dirty {
             format!("{} *", tab.label)
         } else {
             tab.label.clone()
         };
+        if let Some(image) = tab.leading_image.clone() {
+            document.add_child(
+                tab_node,
+                leading_image_node(
+                    format!("{name}.tab.{}.image", tab.id),
+                    image,
+                    options.leading_image_size,
+                    Some(tab.label.clone()),
+                ),
+            );
+        }
         document.add_child(
             tab_node,
             UiNode::text(
@@ -1099,13 +1443,17 @@ pub fn tab_group(
                         ..Default::default()
                     },
                 )
-                .with_input(InputBehavior::BUTTON),
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label(format!("Close {}", tab.label))
+                        .focusable(),
+                ),
             );
         }
     }
 
-    let panel = document.add_child(
-        root,
+    let panel = with_optional_shader(
         UiNode::container(
             format!("{name}.panel"),
             UiNodeStyle {
@@ -1121,8 +1469,11 @@ pub fn tab_group(
                 ..Default::default()
             },
         )
-        .with_visual(options.panel_visual),
+        .with_visual(options.panel_visual)
+        .with_accessibility(tab_panel_accessibility(tabs, selected_index, &name)),
+        options.panel_shader.as_ref(),
     );
+    let panel = document.add_child(root, panel);
 
     if let Some(index) = selected_index {
         build_panel(document, panel, index);
@@ -1157,26 +1508,66 @@ fn data_table_header(
                 ..Default::default()
             },
         )
-        .with_visual(options.header_visual),
+        .with_visual(options.header_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::ListItem)
+                .label("Column headers")
+                .value(format!("{} columns", columns.len())),
+        ),
     );
 
-    for column in columns {
-        document.add_child(
+    for (column_index, column) in columns.iter().enumerate() {
+        let cell = document.add_child(
             header,
-            UiNode::text(
+            UiNode::container(
                 format!("{name}.{}", column.id),
+                UiNodeStyle {
+                    layout: Style {
+                        display: Display::Flex,
+                        flex_direction: FlexDirection::Row,
+                        align_items: Some(AlignItems::Center),
+                        justify_content: Some(justify_content(column.alignment)),
+                        size: TaffySize {
+                            width: px(column.resolved_width()),
+                            height: Dimension::percent(1.0),
+                        },
+                        padding: taffy::prelude::Rect::length(6.0),
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    },
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_accessibility(data_table_header_accessibility(
+                column,
+                column_index,
+                columns.len(),
+            )),
+        );
+        if let Some(image) = column.leading_image.clone() {
+            document.add_child(
+                cell,
+                leading_image_node(
+                    format!("{name}.{}.image", column.id),
+                    image,
+                    options.leading_image_size,
+                    Some(column.label.clone()),
+                ),
+            );
+        }
+        document.add_child(
+            cell,
+            UiNode::text(
+                format!("{name}.{}.label", column.id),
                 &column.label,
                 options.header_text_style.clone(),
                 Style {
-                    display: Display::Flex,
-                    align_items: Some(AlignItems::Center),
-                    justify_content: Some(justify_content(column.alignment)),
+                    flex_grow: 1.0,
                     size: TaffySize {
-                        width: px(column.resolved_width()),
-                        height: Dimension::percent(1.0),
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
                     },
-                    padding: taffy::prelude::Rect::length(6.0),
-                    flex_shrink: 0.0,
                     ..Default::default()
                 },
             ),
@@ -1218,6 +1609,7 @@ fn flatten_tree_items(
             index,
             id: item.id.clone(),
             label: item.label.clone(),
+            leading_image: item.leading_image.clone(),
             depth,
             parent_id: parent_id.map(str::to_owned),
             child_count: item.children.len(),
@@ -1235,6 +1627,328 @@ fn justify_content(alignment: DataCellAlignment) -> JustifyContent {
         DataCellAlignment::Start => JustifyContent::FlexStart,
         DataCellAlignment::Center => JustifyContent::Center,
         DataCellAlignment::End => JustifyContent::FlexEnd,
+    }
+}
+
+fn property_row_accessibility(
+    row: &PropertyGridRow,
+    index: usize,
+    total_rows: usize,
+    selected: bool,
+    focused: bool,
+) -> AccessibilityMeta {
+    let mut value = vec![
+        format!("row {} of {}", index + 1, total_rows),
+        property_value_kind_label(row.value_kind).to_owned(),
+        if row.editable {
+            "editable"
+        } else {
+            "read only"
+        }
+        .to_owned(),
+    ];
+    push_state(&mut value, "selected", selected);
+    push_state(&mut value, "focused", focused);
+    push_state(&mut value, "disabled", row.disabled);
+
+    apply_enabled(
+        AccessibilityMeta::new(AccessibilityRole::ListItem)
+            .label(row.label.clone())
+            .value(value.join("; "))
+            .focusable(),
+        !row.disabled,
+    )
+}
+
+fn property_value_accessibility(
+    row: &PropertyGridRow,
+    selected: bool,
+    focused: bool,
+) -> AccessibilityMeta {
+    let mut value = vec![
+        row.value.clone(),
+        property_value_kind_label(row.value_kind).to_owned(),
+    ];
+    push_state(&mut value, "selected row", selected);
+    push_state(&mut value, "focused row", focused);
+    push_state(&mut value, "read only", !row.editable);
+    push_state(&mut value, "disabled", row.disabled);
+
+    let mut meta = AccessibilityMeta::new(AccessibilityRole::GridCell)
+        .label(format!("{} value", row.label))
+        .value(value.join("; "));
+    if row.editable && !row.disabled {
+        meta = meta.focusable();
+    }
+    apply_enabled(meta, !row.disabled)
+}
+
+fn data_table_header_accessibility(
+    column: &DataTableColumn,
+    column_index: usize,
+    column_count: usize,
+) -> AccessibilityMeta {
+    AccessibilityMeta::new(AccessibilityRole::Label)
+        .label(column.label.clone())
+        .value(format!(
+            "column {} of {}; {}",
+            column_index + 1,
+            column_count,
+            if column.resizable {
+                "resizable"
+            } else {
+                "fixed"
+            }
+        ))
+}
+
+fn data_table_row_accessibility(row: usize, row_count: usize, selected: bool) -> AccessibilityMeta {
+    let mut value = vec![format!("row {} of {}", row + 1, row_count)];
+    push_state(&mut value, "selected", selected);
+    AccessibilityMeta::new(AccessibilityRole::ListItem)
+        .label(format!("Row {}", row + 1))
+        .value(value.join("; "))
+        .focusable()
+}
+
+fn data_table_cell_accessibility(
+    cell: DataTableCellIndex,
+    row_count: usize,
+    columns: &[DataTableColumn],
+    active: bool,
+) -> AccessibilityMeta {
+    let column_label = columns
+        .get(cell.column)
+        .map(|column| column.label.as_str())
+        .unwrap_or("Column");
+    let mut value = vec![
+        format!("row {} of {}", cell.row + 1, row_count),
+        format!("column {} of {}", cell.column + 1, columns.len()),
+    ];
+    push_state(&mut value, "active", active);
+
+    AccessibilityMeta::new(AccessibilityRole::GridCell)
+        .label(format!("Row {}, {}", cell.row + 1, column_label))
+        .value(value.join("; "))
+        .focusable()
+}
+
+fn tree_item_accessibility(
+    item: &TreeVisibleItem,
+    visible_count: usize,
+    selected: bool,
+    focused: bool,
+) -> AccessibilityMeta {
+    let mut value = vec![
+        format!("item {} of {}", item.index + 1, visible_count),
+        format!("level {}", item.depth + 1),
+        if item.has_children() {
+            format!(
+                "{}; {} children",
+                if item.expanded {
+                    "expanded"
+                } else {
+                    "collapsed"
+                },
+                item.child_count
+            )
+        } else {
+            "leaf".to_owned()
+        },
+    ];
+    push_state(&mut value, "selected", selected);
+    push_state(&mut value, "focused", focused);
+    push_state(&mut value, "disabled", item.disabled);
+
+    apply_enabled(
+        AccessibilityMeta::new(AccessibilityRole::TreeItem)
+            .label(item.label.clone())
+            .value(value.join("; "))
+            .focusable(),
+        !item.disabled,
+    )
+}
+
+fn tab_accessibility(
+    tab: &TabItem,
+    index: usize,
+    tab_count: usize,
+    selected: bool,
+    focused: bool,
+) -> AccessibilityMeta {
+    let mut value = vec![format!("tab {} of {}", index + 1, tab_count)];
+    push_state(&mut value, "selected", selected);
+    push_state(&mut value, "focused", focused);
+    push_state(&mut value, "dirty", tab.dirty);
+    push_state(&mut value, "closable", tab.closable);
+    push_state(&mut value, "disabled", tab.disabled);
+
+    apply_enabled(
+        AccessibilityMeta::new(AccessibilityRole::Tab)
+            .label(tab.label.clone())
+            .value(value.join("; "))
+            .focusable(),
+        !tab.disabled,
+    )
+}
+
+fn tab_panel_accessibility(
+    tabs: &[TabItem],
+    selected_index: Option<usize>,
+    group_name: &str,
+) -> AccessibilityMeta {
+    let selected = selected_index.and_then(|index| tabs.get(index));
+    let label = selected
+        .map(|tab| format!("{} panel", tab.label))
+        .unwrap_or_else(|| format!("{group_name} panel"));
+    let value = selected
+        .map(|tab| format!("selected tab {}", tab.id))
+        .unwrap_or_else(|| "no selected tab".to_owned());
+    AccessibilityMeta::new(AccessibilityRole::TabPanel)
+        .label(label)
+        .value(value)
+}
+
+fn leading_image_node(
+    name: impl Into<String>,
+    image: ImageContent,
+    size: f32,
+    label: Option<String>,
+) -> UiNode {
+    let node = UiNode::image(
+        name,
+        image,
+        Style {
+            size: TaffySize {
+                width: px(size),
+                height: px(size),
+            },
+            margin: taffy::prelude::Rect {
+                right: LengthPercentageAuto::length(6.0),
+                ..taffy::prelude::Rect::length(0.0)
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        },
+    );
+    if let Some(label) = label {
+        node.with_accessibility(AccessibilityMeta::new(AccessibilityRole::Image).label(label))
+    } else {
+        node
+    }
+}
+
+fn with_optional_shader(mut node: UiNode, shader: Option<&ShaderEffect>) -> UiNode {
+    if let Some(shader) = shader {
+        node = node.with_shader(shader.clone());
+    }
+    node
+}
+
+fn accessibility_label_or_name(label: &Option<String>, name: &str) -> String {
+    label.clone().unwrap_or_else(|| name.to_owned())
+}
+
+fn property_value_kind_label(kind: PropertyValueKind) -> &'static str {
+    match kind {
+        PropertyValueKind::Text => "text",
+        PropertyValueKind::Number => "number",
+        PropertyValueKind::Boolean => "boolean",
+        PropertyValueKind::Choice => "choice",
+        PropertyValueKind::Color => "color",
+        PropertyValueKind::Custom => "custom",
+    }
+}
+
+fn apply_enabled(meta: AccessibilityMeta, enabled: bool) -> AccessibilityMeta {
+    if enabled {
+        meta
+    } else {
+        meta.disabled()
+    }
+}
+
+fn push_state(values: &mut Vec<String>, label: &str, active: bool) {
+    if active {
+        values.push(label.to_owned());
+    }
+}
+
+fn next_enabled_visible_index(
+    visible: &[TreeVisibleItem],
+    current: Option<usize>,
+) -> Option<usize> {
+    let start = current.and_then(|index| index.checked_add(1)).unwrap_or(0);
+    visible
+        .iter()
+        .find(|item| item.index >= start && !item.disabled)
+        .or_else(|| visible.iter().rev().find(|item| !item.disabled))
+        .map(|item| item.index)
+}
+
+fn previous_enabled_visible_index(
+    visible: &[TreeVisibleItem],
+    current: Option<usize>,
+) -> Option<usize> {
+    match current {
+        Some(current) => visible
+            .iter()
+            .rev()
+            .find(|item| item.index < current && !item.disabled)
+            .or_else(|| visible.iter().find(|item| !item.disabled))
+            .map(|item| item.index),
+        None => visible
+            .iter()
+            .rev()
+            .find(|item| !item.disabled)
+            .map(|item| item.index),
+    }
+}
+
+fn next_enabled_tab_index(tabs: &[TabItem], current: Option<usize>) -> Option<usize> {
+    if tabs.is_empty() {
+        return None;
+    }
+    let start = current
+        .map(|index| (index.min(tabs.len() - 1) + 1) % tabs.len())
+        .unwrap_or(0);
+    for offset in 0..tabs.len() {
+        let index = (start + offset) % tabs.len();
+        if !tabs[index].disabled {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn previous_enabled_tab_index(tabs: &[TabItem], current: Option<usize>) -> Option<usize> {
+    if tabs.is_empty() {
+        return None;
+    }
+    let start = current
+        .map(|index| (index.min(tabs.len() - 1) + tabs.len() - 1) % tabs.len())
+        .unwrap_or(tabs.len() - 1);
+    for offset in 0..tabs.len() {
+        let index = (start + tabs.len() - offset) % tabs.len();
+        if !tabs[index].disabled {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn clamp_index_delta(index: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    ((index as i128) + (delta as i128)).clamp(0, (len - 1) as i128) as usize
+}
+
+fn finite_nonnegative(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -1261,6 +1975,14 @@ mod tests {
         UiDocument::new(crate::root_style(640.0, 480.0))
     }
 
+    fn node_named(doc: &UiDocument, name: &str) -> UiNodeId {
+        doc.nodes()
+            .iter()
+            .position(|node| node.name == name)
+            .map(UiNodeId)
+            .unwrap_or_else(|| panic!("missing node {name}"))
+    }
+
     #[test]
     fn property_inspector_grid_builds_selectable_rows() {
         let mut doc = test_root();
@@ -1285,6 +2007,58 @@ mod tests {
         assert!(!first_value.input.pointer);
         let selected_row = doc.node(doc.node(grid).children[1]);
         assert_eq!(selected_row.visual.fill, ColorRgba::new(43, 62, 86, 255));
+    }
+
+    #[test]
+    fn property_inspector_grid_exports_accessibility_images_and_shader_state() {
+        let mut doc = test_root();
+        let rows = vec![
+            PropertyGridRow::new("name", "Name", "Lead")
+                .with_leading_image(ImageContent::new("icons.text")),
+            PropertyGridRow::new("locked", "Locked", "Yes").disabled(),
+        ];
+        let root = doc.root;
+        let grid = property_inspector_grid(
+            &mut doc,
+            root,
+            "props",
+            &rows,
+            PropertyInspectorOptions {
+                selected_index: Some(0),
+                focused_index: Some(0),
+                selected_row_shader: Some(ShaderEffect::new("ui.selected")),
+                accessibility_label: Some("Inspector".to_owned()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            doc.node(grid).accessibility.as_ref().unwrap().role,
+            AccessibilityRole::Grid
+        );
+        assert_eq!(
+            doc.node(grid)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("Inspector")
+        );
+
+        let selected_row = doc.node(node_named(&doc, "props.row.name"));
+        assert_eq!(selected_row.shader.as_ref().unwrap().key, "ui.selected");
+        let row_meta = selected_row.accessibility.as_ref().unwrap();
+        assert_eq!(row_meta.role, AccessibilityRole::ListItem);
+        assert!(row_meta.value.as_deref().unwrap().contains("selected"));
+        assert!(row_meta.value.as_deref().unwrap().contains("focused"));
+
+        let image = doc.node(node_named(&doc, "props.row.name.image"));
+        assert!(matches!(&image.content, UiContent::Image(image) if image.key == "icons.text"));
+
+        let disabled_row = doc.node(node_named(&doc, "props.row.locked"));
+        assert!(!disabled_row.input.pointer);
+        assert!(!disabled_row.accessibility.as_ref().unwrap().enabled);
     }
 
     #[test]
@@ -1319,11 +2093,60 @@ mod tests {
     }
 
     #[test]
+    fn virtualized_data_table_clamps_edge_offsets_and_keyboard_moves() {
+        let columns = vec![
+            DataTableColumn::new("name", "Name", 100.0),
+            DataTableColumn::new("value", "Value", 100.0),
+        ];
+        let spec = VirtualDataTableSpec {
+            row_count: 10,
+            row_height: 10.0,
+            viewport_width: 50.0,
+            viewport_height: 30.0,
+            scroll_offset: UiPoint::new(999.0, 999.0),
+            overscan_rows: 0,
+        };
+
+        assert_eq!(
+            spec.clamped_scroll_offset(data_table_width(&columns)),
+            UiPoint::new(150.0, 70.0)
+        );
+        assert_eq!(spec.visible_rows(), 7..10);
+        assert_eq!(spec.row_at_viewport_y(0.0), Some(7));
+        assert_eq!(spec.row_at_viewport_y(29.0), Some(9));
+        assert_eq!(
+            data_table_cell_at_point(&columns, spec, UiPoint::new(10.0, 0.0)),
+            Some(DataTableCellIndex::new(7, 1))
+        );
+        assert_eq!(
+            VirtualDataTableSpec {
+                viewport_height: 0.0,
+                ..spec
+            }
+            .visible_rows(),
+            0..0
+        );
+
+        let mut selection = DataTableSelection::default();
+        assert_eq!(
+            selection.set_active_cell_clamped(10, 2, DataTableCellIndex::new(100, 10)),
+            Some(DataTableCellIndex::new(9, 1))
+        );
+        assert_eq!(
+            selection.move_active_cell_by(10, 2, -20, -20),
+            Some(DataTableCellIndex::new(0, 0))
+        );
+        assert_eq!(selection.selected_rows, vec![0]);
+        assert_eq!(selection.move_active_cell_by(0, 2, 1, 0), None);
+    }
+
+    #[test]
     fn virtualized_data_table_builds_header_visible_rows_and_spacers() {
         let mut doc = test_root();
         let root = doc.root;
         let columns = vec![
-            DataTableColumn::new("name", "Name", 120.0),
+            DataTableColumn::new("name", "Name", 120.0)
+                .with_leading_image(ImageContent::new("icons.name")),
             DataTableColumn::new("value", "Value", 80.0),
         ];
         let spec = VirtualDataTableSpec {
@@ -1344,6 +2167,8 @@ mod tests {
             DataTableOptions {
                 selection: DataTableSelection::single_row(10)
                     .with_active_cell(DataTableCellIndex::new(10, 1)),
+                selected_row_shader: Some(ShaderEffect::new("ui.row_selected")),
+                active_cell_shader: Some(ShaderEffect::new("ui.cell_active")),
                 ..Default::default()
             },
             |document, parent, cell| {
@@ -1371,6 +2196,32 @@ mod tests {
         assert_eq!(doc.node(header).children.len(), 2);
         assert_eq!(doc.node(body).children.len(), 8);
         assert_eq!(built_cells.len(), 12);
+        assert!(matches!(
+            &doc.node(node_named(&doc, "table.header.name.image")).content,
+            UiContent::Image(image) if image.key == "icons.name"
+        ));
+        assert_eq!(
+            doc.node(node_named(&doc, "table.row.10"))
+                .shader
+                .as_ref()
+                .unwrap()
+                .key,
+            "ui.row_selected"
+        );
+        let active_cell = doc.node(node_named(&doc, "table.row.10.cell.value"));
+        assert_eq!(active_cell.shader.as_ref().unwrap().key, "ui.cell_active");
+        assert_eq!(
+            active_cell.accessibility.as_ref().unwrap().role,
+            AccessibilityRole::GridCell
+        );
+        assert!(active_cell
+            .accessibility
+            .as_ref()
+            .unwrap()
+            .value
+            .as_deref()
+            .unwrap()
+            .contains("active"));
 
         doc.compute_layout(UiSize::new(640.0, 480.0), &mut ApproxTextMeasurer)
             .expect("layout");
@@ -1404,12 +2255,35 @@ mod tests {
     }
 
     #[test]
+    fn tree_view_state_navigates_enabled_visible_items() {
+        let roots = vec![TreeItem::new("project", "Project").with_children(vec![
+            TreeItem::new("src", "src").disabled(),
+            TreeItem::new("readme", "README.md"),
+        ])];
+        let mut state = TreeViewState::expanded(["project"]);
+        state.select(Some(0));
+
+        assert_eq!(state.select_next_visible(&roots), Some(2));
+        assert_eq!(state.selected_visible_item(&roots).unwrap().id, "readme");
+        assert_eq!(state.select_previous_visible(&roots), Some(0));
+        assert_eq!(state.toggle_selected_expansion(&roots), Some(false));
+        assert_eq!(
+            state
+                .visible_items(&roots)
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["project"]
+        );
+    }
+
+    #[test]
     fn tree_view_builds_rows_with_disclosure_and_selection() {
         let mut doc = test_root();
         let root = doc.root;
-        let roots =
-            vec![TreeItem::new("project", "Project")
-                .with_children(vec![TreeItem::new("src", "src")])];
+        let roots = vec![TreeItem::new("project", "Project")
+            .with_leading_image(ImageContent::new("icons.folder"))
+            .with_children(vec![TreeItem::new("src", "src")])];
         let mut state = TreeViewState::expanded(["project"]);
         state.select(Some(0));
 
@@ -1419,7 +2293,10 @@ mod tests {
             "tree",
             &roots,
             &state,
-            TreeViewOptions::default(),
+            TreeViewOptions {
+                selected_row_shader: Some(ShaderEffect::new("ui.tree_selected")),
+                ..Default::default()
+            },
         );
 
         assert_eq!(doc.node(tree).children.len(), 2);
@@ -1428,6 +2305,31 @@ mod tests {
             doc.node(first_row).visual.fill,
             ColorRgba::new(41, 59, 82, 255)
         );
+        assert_eq!(
+            doc.node(first_row).shader.as_ref().unwrap().key,
+            "ui.tree_selected"
+        );
+        assert_eq!(
+            doc.node(tree).accessibility.as_ref().unwrap().role,
+            AccessibilityRole::Tree
+        );
+        assert_eq!(
+            doc.node(first_row).accessibility.as_ref().unwrap().role,
+            AccessibilityRole::TreeItem
+        );
+        assert!(doc
+            .node(first_row)
+            .accessibility
+            .as_ref()
+            .unwrap()
+            .value
+            .as_deref()
+            .unwrap()
+            .contains("expanded"));
+        assert!(matches!(
+            &doc.node(node_named(&doc, "tree.row.project.image")).content,
+            UiContent::Image(image) if image.key == "icons.folder"
+        ));
         let disclosure = doc.node(doc.node(first_row).children[0]);
         assert!(matches!(&disclosure.content, UiContent::Text(text) if text.text == "v"));
     }
@@ -1449,6 +2351,12 @@ mod tests {
         assert_eq!(unselected.select_next(&tabs), Some(0));
         let mut unselected = TabGroupState::default();
         assert_eq!(unselected.select_previous(&tabs), Some(2));
+
+        let mut focus_only = TabGroupState::selected(0);
+        assert_eq!(focus_only.focus_next(&tabs), Some(2));
+        assert_eq!(focus_only.selected_tab_id(&tabs), Some("one"));
+        assert_eq!(focus_only.select_focused(&tabs), Some(2));
+        assert_eq!(focus_only.selected_tab_id(&tabs), Some("three"));
     }
 
     #[test]
@@ -1456,7 +2364,9 @@ mod tests {
         let mut doc = test_root();
         let root = doc.root;
         let tabs = vec![
-            TabItem::new("inspect", "Inspect").closable(),
+            TabItem::new("inspect", "Inspect")
+                .with_leading_image(ImageContent::new("icons.inspect"))
+                .closable(),
             TabItem::new("history", "History").dirty(),
         ];
         let group = tab_group(
@@ -1464,7 +2374,10 @@ mod tests {
             root,
             "tabs",
             &tabs,
-            TabGroupState::selected(1),
+            TabGroupState {
+                selected_index: Some(1),
+                focused_index: Some(0),
+            },
             TabGroupOptions {
                 layout: Style {
                     size: TaffySize {
@@ -1473,6 +2386,9 @@ mod tests {
                     },
                     ..TabGroupOptions::default().layout
                 },
+                selected_tab_shader: Some(ShaderEffect::new("ui.tab_selected")),
+                focused_tab_shader: Some(ShaderEffect::new("ui.tab_focused")),
+                panel_shader: Some(ShaderEffect::new("ui.panel")),
                 ..Default::default()
             },
             |document, panel, selected_index| {
@@ -1503,5 +2419,27 @@ mod tests {
             doc.node(selected_tab).visual.fill,
             ColorRgba::new(43, 52, 65, 255)
         );
+        assert_eq!(
+            doc.node(selected_tab).shader.as_ref().unwrap().key,
+            "ui.tab_selected"
+        );
+        let focused_tab = doc.node(strip).children[0];
+        assert_eq!(
+            doc.node(focused_tab).shader.as_ref().unwrap().key,
+            "ui.tab_focused"
+        );
+        assert_eq!(
+            doc.node(strip).accessibility.as_ref().unwrap().role,
+            AccessibilityRole::TabList
+        );
+        assert_eq!(
+            doc.node(panel).accessibility.as_ref().unwrap().role,
+            AccessibilityRole::TabPanel
+        );
+        assert_eq!(doc.node(panel).shader.as_ref().unwrap().key, "ui.panel");
+        assert!(matches!(
+            &doc.node(node_named(&doc, "tabs.tab.inspect.image")).content,
+            UiContent::Image(image) if image.key == "icons.inspect"
+        ));
     }
 }

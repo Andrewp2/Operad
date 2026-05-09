@@ -6,13 +6,90 @@ use taffy::prelude::{
 };
 
 use crate::{
-    length, ClipBehavior, ColorRgba, InputBehavior, ScenePrimitive, StrokeStyle, TextStyle,
-    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    length, AccessibilityMeta, AccessibilityRole, AnimatedValues, AnimationMachine, AnimationState,
+    AnimationTransition, AnimationTrigger, ClipBehavior, ColorRgba, ImageContent, InputBehavior,
+    ScenePrimitive, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiNode, UiNodeId,
+    UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 const DEFAULT_SURFACE_BG: ColorRgba = ColorRgba::new(24, 29, 36, 255);
 const DEFAULT_SURFACE_STROKE: ColorRgba = ColorRgba::new(70, 82, 101, 255);
 const DEFAULT_ACCENT: ColorRgba = ColorRgba::new(108, 180, 255, 255);
+
+pub const SURFACE_OPEN_TRIGGER: &str = "surface.open";
+pub const SURFACE_CLOSE_TRIGGER: &str = "surface.close";
+pub const TOAST_ENTER_TRIGGER: &str = "toast.enter";
+pub const TOAST_EXIT_TRIGGER: &str = "toast.exit";
+
+pub fn surface_open_close_animation(initially_open: bool) -> AnimationMachine {
+    AnimationMachine::new(
+        vec![
+            AnimationState::new(
+                "closed",
+                AnimatedValues::new(0.0, UiPoint::new(0.0, 12.0), 0.98),
+            ),
+            AnimationState::new(
+                "open",
+                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+            ),
+        ],
+        vec![
+            AnimationTransition::new(
+                "closed",
+                "open",
+                surface_animation_trigger(SURFACE_OPEN_TRIGGER),
+                0.16,
+            ),
+            AnimationTransition::new(
+                "open",
+                "closed",
+                surface_animation_trigger(SURFACE_CLOSE_TRIGGER),
+                0.12,
+            ),
+        ],
+        if initially_open { "open" } else { "closed" },
+    )
+    .expect("surface open/close animation preset should be internally valid")
+}
+
+pub fn toast_enter_exit_animation(initially_visible: bool) -> AnimationMachine {
+    AnimationMachine::new(
+        vec![
+            AnimationState::new(
+                "hidden",
+                AnimatedValues::new(0.0, UiPoint::new(18.0, 0.0), 0.98),
+            ),
+            AnimationState::new(
+                "visible",
+                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+            ),
+        ],
+        vec![
+            AnimationTransition::new(
+                "hidden",
+                "visible",
+                surface_animation_trigger(TOAST_ENTER_TRIGGER),
+                0.18,
+            ),
+            AnimationTransition::new(
+                "visible",
+                "hidden",
+                surface_animation_trigger(TOAST_EXIT_TRIGGER),
+                0.12,
+            ),
+        ],
+        if initially_visible {
+            "visible"
+        } else {
+            "hidden"
+        },
+    )
+    .expect("toast enter/exit animation preset should be internally valid")
+}
+
+fn surface_animation_trigger(name: &str) -> AnimationTrigger {
+    AnimationTrigger::Custom(name.to_string())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitAxis {
@@ -191,7 +268,12 @@ pub fn split_pane(
                 ..Default::default()
             },
         )
-        .with_visual(options.root_visual),
+        .with_visual(options.root_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Application)
+                .label(format!("{name} split pane"))
+                .hint("Contains two resizable panes"),
+        ),
     );
     let first = document.add_child(
         root,
@@ -210,7 +292,17 @@ pub fn split_pane(
             split_pane_handle_style(axis, options.handle_thickness),
         )
         .with_input(InputBehavior::BUTTON)
-        .with_visual(options.handle_visual),
+        .with_visual(options.handle_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Slider)
+                .label(format!("{name} splitter"))
+                .value(format!("{:.0}%", state.fraction.clamp(0.0, 1.0) * 100.0))
+                .hint(match axis {
+                    SplitAxis::Horizontal => "Resize the left and right panes",
+                    SplitAxis::Vertical => "Resize the upper and lower panes",
+                })
+                .focusable(),
+        ),
     );
 
     let second = document.add_child(
@@ -297,6 +389,16 @@ impl DockSide {
     }
 }
 
+fn dock_side_name(side: DockSide) -> &'static str {
+    match side {
+        DockSide::Top => "Top",
+        DockSide::Bottom => "Bottom",
+        DockSide::Left => "Left",
+        DockSide::Right => "Right",
+        DockSide::Center => "Center",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DockPanelDescriptor {
     pub id: String,
@@ -306,6 +408,10 @@ pub struct DockPanelDescriptor {
     pub min_size: f32,
     pub visible: bool,
     pub resizable: bool,
+    pub title_image: Option<ImageContent>,
+    pub shader: Option<ShaderEffect>,
+    pub accessibility_label: Option<String>,
+    pub accessibility_hint: Option<String>,
 }
 
 impl DockPanelDescriptor {
@@ -318,6 +424,10 @@ impl DockPanelDescriptor {
             min_size: 48.0,
             visible: true,
             resizable: false,
+            title_image: None,
+            shader: None,
+            accessibility_label: None,
+            accessibility_hint: None,
         }
     }
 
@@ -330,6 +440,10 @@ impl DockPanelDescriptor {
             min_size: 0.0,
             visible: true,
             resizable: false,
+            title_image: None,
+            shader: None,
+            accessibility_label: None,
+            accessibility_hint: None,
         }
     }
 
@@ -347,6 +461,44 @@ impl DockPanelDescriptor {
         self.visible = visible;
         self
     }
+
+    pub fn title_image(mut self, image: ImageContent) -> Self {
+        self.title_image = Some(image);
+        self
+    }
+
+    pub fn shader(mut self, shader: ShaderEffect) -> Self {
+        self.shader = Some(shader);
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn accessibility_hint(mut self, hint: impl Into<String>) -> Self {
+        self.accessibility_hint = Some(hint.into());
+        self
+    }
+
+    pub fn accessibility(&self) -> AccessibilityMeta {
+        let label = self
+            .accessibility_label
+            .clone()
+            .or_else(|| (!self.title.is_empty()).then(|| self.title.clone()))
+            .unwrap_or_else(|| self.id.clone());
+        let hint = self.accessibility_hint.clone().unwrap_or_else(|| {
+            if self.resizable {
+                format!("{} dock panel, resizable", dock_side_name(self.side))
+            } else {
+                format!("{} dock panel", dock_side_name(self.side))
+            }
+        });
+        AccessibilityMeta::new(AccessibilityRole::TabPanel)
+            .label(label)
+            .hint(hint)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +510,7 @@ pub struct DockWorkspaceOptions {
     pub title_style: TextStyle,
     pub show_titles: bool,
     pub handle_thickness: f32,
+    pub title_image_size: UiSize,
 }
 
 impl Default for DockWorkspaceOptions {
@@ -386,6 +539,7 @@ impl Default for DockWorkspaceOptions {
             },
             show_titles: true,
             handle_thickness: 5.0,
+            title_image_size: UiSize::new(16.0, 16.0),
         }
     }
 }
@@ -426,6 +580,11 @@ pub fn dock_workspace(
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Application)
+                .label(format!("{name} docking workspace"))
+                .hint("Contains docked panels and a center workspace"),
         ),
     );
     let mut panel_nodes = Vec::new();
@@ -512,37 +671,88 @@ fn add_dock_panel(
     panel: &DockPanelDescriptor,
     options: &DockWorkspaceOptions,
 ) -> DockPanelNode {
-    let root = document.add_child(
-        parent,
-        UiNode::container(
-            format!("{workspace_name}.panel.{}", panel.id),
-            dock_panel_style(panel),
-        )
-        .with_visual(if panel.side == DockSide::Center {
-            options.center_visual
-        } else {
-            options.panel_visual
-        }),
-    );
+    let mut root_node = UiNode::container(
+        format!("{workspace_name}.panel.{}", panel.id),
+        dock_panel_style(panel),
+    )
+    .with_visual(if panel.side == DockSide::Center {
+        options.center_visual
+    } else {
+        options.panel_visual
+    })
+    .with_accessibility(panel.accessibility());
+    if let Some(shader) = &panel.shader {
+        root_node = root_node.with_shader(shader.clone());
+    }
+    let root = document.add_child(parent, root_node);
 
-    let title = if options.show_titles && !panel.title.is_empty() {
-        Some(document.add_child(
+    let title = if options.show_titles && (!panel.title.is_empty() || panel.title_image.is_some()) {
+        let title_bar = document.add_child(
             root,
-            UiNode::text(
+            UiNode::container(
                 format!("{workspace_name}.panel.{}.title", panel.id),
-                panel.title.clone(),
-                options.title_style.clone(),
-                Style {
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: length(24.0),
+                UiNodeStyle {
+                    layout: Style {
+                        display: Display::Flex,
+                        flex_direction: FlexDirection::Row,
+                        align_items: Some(AlignItems::Center),
+                        size: TaffySize {
+                            width: Dimension::percent(1.0),
+                            height: length(24.0),
+                        },
+                        padding: Rect::length(4.0),
+                        flex_shrink: 0.0,
+                        ..Default::default()
                     },
-                    padding: Rect::length(4.0),
-                    flex_shrink: 0.0,
                     ..Default::default()
                 },
             ),
-        ))
+        );
+        if let Some(image) = &panel.title_image {
+            document.add_child(
+                title_bar,
+                UiNode::image(
+                    format!("{workspace_name}.panel.{}.title.image", panel.id),
+                    image.clone(),
+                    Style {
+                        size: TaffySize {
+                            width: length(options.title_image_size.width),
+                            height: length(options.title_image_size.height),
+                        },
+                        margin: Rect {
+                            right: LengthPercentageAuto::length(6.0),
+                            ..Rect::length(0.0)
+                        },
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    },
+                )
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Image).label(panel.title.clone()),
+                ),
+            );
+        }
+        if !panel.title.is_empty() {
+            document.add_child(
+                title_bar,
+                UiNode::text(
+                    format!("{workspace_name}.panel.{}.title.label", panel.id),
+                    panel.title.clone(),
+                    options.title_style.clone(),
+                    Style {
+                        size: TaffySize {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
+                        ..Default::default()
+                    },
+                )
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Label).label(panel.title.clone()),
+                ),
+            );
+        }
+        Some(title_bar)
     } else {
         None
     };
@@ -682,7 +892,16 @@ fn add_dock_resize_handle(
             },
         )
         .with_input(InputBehavior::BUTTON)
-        .with_visual(options.resize_handle_visual),
+        .with_visual(options.resize_handle_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Slider)
+                .label(format!("Resize {} panel", panel.title))
+                .hint(format!(
+                    "Drag to resize the {} dock panel",
+                    dock_side_name(panel.side).to_lowercase()
+                ))
+                .focusable(),
+        ),
     )
 }
 
@@ -735,6 +954,7 @@ pub struct DialogDescriptor {
     pub modal: bool,
     pub trap_focus: bool,
     pub dismissal: DialogDismissal,
+    pub accessibility_hint: Option<String>,
 }
 
 impl DialogDescriptor {
@@ -745,6 +965,7 @@ impl DialogDescriptor {
             modal: false,
             trap_focus: false,
             dismissal: DialogDismissal::STANDARD,
+            accessibility_hint: None,
         }
     }
 
@@ -765,6 +986,31 @@ impl DialogDescriptor {
     pub fn dismissal(mut self, dismissal: DialogDismissal) -> Self {
         self.dismissal = dismissal;
         self
+    }
+
+    pub fn accessibility_hint(mut self, hint: impl Into<String>) -> Self {
+        self.accessibility_hint = Some(hint.into());
+        self
+    }
+
+    pub fn accessibility(&self) -> AccessibilityMeta {
+        let label = if self.title.is_empty() {
+            self.id.clone()
+        } else {
+            self.title.clone()
+        };
+        let hint = self.accessibility_hint.clone().unwrap_or_else(|| {
+            let modality = if self.modal { "Modal dialog" } else { "Dialog" };
+            if self.dismissal.escape_key {
+                format!("{modality}; press Escape to dismiss")
+            } else {
+                format!("{modality}; dismissal is controlled by the application")
+            }
+        });
+        AccessibilityMeta::new(AccessibilityRole::Dialog)
+            .label(label)
+            .hint(hint)
+            .focusable()
     }
 }
 
@@ -832,6 +1078,24 @@ pub enum PopoverPlacement {
     Right,
 }
 
+impl PopoverPlacement {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopoverDismissReason {
+    EscapeKey,
+    OutsidePointer,
+    Toggle,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopoverDescriptor {
     pub id: String,
@@ -839,6 +1103,9 @@ pub struct PopoverDescriptor {
     pub placement: PopoverPlacement,
     pub modal: bool,
     pub close_on_outside: bool,
+    pub close_on_escape: bool,
+    pub accessibility_label: Option<String>,
+    pub accessibility_hint: Option<String>,
 }
 
 impl PopoverDescriptor {
@@ -849,6 +1116,9 @@ impl PopoverDescriptor {
             placement,
             modal: false,
             close_on_outside: true,
+            close_on_escape: true,
+            accessibility_label: None,
+            accessibility_hint: None,
         }
     }
 
@@ -860,6 +1130,48 @@ impl PopoverDescriptor {
     pub fn close_on_outside(mut self, close_on_outside: bool) -> Self {
         self.close_on_outside = close_on_outside;
         self
+    }
+
+    pub fn close_on_escape(mut self, close_on_escape: bool) -> Self {
+        self.close_on_escape = close_on_escape;
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn accessibility_hint(mut self, hint: impl Into<String>) -> Self {
+        self.accessibility_hint = Some(hint.into());
+        self
+    }
+
+    pub fn accessibility(&self) -> AccessibilityMeta {
+        let label = self
+            .accessibility_label
+            .clone()
+            .unwrap_or_else(|| self.id.clone());
+        let hint = self.accessibility_hint.clone().unwrap_or_else(|| {
+            let dismiss_hint = if self.close_on_escape {
+                "; press Escape to dismiss"
+            } else {
+                "; dismissal is controlled by the application"
+            };
+            format!(
+                "Popover anchored to the {}{}",
+                self.placement.as_str(),
+                dismiss_hint
+            )
+        });
+        AccessibilityMeta::new(if self.modal {
+            AccessibilityRole::Dialog
+        } else {
+            AccessibilityRole::Menu
+        })
+        .label(label)
+        .hint(hint)
+        .focusable()
     }
 }
 
@@ -892,14 +1204,16 @@ impl PopoverState {
     }
 
     pub fn dismiss_for_outside_pointer(&mut self) -> Option<PopoverDescriptor> {
-        if self
-            .current
-            .as_ref()
-            .is_some_and(|popover| popover.close_on_outside)
-        {
-            return self.close();
-        }
-        None
+        self.dismiss(PopoverDismissReason::OutsidePointer)
+    }
+
+    pub fn dismiss(&mut self, reason: PopoverDismissReason) -> Option<PopoverDescriptor> {
+        let should_close = self.current.as_ref().is_some_and(|popover| match reason {
+            PopoverDismissReason::EscapeKey => popover.close_on_escape,
+            PopoverDismissReason::OutsidePointer => popover.close_on_outside,
+            PopoverDismissReason::Toggle => true,
+        });
+        should_close.then(|| self.close()).flatten()
     }
 }
 
@@ -910,7 +1224,23 @@ pub fn resolve_popover_rect(
     placement: PopoverPlacement,
     offset: f32,
 ) -> UiRect {
-    let offset = offset.max(0.0);
+    let offset = if offset.is_finite() {
+        offset.max(0.0)
+    } else {
+        0.0
+    };
+    let popover_size = UiSize::new(
+        if popover_size.width.is_finite() {
+            popover_size.width.max(0.0)
+        } else {
+            0.0
+        },
+        if popover_size.height.is_finite() {
+            popover_size.height.max(0.0)
+        } else {
+            0.0
+        },
+    );
     let mut rect = match placement {
         PopoverPlacement::Top => UiRect::new(
             anchor.x,
@@ -943,6 +1273,14 @@ pub fn resolve_popover_rect(
 }
 
 fn clamp_to_viewport(value: f32, extent: f32, min: f32, max: f32) -> f32 {
+    let min = if min.is_finite() { min } else { 0.0 };
+    let max = if max.is_finite() { max.max(min) } else { min };
+    let extent = if extent.is_finite() {
+        extent.max(0.0)
+    } else {
+        0.0
+    };
+    let value = if value.is_finite() { value } else { min };
     let upper = (max - extent).max(min);
     value.clamp(min, upper)
 }
@@ -956,6 +1294,17 @@ pub enum ToastSeverity {
     Success,
     Warning,
     Error,
+}
+
+impl ToastSeverity {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "Info",
+            Self::Success => "Success",
+            Self::Warning => "Warning",
+            Self::Error => "Error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -982,6 +1331,9 @@ pub struct Toast {
     pub timeout_seconds: Option<f32>,
     pub age_seconds: f32,
     pub actions: Vec<ToastAction>,
+    pub icon: Option<ImageContent>,
+    pub shader: Option<ShaderEffect>,
+    pub accessibility_hint: Option<String>,
 }
 
 impl Toast {
@@ -997,9 +1349,14 @@ impl Toast {
             severity,
             title: title.into(),
             body,
-            timeout_seconds,
+            timeout_seconds: timeout_seconds
+                .filter(|timeout| timeout.is_finite())
+                .map(|timeout| timeout.max(0.0)),
             age_seconds: 0.0,
             actions: Vec::new(),
+            icon: None,
+            shader: None,
+            accessibility_hint: None,
         }
     }
 
@@ -1008,9 +1365,49 @@ impl Toast {
         self
     }
 
+    pub fn with_icon(mut self, icon: ImageContent) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    pub fn with_shader(mut self, shader: ShaderEffect) -> Self {
+        self.shader = Some(shader);
+        self
+    }
+
+    pub fn accessibility_hint(mut self, hint: impl Into<String>) -> Self {
+        self.accessibility_hint = Some(hint.into());
+        self
+    }
+
     pub fn expired(&self) -> bool {
         self.timeout_seconds
             .is_some_and(|timeout| self.age_seconds >= timeout)
+    }
+
+    pub fn remaining_seconds(&self) -> Option<f32> {
+        self.timeout_seconds
+            .map(|timeout| (timeout - self.age_seconds).max(0.0))
+    }
+
+    pub fn accessibility(&self) -> AccessibilityMeta {
+        let mut label = format!("{}: {}", self.severity.as_str(), self.title);
+        if let Some(body) = &self.body {
+            if !body.is_empty() {
+                label.push_str(". ");
+                label.push_str(body);
+            }
+        }
+        let hint = self.accessibility_hint.clone().unwrap_or_else(|| {
+            if self.actions.is_empty() {
+                "Notification".to_string()
+            } else {
+                format!("Notification with {} action(s)", self.actions.len())
+            }
+        });
+        AccessibilityMeta::new(AccessibilityRole::ListItem)
+            .label(label)
+            .hint(hint)
     }
 }
 
@@ -1062,6 +1459,9 @@ impl ToastStack {
     }
 
     pub fn tick(&mut self, dt_seconds: f32) {
+        if !dt_seconds.is_finite() {
+            return;
+        }
         let dt = dt_seconds.max(0.0);
         for toast in &mut self.toasts {
             toast.age_seconds += dt;
@@ -1091,6 +1491,7 @@ pub struct ToastStackOptions {
     pub action_visual: UiVisual,
     pub title_style: TextStyle,
     pub body_style: TextStyle,
+    pub toast_animation: Option<AnimationMachine>,
 }
 
 impl Default for ToastStackOptions {
@@ -1142,6 +1543,7 @@ impl Default for ToastStackOptions {
                 color: ColorRgba::new(218, 226, 238, 255),
                 ..Default::default()
             },
+            toast_animation: Some(toast_enter_exit_animation(true)),
         }
     }
 }
@@ -1163,6 +1565,11 @@ pub fn toast_stack(
                 z_index: 60,
                 ..Default::default()
             },
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::List)
+                .label("Notifications")
+                .hint("Most recent notifications"),
         ),
     );
 
@@ -1186,33 +1593,86 @@ fn add_toast_node(
         ToastSeverity::Warning => options.warning_visual,
         ToastSeverity::Error => options.error_visual,
     };
-    let root = document.add_child(
-        parent,
-        UiNode::container(
-            format!("{stack_name}.toast.{}", toast.id.0),
-            UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
-                    },
-                    padding: Rect::length(8.0),
-                    margin: Rect {
-                        bottom: LengthPercentageAuto::length(8.0),
-                        ..Rect::length(0.0)
+    let mut root_node = UiNode::container(
+        format!("{stack_name}.toast.{}", toast.id.0),
+        UiNodeStyle {
+            layout: Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                size: TaffySize {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                padding: Rect::length(8.0),
+                margin: Rect {
+                    bottom: LengthPercentageAuto::length(8.0),
+                    ..Rect::length(0.0)
+                },
+                ..Default::default()
+            },
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
+    )
+    .with_visual(visual)
+    .with_accessibility(toast.accessibility());
+    if let Some(shader) = &toast.shader {
+        root_node = root_node.with_shader(shader.clone());
+    }
+    if let Some(animation) = &options.toast_animation {
+        root_node = root_node.with_animation(animation.clone());
+    }
+    let root = document.add_child(parent, root_node);
+
+    let title_parent = if let Some(icon) = &toast.icon {
+        let header = document.add_child(
+            root,
+            UiNode::container(
+                format!("{stack_name}.toast.{}.header", toast.id.0),
+                UiNodeStyle {
+                    layout: Style {
+                        display: Display::Flex,
+                        flex_direction: FlexDirection::Row,
+                        align_items: Some(AlignItems::Center),
+                        size: TaffySize {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
+                        ..Default::default()
                     },
                     ..Default::default()
                 },
-                clip: ClipBehavior::Clip,
-                ..Default::default()
-            },
-        )
-        .with_visual(visual),
-    );
+            ),
+        );
+        document.add_child(
+            header,
+            UiNode::image(
+                format!("{stack_name}.toast.{}.icon", toast.id.0),
+                icon.clone(),
+                Style {
+                    size: TaffySize {
+                        width: length(18.0),
+                        height: length(18.0),
+                    },
+                    margin: Rect {
+                        right: LengthPercentageAuto::length(6.0),
+                        ..Rect::length(0.0)
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Image)
+                    .label(format!("{} notification icon", toast.severity.as_str())),
+            ),
+        );
+        header
+    } else {
+        root
+    };
     document.add_child(
-        root,
+        title_parent,
         UiNode::text(
             format!("{stack_name}.toast.{}.title", toast.id.0),
             toast.title.clone(),
@@ -1224,6 +1684,9 @@ fn add_toast_node(
                 },
                 ..Default::default()
             },
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Label).label(toast.title.clone()),
         ),
     );
     if let Some(body) = &toast.body {
@@ -1290,7 +1753,13 @@ fn add_toast_node(
                     },
                 )
                 .with_input(InputBehavior::BUTTON)
-                .with_visual(options.action_visual),
+                .with_visual(options.action_visual)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label(action.label.clone())
+                        .hint(format!("Activate {} notification action", toast.title))
+                        .focusable(),
+                ),
             );
             document.add_child(
                 button,
@@ -1326,32 +1795,73 @@ impl TimelineRange {
         Self { start, end }
     }
 
+    pub fn ordered(self) -> Self {
+        if !self.start.is_finite() || !self.end.is_finite() {
+            return Self {
+                start: 0.0,
+                end: 0.0,
+            };
+        }
+        if self.start <= self.end {
+            self
+        } else {
+            Self {
+                start: self.end,
+                end: self.start,
+            }
+        }
+    }
+
     pub fn duration(self) -> f64 {
-        (self.end - self.start).max(0.0)
+        let ordered = self.ordered();
+        (ordered.end - ordered.start).max(0.0)
     }
 
     pub fn contains(self, value: f64) -> bool {
-        value >= self.start && value <= self.end
+        let ordered = self.ordered();
+        value.is_finite() && value >= ordered.start && value <= ordered.end
     }
 
     pub fn normalized(self, value: f64) -> f32 {
-        let duration = self.duration();
+        let ordered = self.ordered();
+        let duration = ordered.duration();
         if duration <= f64::EPSILON {
             return 0.0;
         }
-        ((value - self.start) / duration).clamp(0.0, 1.0) as f32
+        if !value.is_finite() {
+            return 0.0;
+        }
+        ((value - ordered.start) / duration).clamp(0.0, 1.0) as f32
     }
 
     pub fn value_to_x(self, value: f64, width: f32) -> f32 {
-        self.normalized(value) * width.max(0.0)
+        let width = if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
+        };
+        self.normalized(value) * width
     }
 
     pub fn x_to_value(self, x: f32, width: f32) -> f64 {
-        let width = width.max(1.0);
-        self.start + self.duration() * (x.max(0.0).min(width) as f64 / width as f64)
+        let ordered = self.ordered();
+        let width = if width.is_finite() && width > f32::EPSILON {
+            width
+        } else {
+            1.0
+        };
+        let x = if x.is_finite() {
+            x.clamp(0.0, width)
+        } else {
+            0.0
+        };
+        ordered.start + ordered.duration() * (x as f64 / width as f64)
     }
 
     pub fn pan(self, delta: f64) -> Self {
+        if !delta.is_finite() {
+            return self;
+        }
         Self {
             start: self.start + delta,
             end: self.end + delta,
@@ -1384,15 +1894,19 @@ pub struct RulerSpec {
 
 impl RulerSpec {
     pub fn ticks(self) -> Vec<RulerTick> {
-        if self.range.duration() <= f64::EPSILON
+        let range = self.range.ordered();
+        if range.duration() <= f64::EPSILON
+            || !self.width.is_finite()
             || self.width <= f32::EPSILON
+            || !self.major_step.is_finite()
+            || !self.minor_step.is_finite()
             || self.major_step <= f64::EPSILON
             || self.minor_step <= f64::EPSILON
         {
             return Vec::new();
         }
-        let start_index = (self.range.start / self.minor_step).ceil() as i64;
-        let end_index = (self.range.end / self.minor_step).floor() as i64;
+        let start_index = (range.start / self.minor_step).ceil() as i64;
+        let end_index = (range.end / self.minor_step).floor() as i64;
         let label_every = self.label_every.max(1);
         let mut major_count = 0_usize;
         let mut ticks = Vec::new();
@@ -1447,6 +1961,9 @@ pub struct TimelineRulerOptions {
     pub major_stroke: StrokeStyle,
     pub minor_stroke: StrokeStyle,
     pub label_style: TextStyle,
+    pub shader: Option<ShaderEffect>,
+    pub accessibility_label: Option<String>,
+    pub accessibility_hint: Option<String>,
 }
 
 impl Default for TimelineRulerOptions {
@@ -1473,6 +1990,9 @@ impl Default for TimelineRulerOptions {
                 color: ColorRgba::new(218, 226, 238, 255),
                 ..Default::default()
             },
+            shader: None,
+            accessibility_label: None,
+            accessibility_hint: None,
         }
     }
 }
@@ -1486,31 +2006,63 @@ pub fn timeline_ruler(
 ) -> UiNodeId {
     let name = name.into();
     let mut layout = options.layout;
-    layout.size.height = length(options.height);
-    let root = document.add_child(
-        parent,
-        UiNode::container(
-            name.clone(),
-            UiNodeStyle {
-                layout,
-                clip: ClipBehavior::Clip,
-                ..Default::default()
-            },
-        )
-        .with_visual(options.background_visual),
+    let height = if options.height.is_finite() {
+        options.height.max(0.0)
+    } else {
+        0.0
+    };
+    let scene_width = if spec.width.is_finite() {
+        spec.width.max(0.0)
+    } else {
+        0.0
+    };
+    layout.size.height = length(height);
+    let range = spec.range.ordered();
+    let mut root_node = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout,
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
+    )
+    .with_visual(options.background_visual)
+    .with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::Slider)
+            .label(
+                options
+                    .accessibility_label
+                    .clone()
+                    .unwrap_or_else(|| format!("{name} timeline ruler")),
+            )
+            .value(format!(
+                "{} to {}",
+                format_ruler_label(range.start),
+                format_ruler_label(range.end)
+            ))
+            .hint(
+                options
+                    .accessibility_hint
+                    .clone()
+                    .unwrap_or_else(|| "Shows timeline tick marks and labels".to_string()),
+            ),
     );
+    if let Some(shader) = &options.shader {
+        root_node = root_node.with_shader(shader.clone());
+    }
+    let root = document.add_child(parent, root_node);
 
     let ticks = spec.ticks();
     let primitives = ticks
         .iter()
         .map(|tick| {
-            let height = match tick.kind {
-                RulerTickKind::Major => options.height,
-                RulerTickKind::Minor => options.height * 0.5,
+            let tick_height = match tick.kind {
+                RulerTickKind::Major => height,
+                RulerTickKind::Minor => height * 0.5,
             };
             ScenePrimitive::Line {
-                from: UiPoint::new(tick.x, options.height),
-                to: UiPoint::new(tick.x, options.height - height),
+                from: UiPoint::new(tick.x, height),
+                to: UiPoint::new(tick.x, height - tick_height),
                 stroke: match tick.kind {
                     RulerTickKind::Major => options.major_stroke,
                     RulerTickKind::Minor => options.minor_stroke,
@@ -1526,8 +2078,8 @@ pub fn timeline_ruler(
             Style {
                 position: Position::Absolute,
                 size: TaffySize {
-                    width: length(spec.width),
-                    height: length(options.height),
+                    width: length(scene_width),
+                    height: length(height),
                 },
                 ..Default::default()
             },
@@ -1627,13 +2179,27 @@ mod tests {
         assert!(doc.node(nodes.handle).input.focusable);
         assert!(doc.node(nodes.first).layout.rect.width >= state.min_first);
         assert_eq!(doc.node(nodes.root).children.len(), 3);
+
+        let accessibility = doc.accessibility_tree();
+        let splitter = accessibility
+            .iter()
+            .find(|node| node.id == nodes.handle)
+            .expect("splitter accessibility");
+        assert_eq!(splitter.role, AccessibilityRole::Slider);
+        assert_eq!(splitter.label.as_deref(), Some("workspace splitter"));
+        assert_eq!(splitter.value.as_deref(), Some("69%"));
+        assert!(splitter.focusable);
     }
 
     #[test]
     fn dock_workspace_builds_visible_panels_and_center() {
         let panels = vec![
             DockPanelDescriptor::new("top", "Toolbar", DockSide::Top, 40.0),
-            DockPanelDescriptor::new("left", "Browser", DockSide::Left, 120.0).resizable(true),
+            DockPanelDescriptor::new("left", "Browser", DockSide::Left, 120.0)
+                .resizable(true)
+                .title_image(ImageContent::new("icons.browser"))
+                .shader(ShaderEffect::new("dock.panel.blur").uniform("radius", 12.0))
+                .accessibility_hint("Project browser panel"),
             DockPanelDescriptor::center("editor", "Editor"),
             DockPanelDescriptor::new("right", "Inspector", DockSide::Right, 90.0).visible(false),
         ];
@@ -1678,12 +2244,57 @@ mod tests {
             .find(|panel| panel.id == "left")
             .expect("left panel");
         assert_eq!(doc.node(left.root).layout.rect.width, 120.0);
+        assert_eq!(
+            doc.node(left.root)
+                .shader
+                .as_ref()
+                .map(|shader| shader.key.as_str()),
+            Some("dock.panel.blur")
+        );
+        let title = left.title.expect("left title");
+        assert!(doc.node(title).children.iter().any(|child| {
+            matches!(
+                doc.node(*child).content,
+                UiContent::Image(ref image) if image.key == "icons.browser"
+            )
+        }));
+
+        let accessibility = doc.accessibility_tree();
+        let panel_accessibility = accessibility
+            .iter()
+            .find(|node| node.id == left.root)
+            .expect("left panel accessibility");
+        assert_eq!(panel_accessibility.role, AccessibilityRole::TabPanel);
+        assert_eq!(panel_accessibility.label.as_deref(), Some("Browser"));
+        assert_eq!(
+            panel_accessibility.hint.as_deref(),
+            Some("Project browser panel")
+        );
+        let resize_handle = left.resize_handle.expect("left resize handle");
+        let resize_accessibility = accessibility
+            .iter()
+            .find(|node| node.id == resize_handle)
+            .expect("resize accessibility");
+        assert_eq!(resize_accessibility.role, AccessibilityRole::Slider);
+        assert!(resize_accessibility.focusable);
     }
 
     #[test]
     fn dialog_and_popover_state_track_dismissal_rules() {
         let mut dialogs = DialogStack::default();
-        dialogs.open(DialogDescriptor::new("settings", "Settings").modal(true));
+        let settings = DialogDescriptor::new("settings", "Settings")
+            .modal(true)
+            .accessibility_hint("Configure workspace settings");
+        let settings_accessibility = settings.accessibility();
+        assert_eq!(settings_accessibility.role, AccessibilityRole::Dialog);
+        assert_eq!(settings_accessibility.label.as_deref(), Some("Settings"));
+        assert_eq!(
+            settings_accessibility.hint.as_deref(),
+            Some("Configure workspace settings")
+        );
+        assert!(settings_accessibility.focusable);
+
+        dialogs.open(settings);
         dialogs.open(DialogDescriptor::new("confirm", "Confirm").dismissal(DialogDismissal::NONE));
         assert!(dialogs.traps_focus());
         assert_eq!(dialogs.top().unwrap().id, "confirm");
@@ -1704,11 +2315,33 @@ mod tests {
             "tools",
             PopoverAnchor::Rect(UiRect::new(90.0, 90.0, 20.0, 20.0)),
             PopoverPlacement::Bottom,
-        );
+        )
+        .accessibility_label("Tool menu")
+        .close_on_escape(false);
+        let popover_accessibility = popover.accessibility();
+        assert_eq!(popover_accessibility.role, AccessibilityRole::Menu);
+        assert_eq!(popover_accessibility.label.as_deref(), Some("Tool menu"));
         popovers.toggle(popover.clone());
         assert!(popovers.is_open("tools"));
         popovers.toggle(popover);
         assert!(!popovers.is_open("tools"));
+
+        popovers.open(
+            PopoverDescriptor::new(
+                "sticky",
+                PopoverAnchor::Point(UiPoint::new(2.0, 3.0)),
+                PopoverPlacement::Right,
+            )
+            .close_on_escape(false),
+        );
+        assert!(popovers.dismiss(PopoverDismissReason::EscapeKey).is_none());
+        assert_eq!(
+            popovers
+                .dismiss(PopoverDismissReason::OutsidePointer)
+                .unwrap()
+                .id,
+            "sticky"
+        );
 
         let rect = resolve_popover_rect(
             UiRect::new(180.0, 180.0, 20.0, 20.0),
@@ -1719,6 +2352,16 @@ mod tests {
         );
         assert_eq!(rect.x, 140.0);
         assert_eq!(rect.y, 170.0);
+
+        let guarded = resolve_popover_rect(
+            UiRect::new(f32::NAN, 0.0, 10.0, 10.0),
+            UiSize::new(f32::NAN, 24.0),
+            UiRect::new(0.0, 0.0, 100.0, 100.0),
+            PopoverPlacement::Right,
+            f32::NAN,
+        );
+        assert!(guarded.x.is_finite());
+        assert_eq!(guarded.width, 0.0);
     }
 
     #[test]
@@ -1733,7 +2376,10 @@ mod tests {
             Some("Body".to_string()),
             None,
         )
-        .with_action(ToastAction::new("retry", "Retry"));
+        .with_action(ToastAction::new("retry", "Retry"))
+        .with_icon(ImageContent::new("icons.warning"))
+        .with_shader(ShaderEffect::new("toast.warning.glow").uniform("strength", 0.8))
+        .accessibility_hint("Requires attention");
         stack.push_toast(action_toast);
 
         assert_eq!(
@@ -1743,6 +2389,16 @@ mod tests {
                 .map(|toast| toast.title.as_str())
                 .collect::<Vec<_>>(),
             vec!["Two", "Three"]
+        );
+        stack.tick(f32::NAN);
+        assert_eq!(
+            stack
+                .toasts
+                .iter()
+                .find(|toast| toast.title == "One")
+                .unwrap()
+                .remaining_seconds(),
+            Some(1.0)
         );
         stack.tick(1.1);
         assert!(!stack.toasts.iter().any(|toast| toast.title == "One"));
@@ -1760,6 +2416,47 @@ mod tests {
             .expect("layout");
         assert_eq!(doc.node(stack_node).children.len(), 2);
         assert!(doc.nodes().iter().any(|node| node.input.focusable));
+        let warning_node = doc
+            .node(stack_node)
+            .children
+            .last()
+            .copied()
+            .expect("warning toast");
+        assert_eq!(
+            doc.node(warning_node)
+                .shader
+                .as_ref()
+                .map(|shader| shader.key.as_str()),
+            Some("toast.warning.glow")
+        );
+        assert_eq!(
+            doc.node(warning_node)
+                .animation
+                .as_ref()
+                .map(AnimationMachine::current_state_name),
+            Some("visible")
+        );
+        assert!(doc.nodes().iter().any(|node| {
+            matches!(
+                node.content,
+                UiContent::Image(ref image) if image.key == "icons.warning"
+            )
+        }));
+
+        let accessibility = doc.accessibility_tree();
+        assert!(accessibility.iter().any(|node| {
+            node.id == stack_node
+                && node.role == AccessibilityRole::List
+                && node.label.as_deref() == Some("Notifications")
+        }));
+        assert!(accessibility.iter().any(|node| {
+            node.role == AccessibilityRole::ListItem
+                && node.label.as_deref() == Some("Warning: Three. Body")
+                && node.hint.as_deref() == Some("Requires attention")
+        }));
+        assert!(accessibility.iter().any(|node| {
+            node.role == AccessibilityRole::Button && node.label.as_deref() == Some("Retry")
+        }));
     }
 
     #[test]
@@ -1767,6 +2464,10 @@ mod tests {
         let range = TimelineRange::new(10.0, 14.0);
         assert_eq!(range.value_to_x(12.0, 400.0), 200.0);
         assert_eq!(range.x_to_value(100.0, 400.0), 11.0);
+        let reversed = TimelineRange::new(14.0, 10.0);
+        assert_eq!(reversed.ordered(), range);
+        assert!(reversed.contains(12.0));
+        assert_eq!(reversed.x_to_value(100.0, 400.0), 11.0);
 
         let spec = RulerSpec {
             range,
@@ -1787,18 +2488,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["10", "12", "14"]
         );
+        assert!(RulerSpec {
+            range,
+            width: f32::NAN,
+            major_step: 1.0,
+            minor_step: 0.25,
+            label_every: 1,
+        }
+        .ticks()
+        .is_empty());
 
         let mut doc = UiDocument::new(root_style(400.0, 80.0));
         let root = doc.root;
-        let ruler = timeline_ruler(
-            &mut doc,
-            root,
-            "ruler",
-            spec,
-            TimelineRulerOptions::default(),
-        );
+        let options = TimelineRulerOptions {
+            shader: Some(ShaderEffect::new("timeline.scanline")),
+            accessibility_label: Some("Transport timeline".to_string()),
+            ..TimelineRulerOptions::default()
+        };
+        let ruler = timeline_ruler(&mut doc, root, "ruler", spec, options);
         doc.compute_layout(UiSize::new(400.0, 80.0), &mut ApproxTextMeasurer)
             .expect("layout");
+        assert_eq!(
+            doc.node(ruler)
+                .shader
+                .as_ref()
+                .map(|shader| shader.key.as_str()),
+            Some("timeline.scanline")
+        );
         let has_scene = doc.node(ruler).children.iter().any(|child| {
             matches!(
                 doc.node(*child).content,
@@ -1813,5 +2529,38 @@ mod tests {
         });
         assert!(has_scene);
         assert!(has_label_text);
+
+        let ruler_accessibility = doc
+            .accessibility_tree()
+            .into_iter()
+            .find(|node| node.id == ruler)
+            .expect("ruler accessibility");
+        assert_eq!(ruler_accessibility.role, AccessibilityRole::Slider);
+        assert_eq!(
+            ruler_accessibility.label.as_deref(),
+            Some("Transport timeline")
+        );
+        assert_eq!(ruler_accessibility.value.as_deref(), Some("10 to 14"));
+    }
+
+    #[test]
+    fn surface_animation_presets_transition_between_states() {
+        let mut open_close = surface_open_close_animation(false);
+        assert_eq!(open_close.current_state_name(), "closed");
+        assert!(open_close.trigger(surface_animation_trigger(SURFACE_OPEN_TRIGGER)));
+        open_close.tick(0.16);
+        assert_eq!(open_close.current_state_name(), "open");
+        assert!(open_close.trigger(surface_animation_trigger(SURFACE_CLOSE_TRIGGER)));
+        open_close.tick(0.12);
+        assert_eq!(open_close.current_state_name(), "closed");
+
+        let mut toast = toast_enter_exit_animation(false);
+        assert_eq!(toast.current_state_name(), "hidden");
+        assert!(toast.trigger(surface_animation_trigger(TOAST_ENTER_TRIGGER)));
+        toast.tick(0.18);
+        assert_eq!(toast.current_state_name(), "visible");
+        assert!(toast.trigger(surface_animation_trigger(TOAST_EXIT_TRIGGER)));
+        toast.tick(0.12);
+        assert_eq!(toast.current_state_name(), "hidden");
     }
 }

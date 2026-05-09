@@ -8,7 +8,8 @@ use taffy::prelude::{
 };
 
 use crate::{
-    length, ClipBehavior, ColorRgba, InputBehavior, KeyCode, ScrollAxes, StrokeStyle, TextStyle,
+    length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba,
+    ImageContent, InputBehavior, KeyCode, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle,
     UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
 };
 
@@ -111,12 +112,15 @@ impl AnchoredPopup {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PopupOptions {
     pub visual: UiVisual,
     pub z_index: i16,
     pub clip: ClipBehavior,
     pub scroll_axes: ScrollAxes,
+    pub accessibility: Option<AccessibilityMeta>,
+    pub shader: Option<ShaderEffect>,
+    pub animation: Option<AnimationMachine>,
 }
 
 impl Default for PopupOptions {
@@ -130,6 +134,9 @@ impl Default for PopupOptions {
             z_index: 100,
             clip: ClipBehavior::Clip,
             scroll_axes: ScrollAxes::NONE,
+            accessibility: Some(AccessibilityMeta::new(AccessibilityRole::Dialog)),
+            shader: None,
+            animation: None,
         }
     }
 }
@@ -187,19 +194,37 @@ pub fn popup_panel(
     rect: UiRect,
     options: PopupOptions,
 ) -> UiNodeId {
+    let PopupOptions {
+        visual,
+        z_index,
+        clip,
+        scroll_axes,
+        accessibility,
+        shader,
+        animation,
+    } = options;
     let mut node = UiNode::container(
         name,
         UiNodeStyle {
             layout: absolute_rect_style(rect),
-            clip: options.clip,
-            z_index: options.z_index,
+            clip,
+            z_index,
             ..Default::default()
         },
     )
-    .with_visual(options.visual);
+    .with_visual(visual);
 
-    if options.scroll_axes != ScrollAxes::NONE {
-        node = node.with_scroll(options.scroll_axes);
+    if scroll_axes != ScrollAxes::NONE {
+        node = node.with_scroll(scroll_axes);
+    }
+    if let Some(accessibility) = accessibility {
+        node = node.with_accessibility(accessibility);
+    }
+    if let Some(shader) = shader {
+        node = node.with_shader(shader);
+    }
+    if let Some(animation) = animation {
+        node = node.with_animation(animation);
     }
 
     document.add_child(parent, node)
@@ -219,6 +244,9 @@ pub struct MenuItem {
     pub label: String,
     pub enabled: bool,
     pub shortcut: Option<String>,
+    pub image: Option<ImageContent>,
+    pub destructive: bool,
+    pub accessibility_label: Option<String>,
     pub kind: MenuItemKind,
 }
 
@@ -229,6 +257,9 @@ impl MenuItem {
             label: label.into(),
             enabled: true,
             shortcut: None,
+            image: None,
+            destructive: false,
+            accessibility_label: None,
             kind: MenuItemKind::Command,
         }
     }
@@ -239,6 +270,9 @@ impl MenuItem {
             label: label.into(),
             enabled: true,
             shortcut: None,
+            image: None,
+            destructive: false,
+            accessibility_label: None,
             kind: MenuItemKind::Check { checked },
         }
     }
@@ -249,6 +283,9 @@ impl MenuItem {
             label: label.into(),
             enabled: true,
             shortcut: None,
+            image: None,
+            destructive: false,
+            accessibility_label: None,
             kind: MenuItemKind::Submenu { items },
         }
     }
@@ -259,6 +296,9 @@ impl MenuItem {
             label: String::new(),
             enabled: false,
             shortcut: None,
+            image: None,
+            destructive: false,
+            accessibility_label: None,
             kind: MenuItemKind::Separator,
         }
     }
@@ -270,6 +310,25 @@ impl MenuItem {
 
     pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    pub fn image(mut self, image: ImageContent) -> Self {
+        self.image = Some(image);
+        self
+    }
+
+    pub fn image_key(self, key: impl Into<String>) -> Self {
+        self.image(ImageContent::new(key))
+    }
+
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -372,6 +431,8 @@ pub struct SelectOption {
     pub id: String,
     pub label: String,
     pub enabled: bool,
+    pub image: Option<ImageContent>,
+    pub accessibility_label: Option<String>,
 }
 
 impl SelectOption {
@@ -380,11 +441,27 @@ impl SelectOption {
             id: id.into(),
             label: label.into(),
             enabled: true,
+            image: None,
+            accessibility_label: None,
         }
     }
 
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
+        self
+    }
+
+    pub fn image(mut self, image: ImageContent) -> Self {
+        self.image = Some(image);
+        self
+    }
+
+    pub fn image_key(self, key: impl Into<String>) -> Self {
+        self.image(ImageContent::new(key))
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 }
@@ -481,11 +558,17 @@ impl SelectMenuState {
         event: &UiInputEvent,
     ) -> SelectMenuOutcome {
         let mut outcome = SelectMenuOutcome::default();
+        if let UiInputEvent::TextInput(text) = event {
+            return first_typeahead_character(text)
+                .map(|character| self.handle_typeahead(options, character))
+                .unwrap_or(outcome);
+        }
+
         let UiInputEvent::Key { key, .. } = event else {
             return outcome;
         };
 
-        match key {
+        match *key {
             KeyCode::ArrowDown => {
                 if !self.open {
                     self.open(options);
@@ -529,9 +612,33 @@ impl SelectMenuState {
                 self.close();
                 outcome.closed = true;
             }
+            KeyCode::Character(character) if is_typeahead_character(character) => {
+                return self.handle_typeahead(options, character);
+            }
             _ => {}
         }
 
+        outcome
+    }
+
+    fn handle_typeahead(&mut self, options: &[SelectOption], character: char) -> SelectMenuOutcome {
+        let mut outcome = SelectMenuOutcome::default();
+        let Some(index) =
+            next_select_typeahead_index(options, self.active.or(self.selected), character)
+        else {
+            return outcome;
+        };
+
+        self.active = Some(index);
+        if self.open {
+            outcome.active = Some(index);
+        } else if let Some(option) = options.get(index) {
+            self.selected = Some(index);
+            outcome.selected = Some(SelectSelection {
+                index,
+                id: option.id.clone(),
+            });
+        }
         outcome
     }
 }
@@ -568,6 +675,11 @@ pub struct SelectMenuOptions {
     pub disabled_visual: UiVisual,
     pub text_style: TextStyle,
     pub disabled_text_style: TextStyle,
+    pub image_size: UiSize,
+    pub accessibility_label: Option<String>,
+    pub menu_shader: Option<ShaderEffect>,
+    pub active_shader: Option<ShaderEffect>,
+    pub menu_animation: Option<AnimationMachine>,
     pub z_index: i16,
 }
 
@@ -591,6 +703,11 @@ impl Default for SelectMenuOptions {
                 color: ColorRgba::new(138, 148, 164, 255),
                 ..Default::default()
             },
+            image_size: UiSize::new(18.0, 18.0),
+            accessibility_label: None,
+            menu_shader: None,
+            active_shader: None,
+            menu_animation: None,
             z_index: 100,
         }
     }
@@ -650,6 +767,11 @@ pub fn select_menu_popup(
             } else {
                 ScrollAxes::NONE
             },
+            accessibility: Some(AccessibilityMeta::new(AccessibilityRole::List).label(
+                menu_accessibility_label(&name, menu_options.accessibility_label.as_ref()),
+            )),
+            shader: menu_options.menu_shader.clone(),
+            animation: menu_options.menu_animation.clone(),
             ..Default::default()
         },
     );
@@ -663,6 +785,7 @@ pub struct DropdownSelectOptions {
     pub trigger_visual: UiVisual,
     pub text_style: TextStyle,
     pub placeholder: String,
+    pub accessibility_label: Option<String>,
     pub menu: SelectMenuOptions,
 }
 
@@ -688,6 +811,7 @@ impl Default for DropdownSelectOptions {
             ),
             text_style: TextStyle::default(),
             placeholder: String::new(),
+            accessibility_label: None,
             menu: SelectMenuOptions::default(),
         }
     }
@@ -720,6 +844,17 @@ pub fn dropdown_select(
         dropdown_options.trigger_layout,
         dropdown_options.trigger_visual,
         dropdown_options.text_style,
+    );
+    document.node_mut(trigger).accessibility = Some(
+        AccessibilityMeta::new(AccessibilityRole::ComboBox)
+            .label(
+                dropdown_options
+                    .accessibility_label
+                    .clone()
+                    .unwrap_or_else(|| name.clone()),
+            )
+            .value(label.to_string())
+            .focusable(),
     );
     let popup = state.open.then(|| {
         popup.map(|popup| {
@@ -754,6 +889,12 @@ pub struct MenuListOptions {
     pub text_style: TextStyle,
     pub disabled_text_style: TextStyle,
     pub shortcut_text_style: TextStyle,
+    pub destructive_text_style: TextStyle,
+    pub image_size: UiSize,
+    pub accessibility_label: Option<String>,
+    pub menu_shader: Option<ShaderEffect>,
+    pub active_shader: Option<ShaderEffect>,
+    pub menu_animation: Option<AnimationMachine>,
     pub z_index: i16,
 }
 
@@ -781,6 +922,15 @@ impl Default for MenuListOptions {
                 color: ColorRgba::new(178, 188, 204, 255),
                 ..Default::default()
             },
+            destructive_text_style: TextStyle {
+                color: ColorRgba::new(238, 116, 106, 255),
+                ..Default::default()
+            },
+            image_size: UiSize::new(18.0, 18.0),
+            accessibility_label: None,
+            menu_shader: None,
+            active_shader: None,
+            menu_animation: None,
             z_index: 100,
         }
     }
@@ -839,6 +989,11 @@ pub fn menu_list_popup(
             } else {
                 ScrollAxes::NONE
             },
+            accessibility: Some(AccessibilityMeta::new(AccessibilityRole::Menu).label(
+                menu_accessibility_label(&name, options.accessibility_label.as_ref()),
+            )),
+            shader: options.menu_shader.clone(),
+            animation: options.menu_animation.clone(),
             ..Default::default()
         },
     );
@@ -896,11 +1051,18 @@ impl ContextMenuState {
             return outcome;
         }
 
+        if let UiInputEvent::TextInput(text) = event {
+            if let Some(character) = first_typeahead_character(text) {
+                outcome.active = self.move_active_to_match(items, character);
+            }
+            return outcome;
+        }
+
         let UiInputEvent::Key { key, .. } = event else {
             return outcome;
         };
 
-        match key {
+        match *key {
             KeyCode::ArrowDown => {
                 outcome.active = self.move_active(items, NavigationDirection::Next)
             }
@@ -915,7 +1077,7 @@ impl ContextMenuState {
                 self.active = last_navigable_index(items);
                 outcome.active = self.active;
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Character(' ') => {
                 if let Some(index) = self.active {
                     outcome.selected = menu_selection_at_path(items, &[index]);
                     if outcome.selected.is_some() {
@@ -928,10 +1090,19 @@ impl ContextMenuState {
                 self.close();
                 outcome.closed = true;
             }
+            KeyCode::Character(character) if is_typeahead_character(character) => {
+                outcome.active = self.move_active_to_match(items, character);
+            }
             _ => {}
         }
 
         outcome
+    }
+
+    fn move_active_to_match(&mut self, items: &[MenuItem], character: char) -> Option<usize> {
+        let active = next_menu_typeahead_index(items, self.active, character);
+        self.active = active;
+        active
     }
 }
 
@@ -1129,7 +1300,8 @@ pub fn menu_bar(
                 ..Default::default()
             },
         )
-        .with_visual(options.visual),
+        .with_visual(options.visual)
+        .with_accessibility(AccessibilityMeta::new(AccessibilityRole::MenuBar).label(name.clone())),
     );
     let mut buttons = Vec::with_capacity(menus.len());
     for (index, menu) in menus.iter().enumerate() {
@@ -1173,6 +1345,7 @@ pub fn menu_bar(
                 InputBehavior::NONE
             },
         );
+        document.node_mut(button).accessibility = Some(menu_button_accessibility(menu, active));
         buttons.push(button);
     }
 
@@ -1208,6 +1381,8 @@ pub struct CommandPaletteItem {
     pub shortcut: Option<String>,
     pub keywords: Vec<String>,
     pub enabled: bool,
+    pub image: Option<ImageContent>,
+    pub accessibility_label: Option<String>,
 }
 
 impl CommandPaletteItem {
@@ -1219,6 +1394,8 @@ impl CommandPaletteItem {
             shortcut: None,
             keywords: Vec::new(),
             enabled: true,
+            image: None,
+            accessibility_label: None,
         }
     }
 
@@ -1244,6 +1421,20 @@ impl CommandPaletteItem {
 
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
+        self
+    }
+
+    pub fn image(mut self, image: ImageContent) -> Self {
+        self.image = Some(image);
+        self
+    }
+
+    pub fn image_key(self, key: impl Into<String>) -> Self {
+        self.image(ImageContent::new(key))
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 }
@@ -1434,6 +1625,11 @@ pub struct CommandPaletteOptions {
     pub text_style: TextStyle,
     pub muted_text_style: TextStyle,
     pub disabled_text_style: TextStyle,
+    pub image_size: UiSize,
+    pub accessibility_label: Option<String>,
+    pub panel_shader: Option<ShaderEffect>,
+    pub active_row_shader: Option<ShaderEffect>,
+    pub panel_animation: Option<AnimationMachine>,
     pub z_index: i16,
 }
 
@@ -1460,6 +1656,11 @@ impl Default for CommandPaletteOptions {
                 color: ColorRgba::new(138, 148, 164, 255),
                 ..Default::default()
             },
+            image_size: UiSize::new(18.0, 18.0),
+            accessibility_label: None,
+            panel_shader: None,
+            active_row_shader: None,
+            panel_animation: None,
             z_index: 120,
         }
     }
@@ -1502,31 +1703,43 @@ pub fn command_palette(
                 z_index: options.z_index,
                 clip: ClipBehavior::Clip,
                 scroll_axes: ScrollAxes::NONE,
+                accessibility: Some(AccessibilityMeta::new(AccessibilityRole::Dialog).label(
+                    menu_accessibility_label(&name, options.accessibility_label.as_ref()),
+                )),
+                shader: options.panel_shader.clone(),
+                animation: options.panel_animation.clone(),
             },
         )
     } else {
-        document.add_child(
-            parent,
-            UiNode::container(
-                name.clone(),
-                UiNodeStyle {
-                    layout: Style {
-                        display: Display::Flex,
-                        flex_direction: FlexDirection::Column,
-                        size: TaffySize {
-                            width: length(options.width.max(0.0)),
-                            height: length(height.max(0.0)),
-                        },
-                        padding: TaffyRect::length(4.0),
-                        ..Default::default()
+        let mut node = UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    size: TaffySize {
+                        width: length(options.width.max(0.0)),
+                        height: length(height.max(0.0)),
                     },
-                    clip: ClipBehavior::Clip,
-                    z_index: options.z_index,
+                    padding: TaffyRect::length(4.0),
                     ..Default::default()
                 },
-            )
-            .with_visual(options.panel_visual),
+                clip: ClipBehavior::Clip,
+                z_index: options.z_index,
+                ..Default::default()
+            },
         )
+        .with_visual(options.panel_visual)
+        .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Dialog).label(
+            menu_accessibility_label(&name, options.accessibility_label.as_ref()),
+        ));
+        if let Some(shader) = options.panel_shader.clone() {
+            node = node.with_shader(shader);
+        }
+        if let Some(animation) = options.panel_animation.clone() {
+            node = node.with_animation(animation);
+        }
+        document.add_child(parent, node)
     };
 
     let input = document.add_child(
@@ -1550,7 +1763,13 @@ pub fn command_palette(
             },
         )
         .with_input(InputBehavior::BUTTON)
-        .with_visual(options.input_visual),
+        .with_visual(options.input_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::TextBox)
+                .label("Command search")
+                .value(state.query.clone())
+                .focusable(),
+        ),
     );
     label(
         document,
@@ -1590,6 +1809,9 @@ pub fn command_palette(
     if matches.len() > visible_rows {
         list_node = list_node.with_scroll(ScrollAxes::VERTICAL);
     }
+    list_node = list_node.with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::List).label(format!("{name} results")),
+    );
     let list = document.add_child(root, list_node);
 
     let mut rows = Vec::with_capacity(matches.len());
@@ -1610,35 +1832,47 @@ pub fn command_palette(
         };
         let row = document.add_child(
             list,
-            UiNode::container(
+            command_palette_row_node(
                 format!("{name}.result.{}", palette_match.index),
+                item,
+                active,
+                visual,
+                &options,
+            ),
+        );
+        if let Some(image) = &item.image {
+            leading_image(
+                document,
+                row,
+                format!("{name}.result.{}.image", palette_match.index),
+                image.clone(),
+                &command_item_accessibility_label(item),
+                options.image_size,
+            );
+        }
+        let text_column = document.add_child(
+            row,
+            UiNode::container(
+                format!("{name}.result.{}.text", palette_match.index),
                 UiNodeStyle {
                     layout: Style {
                         display: Display::Flex,
-                        flex_direction: FlexDirection::Row,
-                        align_items: Some(AlignItems::Center),
+                        flex_direction: FlexDirection::Column,
+                        justify_content: Some(JustifyContent::Center),
                         size: TaffySize {
                             width: Dimension::percent(1.0),
-                            height: length(options.row_height),
+                            height: Dimension::auto(),
                         },
-                        padding: TaffyRect::length(6.0),
-                        flex_shrink: 0.0,
                         ..Default::default()
                     },
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
-            )
-            .with_input(if item.enabled {
-                InputBehavior::BUTTON
-            } else {
-                InputBehavior::NONE
-            })
-            .with_visual(visual),
+            ),
         );
         label(
             document,
-            row,
+            text_column,
             format!("{name}.result.{}.title", palette_match.index),
             &item.title,
             text_style,
@@ -1650,6 +1884,22 @@ pub fn command_palette(
                 ..Default::default()
             },
         );
+        if let Some(subtitle) = &item.subtitle {
+            label(
+                document,
+                text_column,
+                format!("{name}.result.{}.subtitle", palette_match.index),
+                subtitle,
+                options.muted_text_style.clone(),
+                Style {
+                    size: TaffySize {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+            );
+        }
         if let Some(shortcut) = &item.shortcut {
             label(
                 document,
@@ -1670,6 +1920,60 @@ pub fn command_palette(
     }
 
     CommandPaletteNodes { root, input, rows }
+}
+
+fn command_palette_row_node(
+    name: impl Into<String>,
+    item: &CommandPaletteItem,
+    active: bool,
+    visual: UiVisual,
+    options: &CommandPaletteOptions,
+) -> UiNode {
+    let mut accessibility = AccessibilityMeta::new(AccessibilityRole::ListItem)
+        .label(command_item_accessibility_label(item))
+        .value(item.id.clone());
+    if let Some(shortcut) = &item.shortcut {
+        accessibility = accessibility.hint(format!("Shortcut {shortcut}"));
+    }
+    if item.enabled {
+        accessibility = accessibility.focusable();
+    } else {
+        accessibility = accessibility.disabled();
+    }
+
+    let mut node = UiNode::container(
+        name,
+        UiNodeStyle {
+            layout: Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::Center),
+                size: TaffySize {
+                    width: Dimension::percent(1.0),
+                    height: length(options.row_height),
+                },
+                padding: TaffyRect::length(6.0),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
+    )
+    .with_input(if item.enabled {
+        InputBehavior::BUTTON
+    } else {
+        InputBehavior::NONE
+    })
+    .with_visual(visual)
+    .with_accessibility(accessibility);
+
+    if active {
+        if let Some(shader) = options.active_row_shader.clone() {
+            node = node.with_shader(shader);
+        }
+    }
+    node
 }
 
 fn popup_rect_for_anchor(
@@ -1781,11 +2085,12 @@ fn menu_container_node(
     item_count: usize,
     options: &SelectMenuOptions,
 ) -> UiNode {
+    let name = name.into();
     let scroll = item_count > options.max_visible_rows;
     let height =
         visible_row_count(item_count, options.max_visible_rows) as f32 * options.row_height;
     let mut node = UiNode::container(
-        name,
+        name.clone(),
         UiNodeStyle {
             layout: Style {
                 display: Display::Flex,
@@ -1801,9 +2106,18 @@ fn menu_container_node(
             ..Default::default()
         },
     )
-    .with_visual(options.menu_visual);
+    .with_visual(options.menu_visual)
+    .with_accessibility(AccessibilityMeta::new(AccessibilityRole::List).label(
+        menu_accessibility_label(&name, options.accessibility_label.as_ref()),
+    ));
     if scroll {
         node = node.with_scroll(ScrollAxes::VERTICAL);
+    }
+    if let Some(shader) = options.menu_shader.clone() {
+        node = node.with_shader(shader);
+    }
+    if let Some(animation) = options.menu_animation.clone() {
+        node = node.with_animation(animation);
     }
     node
 }
@@ -1818,7 +2132,6 @@ fn populate_select_menu(
 ) -> Vec<UiNodeId> {
     let mut rows = Vec::with_capacity(options.len());
     for (index, option) in options.iter().enumerate() {
-        let visual = select_row_visual(index, option, state, menu_options);
         let text_style = if option.enabled {
             menu_options.text_style.clone()
         } else {
@@ -1826,17 +2139,24 @@ fn populate_select_menu(
         };
         let row = document.add_child(
             parent,
-            UiNode::container(
+            select_row_node(
                 format!("{name}.option.{index}"),
-                row_style(menu_options.row_height),
-            )
-            .with_input(if option.enabled {
-                InputBehavior::BUTTON
-            } else {
-                InputBehavior::NONE
-            })
-            .with_visual(visual),
+                index,
+                option,
+                state,
+                menu_options,
+            ),
         );
+        if let Some(image) = &option.image {
+            leading_image(
+                document,
+                row,
+                format!("{name}.option.{index}.image"),
+                image.clone(),
+                &option_accessibility_label(option),
+                menu_options.image_size,
+            );
+        }
         label(
             document,
             row,
@@ -1871,6 +2191,43 @@ fn select_row_visual(
     } else {
         options.item_visual
     }
+}
+
+fn select_row_node(
+    name: impl Into<String>,
+    index: usize,
+    option: &SelectOption,
+    state: &SelectMenuState,
+    options: &SelectMenuOptions,
+) -> UiNode {
+    let selected = state.selected == Some(index);
+    let active = state.active == Some(index);
+    let mut accessibility = AccessibilityMeta::new(AccessibilityRole::ListItem)
+        .label(option_accessibility_label(option))
+        .value(if selected { "selected" } else { "not selected" });
+    if active {
+        accessibility = accessibility.hint("Active option");
+    }
+    if option.enabled {
+        accessibility = accessibility.focusable();
+    } else {
+        accessibility = accessibility.disabled();
+    }
+
+    let mut node = UiNode::container(name, row_style(options.row_height))
+        .with_input(if option.enabled {
+            InputBehavior::BUTTON
+        } else {
+            InputBehavior::NONE
+        })
+        .with_visual(select_row_visual(index, option, state, options))
+        .with_accessibility(accessibility);
+    if active {
+        if let Some(shader) = options.active_shader.clone() {
+            node = node.with_shader(shader);
+        }
+    }
+    node
 }
 
 fn first_enabled_select_index(options: &[SelectOption]) -> Option<usize> {
@@ -1908,15 +2265,28 @@ fn next_enabled_select_index(
     None
 }
 
+fn next_select_typeahead_index(
+    options: &[SelectOption],
+    current: Option<usize>,
+    character: char,
+) -> Option<usize> {
+    let query = normalized_character(character)?;
+    next_matching_index(options.len(), current, NavigationDirection::Next, |index| {
+        let option = &options[index];
+        option.enabled && normalize(&option.label).starts_with(&query)
+    })
+}
+
 fn menu_list_container_node(
     name: impl Into<String>,
     items: &[MenuItem],
     options: &MenuListOptions,
 ) -> UiNode {
+    let name = name.into();
     let scroll = menu_row_count_for_scroll(items) > options.max_visible_rows;
     let height = visible_menu_height(items, options);
     let mut node = UiNode::container(
-        name,
+        name.clone(),
         UiNodeStyle {
             layout: Style {
                 display: Display::Flex,
@@ -1932,9 +2302,18 @@ fn menu_list_container_node(
             ..Default::default()
         },
     )
-    .with_visual(options.menu_visual);
+    .with_visual(options.menu_visual)
+    .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Menu).label(
+        menu_accessibility_label(&name, options.accessibility_label.as_ref()),
+    ));
     if scroll {
         node = node.with_scroll(ScrollAxes::VERTICAL);
+    }
+    if let Some(shader) = options.menu_shader.clone() {
+        node = node.with_shader(shader);
+    }
+    if let Some(animation) = options.menu_animation.clone() {
+        node = node.with_animation(animation);
     }
     node
 }
@@ -1954,33 +2333,36 @@ fn populate_menu_list(
             continue;
         }
 
-        let visual = if item.enabled {
-            if active == Some(index) {
-                options.active_visual
-            } else {
-                options.item_visual
-            }
-        } else {
-            options.disabled_visual
-        };
-        let text_style = if item.enabled {
-            options.text_style.clone()
-        } else {
-            options.disabled_text_style.clone()
-        };
+        let text_style = menu_item_text_style(item, options);
         let row = document.add_child(
             parent,
-            UiNode::container(
+            menu_item_row_node(
                 format!("{name}.item.{index}"),
-                row_style(options.row_height),
-            )
-            .with_input(if item.enabled {
-                InputBehavior::BUTTON
-            } else {
-                InputBehavior::NONE
-            })
-            .with_visual(visual),
+                item,
+                active == Some(index),
+                options,
+            ),
         );
+        if let MenuItemKind::Check { checked } = &item.kind {
+            label(
+                document,
+                row,
+                format!("{name}.item.{index}.check"),
+                if *checked { "[x]" } else { "[ ]" },
+                options.shortcut_text_style.clone(),
+                leading_label_layout(24.0),
+            );
+        }
+        if let Some(image) = &item.image {
+            leading_image(
+                document,
+                row,
+                format!("{name}.item.{index}.image"),
+                image.clone(),
+                &menu_item_accessibility_label(item),
+                options.image_size,
+            );
+        }
         label(
             document,
             row,
@@ -2029,6 +2411,47 @@ fn populate_menu_list(
         rows.push(row);
     }
     rows
+}
+
+fn menu_item_row_node(
+    name: impl Into<String>,
+    item: &MenuItem,
+    active: bool,
+    options: &MenuListOptions,
+) -> UiNode {
+    let visual = if item.enabled {
+        if active {
+            options.active_visual
+        } else {
+            options.item_visual
+        }
+    } else {
+        options.disabled_visual
+    };
+    let mut node = UiNode::container(name, row_style(options.row_height))
+        .with_input(if item.enabled {
+            InputBehavior::BUTTON
+        } else {
+            InputBehavior::NONE
+        })
+        .with_visual(visual)
+        .with_accessibility(menu_item_accessibility(item, active));
+    if active {
+        if let Some(shader) = options.active_shader.clone() {
+            node = node.with_shader(shader);
+        }
+    }
+    node
+}
+
+fn menu_item_text_style(item: &MenuItem, options: &MenuListOptions) -> TextStyle {
+    if !item.enabled {
+        options.disabled_text_style.clone()
+    } else if item.destructive {
+        options.destructive_text_style.clone()
+    } else {
+        options.text_style.clone()
+    }
 }
 
 fn separator_row(
@@ -2087,10 +2510,8 @@ fn separator_row(
 
 fn menu_item_label(item: &MenuItem) -> String {
     match &item.kind {
-        MenuItemKind::Check { checked: true } => format!("[x] {}", item.label),
-        MenuItemKind::Check { checked: false } => format!("[ ] {}", item.label),
         MenuItemKind::Command | MenuItemKind::Submenu { .. } => item.label.clone(),
-        MenuItemKind::Separator => String::new(),
+        MenuItemKind::Check { .. } | MenuItemKind::Separator => item.label.clone(),
     }
 }
 
@@ -2108,6 +2529,18 @@ fn visible_menu_height(items: &[MenuItem], options: &MenuListOptions) -> f32 {
         };
     }
     height
+}
+
+fn next_menu_typeahead_index(
+    items: &[MenuItem],
+    current: Option<usize>,
+    character: char,
+) -> Option<usize> {
+    let query = normalized_character(character)?;
+    next_matching_index(items.len(), current, NavigationDirection::Next, |index| {
+        let item = &items[index];
+        item.is_navigable() && normalize(&item.label).starts_with(&query)
+    })
 }
 
 fn next_enabled_menu_bar_index(
@@ -2161,6 +2594,107 @@ fn row_style(height: f32) -> UiNodeStyle {
         },
         clip: ClipBehavior::Clip,
         ..Default::default()
+    }
+}
+
+fn leading_label_layout(width: f32) -> Style {
+    Style {
+        size: TaffySize {
+            width: length(width.max(0.0)),
+            height: Dimension::auto(),
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
+    }
+}
+
+fn leading_image(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    image: ImageContent,
+    accessibility_label: &str,
+    image_size: UiSize,
+) -> UiNodeId {
+    document.add_child(
+        parent,
+        UiNode::image(
+            name,
+            image,
+            Style {
+                size: TaffySize {
+                    width: length(image_size.width.max(0.0)),
+                    height: length(image_size.height.max(0.0)),
+                },
+                margin: TaffyRect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::length(6.0),
+                    top: LengthPercentageAuto::length(0.0),
+                    bottom: LengthPercentageAuto::length(0.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Image).label(accessibility_label),
+        ),
+    )
+}
+
+fn menu_accessibility_label(name: &str, explicit: Option<&String>) -> String {
+    explicit.cloned().unwrap_or_else(|| name.to_string())
+}
+
+fn option_accessibility_label(option: &SelectOption) -> String {
+    option
+        .accessibility_label
+        .clone()
+        .unwrap_or_else(|| option.label.clone())
+}
+
+fn menu_item_accessibility_label(item: &MenuItem) -> String {
+    item.accessibility_label
+        .clone()
+        .unwrap_or_else(|| item.label.clone())
+}
+
+fn command_item_accessibility_label(item: &CommandPaletteItem) -> String {
+    item.accessibility_label
+        .clone()
+        .unwrap_or_else(|| item.title.clone())
+}
+
+fn menu_item_accessibility(item: &MenuItem, active: bool) -> AccessibilityMeta {
+    let mut accessibility = AccessibilityMeta::new(AccessibilityRole::MenuItem)
+        .label(menu_item_accessibility_label(item));
+    if let MenuItemKind::Check { checked } = &item.kind {
+        accessibility = accessibility.value(if *checked { "checked" } else { "unchecked" });
+    }
+    if item.children().is_some() {
+        accessibility = accessibility.hint("Opens submenu");
+    } else if item.destructive {
+        accessibility = accessibility.hint("Destructive action");
+    } else if let Some(shortcut) = &item.shortcut {
+        accessibility = accessibility.hint(format!("Shortcut {shortcut}"));
+    } else if active {
+        accessibility = accessibility.hint("Active menu item");
+    }
+    if item.enabled {
+        accessibility.focusable()
+    } else {
+        accessibility.disabled()
+    }
+}
+
+fn menu_button_accessibility(menu: &MenuBarMenu, active: bool) -> AccessibilityMeta {
+    let accessibility = AccessibilityMeta::new(AccessibilityRole::MenuItem)
+        .label(menu.label.clone())
+        .value(if active { "open" } else { "closed" });
+    if menu.enabled {
+        accessibility.focusable()
+    } else {
+        accessibility.disabled()
     }
 }
 
@@ -2244,6 +2778,46 @@ fn length_percentage(value: f32) -> taffy::prelude::LengthPercentage {
 
 fn normalize(value: &str) -> String {
     value.to_lowercase()
+}
+
+fn first_typeahead_character(text: &str) -> Option<char> {
+    text.chars()
+        .find(|character| is_typeahead_character(*character))
+}
+
+fn is_typeahead_character(character: char) -> bool {
+    !character.is_control() && !character.is_whitespace()
+}
+
+fn normalized_character(character: char) -> Option<String> {
+    is_typeahead_character(character).then(|| character.to_lowercase().collect())
+}
+
+fn next_matching_index(
+    len: usize,
+    current: Option<usize>,
+    direction: NavigationDirection,
+    mut matches: impl FnMut(usize) -> bool,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let start = match (current.filter(|index| *index < len), direction) {
+        (Some(index), NavigationDirection::Next) => (index + 1) % len,
+        (Some(index), NavigationDirection::Previous) => (index + len - 1) % len,
+        (None, NavigationDirection::Next) => 0,
+        (None, NavigationDirection::Previous) => len - 1,
+    };
+    for offset in 0..len {
+        let index = match direction {
+            NavigationDirection::Next => (start + offset) % len,
+            NavigationDirection::Previous => (start + len - offset) % len,
+        };
+        if matches(index) {
+            return Some(index);
+        }
+    }
+    None
 }
 
 fn score_command_palette_item(item: &CommandPaletteItem, query: &str) -> Option<i32> {
@@ -2362,7 +2936,31 @@ mod tests {
     use taffy::prelude::{Size as TaffySize, Style};
 
     use super::*;
-    use crate::{root_style, ApproxTextMeasurer, KeyModifiers};
+    use crate::{
+        root_style, AccessibilityMeta, AccessibilityRole, AnimatedValues, AnimationMachine,
+        AnimationState, AnimationTransition, AnimationTrigger, ApproxTextMeasurer, KeyModifiers,
+        ShaderEffect, UiContent,
+    };
+
+    fn test_animation() -> AnimationMachine {
+        AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "hidden",
+                    AnimatedValues::new(0.0, UiPoint::new(0.0, 0.0), 0.98),
+                ),
+                AnimationState::new("shown", AnimatedValues::default()),
+            ],
+            vec![AnimationTransition::new(
+                "hidden",
+                "shown",
+                AnimationTrigger::Custom("show".to_string()),
+                0.12,
+            )],
+            "hidden",
+        )
+        .expect("animation")
+    }
 
     #[test]
     fn popup_placement_flips_and_clamps_to_viewport() {
@@ -2405,6 +3003,39 @@ mod tests {
     }
 
     #[test]
+    fn popup_panel_exposes_accessibility_shader_and_animation_metadata() {
+        let mut document = UiDocument::new(root_style(300.0, 200.0));
+        let root = document.root;
+        let popup = popup_panel(
+            &mut document,
+            root,
+            "popup",
+            UiRect::new(16.0, 20.0, 120.0, 80.0),
+            PopupOptions {
+                accessibility: Some(
+                    AccessibilityMeta::new(AccessibilityRole::Dialog)
+                        .label("Inspector")
+                        .focusable(),
+                ),
+                shader: Some(ShaderEffect::new("ui.popup.shadow").uniform("elevation", 8.0)),
+                animation: Some(test_animation()),
+                ..Default::default()
+            },
+        );
+
+        let node = document.node(popup);
+        let accessibility = node.accessibility.as_ref().expect("accessibility");
+        assert_eq!(accessibility.role, AccessibilityRole::Dialog);
+        assert_eq!(accessibility.label.as_deref(), Some("Inspector"));
+        assert!(accessibility.focusable);
+        assert_eq!(node.shader.as_ref().unwrap().key, "ui.popup.shadow");
+        assert_eq!(
+            node.animation.as_ref().unwrap().current_state_name(),
+            "hidden"
+        );
+    }
+
+    #[test]
     fn select_menu_keyboard_navigation_skips_disabled_options() {
         let options = vec![
             SelectOption::new("a", "Alpha").disabled(),
@@ -2442,6 +3073,37 @@ mod tests {
     }
 
     #[test]
+    fn select_menu_typeahead_selects_closed_and_moves_open_active_option() {
+        let options = vec![
+            SelectOption::new("alpha", "Alpha"),
+            SelectOption::new("beta", "Beta").disabled(),
+            SelectOption::new("gamma", "Gamma"),
+        ];
+        let mut state = SelectMenuState::with_selected(0);
+
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Character('g'),
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(
+            outcome.selected,
+            Some(SelectSelection {
+                index: 2,
+                id: "gamma".to_string(),
+            })
+        );
+        assert_eq!(state.selected, Some(2));
+
+        state.open(&options);
+        let outcome = state.handle_event(&options, &UiInputEvent::TextInput("a".to_string()));
+        assert_eq!(outcome.active, Some(0));
+        assert_eq!(state.active, Some(0));
+    }
+
+    #[test]
     fn select_menu_builds_scrollable_renderer_neutral_rows() {
         let mut document = UiDocument::new(root_style(320.0, 240.0));
         let root = document.root;
@@ -2475,6 +3137,56 @@ mod tests {
     }
 
     #[test]
+    fn select_menu_exports_accessible_rows_images_and_active_shader() {
+        let mut document = UiDocument::new(root_style(320.0, 240.0));
+        let root = document.root;
+        let options = vec![
+            SelectOption::new("compact", "Compact").image_key("icons.compact"),
+            SelectOption::new("comfortable", "Comfortable")
+                .accessibility_label("Comfortable density"),
+        ];
+        let state = SelectMenuState {
+            open: true,
+            selected: Some(0),
+            active: Some(1),
+        };
+        let nodes = select_menu(
+            &mut document,
+            root,
+            "density",
+            &options,
+            &state,
+            SelectMenuOptions {
+                accessibility_label: Some("Density choices".to_string()),
+                active_shader: Some(ShaderEffect::new("ui.option.active")),
+                ..Default::default()
+            },
+        );
+
+        let root_accessibility = document.node(nodes.root).accessibility.as_ref().unwrap();
+        assert_eq!(root_accessibility.role, AccessibilityRole::List);
+        assert_eq!(root_accessibility.label.as_deref(), Some("Density choices"));
+
+        let first_row = document.node(nodes.rows[0]);
+        let first_accessibility = first_row.accessibility.as_ref().unwrap();
+        assert_eq!(first_accessibility.value.as_deref(), Some("selected"));
+        assert!(first_row.children.iter().any(|child| matches!(
+            &document.node(*child).content,
+            UiContent::Image(image) if image.key == "icons.compact"
+        )));
+
+        let active_accessibility = document.node(nodes.rows[1]).accessibility.as_ref().unwrap();
+        assert_eq!(
+            active_accessibility.label.as_deref(),
+            Some("Comfortable density")
+        );
+        assert_eq!(
+            document.node(nodes.rows[1]).shader.as_ref().unwrap().key,
+            "ui.option.active"
+        );
+    }
+
+    #[test]
     fn nested_menu_selection_returns_index_path_and_id() {
         let items = vec![MenuItem::submenu(
             "file",
@@ -2498,6 +3210,78 @@ mod tests {
             next_navigable_index(&items, None, NavigationDirection::Next),
             Some(0)
         );
+    }
+
+    #[test]
+    fn menu_list_exports_accessible_rich_rows_and_active_shader() {
+        let mut document = UiDocument::new(root_style(360.0, 240.0));
+        let root = document.root;
+        let items = vec![
+            MenuItem::check("snap", "Snap to Grid", true).image_key("icons.grid"),
+            MenuItem::command("delete", "Delete")
+                .shortcut("Del")
+                .destructive()
+                .accessibility_label("Delete selection"),
+            MenuItem::submenu(
+                "arrange",
+                "Arrange",
+                vec![MenuItem::command("front", "Bring to Front")],
+            ),
+        ];
+
+        let nodes = menu_list(
+            &mut document,
+            root,
+            "context",
+            &items,
+            Some(1),
+            MenuListOptions {
+                accessibility_label: Some("Context actions".to_string()),
+                active_shader: Some(ShaderEffect::new("ui.menu.active")),
+                ..Default::default()
+            },
+        );
+
+        let root_accessibility = document.node(nodes.root).accessibility.as_ref().unwrap();
+        assert_eq!(root_accessibility.role, AccessibilityRole::Menu);
+        assert_eq!(root_accessibility.label.as_deref(), Some("Context actions"));
+
+        let check_accessibility = document.node(nodes.rows[0]).accessibility.as_ref().unwrap();
+        assert_eq!(check_accessibility.role, AccessibilityRole::MenuItem);
+        assert_eq!(check_accessibility.value.as_deref(), Some("checked"));
+        assert!(document
+            .node(nodes.rows[0])
+            .children
+            .iter()
+            .any(|child| matches!(
+                &document.node(*child).content,
+                UiContent::Image(image) if image.key == "icons.grid"
+            )));
+
+        let delete_accessibility = document.node(nodes.rows[1]).accessibility.as_ref().unwrap();
+        assert_eq!(
+            delete_accessibility.label.as_deref(),
+            Some("Delete selection")
+        );
+        assert_eq!(
+            delete_accessibility.hint.as_deref(),
+            Some("Destructive action")
+        );
+        assert_eq!(
+            document.node(nodes.rows[1]).shader.as_ref().unwrap().key,
+            "ui.menu.active"
+        );
+        assert!(document
+            .node(nodes.rows[1])
+            .children
+            .iter()
+            .any(|child| matches!(
+                &document.node(*child).content,
+                UiContent::Text(text) if text.text == "Del"
+            )));
+
+        let submenu_accessibility = document.node(nodes.rows[2]).accessibility.as_ref().unwrap();
+        assert_eq!(submenu_accessibility.hint.as_deref(), Some("Opens submenu"));
     }
 
     #[test]
@@ -2536,6 +3320,30 @@ mod tests {
     }
 
     #[test]
+    fn context_menu_typeahead_wraps_and_skips_disabled_items() {
+        let items = vec![
+            MenuItem::command("copy", "Copy"),
+            MenuItem::command("paste", "Paste").disabled(),
+            MenuItem::command("prefs", "Preferences"),
+            MenuItem::command("save", "Save"),
+        ];
+        let mut state = ContextMenuState::open_at(UiPoint::new(20.0, 30.0));
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::Character('p'),
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(outcome.active, Some(2));
+
+        let outcome = state.handle_event(&items, &UiInputEvent::TextInput("c".to_string()));
+        assert_eq!(outcome.active, Some(0));
+        assert_eq!(state.active, Some(0));
+    }
+
+    #[test]
     fn menu_bar_state_skips_disabled_menus_and_selects_active_item() {
         let menus = vec![
             MenuBarMenu::new("file", "File", vec![MenuItem::command("new", "New")]),
@@ -2553,6 +3361,52 @@ mod tests {
                 index_path: vec![2, 0],
             })
         );
+    }
+
+    #[test]
+    fn menu_bar_exports_menubar_and_menuitem_accessibility() {
+        let mut document = UiDocument::new(root_style(480.0, 80.0));
+        let root = document.root;
+        let menus = vec![
+            MenuBarMenu::new("file", "File", vec![MenuItem::command("new", "New")]),
+            MenuBarMenu::new("edit", "Edit", vec![MenuItem::command("undo", "Undo")]).disabled(),
+        ];
+        let state = MenuBarState {
+            open_menu: Some(0),
+            active_item: Some(0),
+        };
+
+        let nodes = menu_bar(
+            &mut document,
+            root,
+            "main-menu",
+            &menus,
+            &state,
+            None,
+            MenuBarOptions::default(),
+        );
+
+        let root_accessibility = document.node(nodes.root).accessibility.as_ref().unwrap();
+        assert_eq!(root_accessibility.role, AccessibilityRole::MenuBar);
+        assert_eq!(root_accessibility.label.as_deref(), Some("main-menu"));
+
+        let file_accessibility = document
+            .node(nodes.buttons[0])
+            .accessibility
+            .as_ref()
+            .unwrap();
+        assert_eq!(file_accessibility.role, AccessibilityRole::MenuItem);
+        assert_eq!(file_accessibility.value.as_deref(), Some("open"));
+        assert!(file_accessibility.enabled);
+        assert!(file_accessibility.focusable);
+
+        let edit_accessibility = document
+            .node(nodes.buttons[1])
+            .accessibility
+            .as_ref()
+            .unwrap();
+        assert_eq!(edit_accessibility.value.as_deref(), Some("closed"));
+        assert!(!edit_accessibility.enabled);
     }
 
     #[test]
@@ -2581,7 +3435,10 @@ mod tests {
         let mut document = UiDocument::new(root_style(600.0, 400.0));
         let root = document.root;
         let items = vec![
-            CommandPaletteItem::new("open", "Open File"),
+            CommandPaletteItem::new("open", "Open File")
+                .subtitle("Recent documents")
+                .image_key("icons.open")
+                .accessibility_label("Open a file"),
             CommandPaletteItem::new("save", "Save Project"),
         ];
         let mut state = CommandPaletteState::new().with_query("o");
@@ -2594,7 +3451,12 @@ mod tests {
             &items,
             &state,
             None,
-            CommandPaletteOptions::default(),
+            CommandPaletteOptions {
+                accessibility_label: Some("Command palette".to_string()),
+                panel_shader: Some(ShaderEffect::new("ui.palette.panel")),
+                active_row_shader: Some(ShaderEffect::new("ui.palette.active")),
+                ..Default::default()
+            },
         );
         document
             .compute_layout(UiSize::new(600.0, 400.0), &mut ApproxTextMeasurer)
@@ -2603,6 +3465,40 @@ mod tests {
         assert_eq!(nodes.rows.len(), 2);
         assert!(document.node(nodes.input).input.focusable);
         assert!(document.node(nodes.root).layout.rect.width > 0.0);
+        assert_eq!(
+            document
+                .node(nodes.root)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("Command palette")
+        );
+        assert_eq!(
+            document.node(nodes.root).shader.as_ref().unwrap().key,
+            "ui.palette.panel"
+        );
+        assert_eq!(
+            document
+                .node(nodes.input)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .role,
+            AccessibilityRole::TextBox
+        );
+
+        let active_row = document.node(nodes.rows[0]);
+        let active_accessibility = active_row.accessibility.as_ref().unwrap();
+        assert_eq!(active_accessibility.role, AccessibilityRole::ListItem);
+        assert_eq!(active_accessibility.label.as_deref(), Some("Open a file"));
+        assert_eq!(active_accessibility.value.as_deref(), Some("open"));
+        assert_eq!(active_row.shader.as_ref().unwrap().key, "ui.palette.active");
+        assert!(active_row.children.iter().any(|child| matches!(
+            &document.node(*child).content,
+            UiContent::Image(image) if image.key == "icons.open"
+        )));
     }
 
     #[test]
@@ -2635,6 +3531,9 @@ mod tests {
         );
 
         assert!(document.node(nodes.trigger).input.focusable);
+        let accessibility = document.node(nodes.trigger).accessibility.as_ref().unwrap();
+        assert_eq!(accessibility.role, AccessibilityRole::ComboBox);
+        assert_eq!(accessibility.value.as_deref(), Some("High"));
         assert!(nodes.popup.is_none());
     }
 }
