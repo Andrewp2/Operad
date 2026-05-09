@@ -1,6 +1,20 @@
 [package]
 name = "operad"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[lib]
+name = "operad"
+path = "src/lib.rs"
+
+[features]
+default = []
+egui = ["dep:egui"]
+text-cosmic = ["dep:cosmic-text"]
+widgets = []
+audit = []
 
 [dependencies]
+cosmic-text = { version = "0.14.2", optional = true }
+egui = { version = "0.33.3", optional = true }
+taffy = "0.10.1"
