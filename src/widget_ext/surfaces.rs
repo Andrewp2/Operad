@@ -6,10 +6,11 @@ use taffy::prelude::{
 };
 
 use crate::{
-    length, AccessibilityMeta, AccessibilityRole, AnimatedValues, AnimationMachine, AnimationState,
-    AnimationTransition, AnimationTrigger, ClipBehavior, ColorRgba, ImageContent, InputBehavior,
-    ScenePrimitive, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, AccessibilityValueRange,
+    AnimatedValues, AnimationMachine, AnimationState, AnimationTransition, AnimationTrigger,
+    ClipBehavior, ColorRgba, ImageContent, InputBehavior, ScenePrimitive, ShaderEffect,
+    StrokeStyle, TextStyle, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize,
+    UiVisual,
 };
 
 const DEFAULT_SURFACE_BG: ColorRgba = ColorRgba::new(24, 29, 36, 255);
@@ -1007,10 +1008,15 @@ impl DialogDescriptor {
                 format!("{modality}; dismissal is controlled by the application")
             }
         });
-        AccessibilityMeta::new(AccessibilityRole::Dialog)
+        let meta = AccessibilityMeta::new(AccessibilityRole::Dialog)
             .label(label)
             .hint(hint)
-            .focusable()
+            .focusable();
+        if self.modal {
+            meta.modal()
+        } else {
+            meta
+        }
     }
 }
 
@@ -1164,14 +1170,20 @@ impl PopoverDescriptor {
                 dismiss_hint
             )
         });
-        AccessibilityMeta::new(if self.modal {
+        let meta = AccessibilityMeta::new(if self.modal {
             AccessibilityRole::Dialog
         } else {
             AccessibilityRole::Menu
         })
         .label(label)
         .hint(hint)
-        .focusable()
+        .expanded(true)
+        .focusable();
+        if self.modal {
+            meta.modal()
+        } else {
+            meta
+        }
     }
 }
 
@@ -1408,6 +1420,10 @@ impl Toast {
         AccessibilityMeta::new(AccessibilityRole::ListItem)
             .label(label)
             .hint(hint)
+            .live_region(match self.severity {
+                ToastSeverity::Error | ToastSeverity::Warning => AccessibilityLiveRegion::Assertive,
+                ToastSeverity::Info | ToastSeverity::Success => AccessibilityLiveRegion::Polite,
+            })
     }
 }
 
@@ -2040,6 +2056,7 @@ pub fn timeline_ruler(
                 format_ruler_label(range.start),
                 format_ruler_label(range.end)
             ))
+            .value_range(AccessibilityValueRange::new(range.start, range.end))
             .hint(
                 options
                     .accessibility_hint

@@ -854,6 +854,7 @@ pub fn dropdown_select(
                     .unwrap_or_else(|| name.clone()),
             )
             .value(label.to_string())
+            .expanded(state.open)
             .focusable(),
     );
     let popup = state.open.then(|| {
@@ -1768,6 +1769,7 @@ pub fn command_palette(
             AccessibilityMeta::new(AccessibilityRole::TextBox)
                 .label("Command search")
                 .value(state.query.clone())
+                .shortcut("Ctrl+K")
                 .focusable(),
         ),
     );
@@ -2667,16 +2669,21 @@ fn command_item_accessibility_label(item: &CommandPaletteItem) -> String {
 
 fn menu_item_accessibility(item: &MenuItem, active: bool) -> AccessibilityMeta {
     let mut accessibility = AccessibilityMeta::new(AccessibilityRole::MenuItem)
-        .label(menu_item_accessibility_label(item));
+        .label(menu_item_accessibility_label(item))
+        .selected(active);
     if let MenuItemKind::Check { checked } = &item.kind {
-        accessibility = accessibility.value(if *checked { "checked" } else { "unchecked" });
+        accessibility = accessibility
+            .value(if *checked { "checked" } else { "unchecked" })
+            .checked(*checked);
     }
     if item.children().is_some() {
-        accessibility = accessibility.hint("Opens submenu");
+        accessibility = accessibility.hint("Opens submenu").expanded(active);
     } else if item.destructive {
         accessibility = accessibility.hint("Destructive action");
     } else if let Some(shortcut) = &item.shortcut {
-        accessibility = accessibility.hint(format!("Shortcut {shortcut}"));
+        accessibility = accessibility
+            .hint(format!("Shortcut {shortcut}"))
+            .shortcut(shortcut.clone());
     } else if active {
         accessibility = accessibility.hint("Active menu item");
     }
@@ -2690,7 +2697,8 @@ fn menu_item_accessibility(item: &MenuItem, active: bool) -> AccessibilityMeta {
 fn menu_button_accessibility(menu: &MenuBarMenu, active: bool) -> AccessibilityMeta {
     let accessibility = AccessibilityMeta::new(AccessibilityRole::MenuItem)
         .label(menu.label.clone())
-        .value(if active { "open" } else { "closed" });
+        .value(if active { "open" } else { "closed" })
+        .expanded(active);
     if menu.enabled {
         accessibility.focusable()
     } else {

@@ -1655,6 +1655,7 @@ fn property_row_accessibility(
         AccessibilityMeta::new(AccessibilityRole::ListItem)
             .label(row.label.clone())
             .value(value.join("; "))
+            .selected(selected)
             .focusable(),
         !row.disabled,
     )
@@ -1676,7 +1677,11 @@ fn property_value_accessibility(
 
     let mut meta = AccessibilityMeta::new(AccessibilityRole::GridCell)
         .label(format!("{} value", row.label))
-        .value(value.join("; "));
+        .value(value.join("; "))
+        .selected(selected);
+    if !row.editable {
+        meta = meta.read_only();
+    }
     if row.editable && !row.disabled {
         meta = meta.focusable();
     }
@@ -1688,7 +1693,7 @@ fn data_table_header_accessibility(
     column_index: usize,
     column_count: usize,
 ) -> AccessibilityMeta {
-    AccessibilityMeta::new(AccessibilityRole::Label)
+    AccessibilityMeta::new(AccessibilityRole::ColumnHeader)
         .label(column.label.clone())
         .value(format!(
             "column {} of {}; {}",
@@ -1708,6 +1713,7 @@ fn data_table_row_accessibility(row: usize, row_count: usize, selected: bool) ->
     AccessibilityMeta::new(AccessibilityRole::ListItem)
         .label(format!("Row {}", row + 1))
         .value(value.join("; "))
+        .selected(selected)
         .focusable()
 }
 
@@ -1730,6 +1736,7 @@ fn data_table_cell_accessibility(
     AccessibilityMeta::new(AccessibilityRole::GridCell)
         .label(format!("Row {}, {}", cell.row + 1, column_label))
         .value(value.join("; "))
+        .selected(active)
         .focusable()
 }
 
@@ -1764,6 +1771,8 @@ fn tree_item_accessibility(
         AccessibilityMeta::new(AccessibilityRole::TreeItem)
             .label(item.label.clone())
             .value(value.join("; "))
+            .selected(selected)
+            .expanded(item.expanded)
             .focusable(),
         !item.disabled,
     )
@@ -1787,6 +1796,7 @@ fn tab_accessibility(
         AccessibilityMeta::new(AccessibilityRole::Tab)
             .label(tab.label.clone())
             .value(value.join("; "))
+            .selected(selected)
             .focusable(),
         !tab.disabled,
     )

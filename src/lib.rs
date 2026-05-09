@@ -348,32 +348,126 @@ pub struct ShaderUniform {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessibilityRole {
+    Alert,
     Application,
     Button,
     Checkbox,
+    ColumnHeader,
     ComboBox,
     Dialog,
+    EditorSurface,
+    Group,
     Grid,
     GridCell,
     Image,
     Label,
+    Link,
     List,
     ListItem,
+    Meter,
     Menu,
     MenuBar,
     MenuItem,
     ProgressBar,
+    RadioButton,
+    Row,
+    RowHeader,
+    Ruler,
+    SearchBox,
+    Separator,
     Slider,
+    SpinButton,
+    Splitter,
+    Status,
+    Switch,
     Tab,
     TabList,
     TabPanel,
     TextBox,
+    ToggleButton,
+    Toolbar,
+    Tooltip,
     Tree,
     TreeItem,
     Window,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityChecked {
+    False,
+    True,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityLiveRegion {
+    Off,
+    Polite,
+    Assertive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilitySortDirection {
+    None,
+    Ascending,
+    Descending,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AccessibilityValueRange {
+    pub min: f64,
+    pub max: f64,
+    pub step: Option<f64>,
+}
+
+impl AccessibilityValueRange {
+    pub const fn new(min: f64, max: f64) -> Self {
+        Self {
+            min,
+            max,
+            step: None,
+        }
+    }
+
+    pub const fn with_step(mut self, step: f64) -> Self {
+        self.step = Some(step);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibilityAction {
+    pub id: String,
+    pub label: String,
+    pub shortcut: Option<String>,
+}
+
+impl AccessibilityAction {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            shortcut: None,
+        }
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccessibilityRelations {
+    pub labelled_by: Vec<UiNodeId>,
+    pub described_by: Vec<UiNodeId>,
+    pub controls: Vec<UiNodeId>,
+    pub owns: Vec<UiNodeId>,
+    pub active_descendant: Option<UiNodeId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AccessibilityMeta {
     pub role: AccessibilityRole,
     pub label: Option<String>,
@@ -381,6 +475,22 @@ pub struct AccessibilityMeta {
     pub hint: Option<String>,
     pub enabled: bool,
     pub focusable: bool,
+    pub hidden: bool,
+    pub modal: bool,
+    pub selected: Option<bool>,
+    pub checked: Option<AccessibilityChecked>,
+    pub expanded: Option<bool>,
+    pub pressed: Option<bool>,
+    pub read_only: bool,
+    pub required: bool,
+    pub invalid: Option<String>,
+    pub live_region: AccessibilityLiveRegion,
+    pub sort: AccessibilitySortDirection,
+    pub value_range: Option<AccessibilityValueRange>,
+    pub focus_order: Option<i32>,
+    pub key_shortcuts: Vec<String>,
+    pub actions: Vec<AccessibilityAction>,
+    pub relations: AccessibilityRelations,
 }
 
 impl AccessibilityMeta {
@@ -392,6 +502,22 @@ impl AccessibilityMeta {
             hint: None,
             enabled: true,
             focusable: false,
+            hidden: false,
+            modal: false,
+            selected: None,
+            checked: None,
+            expanded: None,
+            pressed: None,
+            read_only: false,
+            required: false,
+            invalid: None,
+            live_region: AccessibilityLiveRegion::Off,
+            sort: AccessibilitySortDirection::None,
+            value_range: None,
+            focus_order: None,
+            key_shortcuts: Vec::new(),
+            actions: Vec::new(),
+            relations: AccessibilityRelations::default(),
         }
     }
 
@@ -417,6 +543,115 @@ impl AccessibilityMeta {
 
     pub fn focusable(mut self) -> Self {
         self.focusable = true;
+        self
+    }
+
+    pub fn hidden(mut self) -> Self {
+        self.hidden = true;
+        self
+    }
+
+    pub fn modal(mut self) -> Self {
+        self.modal = true;
+        self
+    }
+
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = Some(selected);
+        self
+    }
+
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(if checked {
+            AccessibilityChecked::True
+        } else {
+            AccessibilityChecked::False
+        });
+        self
+    }
+
+    pub fn mixed(mut self) -> Self {
+        self.checked = Some(AccessibilityChecked::Mixed);
+        self
+    }
+
+    pub fn expanded(mut self, expanded: bool) -> Self {
+        self.expanded = Some(expanded);
+        self
+    }
+
+    pub fn pressed(mut self, pressed: bool) -> Self {
+        self.pressed = Some(pressed);
+        self
+    }
+
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    pub fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    pub fn invalid(mut self, reason: impl Into<String>) -> Self {
+        self.invalid = Some(reason.into());
+        self
+    }
+
+    pub fn live_region(mut self, live_region: AccessibilityLiveRegion) -> Self {
+        self.live_region = live_region;
+        self
+    }
+
+    pub fn sort(mut self, sort: AccessibilitySortDirection) -> Self {
+        self.sort = sort;
+        self
+    }
+
+    pub fn value_range(mut self, range: AccessibilityValueRange) -> Self {
+        self.value_range = Some(range);
+        self
+    }
+
+    pub fn focus_order(mut self, order: i32) -> Self {
+        self.focus_order = Some(order);
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.key_shortcuts.push(shortcut.into());
+        self
+    }
+
+    pub fn action(mut self, action: AccessibilityAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub fn labelled_by(mut self, id: UiNodeId) -> Self {
+        self.relations.labelled_by.push(id);
+        self
+    }
+
+    pub fn described_by(mut self, id: UiNodeId) -> Self {
+        self.relations.described_by.push(id);
+        self
+    }
+
+    pub fn controls(mut self, id: UiNodeId) -> Self {
+        self.relations.controls.push(id);
+        self
+    }
+
+    pub fn owns(mut self, id: UiNodeId) -> Self {
+        self.relations.owns.push(id);
+        self
+    }
+
+    pub fn active_descendant(mut self, id: UiNodeId) -> Self {
+        self.relations.active_descendant = Some(id);
         self
     }
 }
@@ -1793,6 +2028,28 @@ pub struct AccessibilityNode {
     pub rect: UiRect,
     pub enabled: bool,
     pub focusable: bool,
+    pub modal: bool,
+    pub selected: Option<bool>,
+    pub checked: Option<AccessibilityChecked>,
+    pub expanded: Option<bool>,
+    pub pressed: Option<bool>,
+    pub read_only: bool,
+    pub required: bool,
+    pub invalid: Option<String>,
+    pub live_region: AccessibilityLiveRegion,
+    pub sort: AccessibilitySortDirection,
+    pub value_range: Option<AccessibilityValueRange>,
+    pub focus_order: Option<i32>,
+    pub key_shortcuts: Vec<String>,
+    pub actions: Vec<AccessibilityAction>,
+    pub relations: AccessibilityRelations,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AccessibilityTree {
+    pub nodes: Vec<AccessibilityNode>,
+    pub focus_order: Vec<UiNodeId>,
+    pub modal_scope: Option<UiNodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1839,11 +2096,19 @@ impl UiDocument {
     }
 
     pub fn accessibility_tree(&self) -> Vec<AccessibilityNode> {
-        self.nodes
+        self.accessibility_snapshot().nodes
+    }
+
+    pub fn accessibility_snapshot(&self) -> AccessibilityTree {
+        let nodes = self
+            .nodes
             .iter()
             .enumerate()
             .filter_map(|(index, node)| {
                 let accessibility = node.accessibility.as_ref()?;
+                if accessibility.hidden {
+                    return None;
+                }
                 Some(AccessibilityNode {
                     id: UiNodeId(index),
                     parent: node.parent,
@@ -1854,9 +2119,38 @@ impl UiDocument {
                     rect: node.layout.rect,
                     enabled: accessibility.enabled,
                     focusable: accessibility.focusable || node.input.focusable,
+                    modal: accessibility.modal,
+                    selected: accessibility.selected,
+                    checked: accessibility.checked,
+                    expanded: accessibility.expanded,
+                    pressed: accessibility.pressed,
+                    read_only: accessibility.read_only,
+                    required: accessibility.required,
+                    invalid: accessibility.invalid.clone(),
+                    live_region: accessibility.live_region,
+                    sort: accessibility.sort,
+                    value_range: accessibility.value_range,
+                    focus_order: accessibility.focus_order,
+                    key_shortcuts: accessibility.key_shortcuts.clone(),
+                    actions: accessibility.actions.clone(),
+                    relations: accessibility.relations.clone(),
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        let focus_order = accessibility_focus_order(&nodes);
+        let modal_scope = nodes
+            .iter()
+            .find(|node| node.modal && node.enabled)
+            .map(|node| node.id);
+        AccessibilityTree {
+            nodes,
+            focus_order,
+            modal_scope,
+        }
+    }
+
+    pub fn accessibility_focus_order(&self) -> Vec<UiNodeId> {
+        self.accessibility_snapshot().focus_order
     }
 
     fn layout_snapshot_subtree(&self, id: UiNodeId) -> LayoutSnapshot {
@@ -1970,6 +2264,22 @@ impl UiDocument {
         }
         false
     }
+}
+
+fn accessibility_focus_order(nodes: &[AccessibilityNode]) -> Vec<UiNodeId> {
+    let mut focusable = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(document_order, node)| {
+            (node.enabled && node.focusable).then_some((
+                node.focus_order.unwrap_or(i32::MAX),
+                document_order,
+                node.id,
+            ))
+        })
+        .collect::<Vec<_>>();
+    focusable.sort_by_key(|(focus_order, document_order, _)| (*focus_order, *document_order));
+    focusable.into_iter().map(|(_, _, id)| id).collect()
 }
 
 fn rect_is_finite(rect: UiRect) -> bool {
@@ -2093,8 +2403,10 @@ pub mod widgets {
             .accessibility_label
             .clone()
             .unwrap_or_else(|| label.clone());
-        let mut accessibility =
-            AccessibilityMeta::new(AccessibilityRole::Button).label(accessibility_label);
+        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Button)
+            .label(accessibility_label)
+            .pressed(options.pressed)
+            .action(AccessibilityAction::new("activate", "Activate"));
         if let Some(hint) = options.accessibility_hint.clone() {
             accessibility = accessibility.hint(hint);
         }
@@ -2307,7 +2619,9 @@ pub mod widgets {
                     .clone()
                     .unwrap_or_else(|| label_text.clone()),
             )
-            .value(if checked { "checked" } else { "unchecked" });
+            .value(if checked { "checked" } else { "unchecked" })
+            .checked(checked)
+            .action(AccessibilityAction::new("toggle", "Toggle"));
         if let Some(hint) = options.accessibility_hint.clone() {
             accessibility = accessibility.hint(hint);
         }
@@ -2516,7 +2830,13 @@ pub mod widgets {
                     .accessibility_value
                     .clone()
                     .unwrap_or_else(|| slider_accessibility_value(value, range.clone())),
-            );
+            )
+            .value_range(AccessibilityValueRange::new(
+                range.start as f64,
+                range.end as f64,
+            ))
+            .action(AccessibilityAction::new("increase", "Increase"))
+            .action(AccessibilityAction::new("decrease", "Decrease"));
         if let Some(hint) = options.accessibility_hint.clone() {
             accessibility = accessibility.hint(hint);
         }
@@ -2961,7 +3281,15 @@ pub mod widgets {
                     .clone()
                     .unwrap_or_else(|| name.clone()),
             )
-            .value(state.text.clone());
+            .value(state.text.clone())
+            .shortcut("Ctrl+A")
+            .shortcut("Ctrl+C")
+            .shortcut("Ctrl+X")
+            .shortcut("Ctrl+V")
+            .action(AccessibilityAction::new("select_all", "Select all").shortcut("Ctrl+A"))
+            .action(AccessibilityAction::new("copy", "Copy").shortcut("Ctrl+C"))
+            .action(AccessibilityAction::new("cut", "Cut").shortcut("Ctrl+X"))
+            .action(AccessibilityAction::new("paste", "Paste").shortcut("Ctrl+V"));
         let hint = options
             .accessibility_hint
             .clone()
@@ -3189,6 +3517,12 @@ pub mod widgets {
                 format!("{selected_label} (open)")
             } else {
                 selected_label
+            })
+            .expanded(open)
+            .action(if open {
+                AccessibilityAction::new("close", "Close")
+            } else {
+                AccessibilityAction::new("open", "Open")
             });
         if let Some(hint) = accessibility_hint {
             accessibility = accessibility.hint(hint);
@@ -3417,7 +3751,16 @@ pub mod widgets {
         };
         let accessibility = AccessibilityMeta::new(AccessibilityRole::Slider)
             .label(label)
-            .value(format!("{percent:.0}%"));
+            .value(format!("{percent:.0}%"))
+            .value_range(AccessibilityValueRange::new(
+                0.0,
+                max_offset.max(0.0) as f64,
+            ))
+            .action(AccessibilityAction::new(
+                "scroll_backward",
+                "Scroll backward",
+            ))
+            .action(AccessibilityAction::new("scroll_forward", "Scroll forward"));
         if max_offset <= f32::EPSILON {
             accessibility.disabled()
         } else {
@@ -4542,6 +4885,131 @@ mod tests {
         assert_eq!(tree[0].label.as_deref(), Some("Play"));
         assert!(tree[0].focusable);
         assert_eq!(tree[0].rect.width, 80.0);
+    }
+
+    #[test]
+    fn accessibility_snapshot_tracks_focus_order_state_relations_and_actions() {
+        let mut doc = UiDocument::new(root_style(240.0, 140.0));
+        let name = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "play.name",
+                "Play",
+                TextStyle::default(),
+                Style {
+                    size: TaffySize {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+            )
+            .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label("Play")),
+        );
+        let hint = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "play.hint",
+                "Starts transport",
+                TextStyle::default(),
+                Style {
+                    size: TaffySize {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Tooltip).label("Starts transport"),
+            ),
+        );
+        let dialog = doc.add_child(
+            doc.root,
+            UiNode::container("modal", button_style(60.0, 32.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Dialog)
+                        .label("Command palette")
+                        .modal()
+                        .focusable()
+                        .focus_order(0),
+                ),
+        );
+        let slider = doc.add_child(
+            doc.root,
+            UiNode::container("volume", button_style(120.0, 20.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label("Volume")
+                        .value("-6 dB")
+                        .value_range(AccessibilityValueRange::new(-60.0, 6.0).with_step(0.5))
+                        .focusable()
+                        .focus_order(1),
+                ),
+        );
+        let button = doc.add_child(
+            doc.root,
+            UiNode::container("play", button_style(80.0, 32.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::ToggleButton)
+                        .label("Transport play")
+                        .labelled_by(name)
+                        .described_by(hint)
+                        .controls(slider)
+                        .pressed(true)
+                        .selected(true)
+                        .shortcut("Space")
+                        .action(AccessibilityAction::new("activate", "Activate").shortcut("Space"))
+                        .focusable()
+                        .focus_order(2),
+                ),
+        );
+        doc.add_child(
+            doc.root,
+            UiNode::container("hidden", button_style(40.0, 20.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label("Hidden")
+                    .hidden()
+                    .focusable(),
+            ),
+        );
+        doc.compute_layout(UiSize::new(240.0, 140.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let snapshot = doc.accessibility_snapshot();
+        assert_eq!(snapshot.modal_scope, Some(dialog));
+        assert_eq!(snapshot.focus_order, vec![dialog, slider, button]);
+        assert!(!snapshot
+            .nodes
+            .iter()
+            .any(|node| node.label.as_deref() == Some("Hidden")));
+
+        let button_node = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id == button)
+            .expect("button accessibility");
+        assert_eq!(button_node.role, AccessibilityRole::ToggleButton);
+        assert_eq!(button_node.pressed, Some(true));
+        assert_eq!(button_node.selected, Some(true));
+        assert_eq!(button_node.key_shortcuts, vec!["Space"]);
+        assert_eq!(button_node.actions[0].id, "activate");
+        assert_eq!(button_node.relations.labelled_by, vec![name]);
+        assert_eq!(button_node.relations.described_by, vec![hint]);
+        assert_eq!(button_node.relations.controls, vec![slider]);
+
+        let slider_node = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id == slider)
+            .expect("slider accessibility");
+        assert_eq!(
+            slider_node.value_range,
+            Some(AccessibilityValueRange::new(-60.0, 6.0).with_step(0.5))
+        );
     }
 
     #[test]

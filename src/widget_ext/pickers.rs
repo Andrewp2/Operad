@@ -7,8 +7,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::{
-    AccessibilityMeta, AccessibilityRole, ColorRgba, EditPhase, ImageContent, KeyCode,
-    KeyModifiers, ShaderEffect,
+    AccessibilityMeta, AccessibilityRole, AccessibilityValueRange, ColorRgba, EditPhase,
+    ImageContent, KeyCode, KeyModifiers, ShaderEffect,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -198,6 +198,7 @@ impl CalendarDayCell {
         let mut meta = AccessibilityMeta::new(AccessibilityRole::GridCell)
             .label(self.date.accessibility_label())
             .value(self.date.iso_string())
+            .selected(self.selected)
             .focusable();
         if !states.is_empty() {
             meta = meta.hint(states.join(", "));
@@ -249,6 +250,7 @@ impl DatePickerModel {
     pub fn control_accessibility_meta(&self, control: DatePickerControl) -> AccessibilityMeta {
         let mut meta = AccessibilityMeta::new(AccessibilityRole::Button)
             .label(control.label(self))
+            .action(crate::AccessibilityAction::new("activate", "Activate"))
             .focusable();
         if let Some(value) = control.value(self) {
             meta = meta.value(value);
@@ -804,6 +806,7 @@ impl ColorSwatch {
         let mut meta = AccessibilityMeta::new(AccessibilityRole::Button)
             .label(self.label.clone())
             .value(format_hex_color(self.color, self.color.a < 255))
+            .selected(selected)
             .focusable();
         if selected {
             meta = meta.hint("selected");
@@ -888,6 +891,12 @@ impl ColorPickerState {
             .label(channel.label())
             .value(channel.format_value(self.hsv()))
             .hint(channel.hint())
+            .value_range(match channel {
+                ColorChannel::Hue => AccessibilityValueRange::new(0.0, 360.0),
+                ColorChannel::Saturation | ColorChannel::Value | ColorChannel::Alpha => {
+                    AccessibilityValueRange::new(0.0, 1.0)
+                }
+            })
             .focusable()
     }
 
@@ -1290,9 +1299,12 @@ impl NumericInputState {
             .value(self.text.clone())
             .focusable();
         if let Some(message) = validation.message {
-            meta = meta.hint(message);
+            meta = meta.hint(message.clone()).invalid(message);
         } else if let Some(range) = self.range {
             meta = meta.hint(numeric_range_hint(range, self.precision));
+        }
+        if self.range.is_none() {
+            meta = meta.action(crate::AccessibilityAction::new("commit", "Commit value"));
         }
         meta
     }
@@ -1303,7 +1315,9 @@ impl NumericInputState {
             .value(self.precision.format(self.value))
             .focusable();
         if let Some(range) = self.range {
-            meta = meta.hint(numeric_range_hint(range, self.precision));
+            meta = meta
+                .hint(numeric_range_hint(range, self.precision))
+                .value_range(AccessibilityValueRange::new(range.min, range.max));
         }
         meta
     }
