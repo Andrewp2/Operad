@@ -175,3 +175,7 @@ The branch starts from Operad 2.0.0 plus:
 - Renderer-neutral paint extensions in `src/paint.rs` for gradient brushes,
   stroke alignment, corner radii, shadows/glows/inset shadows, anchored scene
   text with alignment and overflow policy, image placement, and path primitives.
+- Renderer-neutral raw input and gesture contracts in `src/input.rs` for pointer
+  identity/buttons, high-resolution wheel units, keyboard/text conversion,
+  pointer capture, drag thresholds, double-click counting, cancellation, and
+  gesture-to-edit phases.

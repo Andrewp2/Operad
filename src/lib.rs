@@ -19,9 +19,17 @@ use taffy::prelude::{
 
 pub mod accessibility;
 pub mod commands;
+pub mod input;
 pub mod paint;
 pub mod platform;
 pub mod theme;
+
+pub use input::{
+    DragGesture, GestureEvent, GesturePhase, GestureSettings, PointerButton, PointerButtons,
+    PointerCapture, PointerClick, PointerEventKind, PointerGestureTracker, PointerId, PointerKind,
+    RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent,
+    WheelDeltaUnit, WheelPhase,
+};
 
 pub use paint::{
     AlignedStroke, CornerRadii, GradientStop, ImageAlignment, ImageFit, LinearGradient, PaintBrush,
