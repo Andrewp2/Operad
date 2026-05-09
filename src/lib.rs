@@ -22,6 +22,7 @@ pub mod commands;
 pub mod input;
 pub mod paint;
 pub mod platform;
+pub mod renderer;
 pub mod shell;
 pub mod testing;
 pub mod theme;
@@ -37,6 +38,12 @@ pub use paint::{
     AlignedStroke, CornerRadii, GradientStop, ImageAlignment, ImageFit, LinearGradient, PaintBrush,
     PaintEffect, PaintEffectKind, PaintImage, PaintPath, PaintRect, PaintText, PathVerb,
     StrokeAlignment, TextHorizontalAlign, TextOverflow, TextVerticalAlign,
+};
+pub use renderer::{
+    DirtyRegionSet, PaintBatch, PaintBatchKey, PaintBatchKind, PaintBatcher, PixelRect,
+    RenderError, RenderFrameOutput, RenderFrameRequest, RenderOptions, RenderTarget,
+    RenderTargetKind, RenderedImage, RendererAdapter, ResourceDescriptor, ResourceFormat,
+    ResourceResolver, ResourceUpdate,
 };
 pub use shell::{
     DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup, ScrollSyncMember,

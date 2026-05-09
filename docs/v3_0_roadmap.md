@@ -186,3 +186,6 @@ The branch starts from Operad 2.0.0 plus:
 - Renderer-neutral testing helpers in `src/testing.rs` for event replay, raw
   input conversion checks, stable-name layout assertions, paint-list assertions,
   RGBA pixel diffs with tolerances, dirty flags, and frame timing sections.
+- Renderer/backend adapter contracts in `src/renderer.rs` for render targets,
+  resource deltas, dirty regions, paint batching, deterministic snapshots, and
+  backend capability negotiation.
