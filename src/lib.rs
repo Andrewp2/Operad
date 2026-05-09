@@ -76,6 +76,14 @@ pub use testing::{
     PixelDiffReport, PixelDiffTolerance, PlatformAssertions, ReplayInput, RgbaImageView,
     TestFailure, TestResult,
 };
+pub use theme::{
+    color_with_alpha, text_style_with_color, ColorTokens, ComponentIconStates,
+    ComponentLayoutTokens, ComponentRole, ComponentState, ComponentStateSlot, ComponentStyle,
+    ComponentTextStates, ComponentTokens, ComponentVisualStates, EffectTokens, IconStyle,
+    LayerEffect, LayerEffectKind, MotionCurve, MotionTokens, OpacityTokens, RadiusTokens,
+    ScopedThemeRegistry, SpacingTokens, StrokeTokens, Theme, ThemePatch, ThemeScope,
+    ThemeScopeError, ThemeScopeId, ThemeScopeKind, TypographyTokens, OPERAD_DARK_THEME_NAME,
+};
 pub use tooltips::{
     CommandTooltip, CommandTooltipResolver, ShortcutDisplayPlatform, ShortcutFormatter,
     TooltipAnchor, TooltipContent, TooltipPlacement, TooltipRequest,

@@ -162,6 +162,9 @@ The branch starts from Operad 2.0.0 plus:
 
 - `Cargo.toml` version bumped to `3.0.0`.
 - Expanded accessibility primitives in core.
+- Scoped theme registry contracts in `src/theme.rs` for shell, panel, editor,
+  overlay, menu, and tooltip theme scopes with inherited token patches and
+  derived component-token rebuilding.
 - `UiDocument::accessibility_snapshot()` with nodes, focus order, and modal
   scope.
 - Accessibility tree helpers for nearest accessible parents, focusable nodes,

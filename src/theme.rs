@@ -5,6 +5,7 @@
 //! resolves to existing core primitives (`UiVisual`, `TextStyle`, `StrokeStyle`,
 //! and `ColorRgba`) instead of renderer-specific paint objects.
 
+use std::collections::{HashMap, HashSet};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
 use crate::{
@@ -75,6 +76,349 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self::dark()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ThemeScopeId(String);
+
+impl ThemeScopeId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for ThemeScopeId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<&str> for ThemeScopeId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for ThemeScopeId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&ThemeScopeId> for ThemeScopeId {
+    fn from(value: &ThemeScopeId) -> Self {
+        value.clone()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ThemeScopeKind {
+    Shell,
+    Panel,
+    EditorSurface,
+    Overlay,
+    Menu,
+    Tooltip,
+    Custom(String),
+}
+
+impl ThemeScopeKind {
+    pub fn custom(id: impl Into<String>) -> Self {
+        Self::Custom(id.into())
+    }
+
+    pub const fn is_editor_surface(&self) -> bool {
+        matches!(self, Self::EditorSurface)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ThemePatch {
+    pub colors: Option<ColorTokens>,
+    pub spacing: Option<SpacingTokens>,
+    pub typography: Option<TypographyTokens>,
+    pub radius: Option<RadiusTokens>,
+    pub stroke: Option<StrokeTokens>,
+    pub effects: Option<EffectTokens>,
+    pub opacity: Option<OpacityTokens>,
+    pub motion: Option<MotionTokens>,
+    pub components: Option<ComponentTokens>,
+}
+
+impl ThemePatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn colors(mut self, colors: ColorTokens) -> Self {
+        self.colors = Some(colors);
+        self
+    }
+
+    pub fn spacing(mut self, spacing: SpacingTokens) -> Self {
+        self.spacing = Some(spacing);
+        self
+    }
+
+    pub fn typography(mut self, typography: TypographyTokens) -> Self {
+        self.typography = Some(typography);
+        self
+    }
+
+    pub fn radius(mut self, radius: RadiusTokens) -> Self {
+        self.radius = Some(radius);
+        self
+    }
+
+    pub fn stroke(mut self, stroke: StrokeTokens) -> Self {
+        self.stroke = Some(stroke);
+        self
+    }
+
+    pub fn effects(mut self, effects: EffectTokens) -> Self {
+        self.effects = Some(effects);
+        self
+    }
+
+    pub fn opacity(mut self, opacity: OpacityTokens) -> Self {
+        self.opacity = Some(opacity);
+        self
+    }
+
+    pub fn motion(mut self, motion: MotionTokens) -> Self {
+        self.motion = Some(motion);
+        self
+    }
+
+    pub fn components(mut self, components: ComponentTokens) -> Self {
+        self.components = Some(components);
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.colors.is_none()
+            && self.spacing.is_none()
+            && self.typography.is_none()
+            && self.radius.is_none()
+            && self.stroke.is_none()
+            && self.effects.is_none()
+            && self.opacity.is_none()
+            && self.motion.is_none()
+            && self.components.is_none()
+    }
+
+    pub fn apply_to(&self, theme: &mut Theme) {
+        let colors_changed = self.colors.is_some();
+        let spacing_changed = self.spacing.is_some();
+        let typography_changed = self.typography.is_some();
+        let radius_changed = self.radius.is_some();
+        let stroke_changed = self.stroke.is_some();
+        let opacity_changed = self.opacity.is_some();
+
+        if let Some(colors) = self.colors {
+            theme.colors = colors;
+        }
+
+        if colors_changed && self.typography.is_none() {
+            theme.typography = TypographyTokens::dark(&theme.colors);
+        }
+
+        if colors_changed && self.stroke.is_none() {
+            theme.stroke = StrokeTokens::dark(&theme.colors);
+        }
+
+        if let Some(spacing) = self.spacing {
+            theme.spacing = spacing;
+        }
+
+        if let Some(typography) = &self.typography {
+            theme.typography = typography.clone();
+        }
+
+        if let Some(radius) = self.radius {
+            theme.radius = radius;
+        }
+
+        if let Some(stroke) = self.stroke {
+            theme.stroke = stroke;
+        }
+
+        if (colors_changed || stroke_changed) && self.effects.is_none() {
+            theme.effects = EffectTokens::dark(&theme.colors, &theme.stroke);
+        }
+
+        if let Some(effects) = self.effects {
+            theme.effects = effects;
+        }
+
+        if let Some(opacity) = self.opacity {
+            theme.opacity = opacity;
+        }
+
+        if let Some(motion) = self.motion {
+            theme.motion = motion;
+        }
+
+        let component_inputs_changed = colors_changed
+            || spacing_changed
+            || typography_changed
+            || radius_changed
+            || stroke_changed
+            || opacity_changed;
+
+        if component_inputs_changed && self.components.is_none() {
+            theme.components = ComponentTokens::dark(
+                &theme.colors,
+                &theme.spacing,
+                &theme.typography,
+                &theme.radius,
+                &theme.stroke,
+                &theme.opacity,
+            );
+        }
+
+        if let Some(components) = &self.components {
+            theme.components = components.clone();
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThemeScope {
+    pub id: ThemeScopeId,
+    pub kind: ThemeScopeKind,
+    pub parent: Option<ThemeScopeId>,
+    pub patch: ThemePatch,
+}
+
+impl ThemeScope {
+    pub fn new(id: impl Into<ThemeScopeId>, kind: ThemeScopeKind) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            parent: None,
+            patch: ThemePatch::default(),
+        }
+    }
+
+    pub fn shell(id: impl Into<ThemeScopeId>) -> Self {
+        Self::new(id, ThemeScopeKind::Shell)
+    }
+
+    pub fn panel(id: impl Into<ThemeScopeId>) -> Self {
+        Self::new(id, ThemeScopeKind::Panel)
+    }
+
+    pub fn editor_surface(id: impl Into<ThemeScopeId>) -> Self {
+        Self::new(id, ThemeScopeKind::EditorSurface)
+    }
+
+    pub fn with_parent(mut self, parent: impl Into<ThemeScopeId>) -> Self {
+        self.parent = Some(parent.into());
+        self
+    }
+
+    pub fn with_patch(mut self, patch: ThemePatch) -> Self {
+        self.patch = patch;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThemeScopeError {
+    MissingScope(ThemeScopeId),
+    Cycle(Vec<ThemeScopeId>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopedThemeRegistry {
+    base: Theme,
+    scopes: HashMap<ThemeScopeId, ThemeScope>,
+}
+
+impl ScopedThemeRegistry {
+    pub fn new(base: Theme) -> Self {
+        Self {
+            base,
+            scopes: HashMap::new(),
+        }
+    }
+
+    pub fn base(&self) -> &Theme {
+        &self.base
+    }
+
+    pub fn base_mut(&mut self) -> &mut Theme {
+        &mut self.base
+    }
+
+    pub fn set_base(&mut self, base: Theme) {
+        self.base = base;
+    }
+
+    pub fn insert(&mut self, scope: ThemeScope) -> Option<ThemeScope> {
+        self.scopes.insert(scope.id.clone(), scope)
+    }
+
+    pub fn with_scope(mut self, scope: ThemeScope) -> Self {
+        self.insert(scope);
+        self
+    }
+
+    pub fn remove(&mut self, id: &ThemeScopeId) -> Option<ThemeScope> {
+        self.scopes.remove(id)
+    }
+
+    pub fn scope(&self, id: &ThemeScopeId) -> Option<&ThemeScope> {
+        self.scopes.get(id)
+    }
+
+    pub fn scopes(&self) -> impl Iterator<Item = &ThemeScope> {
+        self.scopes.values()
+    }
+
+    pub fn resolve(&self, id: &ThemeScopeId) -> Result<Theme, ThemeScopeError> {
+        let mut chain = Vec::new();
+        let mut path = Vec::new();
+        let mut seen = HashSet::new();
+        let mut current = Some(id.clone());
+
+        while let Some(scope_id) = current {
+            if !seen.insert(scope_id.clone()) {
+                path.push(scope_id);
+                return Err(ThemeScopeError::Cycle(path));
+            }
+
+            let scope = self
+                .scopes
+                .get(&scope_id)
+                .ok_or_else(|| ThemeScopeError::MissingScope(scope_id.clone()))?;
+            current = scope.parent.clone();
+            path.push(scope_id);
+            chain.push(scope);
+        }
+
+        let mut theme = self.base.clone();
+        for scope in chain.iter().rev() {
+            scope.patch.apply_to(&mut theme);
+        }
+
+        Ok(theme)
+    }
+
+    pub fn resolve_or_base(&self, id: &ThemeScopeId) -> Theme {
+        self.resolve(id).unwrap_or_else(|_| self.base.clone())
+    }
+}
+
+impl Default for ScopedThemeRegistry {
+    fn default() -> Self {
+        Self::new(Theme::default())
     }
 }
 
@@ -1926,6 +2270,93 @@ mod tests {
                 .resolve_icon(ComponentRole::TransportControl, state)
                 .tint,
             theme.colors.text_inverse
+        );
+    }
+
+    #[test]
+    fn scoped_theme_resolves_inherited_editor_overrides() {
+        let base = Theme::dark();
+        let mut editor_colors = base.colors;
+        editor_colors.editor_background = ColorRgba::new(4, 8, 12, 255);
+        editor_colors.piano_roll_lane = ColorRgba::new(18, 24, 36, 255);
+        editor_colors.clip_midi = ColorRgba::new(36, 180, 118, 255);
+
+        let shell_id = ThemeScopeId::new("shell");
+        let editor_id = ThemeScopeId::new("piano-roll");
+        let registry = ScopedThemeRegistry::new(base.clone())
+            .with_scope(ThemeScope::shell(shell_id.clone()))
+            .with_scope(
+                ThemeScope::editor_surface(editor_id.clone())
+                    .with_parent(shell_id.clone())
+                    .with_patch(ThemePatch::new().colors(editor_colors)),
+            );
+
+        let shell = registry.resolve(&shell_id).unwrap();
+        let editor = registry.resolve(&editor_id).unwrap();
+
+        assert_eq!(
+            shell.colors.editor_background,
+            base.colors.editor_background
+        );
+        assert_eq!(
+            shell.resolve_visual(ComponentRole::Button, ComponentState::NORMAL),
+            base.resolve_visual(ComponentRole::Button, ComponentState::NORMAL)
+        );
+        assert_eq!(
+            editor.colors.editor_background,
+            editor_colors.editor_background
+        );
+        assert_eq!(
+            editor
+                .resolve_visual(ComponentRole::PianoRollLane, ComponentState::NORMAL)
+                .fill,
+            editor_colors.piano_roll_lane
+        );
+    }
+
+    #[test]
+    fn scoped_theme_parent_patch_feeds_child_resolution() {
+        let mut compact_spacing = SpacingTokens::dense();
+        compact_spacing.control_x = 3.0;
+        compact_spacing.control_y = 2.0;
+
+        let shell_id = ThemeScopeId::new("shell");
+        let panel_id = ThemeScopeId::new("inspector");
+        let registry = ScopedThemeRegistry::default()
+            .with_scope(
+                ThemeScope::shell(shell_id.clone())
+                    .with_patch(ThemePatch::new().spacing(compact_spacing)),
+            )
+            .with_scope(ThemeScope::panel(panel_id.clone()).with_parent(shell_id));
+
+        let panel = registry.resolve(&panel_id).unwrap();
+
+        assert_eq!(panel.spacing.control_x, compact_spacing.control_x);
+        assert_eq!(
+            panel.component(ComponentRole::Button).layout.padding_x,
+            compact_spacing.control_x
+        );
+    }
+
+    #[test]
+    fn scoped_theme_reports_missing_scope_and_cycles() {
+        let missing = ScopedThemeRegistry::default()
+            .resolve(&ThemeScopeId::new("missing"))
+            .unwrap_err();
+        assert_eq!(
+            missing,
+            ThemeScopeError::MissingScope(ThemeScopeId::new("missing"))
+        );
+
+        let first = ThemeScopeId::new("first");
+        let second = ThemeScopeId::new("second");
+        let registry = ScopedThemeRegistry::default()
+            .with_scope(ThemeScope::panel(first.clone()).with_parent(second.clone()))
+            .with_scope(ThemeScope::panel(second.clone()).with_parent(first.clone()));
+
+        let err = registry.resolve(&first).unwrap_err();
+        assert!(
+            matches!(err, ThemeScopeError::Cycle(path) if path == vec![first, second, ThemeScopeId::new("first")])
         );
     }
 }
