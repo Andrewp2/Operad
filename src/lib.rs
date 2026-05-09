@@ -1748,12 +1748,17 @@ fn rect_is_finite(rect: UiRect) -> bool {
 }
 
 #[cfg(feature = "widgets")]
+mod widget_ext;
+
+#[cfg(feature = "widgets")]
 pub mod widgets {
     use std::ops::Range;
 
     use taffy::prelude::{AlignItems, JustifyContent};
 
     use super::*;
+
+    pub use crate::widget_ext::*;
 
     #[derive(Debug, Clone)]
     pub struct ButtonOptions {
