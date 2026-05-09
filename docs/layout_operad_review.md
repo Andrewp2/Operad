@@ -23,27 +23,22 @@ Those changes are aligned with the right long-term boundary: core document,
 layout, input, and paint-list behavior in Operad; renderers, text engines,
 platforms, and product state outside the core.
 
-## Critical Consumer Break
+## Game Integration Requirement
 
-The game integration currently looks mismatched.
+The game integration should intentionally enable `text-cosmic`.
 
-In the game repo, the path dependency enables only:
-
-```toml
-operad = { path = "../operad", features = ["egui"] }
-```
-
-But game code still imports `CosmicTextMeasurer` through `src/ui/player/mod.rs`.
-Since `CosmicTextMeasurer` is now gated behind `text-cosmic`, the game needs one
-of these changes:
+The game still imports `CosmicTextMeasurer` through `src/ui/player/mod.rs`, and
+that behavior is fine to preserve. Since `CosmicTextMeasurer` is now gated behind
+`text-cosmic`, the game dependency should use:
 
 ```toml
 operad = { path = "../operad", features = ["egui", "text-cosmic"] }
 ```
 
-or the game needs to switch those call sites to `ApproxTextMeasurer`.
-
-This should be fixed before treating the extraction as integrated.
+This is not a core design problem. It is an expected integration requirement:
+consumers that want real cosmic-text measurement should opt into
+`text-cosmic`, while consumers that only need approximate layout can keep the
+default lightweight dependency set.
 
 ## Scroll Routing Is Too Narrow
 
@@ -240,8 +235,7 @@ All passed.
 
 ## Recommended Fix Order
 
-1. Fix the game feature mismatch by enabling `text-cosmic` or changing the game
-   to use `ApproxTextMeasurer`.
+1. Update the game dependency to enable `text-cosmic` alongside `egui`.
 2. Improve wheel routing so blank space inside scroll regions scrolls.
 3. Make scroll content bounds descendant-aware.
 4. Define the canvas callback/registry boundary for renderer adapters.
