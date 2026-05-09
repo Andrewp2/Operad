@@ -18,6 +18,7 @@ use taffy::prelude::{
 };
 
 pub mod accessibility;
+pub mod assets;
 pub mod commands;
 pub mod display;
 pub mod editor;
@@ -30,6 +31,9 @@ pub mod shell;
 pub mod testing;
 pub mod theme;
 
+pub use assets::{
+    AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
+};
 pub use display::{
     DisplayListId, DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKey,
     DisplayListKind, DisplayListScope, RetainedDisplayList, RetainedDisplayListCache,

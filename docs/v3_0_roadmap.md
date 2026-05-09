@@ -198,3 +198,6 @@ The branch starts from Operad 2.0.0 plus:
 - Retained display-list cache contracts in `src/display.rs` for static editor
   backgrounds, snapshot/display-list reuse, dirty-flag invalidation, and bounded
   cache eviction.
+- Asset registry contracts in `src/assets.rs` for built-in common action icons,
+  app-provided icon/image descriptors, sizing, tinting, alignment, compact
+  icon-button metadata, tooltip text, and accessibility labels.
