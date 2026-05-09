@@ -183,3 +183,6 @@ The branch starts from Operad 2.0.0 plus:
   panel visibility, saved extents, collapse/restore, keyboard-resizable split
   state, active tabs, focus restore, and synchronized track/arrangement scroll
   offsets.
+- Renderer-neutral testing helpers in `src/testing.rs` for event replay, raw
+  input conversion checks, stable-name layout assertions, paint-list assertions,
+  RGBA pixel diffs with tolerances, dirty flags, and frame timing sections.

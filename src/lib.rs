@@ -23,6 +23,7 @@ pub mod input;
 pub mod paint;
 pub mod platform;
 pub mod shell;
+pub mod testing;
 pub mod theme;
 
 pub use input::{
@@ -40,6 +41,11 @@ pub use paint::{
 pub use shell::{
     DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup, ScrollSyncMember,
     ShellExtent, ShellPanelState, ShellRegion, ShellWorkspaceState, SplitPaneSide,
+};
+pub use testing::{
+    diff_rgba8, DirtyFlags, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
+    FrameTiming, FrameTimingSection, LayoutAssertions, PaintAssertions, PaintKindSelector,
+    PixelDiffReport, PixelDiffTolerance, ReplayInput, RgbaImageView, TestFailure, TestResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
