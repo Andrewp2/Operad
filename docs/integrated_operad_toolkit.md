@@ -27,11 +27,14 @@ currently just `taffy` plus its small layout dependencies.
 - `text-cosmic`: provides `CosmicTextMeasurer` for real text shaping and
   measurement while keeping public text styles backend-neutral.
 - `egui`: paints the neutral `PaintList` through egui for incremental migration
-  inside existing apps.
-- `widgets`: starts a domain-neutral widget layer with reusable button, label,
-  and scroll-area builders.
-- `audit`: reserved for stronger snapshot/export checks as the testing surface
-  grows.
+  inside existing apps, including a callback boundary for app-owned canvas
+  surfaces.
+- `widgets`: provides domain-neutral builders and helpers for buttons, labels,
+  checkboxes, sliders, text inputs, combo boxes, scroll areas, scrollbar thumb
+  geometry, virtual lists, and table headers.
+- `audit`: keeps the headless layout and paint audit surface available for
+  consumers that want stricter checks around clipped text, duplicate names,
+  unusable hit targets, and empty paint clips.
 
 ## Consumer Boundaries
 
@@ -47,10 +50,16 @@ and Fabricad layout viewports should use Operad for chrome, panels, clipping,
 input arbitration, and stable rect inspection while keeping domain drawing and
 commands in the application crate.
 
-## Near-Term Gaps
+## Version 1.0 Scope
 
-The next toolkit milestones are text input, richer keyboard shortcut scopes,
-command/menu models, virtual lists/tables, scrollbar thumb interaction,
-splitters/docking, and stronger audit export. Those should build on the same
-document, input, scroll, and paint-list boundaries rather than adding
-app-specific behavior to core.
+Operad `1.0.0` is an internal consumer baseline, not a promise that the toolkit
+is complete. The stable expectation is that consumers can start building against
+the retained document, neutral style/text/input types, scroll model, paint-list
+boundary, audit hooks, optional egui/text adapters, and the initial widget/data
+view helpers while still owning product-specific commands and domain editors.
+
+The next milestones after `1.0.0` are richer shortcut scopes, menu/command
+models, text selection painting, native clipboard adapters, more complete table
+interactions, docking/splitter state helpers, and stronger serialized audit
+export. Those should build on the same document, input, scroll, and paint-list
+boundaries rather than adding app-specific behavior to core.
