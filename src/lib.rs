@@ -19,6 +19,7 @@ use taffy::prelude::{
 
 pub mod accessibility;
 pub mod commands;
+pub mod host;
 pub mod input;
 pub mod paint;
 pub mod platform;
@@ -27,6 +28,10 @@ pub mod shell;
 pub mod testing;
 pub mod theme;
 
+pub use host::{
+    text_input_id_for_node, HostAdapter, HostAdapterError, HostCommandDispatch, HostFrameOutput,
+    HostFrameRequest, HostInteractionState, HostNodeInteraction, HostShortcutRoute,
+};
 pub use input::{
     DragGesture, GestureEvent, GesturePhase, GestureSettings, PointerButton, PointerButtons,
     PointerCapture, PointerClick, PointerEventKind, PointerGestureTracker, PointerId, PointerKind,

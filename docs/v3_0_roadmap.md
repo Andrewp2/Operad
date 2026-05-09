@@ -189,3 +189,6 @@ The branch starts from Operad 2.0.0 plus:
 - Renderer/backend adapter contracts in `src/renderer.rs` for render targets,
   resource deltas, dirty regions, paint batching, deterministic snapshots, and
   backend capability negotiation.
+- Host adapter contracts in `src/host.rs` for hover, pressed, focused,
+  drag-captured, text/IME, wheel-targeted, shortcut-routed, command dispatch,
+  and repaint/platform-service state before paint.
