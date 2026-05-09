@@ -19,6 +19,7 @@ use taffy::prelude::{
 
 pub mod accessibility;
 pub mod commands;
+pub mod editor;
 pub mod host;
 pub mod input;
 pub mod paint;
@@ -28,6 +29,11 @@ pub mod shell;
 pub mod testing;
 pub mod theme;
 
+pub use editor::{
+    EditorCursor, EditorHitId, EditorHitKind, EditorHitTarget, EditorHitTest, EditorHitTester,
+    EditorOverlay, EditorOverlayStack, EditorSurfaceId, EditorSurfaceState, EditorToolId,
+    EditorToolMode, EditorTransform, MarqueeSelection, SnapGrid,
+};
 pub use host::{
     text_input_id_for_node, HostAdapter, HostAdapterError, HostCommandDispatch, HostFrameOutput,
     HostFrameRequest, HostInteractionState, HostNodeInteraction, HostShortcutRoute,

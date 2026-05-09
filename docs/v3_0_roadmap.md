@@ -192,3 +192,6 @@ The branch starts from Operad 2.0.0 plus:
 - Host adapter contracts in `src/host.rs` for hover, pressed, focused,
   drag-captured, text/IME, wheel-targeted, shortcut-routed, command dispatch,
   and repaint/platform-service state before paint.
+- Editor-surface helpers in `src/editor.rs` for world/view transforms, hit
+  testing, snapping, cursor/tool modes, marquee selection, drag capture, and
+  overlay ordering.
