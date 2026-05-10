@@ -66,8 +66,8 @@ pub use editor::{
     generate_ruler_ticks, ArrangementGeometry, EditorAxisRange, EditorCursor, EditorHitId,
     EditorHitKind, EditorHitTarget, EditorHitTest, EditorHitTester, EditorOverlay,
     EditorOverlayStack, EditorSurfaceId, EditorSurfaceState, EditorToolId, EditorToolMode,
-    EditorTransform, LaneGeometry, MarqueeSelection, RulerTickConfig, SnapGrid, TimelineGeometry,
-    VisibleLaneRange,
+    EditorTransform, LaneGeometry, MarqueeSelection, PianoRollGeometry, PianoRollNote,
+    PianoRollPitchRange, RulerTickConfig, SnapGrid, TimelineGeometry, VisibleLaneRange,
 };
 pub use host::{
     process_document_frame, process_shell_frame, text_input_id_for_node, HostAdapter,

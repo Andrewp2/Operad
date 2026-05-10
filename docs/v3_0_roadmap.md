@@ -285,6 +285,9 @@ The branch starts from Operad 2.0.0 plus:
 - Arrangement and lane geometry helpers in `src/editor.rs` for unit-to-x
   timelines, lane y/index mapping, visible ranges, clip/selection/playhead
   rectangles, ruler ticks, and grid snapping.
+- Piano-roll geometry helpers in `src/editor.rs` for pitch-to-lane mapping,
+  note rectangles, loop-wrapped note segments, body versus resize-handle hit
+  targets, and velocity-bar geometry.
 - Retained display-list cache contracts in `src/display.rs` for static editor
   backgrounds, snapshot/display-list reuse, dirty-flag invalidation, and bounded
   cache eviction.
