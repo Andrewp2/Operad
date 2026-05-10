@@ -268,6 +268,9 @@ The branch starts from Operad 2.0.0 plus:
   caret geometry, producing activate/update/deactivate and keyboard
   show/hide requests, mapping clipboard outcomes to platform clipboard
   requests, and applying IME commit/preedit/delete responses.
+- Scrollbar drag contracts in `src/lib.rs` for mapping vertical and horizontal
+  thumb pointer deltas to clamped scroll offsets without backend-specific
+  widget state.
 - Data-table export helpers in `src/widget_ext/data.rs` for selected rows,
   visible rows, active cells, and ranges, with TSV/CSV formatting and clipboard
   command-effect integration.

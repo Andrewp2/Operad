@@ -4672,6 +4672,72 @@ pub mod widgets {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct ScrollbarDragState {
+        pub axis: ScrollAxis,
+        pub track: UiRect,
+        pub thumb: UiRect,
+        pub pointer_start: UiPoint,
+        pub offset_start: UiPoint,
+        pub max_offset: UiPoint,
+    }
+
+    impl ScrollbarDragState {
+        pub fn new(
+            scroll: ScrollState,
+            track: UiRect,
+            axis: ScrollAxis,
+            pointer_start: UiPoint,
+        ) -> Option<Self> {
+            let thumb = scrollbar_thumb(scroll, track, axis);
+            let max_offset = scroll.max_offset();
+            let travel = scrollbar_thumb_travel(track, thumb, axis);
+            let axis_max_offset = axis.value(max_offset);
+            (travel > f32::EPSILON && axis_max_offset > f32::EPSILON).then_some(Self {
+                axis,
+                track,
+                thumb,
+                pointer_start,
+                offset_start: scroll.offset,
+                max_offset,
+            })
+        }
+
+        pub fn offset_for_pointer(self, pointer: UiPoint) -> UiPoint {
+            let travel = scrollbar_thumb_travel(self.track, self.thumb, self.axis);
+            if travel <= f32::EPSILON {
+                return self.offset_start;
+            }
+            let pointer_delta = self.axis.value(pointer) - self.axis.value(self.pointer_start);
+            let max_axis_offset = self.axis.value(self.max_offset);
+            let offset_delta = pointer_delta / travel * max_axis_offset;
+            let offset = self.axis.with_value(
+                self.offset_start,
+                self.axis.value(self.offset_start) + offset_delta,
+            );
+            UiPoint::new(
+                offset.x.clamp(0.0, self.max_offset.x),
+                offset.y.clamp(0.0, self.max_offset.y),
+            )
+        }
+
+        pub fn scroll_state_for_pointer(
+            self,
+            mut scroll: ScrollState,
+            pointer: UiPoint,
+        ) -> ScrollState {
+            scroll.offset = scroll.clamp_offset(self.offset_for_pointer(pointer));
+            scroll
+        }
+    }
+
+    fn scrollbar_thumb_travel(track: UiRect, thumb: UiRect, axis: ScrollAxis) -> f32 {
+        match axis {
+            ScrollAxis::Vertical => (track.height - thumb.height).max(0.0),
+            ScrollAxis::Horizontal => (track.width - thumb.width).max(0.0),
+        }
+    }
+
     fn scrollbar_viewport_ratio(viewport: f32, content: f32) -> f32 {
         if viewport <= f32::EPSILON || content <= viewport {
             1.0
@@ -4684,6 +4750,22 @@ pub mod widgets {
     pub enum ScrollAxis {
         Vertical,
         Horizontal,
+    }
+
+    impl ScrollAxis {
+        pub const fn value(self, point: UiPoint) -> f32 {
+            match self {
+                Self::Vertical => point.y,
+                Self::Horizontal => point.x,
+            }
+        }
+
+        pub const fn with_value(self, point: UiPoint, value: f32) -> UiPoint {
+            match self {
+                Self::Vertical => UiPoint::new(point.x, value),
+                Self::Horizontal => UiPoint::new(value, point.y),
+            }
+        }
     }
 }
 
@@ -7021,5 +7103,65 @@ mod tests {
         );
         assert!(!disabled_accessibility.enabled);
         assert!(!disabled_accessibility.focusable);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_scrollbar_drag_state_maps_pointer_delta_to_scroll_offsets() {
+        let vertical = ScrollState {
+            axes: ScrollAxes::VERTICAL,
+            offset: UiPoint::new(0.0, 60.0),
+            viewport_size: UiSize::new(10.0, 100.0),
+            content_size: UiSize::new(10.0, 400.0),
+        };
+        let track = UiRect::new(0.0, 0.0, 10.0, 100.0);
+        let drag = widgets::ScrollbarDragState::new(
+            vertical,
+            track,
+            widgets::ScrollAxis::Vertical,
+            UiPoint::new(5.0, 20.0),
+        )
+        .expect("vertical drag");
+
+        assert_eq!(drag.thumb, UiRect::new(0.0, 15.0, 10.0, 25.0));
+        assert_eq!(
+            drag.offset_for_pointer(UiPoint::new(5.0, 50.0)),
+            UiPoint::new(0.0, 180.0)
+        );
+        assert_eq!(
+            drag.scroll_state_for_pointer(vertical, UiPoint::new(5.0, 200.0))
+                .offset,
+            UiPoint::new(0.0, 300.0)
+        );
+
+        let horizontal = ScrollState {
+            axes: ScrollAxes::HORIZONTAL,
+            offset: UiPoint::new(30.0, 0.0),
+            viewport_size: UiSize::new(50.0, 10.0),
+            content_size: UiSize::new(200.0, 10.0),
+        };
+        let drag = widgets::ScrollbarDragState::new(
+            horizontal,
+            UiRect::new(0.0, 0.0, 100.0, 10.0),
+            widgets::ScrollAxis::Horizontal,
+            UiPoint::new(20.0, 5.0),
+        )
+        .expect("horizontal drag");
+        let offset = drag.offset_for_pointer(UiPoint::new(60.0, 5.0));
+        assert!((offset.x - 110.0).abs() < 0.01, "{offset:?}");
+        assert_eq!(offset.y, 0.0);
+
+        assert!(widgets::ScrollbarDragState::new(
+            ScrollState {
+                axes: ScrollAxes::VERTICAL,
+                offset: UiPoint::new(0.0, 0.0),
+                viewport_size: UiSize::new(10.0, 100.0),
+                content_size: UiSize::new(10.0, 100.0),
+            },
+            track,
+            widgets::ScrollAxis::Vertical,
+            UiPoint::new(0.0, 0.0),
+        )
+        .is_none());
     }
 }
