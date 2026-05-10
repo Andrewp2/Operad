@@ -9,8 +9,9 @@ use taffy::prelude::{
 
 use crate::{
     length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba,
-    ImageContent, InputBehavior, KeyCode, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle,
-    UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    CommandId, CommandRegistry, CommandScope, CommandTooltipResolver, ImageContent, InputBehavior,
+    KeyCode, ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument,
+    UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,6 +363,32 @@ pub struct MenuSelection {
     pub index_path: Vec<usize>,
 }
 
+impl MenuSelection {
+    pub fn command_id(&self) -> Option<CommandId> {
+        self.id.as_deref().map(CommandId::from)
+    }
+
+    pub fn command_selection(&self) -> Option<MenuCommandSelection> {
+        Some(MenuCommandSelection {
+            command: self.command_id()?,
+            index_path: self.index_path.clone(),
+        })
+    }
+
+    pub fn into_command_selection(self) -> Option<MenuCommandSelection> {
+        Some(MenuCommandSelection {
+            command: self.id.map(CommandId::from)?,
+            index_path: self.index_path,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuCommandSelection {
+    pub command: CommandId,
+    pub index_path: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavigationDirection {
     Next,
@@ -386,6 +413,32 @@ pub fn menu_selection_at_path(items: &[MenuItem], path: &[usize]) -> Option<Menu
         id: item.id.clone(),
         index_path: path.to_vec(),
     })
+}
+
+pub fn menu_command_selection_at_path(
+    items: &[MenuItem],
+    path: &[usize],
+) -> Option<MenuCommandSelection> {
+    menu_selection_at_path(items, path)?.into_command_selection()
+}
+
+pub fn menu_item_from_command(
+    registry: &CommandRegistry,
+    command: impl Into<CommandId>,
+    active_scopes: &[CommandScope],
+    formatter: &ShortcutFormatter,
+) -> Option<MenuItem> {
+    let command_id = command.into();
+    let command = registry.command(&command_id)?;
+    let mut item = MenuItem::command(command_id.as_str(), command.meta.label.clone());
+    if let Some(shortcut) = command_shortcut_label(registry, &command_id, active_scopes, formatter)
+    {
+        item = item.shortcut(shortcut);
+    }
+    if !command.enabled {
+        item = item.disabled();
+    }
+    Some(item)
 }
 
 pub fn first_navigable_index(items: &[MenuItem]) -> Option<usize> {
@@ -1121,6 +1174,14 @@ pub struct MenuOutcome {
     pub selected: Option<MenuSelection>,
 }
 
+impl MenuOutcome {
+    pub fn selected_command(&self) -> Option<MenuCommandSelection> {
+        self.selected
+            .as_ref()
+            .and_then(MenuSelection::command_selection)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn context_menu(
     document: &mut UiDocument,
@@ -1453,6 +1514,32 @@ pub struct CommandPaletteSelection {
     pub id: String,
 }
 
+impl CommandPaletteSelection {
+    pub fn command_id(&self) -> CommandId {
+        CommandId::from(self.id.as_str())
+    }
+
+    pub fn command_selection(&self) -> CommandPaletteCommandSelection {
+        CommandPaletteCommandSelection {
+            index: self.index,
+            command: self.command_id(),
+        }
+    }
+
+    pub fn into_command_selection(self) -> CommandPaletteCommandSelection {
+        CommandPaletteCommandSelection {
+            index: self.index,
+            command: CommandId::from(self.id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandPaletteCommandSelection {
+    pub index: usize,
+    pub command: CommandId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandPaletteState {
     pub query: String,
@@ -1571,6 +1658,59 @@ pub struct CommandPaletteOutcome {
     pub active_match: Option<usize>,
     pub selected: Option<CommandPaletteSelection>,
     pub closed: bool,
+}
+
+impl CommandPaletteOutcome {
+    pub fn selected_command(&self) -> Option<CommandPaletteCommandSelection> {
+        self.selected
+            .as_ref()
+            .map(CommandPaletteSelection::command_selection)
+    }
+}
+
+pub fn command_palette_item_from_command(
+    registry: &CommandRegistry,
+    command: impl Into<CommandId>,
+    active_scopes: &[CommandScope],
+    formatter: &ShortcutFormatter,
+) -> Option<CommandPaletteItem> {
+    let command_id = command.into();
+    let command = registry.command(&command_id)?;
+    let mut item = CommandPaletteItem::new(command_id.as_str(), command.meta.label.clone());
+    if let Some(description) = &command.meta.description {
+        item = item.subtitle(description.clone());
+    } else if let Some(category) = &command.meta.category {
+        item = item.subtitle(category.clone());
+    }
+    if let Some(category) = &command.meta.category {
+        item = item.keyword(category.clone());
+    }
+    if let Some(shortcut) = command_shortcut_label(registry, &command_id, active_scopes, formatter)
+    {
+        item = item.shortcut(shortcut);
+    }
+    if !command.enabled {
+        item = item.disabled();
+    }
+    Some(item)
+}
+
+pub fn command_palette_items_from_registry(
+    registry: &CommandRegistry,
+    active_scopes: &[CommandScope],
+    formatter: &ShortcutFormatter,
+) -> Vec<CommandPaletteItem> {
+    let mut command_ids = registry
+        .commands()
+        .map(|command| command.meta.id.clone())
+        .collect::<Vec<_>>();
+    command_ids.sort();
+    command_ids
+        .into_iter()
+        .filter_map(|command| {
+            command_palette_item_from_command(registry, command, active_scopes, formatter)
+        })
+        .collect()
 }
 
 pub fn filter_command_palette(
@@ -2667,6 +2807,18 @@ fn command_item_accessibility_label(item: &CommandPaletteItem) -> String {
         .unwrap_or_else(|| item.title.clone())
 }
 
+fn command_shortcut_label(
+    registry: &CommandRegistry,
+    command: &CommandId,
+    active_scopes: &[CommandScope],
+    formatter: &ShortcutFormatter,
+) -> Option<String> {
+    CommandTooltipResolver::new(registry)
+        .formatter(formatter.clone())
+        .shortcut_for(command, active_scopes)
+        .map(|shortcut| formatter.format(shortcut))
+}
+
 fn menu_item_accessibility(item: &MenuItem, active: bool) -> AccessibilityMeta {
     let mut accessibility = AccessibilityMeta::new(AccessibilityRole::MenuItem)
         .label(menu_item_accessibility_label(item))
@@ -2946,8 +3098,9 @@ mod tests {
     use super::*;
     use crate::{
         root_style, AccessibilityMeta, AccessibilityRole, AnimatedValues, AnimationMachine,
-        AnimationState, AnimationTransition, AnimationTrigger, ApproxTextMeasurer, KeyModifiers,
-        ShaderEffect, UiContent,
+        AnimationState, AnimationTransition, AnimationTrigger, ApproxTextMeasurer, Command,
+        CommandId, CommandMeta, CommandRegistry, CommandScope, KeyModifiers, ShaderEffect,
+        Shortcut, ShortcutFormatter, UiContent,
     };
 
     fn test_animation() -> AnimationMachine {
@@ -3328,6 +3481,67 @@ mod tests {
     }
 
     #[test]
+    fn menu_command_helpers_return_typed_command_ids_and_shortcuts() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(Command::new(
+                CommandMeta::new("file.save", "Save Project")
+                    .description("Save the current project")
+                    .category("File"),
+            ))
+            .unwrap();
+        registry
+            .register(
+                Command::new(CommandMeta::new("file.export", "Export Audio").category("File"))
+                    .disabled("No mixdown target"),
+            )
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('s'), "file.save")
+            .unwrap();
+
+        let formatter = ShortcutFormatter::default();
+        let save = menu_item_from_command(
+            &registry,
+            "file.save",
+            &[CommandScope::Workspace],
+            &formatter,
+        )
+        .unwrap();
+        assert_eq!(save.id.as_deref(), Some("file.save"));
+        assert_eq!(save.shortcut.as_deref(), Some("Ctrl+S"));
+        assert!(save.enabled);
+
+        let export = menu_item_from_command(
+            &registry,
+            "file.export",
+            &[CommandScope::Workspace],
+            &formatter,
+        )
+        .unwrap();
+        assert_eq!(export.id.as_deref(), Some("file.export"));
+        assert!(!export.enabled);
+
+        let items = vec![save, export];
+        let selection = menu_command_selection_at_path(&items, &[0]).unwrap();
+        assert_eq!(selection.command, CommandId::from("file.save"));
+        assert_eq!(selection.index_path, vec![0]);
+        assert!(menu_command_selection_at_path(&items, &[1]).is_none());
+
+        let outcome = MenuOutcome {
+            selected: Some(MenuSelection {
+                id: Some("file.save".to_string()),
+                index_path: vec![0],
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome.selected_command().unwrap().command,
+            CommandId::from("file.save")
+        );
+    }
+
+    #[test]
     fn context_menu_typeahead_wraps_and_skips_disabled_items() {
         let items = vec![
             MenuItem::command("copy", "Copy"),
@@ -3435,6 +3649,65 @@ mod tests {
                 index: 1,
                 id: "save".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn command_palette_helpers_build_from_registry_and_select_command_ids() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(Command::new(
+                CommandMeta::new("file.save", "Save Project")
+                    .description("Save the current project")
+                    .category("File"),
+            ))
+            .unwrap();
+        registry
+            .register(
+                Command::new(CommandMeta::new("edit.quantize", "Quantize Clip").category("Edit"))
+                    .disabled("No clip selected"),
+            )
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('s'), "file.save")
+            .unwrap();
+
+        let formatter = ShortcutFormatter::default();
+        let items = command_palette_items_from_registry(&registry, &[], &formatter);
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["edit.quantize", "file.save"]
+        );
+        let save = items.iter().find(|item| item.id == "file.save").unwrap();
+        assert_eq!(save.shortcut.as_deref(), Some("Ctrl+S"));
+        assert_eq!(save.subtitle.as_deref(), Some("Save the current project"));
+
+        let quantize = items
+            .iter()
+            .find(|item| item.id == "edit.quantize")
+            .unwrap();
+        assert!(!quantize.enabled);
+        assert!(filter_command_palette(&items, "edit", 10)
+            .iter()
+            .any(|palette_match| palette_match.id == "edit.quantize"));
+
+        let selection = CommandPaletteSelection {
+            index: 1,
+            id: "file.save".to_string(),
+        };
+        assert_eq!(selection.command_id(), CommandId::from("file.save"));
+
+        let outcome = CommandPaletteOutcome {
+            selected: Some(selection),
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome.selected_command().unwrap().command,
+            CommandId::from("file.save")
         );
     }
 

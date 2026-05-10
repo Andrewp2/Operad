@@ -221,6 +221,9 @@ The branch starts from Operad 2.0.0 plus:
 - Tooltip and shortcut-display contracts in `src/tooltips.rs` for platform-aware
   shortcut labels, command metadata tooltips, disabled reasons, and
   renderer-neutral tooltip requests.
+- Menu and command-palette helpers in `src/widget_ext/menu.rs` for building
+  items from the command registry, preserving enabled/disabled command state,
+  displaying scoped shortcuts, and returning typed `CommandId` selections.
 - Data-table export helpers in `src/widget_ext/data.rs` for selected rows,
   visible rows, active cells, and ranges, with TSV/CSV formatting and clipboard
   command-effect integration.
