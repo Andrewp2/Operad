@@ -919,6 +919,24 @@ impl<'a> PlatformAssertions<'a> {
             })
     }
 
+    pub fn require_unsupported_response_for(
+        &self,
+        request: &PlatformServiceRequest,
+    ) -> TestResult<&PlatformServiceResponse> {
+        let response = self.require_response_for(request)?;
+        let expected = PlatformResponse::unsupported(request.kind());
+        if response.response == expected {
+            Ok(response)
+        } else {
+            Err(TestFailure::new(format!(
+                "platform response id {} kind {:?} expected unsupported response, got {:?}",
+                response.id.0,
+                response.kind(),
+                response.response
+            )))
+        }
+    }
+
     pub fn require_all_responses_match_requests(&self) -> TestResult {
         for response in self.responses.iter() {
             if !self
@@ -936,6 +954,22 @@ impl<'a> PlatformAssertions<'a> {
         Ok(())
     }
 
+    pub fn require_no_unsupported_responses(&self) -> TestResult {
+        if let Some(response) = self
+            .responses
+            .iter()
+            .find(|response| platform_response_is_unsupported(&response.response))
+        {
+            Err(TestFailure::new(format!(
+                "platform response id {} kind {:?} was unsupported",
+                response.id.0,
+                response.kind()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn require_no_error_responses(&self) -> TestResult {
         if let Some((response, error)) = self.responses.iter().find_map(|response| {
             platform_response_error(&response.response).map(|error| (response, error))
@@ -951,6 +985,10 @@ impl<'a> PlatformAssertions<'a> {
             Ok(())
         }
     }
+}
+
+fn platform_response_is_unsupported(response: &PlatformResponse) -> bool {
+    response == &PlatformResponse::unsupported(response.kind())
 }
 
 fn platform_response_error(response: &PlatformResponse) -> Option<&PlatformServiceError> {
@@ -1733,6 +1771,44 @@ mod tests {
         assert!(PlatformAssertions::from_host_frame(&error_output)
             .require_no_error_responses()
             .is_err());
+    }
+
+    #[test]
+    fn platform_assertions_check_unsupported_service_responses() {
+        let request = PlatformServiceRequest::new(
+            PlatformRequestId::new(22),
+            PlatformRequest::Clipboard(ClipboardRequest::ReadText),
+        );
+        let unsupported = request.unsupported_response();
+        let supported = PlatformServiceResponse::new(
+            request.id,
+            PlatformResponse::Clipboard(ClipboardResponse::Text(Some("text".into()))),
+        );
+
+        let unsupported_platform = PlatformAssertions::new(
+            std::slice::from_ref(&request),
+            std::slice::from_ref(&unsupported),
+        );
+        assert_eq!(
+            unsupported_platform
+                .require_unsupported_response_for(&request)
+                .expect("unsupported response"),
+            &unsupported
+        );
+        assert!(unsupported_platform
+            .require_no_unsupported_responses()
+            .is_err());
+
+        let supported_platform = PlatformAssertions::new(
+            std::slice::from_ref(&request),
+            std::slice::from_ref(&supported),
+        );
+        assert!(supported_platform
+            .require_unsupported_response_for(&request)
+            .is_err());
+        supported_platform
+            .require_no_unsupported_responses()
+            .expect("no unsupported responses");
     }
 
     #[test]
