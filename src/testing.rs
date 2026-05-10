@@ -8,10 +8,14 @@
 use std::fmt;
 use std::time::Duration;
 
+use crate::accessibility::{
+    AccessibilityAdapterRequest, AccessibilityAnnouncement, AccessibilityPreferences,
+    AccessibilityRequestKind,
+};
 use crate::commands::{CommandId, CommandRegistry};
 use crate::host::{
-    HostCommandDispatch, HostFrameOutput, HostInteractionState, HostNodeInteraction,
-    HostShortcutRoute,
+    HostCommandDispatch, HostDocumentFrameOutput, HostFrameOutput, HostInteractionState,
+    HostNodeInteraction, HostShortcutRoute,
 };
 use crate::platform::{
     AppLifecycleResponse, ClipboardResponse, CursorResponse, DragDropResponse, FileDialogResponse,
@@ -490,6 +494,122 @@ impl<'a> AccessibilityAssertions<'a> {
                 self.tree.focus_order
             )))
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AccessibilityRequestAssertions<'a> {
+    requests: &'a [AccessibilityAdapterRequest],
+}
+
+impl<'a> AccessibilityRequestAssertions<'a> {
+    pub const fn new(requests: &'a [AccessibilityAdapterRequest]) -> Self {
+        Self { requests }
+    }
+
+    pub fn from_document_frame(output: &'a HostDocumentFrameOutput) -> Self {
+        Self::new(&output.accessibility_requests)
+    }
+
+    pub const fn requests(&self) -> &'a [AccessibilityAdapterRequest] {
+        self.requests
+    }
+
+    pub fn request_count(&self, kind: AccessibilityRequestKind) -> usize {
+        self.requests
+            .iter()
+            .filter(|request| request.kind() == kind)
+            .count()
+    }
+
+    pub fn require_request_kind(
+        &self,
+        kind: AccessibilityRequestKind,
+    ) -> TestResult<&'a AccessibilityAdapterRequest> {
+        self.requests
+            .iter()
+            .find(|request| request.kind() == kind)
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing accessibility request kind {kind:?}; available requests: {:?}",
+                    self.request_kinds()
+                ))
+            })
+    }
+
+    pub fn require_publish_tree(
+        &self,
+    ) -> TestResult<(
+        &'a AccessibilityTree,
+        Option<UiNodeId>,
+        AccessibilityPreferences,
+    )> {
+        self.requests
+            .iter()
+            .find_map(|request| {
+                if let AccessibilityAdapterRequest::PublishTree {
+                    tree,
+                    focused,
+                    preferences,
+                } = request
+                {
+                    Some((tree, *focused, *preferences))
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing accessibility PublishTree request; available requests: {:?}",
+                    self.request_kinds()
+                ))
+            })
+    }
+
+    pub fn require_apply_preferences(
+        &self,
+        preferences: AccessibilityPreferences,
+    ) -> TestResult<&'a AccessibilityAdapterRequest> {
+        self.requests
+            .iter()
+            .find(|request| {
+                matches!(
+                    request,
+                    AccessibilityAdapterRequest::ApplyPreferences(actual)
+                        if *actual == preferences
+                )
+            })
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing accessibility ApplyPreferences request for {preferences:?}; available requests: {:?}",
+                    self.request_kinds()
+                ))
+            })
+    }
+
+    pub fn require_announcement_contains(
+        &self,
+        text: &str,
+    ) -> TestResult<&'a AccessibilityAnnouncement> {
+        self.requests
+            .iter()
+            .find_map(|request| {
+                if let AccessibilityAdapterRequest::Announce(announcement) = request {
+                    announcement.message.contains(text).then_some(announcement)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing accessibility announcement containing `{text}`; available requests: {:?}",
+                    self.request_kinds()
+                ))
+            })
+    }
+
+    fn request_kinds(&self) -> Vec<AccessibilityRequestKind> {
+        self.requests.iter().map(|request| request.kind()).collect()
     }
 }
 
@@ -1482,6 +1602,58 @@ mod tests {
         accessibility
             .require_summary_contains("status", "State: Ready")
             .expect("status summary");
+    }
+
+    #[test]
+    fn accessibility_request_assertions_check_adapter_requests() {
+        let focused = UiNodeId(7);
+        let preferences = AccessibilityPreferences::DEFAULT
+            .screen_reader_active(true)
+            .high_contrast(true);
+        let tree = AccessibilityTree {
+            nodes: Vec::new(),
+            focus_order: vec![focused],
+            modal_scope: None,
+        };
+        let requests = vec![
+            AccessibilityAdapterRequest::PublishTree {
+                tree: tree.clone(),
+                focused: Some(focused),
+                preferences,
+            },
+            AccessibilityAdapterRequest::ApplyPreferences(preferences),
+            AccessibilityAdapterRequest::Announce(
+                AccessibilityAnnouncement::polite("Save complete").source(focused),
+            ),
+        ];
+
+        let assertions = AccessibilityRequestAssertions::new(&requests);
+        assert_eq!(
+            assertions.request_count(AccessibilityRequestKind::PublishTree),
+            1
+        );
+        assert_eq!(
+            assertions.request_count(AccessibilityRequestKind::ApplyPreferences),
+            1
+        );
+        assert_eq!(assertions.requests(), requests.as_slice());
+        let (published_tree, published_focus, published_preferences) = assertions
+            .require_publish_tree()
+            .expect("publish tree request");
+        assert_eq!(published_tree, &tree);
+        assert_eq!(published_focus, Some(focused));
+        assert_eq!(published_preferences, preferences);
+        assertions
+            .require_request_kind(AccessibilityRequestKind::Announce)
+            .expect("announcement request");
+        assertions
+            .require_apply_preferences(preferences)
+            .expect("preferences request");
+        let announcement = assertions
+            .require_announcement_contains("complete")
+            .expect("announcement text");
+        assert_eq!(announcement.source, Some(focused));
+        assert!(assertions.require_announcement_contains("missing").is_err());
     }
 
     #[test]

@@ -445,6 +445,19 @@ impl AccessibilityAdapterRequest {
     }
 }
 
+pub fn push_supported_accessibility_request(
+    requests: &mut Vec<AccessibilityAdapterRequest>,
+    capabilities: AccessibilityCapabilities,
+    request: AccessibilityAdapterRequest,
+) -> bool {
+    if capabilities.supports(request.kind()) {
+        requests.push(request);
+        true
+    } else {
+        false
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccessibilityAdapterResponse {
     Applied,

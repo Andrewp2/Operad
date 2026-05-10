@@ -8,8 +8,9 @@
 use std::fmt;
 
 use crate::accessibility::{
-    AccessibilityAdapterRequest, AccessibilityAnnouncementQueue, AccessibilityCapabilities,
-    AccessibilityLiveRegionSnapshot, AccessibilityPreferences, FocusRestoreTarget,
+    push_supported_accessibility_request, AccessibilityAdapterRequest,
+    AccessibilityAnnouncementQueue, AccessibilityCapabilities, AccessibilityLiveRegionSnapshot,
+    AccessibilityPreferences, FocusRestoreTarget,
 };
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{GestureEvent, GesturePhase, PointerCapture, RawInputEvent};
@@ -372,6 +373,9 @@ pub struct HostDocumentFrameRequest {
     pub target: RenderTarget,
     pub host_output: HostFrameOutput,
     pub previous_live_regions: Option<AccessibilityLiveRegionSnapshot>,
+    pub previous_accessibility_tree: Option<AccessibilityTree>,
+    pub previous_focused: Option<Option<UiNodeId>>,
+    pub previous_accessibility_preferences: Option<AccessibilityPreferences>,
     pub accessibility_capabilities: AccessibilityCapabilities,
     pub accessibility_preferences: AccessibilityPreferences,
     pub render_options: RenderOptions,
@@ -385,6 +389,9 @@ impl HostDocumentFrameRequest {
             target,
             host_output,
             previous_live_regions: None,
+            previous_accessibility_tree: None,
+            previous_focused: None,
+            previous_accessibility_preferences: None,
             accessibility_capabilities: AccessibilityCapabilities::NONE,
             accessibility_preferences: AccessibilityPreferences::DEFAULT,
             render_options: RenderOptions::default(),
@@ -394,6 +401,24 @@ impl HostDocumentFrameRequest {
 
     pub fn previous_live_regions(mut self, previous: AccessibilityLiveRegionSnapshot) -> Self {
         self.previous_live_regions = Some(previous);
+        self
+    }
+
+    pub fn previous_accessibility_tree(mut self, previous: AccessibilityTree) -> Self {
+        self.previous_accessibility_tree = Some(previous);
+        self
+    }
+
+    pub const fn previous_focused(mut self, previous: Option<UiNodeId>) -> Self {
+        self.previous_focused = Some(previous);
+        self
+    }
+
+    pub const fn previous_accessibility_preferences(
+        mut self,
+        previous: AccessibilityPreferences,
+    ) -> Self {
+        self.previous_accessibility_preferences = Some(previous);
         self
     }
 
@@ -600,6 +625,9 @@ pub fn process_document_frame(
         target,
         mut host_output,
         previous_live_regions,
+        previous_accessibility_tree,
+        previous_focused,
+        previous_accessibility_preferences,
         accessibility_capabilities,
         accessibility_preferences,
         render_options,
@@ -624,7 +652,36 @@ pub fn process_document_frame(
         &previous_live_regions,
         &live_regions,
     );
-    let accessibility_requests = announcements.supported_requests(accessibility_capabilities);
+    let mut accessibility_requests = Vec::new();
+    if previous_accessibility_tree
+        .as_ref()
+        .is_none_or(|previous| previous != &accessibility_tree)
+        || previous_focused.is_some_and(|previous| previous != state.focused)
+    {
+        push_supported_accessibility_request(
+            &mut accessibility_requests,
+            accessibility_capabilities,
+            AccessibilityAdapterRequest::PublishTree {
+                tree: accessibility_tree.clone(),
+                focused: state.focused,
+                preferences: accessibility_preferences,
+            },
+        );
+    }
+    if previous_accessibility_preferences != Some(accessibility_preferences) {
+        push_supported_accessibility_request(
+            &mut accessibility_requests,
+            accessibility_capabilities,
+            AccessibilityAdapterRequest::ApplyPreferences(accessibility_preferences),
+        );
+    }
+    for announcement in &announcements.pending {
+        push_supported_accessibility_request(
+            &mut accessibility_requests,
+            accessibility_capabilities,
+            AccessibilityAdapterRequest::Announce(announcement.clone()),
+        );
+    }
 
     let paint = document.paint_list();
     let mut node_interactions = paint
@@ -665,6 +722,7 @@ pub fn process_document_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accessibility::AccessibilityRequestKind;
     use crate::commands::{Command, CommandMeta};
     use crate::input::{
         DragGesture, PointerButton, PointerId, RawKeyboardEvent, RawWheelEvent, WheelPhase,
@@ -907,7 +965,18 @@ mod tests {
         );
         assert_eq!(frame.announcements.pending.len(), 1);
         assert_eq!(frame.announcements.pending[0].message, "Status: Running");
-        assert_eq!(frame.accessibility_requests.len(), 1);
+        assert_eq!(
+            frame
+                .accessibility_requests
+                .iter()
+                .map(AccessibilityAdapterRequest::kind)
+                .collect::<Vec<_>>(),
+            vec![
+                AccessibilityRequestKind::PublishTree,
+                AccessibilityRequestKind::ApplyPreferences,
+                AccessibilityRequestKind::Announce,
+            ]
+        );
         assert_eq!(
             frame.render_request.options.accessibility_preferences,
             AccessibilityPreferences::DEFAULT
@@ -915,9 +984,262 @@ mod tests {
                 .text_scale(1.25)
         );
         assert!(matches!(
-            frame.accessibility_requests[0],
+            frame.accessibility_requests[2],
             AccessibilityAdapterRequest::Announce(_)
         ));
+    }
+
+    #[test]
+    fn document_frame_publishes_screen_reader_tree_when_supported() {
+        let viewport = UiSize::new(180.0, 80.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(180.0, 80.0));
+        let button = document.add_child(
+            document.root,
+            UiNode::container("play", fixed_style(80.0, 28.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Play")
+                        .focusable(),
+                ),
+        );
+        let host_output = HostFrameOutput::new(HostInteractionState {
+            focused: Some(button),
+            ..HostInteractionState::default()
+        });
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            )
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
+        )
+        .expect("document frame");
+
+        assert_eq!(
+            frame.accessibility_requests[0].kind(),
+            AccessibilityRequestKind::PublishTree
+        );
+        let AccessibilityAdapterRequest::PublishTree {
+            tree,
+            focused,
+            preferences,
+        } = &frame.accessibility_requests[0]
+        else {
+            panic!("expected PublishTree");
+        };
+        assert_eq!(*focused, Some(button));
+        assert_eq!(*preferences, AccessibilityPreferences::DEFAULT);
+        assert_eq!(tree.node(button).unwrap().label.as_deref(), Some("Play"));
+    }
+
+    #[test]
+    fn document_frame_applies_changed_accessibility_preferences() {
+        let viewport = UiSize::new(180.0, 80.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(180.0, 80.0));
+        document.add_child(
+            document.root,
+            UiNode::container("status", fixed_style(100.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Status).label("Status"),
+            ),
+        );
+
+        let first = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            )
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER)
+            .accessibility_preferences(AccessibilityPreferences::DEFAULT),
+        )
+        .expect("first frame");
+        let updated_preferences = AccessibilityPreferences::DEFAULT
+            .high_contrast(true)
+            .text_scale(1.35);
+
+        let second = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(first.host_output.state),
+            )
+            .previous_accessibility_tree(first.accessibility_tree)
+            .previous_focused(None)
+            .previous_accessibility_preferences(AccessibilityPreferences::DEFAULT)
+            .previous_live_regions(first.live_regions)
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER)
+            .accessibility_preferences(updated_preferences),
+        )
+        .expect("second frame");
+
+        assert_eq!(
+            second
+                .accessibility_requests
+                .iter()
+                .map(AccessibilityAdapterRequest::kind)
+                .collect::<Vec<_>>(),
+            vec![AccessibilityRequestKind::ApplyPreferences]
+        );
+        assert_eq!(
+            second.accessibility_requests[0],
+            AccessibilityAdapterRequest::ApplyPreferences(updated_preferences)
+        );
+    }
+
+    #[test]
+    fn document_frame_skips_tree_and_preferences_when_capabilities_are_missing() {
+        let viewport = UiSize::new(180.0, 80.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(180.0, 80.0));
+        document.add_child(
+            document.root,
+            UiNode::container("status", fixed_style(100.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Status)
+                    .label("Status")
+                    .value("Ready")
+                    .live_region(AccessibilityLiveRegion::Polite),
+            ),
+        );
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            )
+            .accessibility_capabilities(AccessibilityCapabilities::NONE)
+            .accessibility_preferences(AccessibilityPreferences::DEFAULT.high_contrast(true)),
+        )
+        .expect("document frame");
+
+        assert!(frame.accessibility_requests.is_empty());
+        assert_eq!(frame.announcements.pending.len(), 1);
+    }
+
+    #[test]
+    fn document_frame_does_not_republish_unchanged_tree_when_previous_state_matches() {
+        let viewport = UiSize::new(180.0, 80.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(180.0, 80.0));
+        let button = document.add_child(
+            document.root,
+            UiNode::container("play", fixed_style(80.0, 28.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Play")
+                        .focusable(),
+                ),
+        );
+        let state = HostInteractionState {
+            focused: Some(button),
+            ..HostInteractionState::default()
+        };
+        let first = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(state),
+            )
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
+        )
+        .expect("first frame");
+
+        let second = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(first.host_output.state.clone()),
+            )
+            .previous_accessibility_tree(first.accessibility_tree)
+            .previous_focused(first.host_output.state.focused)
+            .previous_accessibility_preferences(AccessibilityPreferences::DEFAULT)
+            .previous_live_regions(first.live_regions)
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
+        )
+        .expect("second frame");
+
+        assert!(second.accessibility_requests.is_empty());
+    }
+
+    #[test]
+    fn document_frame_republishes_tree_when_focus_changes() {
+        let viewport = UiSize::new(180.0, 80.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(180.0, 80.0));
+        let button = document.add_child(
+            document.root,
+            UiNode::container("play", fixed_style(80.0, 28.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Play")
+                        .focusable(),
+                ),
+        );
+        let first = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            )
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
+        )
+        .expect("first frame");
+        let focused_state = HostInteractionState {
+            focused: Some(button),
+            ..first.host_output.state
+        };
+
+        let second = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(focused_state),
+            )
+            .previous_accessibility_tree(first.accessibility_tree)
+            .previous_focused(None)
+            .previous_accessibility_preferences(AccessibilityPreferences::DEFAULT)
+            .previous_live_regions(first.live_regions)
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
+        )
+        .expect("second frame");
+
+        assert_eq!(
+            second
+                .accessibility_requests
+                .iter()
+                .map(AccessibilityAdapterRequest::kind)
+                .collect::<Vec<_>>(),
+            vec![AccessibilityRequestKind::PublishTree]
+        );
+        let AccessibilityAdapterRequest::PublishTree { focused, .. } =
+            &second.accessibility_requests[0]
+        else {
+            panic!("expected PublishTree");
+        };
+        assert_eq!(*focused, Some(button));
     }
 
     fn canvas_document(interaction: CanvasInteractionPolicy) -> (UiDocument, UiNodeId) {
