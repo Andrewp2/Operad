@@ -320,7 +320,7 @@ The branch starts from Operad 2.0.0 plus:
   empty paint clips, interactive controls missing visible accessibility
   metadata, focusable controls missing from the accessibility traversal, and
   accessible-name/action/action-id/action-label/duplicate-action/state/value/
-  value-range/relation-target gaps.
+  missing-or-invalid-value-range/relation-target gaps.
 - Public `ColorRgba` contrast helpers compute alpha compositing, relative
   luminance, contrast ratios, contrast pass/fail checks, and highest-contrast
   foreground selection for theme, widget, audit, and snapshot code.

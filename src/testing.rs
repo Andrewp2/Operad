@@ -38,10 +38,11 @@ use crate::renderer::{
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
-    AccessibilityStateKind, AccessibilityTree, ApproxTextMeasurer, AuditWarning, CanvasContent,
-    ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem, PaintKind, PaintList,
-    PaintTransform, PathVerb, RawInputEvent, StrokeStyle, TextContent, TextMeasurer, UiDocument,
-    UiInputEvent, UiInputResult, UiNode, UiNodeId, UiPoint, UiRect, UiSize,
+    AccessibilityStateKind, AccessibilityTree, AccessibilityValueRangeIssue, ApproxTextMeasurer,
+    AuditWarning, CanvasContent, ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem,
+    PaintKind, PaintList, PaintTransform, PathVerb, RawInputEvent, StrokeStyle, TextContent,
+    TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId, UiPoint, UiRect,
+    UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1141,6 +1142,27 @@ impl<'a> AuditAssertions<'a> {
         })
     }
 
+    pub fn require_accessibility_value_range_invalid_gap(
+        &self,
+        name: &str,
+        issue: AccessibilityValueRangeIssue,
+    ) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::AccessibilityValueRangeInvalid { issue: actual, .. } if *actual == issue
+            )
+        })
+    }
+
+    pub fn require_no_accessibility_value_range_invalid_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityValueRangeInvalid { .. })
+        })
+    }
+
     pub fn require_relation_target_gap(
         &self,
         name: &str,
@@ -1240,6 +1262,7 @@ fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
             | AuditWarning::AccessibilityStateMissing { .. }
             | AuditWarning::AccessibilityValueMissing { .. }
             | AuditWarning::AccessibilityValueRangeMissing { .. }
+            | AuditWarning::AccessibilityValueRangeInvalid { .. }
             | AuditWarning::AccessibilityRelationTargetMissing { .. }
             | AuditWarning::TextContrastTooLow { .. }
             | AuditWarning::FocusableMissingFromAccessibilityTree { .. }
@@ -1262,6 +1285,7 @@ fn warning_node(warning: &AuditWarning) -> Option<UiNodeId> {
         | AuditWarning::AccessibilityStateMissing { node, .. }
         | AuditWarning::AccessibilityValueMissing { node, .. }
         | AuditWarning::AccessibilityValueRangeMissing { node, .. }
+        | AuditWarning::AccessibilityValueRangeInvalid { node, .. }
         | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
         | AuditWarning::TextClipped { node, .. }
         | AuditWarning::TextContrastTooLow { node, .. }
@@ -4417,6 +4441,20 @@ mod tests {
         );
         document.add_child(
             root,
+            UiNode::container("invalid_range", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label("Invalid range")
+                        .value("50%")
+                        .value_range(AccessibilityValueRange::new(10.0, 0.0))
+                        .action(AccessibilityAction::new("increase", "Increase"))
+                        .action(AccessibilityAction::new("decrease", "Decrease"))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
             UiNode::container("action_id_gap", fixed_style(80.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
@@ -4527,6 +4565,12 @@ mod tests {
             .require_accessibility_value_range_gap("value_gap")
             .expect("missing range");
         audit
+            .require_accessibility_value_range_invalid_gap(
+                "invalid_range",
+                AccessibilityValueRangeIssue::Reversed,
+            )
+            .expect("invalid range");
+        audit
             .require_accessibility_action_id_gap("action_id_gap")
             .expect("missing action id");
         audit
@@ -4565,6 +4609,9 @@ mod tests {
         audit
             .require_no_accessibility_value_range_gap("complete_slider")
             .expect("complete range");
+        audit
+            .require_no_accessibility_value_range_invalid_gap("complete_slider")
+            .expect("valid range");
         audit
             .require_no_accessibility_state_gap("complete_toggle")
             .expect("complete toggle state");

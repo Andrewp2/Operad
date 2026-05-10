@@ -2710,6 +2710,13 @@ pub enum AuditWarning {
         name: String,
         role: AccessibilityRole,
     },
+    AccessibilityValueRangeInvalid {
+        node: UiNodeId,
+        name: String,
+        role: AccessibilityRole,
+        issue: AccessibilityValueRangeIssue,
+        range: AccessibilityValueRange,
+    },
     AccessibilityRelationTargetMissing {
         node: UiNodeId,
         name: String,
@@ -2755,6 +2762,13 @@ pub enum AccessibilityStateKind {
     Expanded,
     Pressed,
     Selected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibilityValueRangeIssue {
+    NonFinite,
+    Reversed,
+    NonPositiveStep,
 }
 
 impl UiDocument {
@@ -2983,6 +2997,18 @@ impl UiDocument {
                         node: id,
                         name: node.name.clone(),
                         role: accessibility.role,
+                    });
+                }
+                if let Some((range, issue)) = accessibility
+                    .value_range
+                    .and_then(invalid_accessibility_value_range)
+                {
+                    warnings.push(AuditWarning::AccessibilityValueRangeInvalid {
+                        node: id,
+                        name: node.name.clone(),
+                        role: accessibility.role,
+                        issue,
+                        range,
                     });
                 }
                 push_missing_relation_target_warnings(
@@ -3218,6 +3244,23 @@ fn missing_required_accessibility_state(
             Some(AccessibilityStateKind::Selected)
         }
         _ => None,
+    }
+}
+
+fn invalid_accessibility_value_range(
+    range: AccessibilityValueRange,
+) -> Option<(AccessibilityValueRange, AccessibilityValueRangeIssue)> {
+    if !range.min.is_finite()
+        || !range.max.is_finite()
+        || range.step.is_some_and(|step| !step.is_finite())
+    {
+        Some((range, AccessibilityValueRangeIssue::NonFinite))
+    } else if range.max < range.min {
+        Some((range, AccessibilityValueRangeIssue::Reversed))
+    } else if range.step.is_some_and(|step| step <= 0.0) {
+        Some((range, AccessibilityValueRangeIssue::NonPositiveStep))
+    } else {
+        None
     }
 }
 
@@ -7528,6 +7571,20 @@ mod tests {
                         .focusable(),
                 ),
         );
+        let invalid_range = doc.add_child(
+            doc.root,
+            UiNode::container("invalid_range", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label("Invalid range")
+                        .value("50%")
+                        .value_range(AccessibilityValueRange::new(100.0, 0.0))
+                        .action(AccessibilityAction::new("increase", "Increase"))
+                        .action(AccessibilityAction::new("decrease", "Decrease"))
+                        .focusable(),
+                ),
+        );
         let complete = doc.add_child(
             doc.root,
             UiNode::container("complete", button_style(80.0, 24.0))
@@ -7657,6 +7714,15 @@ mod tests {
                 role: AccessibilityRole::Slider,
             })
         );
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityValueRangeInvalid {
+                node: invalid_range,
+                name: "invalid_range".to_string(),
+                role: AccessibilityRole::Slider,
+                issue: AccessibilityValueRangeIssue::Reversed,
+                range: AccessibilityValueRange::new(100.0, 0.0),
+            })
+        );
         assert!(!warnings.contains(&AuditWarning::AccessibleNameMissing {
             node: named_by_relation,
             name: "named_by_relation".to_string(),
@@ -7714,6 +7780,15 @@ mod tests {
                 node: complete_slider,
                 name: "complete_slider".to_string(),
                 role: AccessibilityRole::Slider,
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityValueRangeInvalid {
+                node: complete_slider,
+                name: "complete_slider".to_string(),
+                role: AccessibilityRole::Slider,
+                issue: AccessibilityValueRangeIssue::Reversed,
+                range: AccessibilityValueRange::new(100.0, 0.0),
             })
         );
     }
