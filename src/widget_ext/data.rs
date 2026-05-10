@@ -9,9 +9,9 @@ use taffy::prelude::{
 };
 
 use crate::{
-    AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, ImageContent, InputBehavior,
-    ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiPoint, UiVisual,
+    commands::CommandEffect, platform::ClipboardRequest, AccessibilityMeta, AccessibilityRole,
+    ClipBehavior, ColorRgba, ImageContent, InputBehavior, ScrollAxes, ShaderEffect, StrokeStyle,
+    TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiVisual,
 };
 
 /// Semantic hint for property value rendering and editing owned by the app.
@@ -381,6 +381,10 @@ impl DataTableSelection {
         self.active_cell == Some(cell)
     }
 
+    pub fn selected_rows_clamped(&self, row_count: usize) -> Vec<usize> {
+        sorted_unique_indices(self.selected_rows.iter().copied(), row_count)
+    }
+
     pub fn set_active_cell_clamped(
         &mut self,
         row_count: usize,
@@ -424,6 +428,116 @@ impl DataTableSelection {
                 clamp_index_delta(base.column, column_delta, column_count),
             ),
         )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataTableExportFormat {
+    Tsv,
+    Csv,
+}
+
+impl DataTableExportFormat {
+    pub const fn mime_type(self) -> &'static str {
+        match self {
+            Self::Tsv => "text/tab-separated-values",
+            Self::Csv => "text/csv",
+        }
+    }
+
+    pub const fn file_extension(self) -> &'static str {
+        match self {
+            Self::Tsv => "tsv",
+            Self::Csv => "csv",
+        }
+    }
+}
+
+impl Default for DataTableExportFormat {
+    fn default() -> Self {
+        Self::Tsv
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataTableExportScope {
+    AllRows,
+    VisibleRows(Range<usize>),
+    SelectedRows,
+    ActiveCell,
+    Rows(Vec<usize>),
+    CellRange {
+        rows: Range<usize>,
+        columns: Range<usize>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableExportOptions {
+    pub format: DataTableExportFormat,
+    pub scope: DataTableExportScope,
+    pub include_headers: bool,
+    pub line_ending: String,
+}
+
+impl DataTableExportOptions {
+    pub fn new(scope: DataTableExportScope) -> Self {
+        Self {
+            scope,
+            ..Default::default()
+        }
+    }
+
+    pub fn format(mut self, format: DataTableExportFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    pub fn include_headers(mut self, include_headers: bool) -> Self {
+        self.include_headers = include_headers;
+        self
+    }
+
+    pub fn line_ending(mut self, line_ending: impl Into<String>) -> Self {
+        self.line_ending = line_ending.into();
+        self
+    }
+}
+
+impl Default for DataTableExportOptions {
+    fn default() -> Self {
+        Self {
+            format: DataTableExportFormat::Tsv,
+            scope: DataTableExportScope::SelectedRows,
+            include_headers: true,
+            line_ending: "\n".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableExport {
+    pub text: String,
+    pub format: DataTableExportFormat,
+    pub row_count: usize,
+    pub column_count: usize,
+}
+
+impl DataTableExport {
+    pub fn mime_type(&self) -> &'static str {
+        self.format.mime_type()
+    }
+
+    pub fn file_extension(&self) -> &'static str {
+        self.format.file_extension()
+    }
+
+    pub fn clipboard_request(&self) -> ClipboardRequest {
+        ClipboardRequest::WriteText(self.text.clone())
+    }
+
+    pub fn clipboard_effect(&self) -> CommandEffect {
+        CommandEffect::clipboard(self.clipboard_request())
     }
 }
 
@@ -748,6 +862,100 @@ pub fn data_table_cell_at_point(
         spec.clamped_scroll_offset(data_table_width(columns)).x + point.x,
     )?;
     Some(DataTableCellIndex::new(row, column))
+}
+
+pub fn export_data_table_text(
+    columns: &[DataTableColumn],
+    row_count: usize,
+    selection: &DataTableSelection,
+    options: DataTableExportOptions,
+    mut cell_text: impl FnMut(DataTableCellIndex) -> String,
+) -> DataTableExport {
+    let selected = data_table_export_indices(columns, row_count, selection, &options.scope);
+    let rows = selected.rows;
+    let column_indices = selected.columns;
+    let mut lines = Vec::new();
+
+    if options.include_headers && !column_indices.is_empty() {
+        lines.push(format_data_table_row(
+            options.format,
+            column_indices
+                .iter()
+                .filter_map(|column| columns.get(*column).map(|column| column.label.as_str())),
+        ));
+    }
+
+    for row in &rows {
+        lines.push(format_data_table_row(
+            options.format,
+            column_indices
+                .iter()
+                .map(|column| cell_text(DataTableCellIndex::new(*row, *column))),
+        ));
+    }
+
+    DataTableExport {
+        text: lines.join(&options.line_ending),
+        format: options.format,
+        row_count: rows.len(),
+        column_count: column_indices.len(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DataTableExportIndices {
+    rows: Vec<usize>,
+    columns: Vec<usize>,
+}
+
+fn data_table_export_indices(
+    columns: &[DataTableColumn],
+    row_count: usize,
+    selection: &DataTableSelection,
+    scope: &DataTableExportScope,
+) -> DataTableExportIndices {
+    let column_count = columns.len();
+    let all_columns = (0..column_count).collect::<Vec<_>>();
+    match scope {
+        DataTableExportScope::AllRows => DataTableExportIndices {
+            rows: (0..row_count).collect(),
+            columns: all_columns,
+        },
+        DataTableExportScope::VisibleRows(rows) => DataTableExportIndices {
+            rows: clamp_range_to_indices(rows.clone(), row_count),
+            columns: all_columns,
+        },
+        DataTableExportScope::SelectedRows => {
+            let mut rows = selection.selected_rows_clamped(row_count);
+            if rows.is_empty() {
+                rows = selection
+                    .active_cell
+                    .map(|cell| vec![cell.row])
+                    .unwrap_or_default();
+                rows = sorted_unique_indices(rows, row_count);
+            }
+            DataTableExportIndices {
+                rows,
+                columns: all_columns,
+            }
+        }
+        DataTableExportScope::ActiveCell => {
+            let (rows, columns) = selection
+                .active_cell
+                .filter(|cell| cell.row < row_count && cell.column < column_count)
+                .map(|cell| (vec![cell.row], vec![cell.column]))
+                .unwrap_or_default();
+            DataTableExportIndices { rows, columns }
+        }
+        DataTableExportScope::Rows(rows) => DataTableExportIndices {
+            rows: sorted_unique_indices(rows.iter().copied(), row_count),
+            columns: all_columns,
+        },
+        DataTableExportScope::CellRange { rows, columns } => DataTableExportIndices {
+            rows: clamp_range_to_indices(rows.clone(), row_count),
+            columns: clamp_range_to_indices(columns.clone(), column_count),
+        },
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1884,6 +2092,58 @@ fn push_state(values: &mut Vec<String>, label: &str, active: bool) {
     }
 }
 
+fn sorted_unique_indices(
+    indices: impl IntoIterator<Item = usize>,
+    upper_bound: usize,
+) -> Vec<usize> {
+    let mut indices = indices
+        .into_iter()
+        .filter(|index| *index < upper_bound)
+        .collect::<Vec<_>>();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+fn clamp_range_to_indices(range: Range<usize>, upper_bound: usize) -> Vec<usize> {
+    let start = range.start.min(upper_bound);
+    let end = range.end.min(upper_bound);
+    (start..end).collect()
+}
+
+fn format_data_table_row(
+    format: DataTableExportFormat,
+    cells: impl IntoIterator<Item = impl AsRef<str>>,
+) -> String {
+    let cells = cells
+        .into_iter()
+        .map(|cell| format_data_table_cell(format, cell.as_ref()))
+        .collect::<Vec<_>>();
+    match format {
+        DataTableExportFormat::Tsv => cells.join("\t"),
+        DataTableExportFormat::Csv => cells.join(","),
+    }
+}
+
+fn format_data_table_cell(format: DataTableExportFormat, text: &str) -> String {
+    match format {
+        DataTableExportFormat::Tsv => text
+            .chars()
+            .map(|character| match character {
+                '\t' | '\r' | '\n' => ' ',
+                other => other,
+            })
+            .collect(),
+        DataTableExportFormat::Csv => {
+            if text.contains([',', '"', '\r', '\n']) {
+                format!("\"{}\"", text.replace('"', "\"\""))
+            } else {
+                text.to_owned()
+            }
+        }
+    }
+}
+
 fn next_enabled_visible_index(
     visible: &[TreeVisibleItem],
     current: Option<usize>,
@@ -2148,6 +2408,85 @@ mod tests {
         );
         assert_eq!(selection.selected_rows, vec![0]);
         assert_eq!(selection.move_active_cell_by(0, 2, 1, 0), None);
+    }
+
+    #[test]
+    fn data_table_export_formats_selected_rows_and_clipboard_effects() {
+        let columns = vec![
+            DataTableColumn::new("name", "Name", 120.0),
+            DataTableColumn::new("value", "Value", 80.0),
+        ];
+        let selection = DataTableSelection {
+            selected_rows: vec![3, 1, 3, 99],
+            active_cell: None,
+        };
+        let export = export_data_table_text(
+            &columns,
+            4,
+            &selection,
+            DataTableExportOptions::new(DataTableExportScope::SelectedRows),
+            |cell| match cell.column {
+                0 => format!("clip\t{}", cell.row),
+                _ => format!("bar\n{}", cell.row + 1),
+            },
+        );
+
+        assert_eq!(selection.selected_rows_clamped(4), vec![1, 3]);
+        assert_eq!(export.format, DataTableExportFormat::Tsv);
+        assert_eq!(export.mime_type(), "text/tab-separated-values");
+        assert_eq!(export.file_extension(), "tsv");
+        assert_eq!(export.row_count, 2);
+        assert_eq!(export.column_count, 2);
+        assert_eq!(export.text, "Name\tValue\nclip 1\tbar 2\nclip 3\tbar 4");
+        assert_eq!(
+            export.clipboard_request(),
+            ClipboardRequest::WriteText(export.text.clone())
+        );
+        assert_eq!(
+            export.clipboard_effect(),
+            CommandEffect::clipboard(ClipboardRequest::WriteText(export.text.clone()))
+        );
+    }
+
+    #[test]
+    fn data_table_export_supports_csv_active_cells_and_ranges() {
+        let columns = vec![
+            DataTableColumn::new("name", "Name", 120.0),
+            DataTableColumn::new("note", "Note", 200.0),
+        ];
+        let selection =
+            DataTableSelection::single_row(0).with_active_cell(DataTableCellIndex::new(2, 1));
+        let active = export_data_table_text(
+            &columns,
+            8,
+            &selection,
+            DataTableExportOptions::new(DataTableExportScope::ActiveCell)
+                .format(DataTableExportFormat::Csv)
+                .include_headers(false),
+            |cell| format!("row {}, \"quoted\"", cell.row),
+        );
+
+        assert_eq!(active.text, "\"row 2, \"\"quoted\"\"\"");
+        assert_eq!(active.mime_type(), "text/csv");
+        assert_eq!(active.row_count, 1);
+        assert_eq!(active.column_count, 1);
+
+        let range = export_data_table_text(
+            &columns,
+            8,
+            &selection,
+            DataTableExportOptions::new(DataTableExportScope::CellRange {
+                rows: 1..3,
+                columns: 0..2,
+            })
+            .format(DataTableExportFormat::Csv)
+            .line_ending("\r\n"),
+            |cell| format!("r{}c{}", cell.row, cell.column),
+        );
+
+        assert_eq!(range.text, "Name,Note\r\nr1c0,r1c1\r\nr2c0,r2c1");
+        assert_eq!(range.row_count, 2);
+        assert_eq!(range.column_count, 2);
     }
 
     #[test]
