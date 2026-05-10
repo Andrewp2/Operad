@@ -301,6 +301,10 @@ The branch starts from Operad 2.0.0 plus:
   prefixes/suffixes, normalized linear/logarithmic value mapping, formatted
   parameter accessibility metadata, and parameter-aware commit/cancel text
   editing.
+- Numeric slider interaction contracts in `src/widget_ext/pickers.rs` for
+  horizontal/vertical geometry, fill/thumb rects, pointer drag phases,
+  keyboard stepping, quantized parameter values, and slider accessibility
+  actions.
 - Text-input editing helpers in `src/lib.rs` for selected text, Unicode-safe
   caret line/column metadata, multiline line-start/line-end movement, and
   vertical caret movement with shift selection.

@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::{
     AccessibilityMeta, AccessibilityRole, AccessibilityValueRange, ColorRgba, EditPhase,
-    ImageContent, KeyCode, KeyModifiers, ShaderEffect,
+    ImageContent, KeyCode, KeyModifiers, ShaderEffect, UiPoint, UiRect,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1396,6 +1396,8 @@ impl NumericParameterSpec {
             .hint(numeric_range_hint(self.range, self.precision))
             .value_range(AccessibilityValueRange::new(self.range.min, self.range.max))
             .focusable()
+            .action(crate::AccessibilityAction::new("decrease", "Decrease"))
+            .action(crate::AccessibilityAction::new("increase", "Increase"))
     }
 }
 
@@ -1736,6 +1738,301 @@ impl NumericInputState {
 pub struct NumericInputOutcome {
     pub previous: f64,
     pub value: f64,
+    pub text: String,
+    pub phase: EditPhase,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliderAxis {
+    Horizontal,
+    Vertical,
+}
+
+impl SliderAxis {
+    pub const fn is_horizontal(self) -> bool {
+        matches!(self, Self::Horizontal)
+    }
+
+    pub const fn is_vertical(self) -> bool {
+        matches!(self, Self::Vertical)
+    }
+}
+
+impl Default for SliderAxis {
+    fn default() -> Self {
+        Self::Horizontal
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SliderGeometry {
+    pub track: UiRect,
+    pub axis: SliderAxis,
+    pub thumb_size: f32,
+}
+
+impl SliderGeometry {
+    pub fn new(track: UiRect, axis: SliderAxis) -> Self {
+        Self {
+            track: sanitized_rect(track),
+            axis,
+            thumb_size: 12.0,
+        }
+    }
+
+    pub fn horizontal(track: UiRect) -> Self {
+        Self::new(track, SliderAxis::Horizontal)
+    }
+
+    pub fn vertical(track: UiRect) -> Self {
+        Self::new(track, SliderAxis::Vertical)
+    }
+
+    pub fn thumb_size(mut self, thumb_size: f32) -> Self {
+        self.thumb_size = finite_or_f32(thumb_size, 12.0).max(0.0);
+        self
+    }
+
+    pub fn position_from_point(self, point: UiPoint) -> f64 {
+        let point = UiPoint::new(finite_or_f32(point.x, 0.0), finite_or_f32(point.y, 0.0));
+        match self.axis {
+            SliderAxis::Horizontal => {
+                if self.track.width <= f32::EPSILON {
+                    0.0
+                } else {
+                    ((point.x - self.track.x) / self.track.width).clamp(0.0, 1.0) as f64
+                }
+            }
+            SliderAxis::Vertical => {
+                if self.track.height <= f32::EPSILON {
+                    0.0
+                } else {
+                    (1.0 - (point.y - self.track.y) / self.track.height).clamp(0.0, 1.0) as f64
+                }
+            }
+        }
+    }
+
+    pub fn fill_rect(self, position: f64) -> UiRect {
+        let position = unit_f64(position) as f32;
+        match self.axis {
+            SliderAxis::Horizontal => UiRect::new(
+                self.track.x,
+                self.track.y,
+                self.track.width * position,
+                self.track.height,
+            ),
+            SliderAxis::Vertical => {
+                let height = self.track.height * position;
+                UiRect::new(
+                    self.track.x,
+                    self.track.bottom() - height,
+                    self.track.width,
+                    height,
+                )
+            }
+        }
+    }
+
+    pub fn thumb_rect(self, position: f64) -> UiRect {
+        let position = unit_f64(position) as f32;
+        let size = self.thumb_size.max(0.0);
+        match self.axis {
+            SliderAxis::Horizontal => UiRect::new(
+                self.track.x + self.track.width * position - size * 0.5,
+                self.track.y + self.track.height * 0.5 - size * 0.5,
+                size,
+                size,
+            ),
+            SliderAxis::Vertical => UiRect::new(
+                self.track.x + self.track.width * 0.5 - size * 0.5,
+                self.track.bottom() - self.track.height * position - size * 0.5,
+                size,
+                size,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumericSliderDrag {
+    pub start_value: f64,
+    pub start_position: f64,
+    pub pointer_start: UiPoint,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumericSliderState {
+    pub value: f64,
+    pub phase: EditPhase,
+    pub dragging: Option<NumericSliderDrag>,
+}
+
+impl NumericSliderState {
+    pub fn new(value: f64, parameter: &NumericParameterSpec) -> Self {
+        Self {
+            value: parameter.normalize_value(value),
+            phase: EditPhase::Preview,
+            dragging: None,
+        }
+    }
+
+    pub fn position(&self, parameter: &NumericParameterSpec) -> f64 {
+        parameter.position_for_value(self.value)
+    }
+
+    pub fn set_value(
+        &mut self,
+        value: f64,
+        phase: EditPhase,
+        parameter: &NumericParameterSpec,
+    ) -> NumericSliderOutcome {
+        let previous = self.value;
+        self.value = parameter.normalize_value(value);
+        self.phase = phase;
+        self.outcome(previous, parameter)
+    }
+
+    pub fn set_position(
+        &mut self,
+        position: f64,
+        phase: EditPhase,
+        parameter: &NumericParameterSpec,
+    ) -> NumericSliderOutcome {
+        self.set_value(parameter.value_at_position(position), phase, parameter)
+    }
+
+    pub fn value_from_point(
+        &self,
+        geometry: SliderGeometry,
+        point: UiPoint,
+        parameter: &NumericParameterSpec,
+    ) -> f64 {
+        parameter.value_at_position(geometry.position_from_point(point))
+    }
+
+    pub fn begin_drag(
+        &mut self,
+        geometry: SliderGeometry,
+        point: UiPoint,
+        parameter: &NumericParameterSpec,
+    ) -> NumericSliderOutcome {
+        self.dragging = Some(NumericSliderDrag {
+            start_value: self.value,
+            start_position: self.position(parameter),
+            pointer_start: point,
+        });
+        self.set_value(
+            self.value_from_point(geometry, point, parameter),
+            EditPhase::BeginEdit,
+            parameter,
+        )
+    }
+
+    pub fn update_drag(
+        &mut self,
+        geometry: SliderGeometry,
+        point: UiPoint,
+        parameter: &NumericParameterSpec,
+    ) -> NumericSliderOutcome {
+        if self.dragging.is_none() {
+            return self.begin_drag(geometry, point, parameter);
+        }
+        self.set_value(
+            self.value_from_point(geometry, point, parameter),
+            EditPhase::UpdateEdit,
+            parameter,
+        )
+    }
+
+    pub fn end_drag(&mut self, parameter: &NumericParameterSpec) -> NumericSliderOutcome {
+        self.dragging = None;
+        self.set_value(self.value, EditPhase::CommitEdit, parameter)
+    }
+
+    pub fn cancel_drag(&mut self, parameter: &NumericParameterSpec) -> NumericSliderOutcome {
+        let previous = self.value;
+        let restored = self.dragging.map_or(self.value, |drag| drag.start_value);
+        self.dragging = None;
+        self.value = parameter.normalize_value(restored);
+        self.phase = EditPhase::CancelEdit;
+        self.outcome(previous, parameter)
+    }
+
+    pub fn apply_keyboard_step(
+        &mut self,
+        step: NumericKeyboardStep,
+        parameter: &NumericParameterSpec,
+    ) -> NumericSliderOutcome {
+        match step {
+            NumericKeyboardStep::Decrement => self.nudge(-1, EditPhase::UpdateEdit, parameter),
+            NumericKeyboardStep::Increment => self.nudge(1, EditPhase::UpdateEdit, parameter),
+            NumericKeyboardStep::LargeDecrement => {
+                self.nudge(-10, EditPhase::UpdateEdit, parameter)
+            }
+            NumericKeyboardStep::LargeIncrement => self.nudge(10, EditPhase::UpdateEdit, parameter),
+            NumericKeyboardStep::Minimum => {
+                self.set_value(parameter.range.min, EditPhase::UpdateEdit, parameter)
+            }
+            NumericKeyboardStep::Maximum => {
+                self.set_value(parameter.range.max, EditPhase::UpdateEdit, parameter)
+            }
+        }
+    }
+
+    pub fn handle_keyboard_step(
+        &mut self,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+        parameter: &NumericParameterSpec,
+    ) -> Option<NumericSliderOutcome> {
+        NumericKeyboardStep::from_key(key, modifiers)
+            .map(|step| self.apply_keyboard_step(step, parameter))
+    }
+
+    pub fn fill_rect(&self, geometry: SliderGeometry, parameter: &NumericParameterSpec) -> UiRect {
+        geometry.fill_rect(self.position(parameter))
+    }
+
+    pub fn thumb_rect(&self, geometry: SliderGeometry, parameter: &NumericParameterSpec) -> UiRect {
+        geometry.thumb_rect(self.position(parameter))
+    }
+
+    pub fn accessibility_meta(&self, parameter: &NumericParameterSpec) -> AccessibilityMeta {
+        parameter.slider_accessibility_meta(self.value)
+    }
+
+    fn nudge(
+        &mut self,
+        steps: i32,
+        phase: EditPhase,
+        parameter: &NumericParameterSpec,
+    ) -> NumericSliderOutcome {
+        self.set_value(
+            self.value + parameter.precision.step * f64::from(steps),
+            phase,
+            parameter,
+        )
+    }
+
+    fn outcome(&self, previous: f64, parameter: &NumericParameterSpec) -> NumericSliderOutcome {
+        NumericSliderOutcome {
+            previous,
+            value: self.value,
+            position: self.position(parameter),
+            text: parameter.format_value(self.value),
+            phase: self.phase,
+            changed: previous != self.value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumericSliderOutcome {
+    pub previous: f64,
+    pub value: f64,
+    pub position: f64,
     pub text: String,
     pub phase: EditPhase,
     pub changed: bool,
@@ -2250,6 +2547,23 @@ fn finite_or_f32(value: f32, fallback: f32) -> f32 {
         value
     } else {
         fallback
+    }
+}
+
+fn sanitized_rect(rect: UiRect) -> UiRect {
+    UiRect::new(
+        finite_or_f32(rect.x, 0.0),
+        finite_or_f32(rect.y, 0.0),
+        finite_or_f32(rect.width, 0.0).max(0.0),
+        finite_or_f32(rect.height, 0.0).max(0.0),
+    )
+}
+
+fn unit_f64(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
     }
 }
 
@@ -2786,6 +3100,87 @@ mod tests {
         assert_eq!(slider_meta.role, AccessibilityRole::Slider);
         assert_eq!(slider_meta.value.as_deref(), Some("1000.0 Hz"));
         assert_eq!(slider_meta.value_range.as_ref().unwrap().min, 20.0);
+        assert!(slider_meta
+            .actions
+            .iter()
+            .any(|action| action.id == "increase"));
+    }
+
+    #[test]
+    fn numeric_slider_geometry_maps_axis_fill_and_thumb_rects() {
+        let horizontal =
+            SliderGeometry::horizontal(UiRect::new(10.0, 20.0, 100.0, 10.0)).thumb_size(12.0);
+        assert_eq!(
+            horizontal.position_from_point(UiPoint::new(60.0, 25.0)),
+            0.5
+        );
+        assert_eq!(
+            horizontal.fill_rect(0.5),
+            UiRect::new(10.0, 20.0, 50.0, 10.0)
+        );
+        assert_eq!(
+            horizontal.thumb_rect(0.5),
+            UiRect::new(54.0, 19.0, 12.0, 12.0)
+        );
+
+        let vertical =
+            SliderGeometry::vertical(UiRect::new(0.0, 0.0, 10.0, 100.0)).thumb_size(10.0);
+        assert_eq!(vertical.position_from_point(UiPoint::new(5.0, 25.0)), 0.75);
+        assert_eq!(vertical.fill_rect(0.75), UiRect::new(0.0, 25.0, 10.0, 75.0));
+        assert_eq!(
+            vertical.thumb_rect(0.75),
+            UiRect::new(0.0, 20.0, 10.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn numeric_slider_state_tracks_drag_keyboard_and_accessibility() {
+        let utilization = NumericParameterSpec::new(
+            "Utilization",
+            NumericRange::new(0.0, 100.0),
+            NumericPrecision::decimals(1).with_step(0.5),
+        )
+        .unit_suffix("%");
+        let geometry = SliderGeometry::horizontal(UiRect::new(0.0, 0.0, 100.0, 8.0));
+        let mut slider = NumericSliderState::new(25.2, &utilization);
+
+        assert_eq!(slider.value, 25.0);
+        assert_eq!(slider.position(&utilization), 0.25);
+        assert_eq!(
+            slider.fill_rect(geometry, &utilization),
+            UiRect::new(0.0, 0.0, 25.0, 8.0)
+        );
+
+        let begin = slider.begin_drag(geometry, UiPoint::new(60.0, 4.0), &utilization);
+        assert_eq!(begin.phase, EditPhase::BeginEdit);
+        assert_eq!(begin.value, 60.0);
+        assert!(begin.changed);
+        assert!(slider.dragging.is_some());
+
+        let update = slider.update_drag(geometry, UiPoint::new(80.0, 4.0), &utilization);
+        assert_eq!(update.phase, EditPhase::UpdateEdit);
+        assert_eq!(update.value, 80.0);
+
+        let commit = slider.end_drag(&utilization);
+        assert_eq!(commit.phase, EditPhase::CommitEdit);
+        assert_eq!(commit.text, "80.0%");
+        assert!(slider.dragging.is_none());
+
+        let decrement = slider
+            .handle_keyboard_step(KeyCode::ArrowLeft, KeyModifiers::NONE, &utilization)
+            .expect("keyboard step");
+        assert_eq!(decrement.value, 79.5);
+        assert_eq!(decrement.position, 0.795);
+
+        slider.begin_drag(geometry, UiPoint::new(20.0, 4.0), &utilization);
+        let cancel = slider.cancel_drag(&utilization);
+        assert_eq!(cancel.phase, EditPhase::CancelEdit);
+        assert_eq!(cancel.value, 79.5);
+
+        let meta = slider.accessibility_meta(&utilization);
+        assert_eq!(meta.role, AccessibilityRole::Slider);
+        assert_eq!(meta.value.as_deref(), Some("79.5%"));
+        assert_eq!(meta.value_range.as_ref().unwrap().max, 100.0);
     }
 
     #[test]
