@@ -2494,6 +2494,16 @@ pub enum AuditWarning {
         name: String,
         role: AccessibilityRole,
     },
+    AccessibilityValueMissing {
+        node: UiNodeId,
+        name: String,
+        role: AccessibilityRole,
+    },
+    AccessibilityValueRangeMissing {
+        node: UiNodeId,
+        name: String,
+        role: AccessibilityRole,
+    },
     AccessibilityRelationTargetMissing {
         node: UiNodeId,
         name: String,
@@ -2711,6 +2721,27 @@ impl UiDocument {
                         role: accessibility.role,
                     });
                 }
+                if accessibility_needs_value(accessibility.role)
+                    && accessibility
+                        .value
+                        .as_deref()
+                        .is_none_or(|value| value.trim().is_empty())
+                {
+                    warnings.push(AuditWarning::AccessibilityValueMissing {
+                        node: id,
+                        name: node.name.clone(),
+                        role: accessibility.role,
+                    });
+                }
+                if accessibility_needs_value_range(accessibility.role)
+                    && accessibility.value_range.is_none()
+                {
+                    warnings.push(AuditWarning::AccessibilityValueRangeMissing {
+                        node: id,
+                        name: node.name.clone(),
+                        role: accessibility.role,
+                    });
+                }
                 push_missing_relation_target_warnings(
                     &mut warnings,
                     id,
@@ -2848,6 +2879,23 @@ fn accessibility_needs_action(role: AccessibilityRole) -> bool {
             | AccessibilityRole::TextBox
             | AccessibilityRole::ToggleButton
             | AccessibilityRole::TreeItem
+    )
+}
+
+fn accessibility_needs_value(role: AccessibilityRole) -> bool {
+    matches!(
+        role,
+        AccessibilityRole::Meter
+            | AccessibilityRole::ProgressBar
+            | AccessibilityRole::Slider
+            | AccessibilityRole::SpinButton
+    )
+}
+
+fn accessibility_needs_value_range(role: AccessibilityRole) -> bool {
+    matches!(
+        role,
+        AccessibilityRole::Slider | AccessibilityRole::SpinButton
     )
 }
 
@@ -6677,6 +6725,31 @@ mod tests {
                         .focusable(),
                 ),
         );
+        let value_gap = doc.add_child(
+            doc.root,
+            UiNode::container("value_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label("Missing value")
+                        .action(AccessibilityAction::new("increase", "Increase"))
+                        .action(AccessibilityAction::new("decrease", "Decrease"))
+                        .focusable(),
+                ),
+        );
+        let range_gap = doc.add_child(
+            doc.root,
+            UiNode::container("range_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label("Missing range")
+                        .value("50%")
+                        .action(AccessibilityAction::new("increase", "Increase"))
+                        .action(AccessibilityAction::new("decrease", "Decrease"))
+                        .focusable(),
+                ),
+        );
         let complete = doc.add_child(
             doc.root,
             UiNode::container("complete", button_style(80.0, 24.0))
@@ -6685,6 +6758,20 @@ mod tests {
                     AccessibilityMeta::new(AccessibilityRole::Button)
                         .label("Complete")
                         .action(AccessibilityAction::new("activate", "Activate"))
+                        .focusable(),
+                ),
+        );
+        let complete_slider = doc.add_child(
+            doc.root,
+            UiNode::container("complete_slider", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label("Complete slider")
+                        .value("75%")
+                        .value_range(AccessibilityValueRange::new(0.0, 100.0))
+                        .action(AccessibilityAction::new("increase", "Increase"))
+                        .action(AccessibilityAction::new("decrease", "Decrease"))
                         .focusable(),
                 ),
         );
@@ -6717,6 +6804,25 @@ mod tests {
                 target: hidden_label,
             })
         );
+        assert!(warnings.contains(&AuditWarning::AccessibilityValueMissing {
+            node: value_gap,
+            name: "value_gap".to_string(),
+            role: AccessibilityRole::Slider,
+        }));
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityValueRangeMissing {
+                node: value_gap,
+                name: "value_gap".to_string(),
+                role: AccessibilityRole::Slider,
+            })
+        );
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityValueRangeMissing {
+                node: range_gap,
+                name: "range_gap".to_string(),
+                role: AccessibilityRole::Slider,
+            })
+        );
         assert!(!warnings.contains(&AuditWarning::AccessibleNameMissing {
             node: named_by_relation,
             name: "named_by_relation".to_string(),
@@ -6732,6 +6838,20 @@ mod tests {
                 node: complete,
                 name: "complete".to_string(),
                 role: AccessibilityRole::Button,
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityValueMissing {
+                node: complete_slider,
+                name: "complete_slider".to_string(),
+                role: AccessibilityRole::Slider,
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityValueRangeMissing {
+                node: complete_slider,
+                name: "complete_slider".to_string(),
+                role: AccessibilityRole::Slider,
             })
         );
     }

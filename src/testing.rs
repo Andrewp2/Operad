@@ -547,6 +547,34 @@ impl<'a> AuditAssertions<'a> {
         })
     }
 
+    pub fn require_accessibility_value_gap(&self, name: &str) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityValueMissing { .. })
+        })
+    }
+
+    pub fn require_no_accessibility_value_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityValueMissing { .. })
+        })
+    }
+
+    pub fn require_accessibility_value_range_gap(&self, name: &str) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityValueRangeMissing { .. })
+        })
+    }
+
+    pub fn require_no_accessibility_value_range_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityValueRangeMissing { .. })
+        })
+    }
+
     pub fn require_relation_target_gap(
         &self,
         name: &str,
@@ -625,6 +653,8 @@ fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
         warning,
         AuditWarning::AccessibleNameMissing { .. }
             | AuditWarning::AccessibilityActionMissing { .. }
+            | AuditWarning::AccessibilityValueMissing { .. }
+            | AuditWarning::AccessibilityValueRangeMissing { .. }
             | AuditWarning::AccessibilityRelationTargetMissing { .. }
             | AuditWarning::FocusableMissingFromAccessibilityTree { .. }
     )
@@ -639,6 +669,8 @@ fn warning_node(warning: &AuditWarning) -> Option<UiNodeId> {
         | AuditWarning::FocusableMissingFromAccessibilityTree { node, .. }
         | AuditWarning::AccessibleNameMissing { node, .. }
         | AuditWarning::AccessibilityActionMissing { node, .. }
+        | AuditWarning::AccessibilityValueMissing { node, .. }
+        | AuditWarning::AccessibilityValueRangeMissing { node, .. }
         | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
         | AuditWarning::TextClipped { node, .. }
         | AuditWarning::NodeOutsideRoot { node, .. }
@@ -2033,14 +2065,14 @@ mod tests {
     };
     use crate::{
         length, process_document_frame, root_style, AccessibilityAction, AccessibilityLiveRegion,
-        AccessibilityMeta, AccessibilityRole, AccessibilitySummary, ApproxTextMeasurer,
-        CanvasContent, CanvasInteractionPolicy, CanvasRenderContext, CanvasRenderOutput,
-        CanvasRenderRegistry, ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest,
-        HostFrameOutput, HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
-        ImageRenderRegistry, InputBehavior, PaintBatch, PaintBatchKey, RawKeyboardEvent,
-        RawWheelEvent, RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind,
-        RenderedImage, ResourceFormat, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent,
-        UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
+        AccessibilityMeta, AccessibilityRole, AccessibilitySummary, AccessibilityValueRange,
+        ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy, CanvasRenderContext,
+        CanvasRenderOutput, CanvasRenderRegistry, ClipBehavior, ColorRgba, DirtyRegionSet,
+        HostDocumentFrameRequest, HostFrameOutput, HostInteractionState, ImageContent,
+        ImageRenderContext, ImageRenderOutput, ImageRenderRegistry, InputBehavior, PaintBatch,
+        PaintBatchKey, RawKeyboardEvent, RawWheelEvent, RenderFrameOutput, RenderFrameRequest,
+        RenderTarget, RenderTargetKind, RenderedImage, ResourceFormat, ScrollAxes, ShaderEffect,
+        StrokeStyle, TextStyle, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -2412,12 +2444,38 @@ mod tests {
         );
         document.add_child(
             root,
+            UiNode::container("value_gap", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label("Missing value")
+                        .action(AccessibilityAction::new("increase", "Increase"))
+                        .action(AccessibilityAction::new("decrease", "Decrease"))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
             UiNode::container("complete", fixed_style(80.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
                     AccessibilityMeta::new(AccessibilityRole::Button)
                         .label("Complete")
                         .action(AccessibilityAction::new("activate", "Activate"))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
+            UiNode::container("complete_slider", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label("Complete slider")
+                        .value("25%")
+                        .value_range(AccessibilityValueRange::new(0.0, 100.0))
+                        .action(AccessibilityAction::new("increase", "Increase"))
+                        .action(AccessibilityAction::new("decrease", "Decrease"))
                         .focusable(),
                 ),
         );
@@ -2442,6 +2500,12 @@ mod tests {
             )
             .expect("missing relation target");
         audit
+            .require_accessibility_value_gap("value_gap")
+            .expect("missing value");
+        audit
+            .require_accessibility_value_range_gap("value_gap")
+            .expect("missing range");
+        audit
             .require_no_accessible_name_gap("complete")
             .expect("complete label");
         audit
@@ -2450,6 +2514,12 @@ mod tests {
         audit
             .require_no_relation_target_gap("complete")
             .expect("complete relations");
+        audit
+            .require_no_accessibility_value_gap("complete_slider")
+            .expect("complete value");
+        audit
+            .require_no_accessibility_value_range_gap("complete_slider")
+            .expect("complete range");
     }
 
     #[test]

@@ -280,7 +280,8 @@ The branch starts from Operad 2.0.0 plus:
 - Layout audit checks in `src/lib.rs` now cover duplicate node names,
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   nodes outside the root, empty paint clips, focusable controls missing from
-  the accessibility traversal, and accessible-name/action/relation-target gaps.
+  the accessibility traversal, and accessible-name/action/value/value-range/
+  relation-target gaps.
 - Operad-owned layout helper APIs in `src/lib.rs` cover common fixed, fill,
   centered flex, absolute, gap, min/max size, flex item, and clipped node-style
   shapes so consumers can use fewer raw Taffy struct literals.
