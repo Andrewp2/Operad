@@ -281,7 +281,7 @@ The branch starts from Operad 2.0.0 plus:
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   nodes outside the root, empty paint clips, focusable controls missing from
   the accessibility traversal, and accessible-name/action/action-id/action-label/
-  duplicate-action/value/value-range/relation-target gaps.
+  duplicate-action/state/value/value-range/relation-target gaps.
 - Operad-owned layout helper APIs in `src/lib.rs` cover common fixed, fill,
   centered flex, absolute, gap, min/max size, flex item, and clipped node-style
   shapes so consumers can use fewer raw Taffy struct literals.

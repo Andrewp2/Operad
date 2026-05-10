@@ -2508,6 +2508,12 @@ pub enum AuditWarning {
         name: String,
         action_id: String,
     },
+    AccessibilityStateMissing {
+        node: UiNodeId,
+        name: String,
+        role: AccessibilityRole,
+        state: AccessibilityStateKind,
+    },
     AccessibilityValueMissing {
         node: UiNodeId,
         name: String,
@@ -2547,6 +2553,14 @@ pub enum AccessibilityRelationKind {
     Controls,
     Owns,
     ActiveDescendant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibilityStateKind {
+    Checked,
+    Expanded,
+    Pressed,
+    Selected,
 }
 
 impl UiDocument {
@@ -2736,6 +2750,14 @@ impl UiDocument {
                     });
                 }
                 push_action_quality_warnings(&mut warnings, id, &node.name, &accessibility.actions);
+                if let Some(state) = missing_required_accessibility_state(accessibility) {
+                    warnings.push(AuditWarning::AccessibilityStateMissing {
+                        node: id,
+                        name: node.name.clone(),
+                        role: accessibility.role,
+                        state,
+                    });
+                }
                 if accessibility_needs_value(accessibility.role)
                     && accessibility
                         .value
@@ -2912,6 +2934,30 @@ fn accessibility_needs_value_range(role: AccessibilityRole) -> bool {
         role,
         AccessibilityRole::Slider | AccessibilityRole::SpinButton
     )
+}
+
+fn missing_required_accessibility_state(
+    accessibility: &AccessibilityMeta,
+) -> Option<AccessibilityStateKind> {
+    match accessibility.role {
+        AccessibilityRole::Checkbox
+        | AccessibilityRole::RadioButton
+        | AccessibilityRole::Switch
+            if accessibility.checked.is_none() =>
+        {
+            Some(AccessibilityStateKind::Checked)
+        }
+        AccessibilityRole::ComboBox if accessibility.expanded.is_none() => {
+            Some(AccessibilityStateKind::Expanded)
+        }
+        AccessibilityRole::ToggleButton if accessibility.pressed.is_none() => {
+            Some(AccessibilityStateKind::Pressed)
+        }
+        AccessibilityRole::Tab if accessibility.selected.is_none() => {
+            Some(AccessibilityStateKind::Selected)
+        }
+        _ => None,
+    }
 }
 
 fn push_action_quality_warnings(
@@ -6805,6 +6851,50 @@ mod tests {
                         .focusable(),
                 ),
         );
+        let checked_state_gap = doc.add_child(
+            doc.root,
+            UiNode::container("checked_state_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Checkbox)
+                        .label("Missing checked")
+                        .action(AccessibilityAction::new("toggle", "Toggle"))
+                        .focusable(),
+                ),
+        );
+        let expanded_state_gap = doc.add_child(
+            doc.root,
+            UiNode::container("expanded_state_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::ComboBox)
+                        .label("Missing expanded")
+                        .action(AccessibilityAction::new("open", "Open"))
+                        .focusable(),
+                ),
+        );
+        let pressed_state_gap = doc.add_child(
+            doc.root,
+            UiNode::container("pressed_state_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::ToggleButton)
+                        .label("Missing pressed")
+                        .action(AccessibilityAction::new("toggle", "Toggle"))
+                        .focusable(),
+                ),
+        );
+        let selected_state_gap = doc.add_child(
+            doc.root,
+            UiNode::container("selected_state_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Tab)
+                        .label("Missing selected")
+                        .action(AccessibilityAction::new("select", "Select"))
+                        .focusable(),
+                ),
+        );
         let value_gap = doc.add_child(
             doc.root,
             UiNode::container("value_gap", button_style(80.0, 24.0))
@@ -6838,6 +6928,18 @@ mod tests {
                     AccessibilityMeta::new(AccessibilityRole::Button)
                         .label("Complete")
                         .action(AccessibilityAction::new("activate", "Activate"))
+                        .focusable(),
+                ),
+        );
+        let complete_checkbox = doc.add_child(
+            doc.root,
+            UiNode::container("complete_checkbox", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Checkbox)
+                        .label("Complete checkbox")
+                        .checked(false)
+                        .action(AccessibilityAction::new("toggle", "Toggle"))
                         .focusable(),
                 ),
         );
@@ -6904,6 +7006,30 @@ mod tests {
                 action_id: "activate".to_string(),
             })
         );
+        assert!(warnings.contains(&AuditWarning::AccessibilityStateMissing {
+            node: checked_state_gap,
+            name: "checked_state_gap".to_string(),
+            role: AccessibilityRole::Checkbox,
+            state: AccessibilityStateKind::Checked,
+        }));
+        assert!(warnings.contains(&AuditWarning::AccessibilityStateMissing {
+            node: expanded_state_gap,
+            name: "expanded_state_gap".to_string(),
+            role: AccessibilityRole::ComboBox,
+            state: AccessibilityStateKind::Expanded,
+        }));
+        assert!(warnings.contains(&AuditWarning::AccessibilityStateMissing {
+            node: pressed_state_gap,
+            name: "pressed_state_gap".to_string(),
+            role: AccessibilityRole::ToggleButton,
+            state: AccessibilityStateKind::Pressed,
+        }));
+        assert!(warnings.contains(&AuditWarning::AccessibilityStateMissing {
+            node: selected_state_gap,
+            name: "selected_state_gap".to_string(),
+            role: AccessibilityRole::Tab,
+            state: AccessibilityStateKind::Selected,
+        }));
         assert!(warnings.contains(&AuditWarning::AccessibilityValueMissing {
             node: value_gap,
             name: "value_gap".to_string(),
@@ -6958,6 +7084,14 @@ mod tests {
                 node: complete,
                 name: "complete".to_string(),
                 action_id: "activate".to_string(),
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityStateMissing {
+                node: complete_checkbox,
+                name: "complete_checkbox".to_string(),
+                role: AccessibilityRole::Checkbox,
+                state: AccessibilityStateKind::Checked,
             })
         );
         assert!(

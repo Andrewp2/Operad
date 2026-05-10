@@ -30,9 +30,9 @@ use crate::renderer::{
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
-    AccessibilityTree, AuditWarning, ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem,
-    PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId,
-    UiPoint, UiRect, UiSize,
+    AccessibilityStateKind, AccessibilityTree, AuditWarning, ColorRgba, FocusDirection, KeyCode,
+    KeyModifiers, PaintItem, PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent,
+    UiInputResult, UiNode, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -605,6 +605,27 @@ impl<'a> AuditAssertions<'a> {
         })
     }
 
+    pub fn require_accessibility_state_gap(
+        &self,
+        name: &str,
+        state: AccessibilityStateKind,
+    ) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::AccessibilityStateMissing { state: actual, .. } if *actual == state
+            )
+        })
+    }
+
+    pub fn require_no_accessibility_state_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityStateMissing { .. })
+        })
+    }
+
     pub fn require_accessibility_value_gap(&self, name: &str) -> TestResult<&AuditWarning> {
         let node = self.node_id(name)?;
         self.require_warning_for(name, node, |warning| {
@@ -714,6 +735,7 @@ fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
             | AuditWarning::AccessibilityActionIdMissing { .. }
             | AuditWarning::AccessibilityActionLabelMissing { .. }
             | AuditWarning::AccessibilityActionDuplicate { .. }
+            | AuditWarning::AccessibilityStateMissing { .. }
             | AuditWarning::AccessibilityValueMissing { .. }
             | AuditWarning::AccessibilityValueRangeMissing { .. }
             | AuditWarning::AccessibilityRelationTargetMissing { .. }
@@ -733,6 +755,7 @@ fn warning_node(warning: &AuditWarning) -> Option<UiNodeId> {
         | AuditWarning::AccessibilityActionIdMissing { node, .. }
         | AuditWarning::AccessibilityActionLabelMissing { node, .. }
         | AuditWarning::AccessibilityActionDuplicate { node, .. }
+        | AuditWarning::AccessibilityStateMissing { node, .. }
         | AuditWarning::AccessibilityValueMissing { node, .. }
         | AuditWarning::AccessibilityValueRangeMissing { node, .. }
         | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
@@ -2603,6 +2626,17 @@ mod tests {
         );
         document.add_child(
             root,
+            UiNode::container("state_gap", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::ToggleButton)
+                        .label("Missing pressed")
+                        .action(AccessibilityAction::new("toggle", "Toggle"))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
             UiNode::container("complete", fixed_style(80.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
@@ -2623,6 +2657,18 @@ mod tests {
                         .value_range(AccessibilityValueRange::new(0.0, 100.0))
                         .action(AccessibilityAction::new("increase", "Increase"))
                         .action(AccessibilityAction::new("decrease", "Decrease"))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
+            UiNode::container("complete_toggle", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::ToggleButton)
+                        .label("Complete toggle")
+                        .pressed(false)
+                        .action(AccessibilityAction::new("toggle", "Toggle"))
                         .focusable(),
                 ),
         );
@@ -2662,6 +2708,9 @@ mod tests {
             .require_accessibility_action_duplicate_gap("action_duplicate_gap", "activate")
             .expect("duplicate action id");
         audit
+            .require_accessibility_state_gap("state_gap", AccessibilityStateKind::Pressed)
+            .expect("missing pressed state");
+        audit
             .require_no_accessible_name_gap("complete")
             .expect("complete label");
         audit
@@ -2685,6 +2734,9 @@ mod tests {
         audit
             .require_no_accessibility_value_range_gap("complete_slider")
             .expect("complete range");
+        audit
+            .require_no_accessibility_state_gap("complete_toggle")
+            .expect("complete toggle state");
     }
 
     #[test]
