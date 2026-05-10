@@ -2598,20 +2598,11 @@ fn cpu_snapshot_blend_pixel(
 }
 
 fn cpu_snapshot_transform_point(point: UiPoint, transform: PaintTransform) -> UiPoint {
-    UiPoint::new(
-        point.x * transform.scale + transform.translation.x,
-        point.y * transform.scale + transform.translation.y,
-    )
+    transform.transform_point(point)
 }
 
 fn cpu_snapshot_transform_rect(rect: UiRect, transform: PaintTransform) -> UiRect {
-    let top_left = cpu_snapshot_transform_point(UiPoint::new(rect.x, rect.y), transform);
-    UiRect::new(
-        top_left.x,
-        top_left.y,
-        rect.width * transform.scale,
-        rect.height * transform.scale,
-    )
+    transform.transform_rect(rect)
 }
 
 fn cpu_snapshot_color_from_key(key: &str, alpha: u8) -> ColorRgba {

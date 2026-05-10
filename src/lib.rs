@@ -1888,7 +1888,7 @@ impl UiDocument {
             {
                 continue;
             }
-            if node.layout.rect.contains_point(point) {
+            if self.node_paint_rect(index).contains_point(point) {
                 return Some(UiNodeId(index));
             }
         }
@@ -1944,7 +1944,7 @@ impl UiDocument {
                 let node = &self.nodes[index];
                 (node.layout.visible
                     && node.layout.clip_rect.contains_point(position)
-                    && node.layout.rect.contains_point(position)
+                    && self.node_paint_rect(index).contains_point(position)
                     && node
                         .scroll
                         .is_some_and(|scroll| scroll.axes.horizontal || scroll.axes.vertical))
@@ -2012,16 +2012,9 @@ impl UiDocument {
             }
             let layer_order = layer_orders[index];
             let z_index = layer_order.local_z;
-            let animation_values = node
-                .animation
-                .as_ref()
-                .map(AnimationMachine::values)
-                .unwrap_or_default();
+            let animation_values = Self::node_animation_values(node);
             let opacity = node.layout.opacity * animation_values.opacity;
-            let transform = PaintTransform {
-                translation: animation_values.translate,
-                scale: animation_values.scale,
-            };
+            let transform = Self::node_paint_transform(node);
             if node.visual.fill.a > 0
                 || node
                     .visual
@@ -2101,6 +2094,26 @@ impl UiDocument {
             }
         }
         list
+    }
+
+    fn node_animation_values(node: &UiNode) -> AnimatedValues {
+        node.animation
+            .as_ref()
+            .map(AnimationMachine::values)
+            .unwrap_or_default()
+    }
+
+    fn node_paint_transform(node: &UiNode) -> PaintTransform {
+        let values = Self::node_animation_values(node);
+        PaintTransform {
+            translation: values.translate,
+            scale: values.scale,
+        }
+    }
+
+    fn node_paint_rect(&self, index: usize) -> UiRect {
+        let node = &self.nodes[index];
+        Self::node_paint_transform(node).transform_rect(node.layout.rect)
     }
 
     fn visual_order(&self) -> Vec<usize> {
@@ -2371,6 +2384,25 @@ impl Default for PaintTransform {
             translation: UiPoint::new(0.0, 0.0),
             scale: 1.0,
         }
+    }
+}
+
+impl PaintTransform {
+    pub fn transform_point(self, point: UiPoint) -> UiPoint {
+        UiPoint::new(
+            point.x * self.scale + self.translation.x,
+            point.y * self.scale + self.translation.y,
+        )
+    }
+
+    pub fn transform_rect(self, rect: UiRect) -> UiRect {
+        let top_left = self.transform_point(UiPoint::new(rect.x, rect.y));
+        UiRect::new(
+            top_left.x,
+            top_left.y,
+            rect.width * self.scale,
+            rect.height * self.scale,
+        )
     }
 }
 
@@ -6044,21 +6076,12 @@ fn egui_pos(point: UiPoint) -> egui::Pos2 {
 
 #[cfg(feature = "egui")]
 fn transform_point(point: UiPoint, transform: PaintTransform) -> UiPoint {
-    UiPoint::new(
-        point.x * transform.scale + transform.translation.x,
-        point.y * transform.scale + transform.translation.y,
-    )
+    transform.transform_point(point)
 }
 
 #[cfg(feature = "egui")]
 fn transform_rect(rect: UiRect, transform: PaintTransform) -> UiRect {
-    let top_left = transform_point(UiPoint::new(rect.x, rect.y), transform);
-    UiRect::new(
-        top_left.x,
-        top_left.y,
-        rect.width * transform.scale,
-        rect.height * transform.scale,
-    )
+    transform.transform_rect(rect)
 }
 
 #[cfg(feature = "egui")]
@@ -6397,6 +6420,35 @@ mod tests {
     }
 
     #[test]
+    fn hit_testing_uses_animation_transform_rect() {
+        let animation = AnimationMachine::new(
+            vec![AnimationState::new(
+                "shown",
+                AnimatedValues::new(1.0, UiPoint::new(30.0, 0.0), 2.0),
+            )],
+            Vec::new(),
+            "shown",
+        )
+        .expect("animation");
+        let mut doc = UiDocument::new(root_style(160.0, 100.0));
+        let button = doc.add_child(
+            doc.root,
+            UiNode::container("toast_action", button_style(40.0, 20.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_animation(animation),
+        );
+        doc.compute_layout(UiSize::new(160.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert_eq!(
+            doc.node(button).layout.rect,
+            UiRect::new(0.0, 0.0, 40.0, 20.0)
+        );
+        assert_eq!(doc.hit_test(UiPoint::new(20.0, 10.0)), None);
+        assert_eq!(doc.hit_test(UiPoint::new(95.0, 30.0)), Some(button));
+    }
+
+    #[test]
     fn hit_testing_uses_effective_paint_z_order() {
         let mut doc = UiDocument::new(root_style(240.0, 160.0));
         let under = doc.add_child(
@@ -6603,6 +6655,59 @@ mod tests {
             delta: UiPoint::new(0.0, 30.0),
         });
 
+        assert_eq!(input.scrolled, Some(scroll_area));
+        assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 30.0);
+    }
+
+    #[test]
+    fn wheel_scroll_targets_animation_transform_rect() {
+        let animation = AnimationMachine::new(
+            vec![AnimationState::new(
+                "shown",
+                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 0.5),
+            )],
+            Vec::new(),
+            "shown",
+        )
+        .expect("animation");
+        let mut doc = UiDocument::new(root_style(160.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: Style {
+                        size: TaffySize {
+                            width: length(60.0),
+                            height: length(50.0),
+                        },
+                        ..Default::default()
+                    },
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL)
+            .with_animation(animation),
+        );
+        doc.add_child(
+            scroll_area,
+            UiNode::container("content", button_style(60.0, 120.0)),
+        );
+        doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let stale_layout_input = doc.handle_input(UiInputEvent::Wheel {
+            position: UiPoint::new(45.0, 20.0),
+            delta: UiPoint::new(0.0, 30.0),
+        });
+        assert_eq!(stale_layout_input.scrolled, None);
+        assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 0.0);
+
+        let input = doc.handle_input(UiInputEvent::Wheel {
+            position: UiPoint::new(20.0, 20.0),
+            delta: UiPoint::new(0.0, 30.0),
+        });
         assert_eq!(input.scrolled, Some(scroll_area));
         assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 30.0);
     }

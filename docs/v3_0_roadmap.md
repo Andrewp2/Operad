@@ -306,6 +306,10 @@ The branch starts from Operad 2.0.0 plus:
   hit testing, paint-list generation, renderer batch keys, image/canvas render
   requests, and debug dumps so host, app, overlay, debug, and system surfaces
   sort consistently before local z-index is applied.
+- Document hit testing and wheel-scroll targeting now use the same
+  renderer-neutral `PaintTransform` geometry as paint output, so animated or
+  scaled controls receive input where they are painted instead of in stale
+  layout-space bounds.
 - Egui paint callback hooks in `src/lib.rs` for forwarding renderer-neutral
   image, image-placement, and canvas paint items to app-owned egui bridge code
   instead of silently dropping asset-backed primitives.
