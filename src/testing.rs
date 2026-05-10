@@ -12,8 +12,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::accessibility::{
-    AccessibilityAdapterRequest, AccessibilityAnnouncement, AccessibilityPreferences,
-    AccessibilityRequestKind, FocusRestoreTarget,
+    AccessibilityAdapterRequest, AccessibilityAdapterResponse, AccessibilityAnnouncement,
+    AccessibilityPreferences, AccessibilityRequestKind, FocusRestoreTarget,
 };
 use crate::commands::{CommandId, CommandRegistry};
 use crate::host::{
@@ -1150,6 +1150,67 @@ impl<'a> AccessibilityRequestAssertions<'a> {
 
     fn request_kinds(&self) -> Vec<AccessibilityRequestKind> {
         self.requests.iter().map(|request| request.kind()).collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AccessibilityResponseAssertions<'a> {
+    responses: &'a [AccessibilityAdapterResponse],
+}
+
+impl<'a> AccessibilityResponseAssertions<'a> {
+    pub const fn new(responses: &'a [AccessibilityAdapterResponse]) -> Self {
+        Self { responses }
+    }
+
+    pub const fn responses(&self) -> &'a [AccessibilityAdapterResponse] {
+        self.responses
+    }
+
+    pub fn response_count(&self, kind: AccessibilityRequestKind) -> usize {
+        self.responses
+            .iter()
+            .filter(|response| accessibility_response_kind(response) == Some(kind))
+            .count()
+    }
+
+    pub fn require_unsupported(&self, kind: AccessibilityRequestKind) -> TestResult {
+        if self.responses.iter().any(|response| {
+            matches!(response, AccessibilityAdapterResponse::Unsupported(actual) if *actual == kind)
+        }) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "missing accessibility Unsupported response for {kind:?}; available responses: {:?}",
+                self.responses
+            )))
+        }
+    }
+
+    pub fn require_no_unsupported(&self) -> TestResult {
+        if let Some(unsupported) = self
+            .responses
+            .iter()
+            .find(|response| matches!(response, AccessibilityAdapterResponse::Unsupported(_)))
+        {
+            Err(TestFailure::new(format!(
+                "expected no unsupported accessibility responses, got {unsupported:?}"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn accessibility_response_kind(
+    response: &AccessibilityAdapterResponse,
+) -> Option<AccessibilityRequestKind> {
+    match response {
+        AccessibilityAdapterResponse::Unsupported(kind) => Some(*kind),
+        AccessibilityAdapterResponse::Failed { request, .. } => Some(*request),
+        AccessibilityAdapterResponse::Applied
+        | AccessibilityAdapterResponse::FocusChanged(_)
+        | AccessibilityAdapterResponse::PreferencesChanged(_) => None,
     }
 }
 
@@ -4131,6 +4192,31 @@ mod tests {
             .expect("announcement text");
         assert_eq!(announcement.source, Some(focused));
         assert!(assertions.require_announcement_contains("missing").is_err());
+
+        let responses = vec![
+            AccessibilityAdapterResponse::Applied,
+            AccessibilityAdapterResponse::Unsupported(AccessibilityRequestKind::PublishTree),
+            AccessibilityAdapterResponse::Failed {
+                request: AccessibilityRequestKind::Announce,
+                reason: "muted".to_string(),
+            },
+        ];
+        let response_assertions = AccessibilityResponseAssertions::new(&responses);
+        assert_eq!(
+            response_assertions.response_count(AccessibilityRequestKind::PublishTree),
+            1
+        );
+        assert_eq!(
+            response_assertions.response_count(AccessibilityRequestKind::Announce),
+            1
+        );
+        response_assertions
+            .require_unsupported(AccessibilityRequestKind::PublishTree)
+            .expect("unsupported publish response");
+        assert!(response_assertions.require_no_unsupported().is_err());
+        AccessibilityResponseAssertions::new(&[AccessibilityAdapterResponse::Applied])
+            .require_no_unsupported()
+            .expect("no unsupported accessibility responses");
     }
 
     #[test]

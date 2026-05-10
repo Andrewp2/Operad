@@ -464,6 +464,64 @@ pub fn push_supported_accessibility_request(
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AccessibilityAdapterRequestPlan {
+    pub supported_requests: Vec<AccessibilityAdapterRequest>,
+    pub unsupported_responses: Vec<AccessibilityAdapterResponse>,
+}
+
+impl AccessibilityAdapterRequestPlan {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_requests<'a>(
+        requests: impl IntoIterator<Item = &'a AccessibilityAdapterRequest>,
+        capabilities: AccessibilityCapabilities,
+    ) -> Self {
+        let mut plan = Self::new();
+        for request in requests {
+            plan.push_request(request, capabilities);
+        }
+        plan
+    }
+
+    pub fn push_request(
+        &mut self,
+        request: &AccessibilityAdapterRequest,
+        capabilities: AccessibilityCapabilities,
+    ) -> bool {
+        if capabilities.supports(request.kind()) {
+            self.supported_requests.push(request.clone());
+            true
+        } else {
+            self.unsupported_responses
+                .push(AccessibilityAdapterResponse::Unsupported(request.kind()));
+            false
+        }
+    }
+
+    pub fn is_fully_supported(&self) -> bool {
+        self.unsupported_responses.is_empty()
+    }
+
+    pub fn supported_count(&self, kind: AccessibilityRequestKind) -> usize {
+        self.supported_requests
+            .iter()
+            .filter(|request| request.kind() == kind)
+            .count()
+    }
+
+    pub fn unsupported_count(&self, kind: AccessibilityRequestKind) -> usize {
+        self.unsupported_responses
+            .iter()
+            .filter(|response| {
+                matches!(response, AccessibilityAdapterResponse::Unsupported(actual) if *actual == kind)
+            })
+            .count()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccessibilityAdapterResponse {
     Applied,
@@ -1105,6 +1163,48 @@ mod tests {
             AccessibilityAdapterResponse::Unsupported(AccessibilityRequestKind::PublishTree)
         );
         assert_eq!(adapter.handled, vec![AccessibilityRequestKind::Announce]);
+    }
+
+    #[test]
+    fn accessibility_request_plan_splits_supported_and_unsupported_requests() {
+        let target = UiNodeId(7);
+        let requests = vec![
+            AccessibilityAdapterRequest::Announce(AccessibilityAnnouncement::polite("Ready")),
+            AccessibilityAdapterRequest::MoveFocus {
+                target,
+                restore: FocusRestoreTarget::Previous,
+            },
+            AccessibilityAdapterRequest::PublishTree {
+                tree: AccessibilityTree::default(),
+                focused: Some(target),
+                preferences: AccessibilityPreferences::DEFAULT,
+            },
+        ];
+        let capabilities = AccessibilityCapabilities {
+            announcements: true,
+            focus_restore: true,
+            ..AccessibilityCapabilities::NONE
+        };
+
+        let plan = AccessibilityAdapterRequestPlan::from_requests(&requests, capabilities);
+
+        assert!(!plan.is_fully_supported());
+        assert_eq!(
+            plan.supported_requests,
+            vec![requests[0].clone(), requests[1].clone()]
+        );
+        assert_eq!(
+            plan.unsupported_responses,
+            vec![AccessibilityAdapterResponse::Unsupported(
+                AccessibilityRequestKind::PublishTree,
+            )]
+        );
+        assert_eq!(plan.supported_count(AccessibilityRequestKind::Announce), 1);
+        assert_eq!(plan.supported_count(AccessibilityRequestKind::MoveFocus), 1);
+        assert_eq!(
+            plan.unsupported_count(AccessibilityRequestKind::PublishTree),
+            1
+        );
     }
 
     #[test]

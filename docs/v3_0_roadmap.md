@@ -302,7 +302,9 @@ The branch starts from Operad 2.0.0 plus:
   shapes so consumers can use fewer raw Taffy struct literals.
 - Accessibility adapter contracts in `src/accessibility.rs` now include
   deterministic live-region snapshots, live-region diffing, and announcement
-  queues that can be converted into supported screen-reader adapter requests.
+  queues that can be converted into supported screen-reader adapter requests,
+  plus batch request plans that split supported adapter requests from explicit
+  unsupported responses.
 - Live-region snapshots and announcement queues now prioritize assertive
   announcements ahead of polite status updates while preserving deterministic
   ordering within each priority.
