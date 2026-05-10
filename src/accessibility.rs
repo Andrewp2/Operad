@@ -309,7 +309,7 @@ impl AccessibilityLiveRegionSnapshot {
             .live_region_nodes()
             .filter_map(AccessibilityLiveRegionEntry::from_node)
             .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.node.0);
+        entries.sort_by_key(|entry| (live_region_priority(entry.live_region), entry.node.0));
         Self { entries }
     }
 
@@ -357,6 +357,7 @@ impl AccessibilityAnnouncementQueue {
     pub fn push(&mut self, announcement: AccessibilityAnnouncement) {
         if !announcement.message.is_empty() {
             self.pending.push(announcement);
+            self.prioritize();
         }
     }
 
@@ -390,6 +391,11 @@ impl AccessibilityAnnouncementQueue {
 
     pub fn drain(&mut self) -> Vec<AccessibilityAnnouncement> {
         self.pending.drain(..).collect()
+    }
+
+    fn prioritize(&mut self) {
+        self.pending
+            .sort_by_key(|announcement| live_region_priority(announcement.live_region));
     }
 }
 
@@ -671,6 +677,14 @@ fn live_region_message(node: &AccessibilityNode) -> String {
         }
     }
     parts.join(": ")
+}
+
+fn live_region_priority(live_region: AccessibilityLiveRegion) -> u8 {
+    match live_region {
+        AccessibilityLiveRegion::Assertive => 0,
+        AccessibilityLiveRegion::Polite => 1,
+        AccessibilityLiveRegion::Off => 2,
+    }
 }
 
 fn non_empty_text(text: Option<&str>) -> Option<String> {
@@ -1104,15 +1118,20 @@ mod tests {
         let mut queue = AccessibilityAnnouncementQueue::from_live_region_diff(&previous, &current);
 
         assert_eq!(queue.len(), 2);
-        assert_eq!(queue.pending[0].source, Some(status));
-        assert_eq!(queue.pending[0].message, "Status: Running");
+        assert_eq!(queue.pending[0].source, Some(alert));
+        assert_eq!(queue.pending[0].message, "Warning. Pressure critical");
         assert_eq!(
             queue.pending[0].live_region,
+            AccessibilityLiveRegion::Assertive
+        );
+        assert!(queue.pending[0].interrupt);
+        assert_eq!(queue.pending[1].source, Some(status));
+        assert_eq!(queue.pending[1].message, "Status: Running");
+        assert_eq!(
+            queue.pending[1].live_region,
             AccessibilityLiveRegion::Polite
         );
-        assert!(!queue.pending[0].interrupt);
-        assert_eq!(queue.pending[1].source, Some(alert));
-        assert_eq!(queue.pending[1].message, "Warning. Pressure critical");
+        assert!(!queue.pending[1].interrupt);
         assert_eq!(
             queue.supported_requests(AccessibilityCapabilities::NONE),
             Vec::<AccessibilityAdapterRequest>::new()
@@ -1125,6 +1144,22 @@ mod tests {
         );
         assert_eq!(queue.drain().len(), 2);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn announcement_queue_prioritizes_assertive_messages() {
+        let mut queue = AccessibilityAnnouncementQueue::new();
+        queue.push(AccessibilityAnnouncement::polite("Save complete").source(UiNodeId(1)));
+        queue.push(AccessibilityAnnouncement::assertive("Connection lost").source(UiNodeId(2)));
+        queue.push(AccessibilityAnnouncement::polite("Sync complete").source(UiNodeId(3)));
+
+        assert_eq!(queue.pending[0].message, "Connection lost");
+        assert_eq!(
+            queue.pending[0].live_region,
+            AccessibilityLiveRegion::Assertive
+        );
+        assert_eq!(queue.pending[1].message, "Save complete");
+        assert_eq!(queue.pending[2].message, "Sync complete");
     }
 
     #[test]

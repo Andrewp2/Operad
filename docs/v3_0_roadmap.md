@@ -301,6 +301,9 @@ The branch starts from Operad 2.0.0 plus:
 - Accessibility adapter contracts in `src/accessibility.rs` now include
   deterministic live-region snapshots, live-region diffing, and announcement
   queues that can be converted into supported screen-reader adapter requests.
+- Live-region snapshots and announcement queues now prioritize assertive
+  announcements ahead of polite status updates while preserving deterministic
+  ordering within each priority.
 - Renderer-neutral debug snapshots in `src/debug.rs` for layout bounds, clip
   rects, paint primitive counts, local and resolved z ranges, host interaction
   flags, command scopes, active gestures, repaint reasons, frame timings, theme
