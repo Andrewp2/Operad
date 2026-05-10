@@ -296,8 +296,9 @@ The branch starts from Operad 2.0.0 plus:
   platform-service responses, render-frame conformance assertions for
   canvas/image handler coverage, dirty regions, host input capture, and
   per-node interaction state, canvas hit-report assertions for target ids,
-  topmost hits, accessibility labels, disabled targets, and metadata, plus
-  render-output snapshot, batch, painted-item, and timing assertions.
+  topmost hits, accessibility labels, disabled targets, and metadata,
+  display-list reuse/invalidation assertions, plus render-output snapshot,
+  batch, painted-item, and timing assertions.
 - Public CPU snapshot rendering in `src/testing.rs` gives consumers a
   deterministic renderer adapter and document raster path for E2E screenshots
   without depending on egui or Operad's private integration-test harness.
@@ -454,7 +455,8 @@ The branch starts from Operad 2.0.0 plus:
   hit targets, and magnitude-bar geometry.
 - Retained display-list cache contracts in `src/display.rs` for static editor
   backgrounds, snapshot/display-list reuse, dirty-flag invalidation, and bounded
-  cache eviction.
+  cache eviction, with observable reuse/miss/eviction/invalidation reports for
+  scenario and performance tests.
 - Asset registry contracts in `src/assets.rs` for built-in common action icons,
   app-provided icon/image descriptors, sizing, tinting, alignment, compact
   icon-button metadata, tooltip text, accessibility labels, and deterministic

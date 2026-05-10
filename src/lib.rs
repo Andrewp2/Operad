@@ -57,8 +57,9 @@ pub use debug::{
     DebugThemeScopeInfo, DebugThemeSnapshot, DebugThemeToken, DebugThemeTokenKind,
 };
 pub use display::{
-    DisplayListId, DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKey,
-    DisplayListKind, DisplayListScope, RetainedDisplayList, RetainedDisplayListCache,
+    DisplayListId, DisplayListInvalidation, DisplayListInvalidationReport,
+    DisplayListInvalidationRequest, DisplayListKey, DisplayListKind, DisplayListReuseOutcome,
+    DisplayListReuseReport, DisplayListScope, RetainedDisplayList, RetainedDisplayListCache,
 };
 pub use drag_drop::{
     payload_has_content, DragDropSurfaceKind, DragSourceDescriptor, DragSourceId,
@@ -120,13 +121,14 @@ pub use shell::{
 pub use testing::{
     diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, AuditAssertions,
     CommandReplayReport, CommandReplayStepResult, CpuSnapshotImage, CpuSnapshotRenderer,
-    DirtyFlags, EmptyResourceResolver, EventReplay, EventReplayReport, EventReplayStep,
-    EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
-    FrameTimingSeries, FrameTimingSeriesAssertions, LayoutAssertions, PaintAssertions,
-    PaintKindSelector, PerformanceAssertions, PerformanceSamples, PixelDiffReport,
-    PixelDiffTolerance, PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput,
-    RgbaImageView, ScenarioFrameReport, ScenarioHarness, SnapshotAssertions, TestFailure,
-    TestResult, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
+    DirtyFlags, DisplayListInvalidationAssertions, DisplayListReuseAssertions,
+    EmptyResourceResolver, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
+    FrameTiming, FrameTimingAssertions, FrameTimingSection, FrameTimingSeries,
+    FrameTimingSeriesAssertions, LayoutAssertions, PaintAssertions, PaintKindSelector,
+    PerformanceAssertions, PerformanceSamples, PixelDiffReport, PixelDiffTolerance,
+    PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput, RgbaImageView,
+    ScenarioFrameReport, ScenarioHarness, SnapshotAssertions, TestFailure, TestResult,
+    DEFAULT_CPU_SNAPSHOT_BACKGROUND,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,

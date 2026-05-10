@@ -188,12 +188,103 @@ pub enum DisplayListInvalidationRequest {
     Dirty(DirtyFlags),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisplayListReuseOutcome {
+    Reused,
+    MissAbsent,
+    MissDirty,
+    MissEvicted,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayListReuseReport {
+    pub key: DisplayListKey,
+    pub outcome: DisplayListReuseOutcome,
+    pub dirty_flags: DirtyFlags,
+    pub frame: u64,
+    pub kind: Option<DisplayListKind>,
+    pub invalidation: Option<DisplayListInvalidation>,
+    pub item_count: Option<usize>,
+    pub created_frame: Option<u64>,
+    pub last_used_frame: Option<u64>,
+}
+
+impl DisplayListReuseReport {
+    fn from_entry(
+        entry: &RetainedDisplayList,
+        outcome: DisplayListReuseOutcome,
+        dirty_flags: DirtyFlags,
+        frame: u64,
+    ) -> Self {
+        Self {
+            key: entry.key.clone(),
+            outcome,
+            dirty_flags,
+            frame,
+            kind: Some(entry.kind),
+            invalidation: Some(entry.invalidation),
+            item_count: Some(entry.item_count),
+            created_frame: Some(entry.created_frame),
+            last_used_frame: Some(entry.last_used_frame),
+        }
+    }
+
+    fn missing(
+        key: DisplayListKey,
+        outcome: DisplayListReuseOutcome,
+        dirty_flags: DirtyFlags,
+        frame: u64,
+    ) -> Self {
+        Self {
+            key,
+            outcome,
+            dirty_flags,
+            frame,
+            kind: None,
+            invalidation: None,
+            item_count: None,
+            created_frame: None,
+            last_used_frame: None,
+        }
+    }
+
+    pub const fn reused(&self) -> bool {
+        matches!(self.outcome, DisplayListReuseOutcome::Reused)
+    }
+
+    pub const fn missed(&self) -> bool {
+        !self.reused()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayListInvalidationReport {
+    pub request: DisplayListInvalidationRequest,
+    pub removed_keys: Vec<DisplayListKey>,
+    pub before_len: usize,
+    pub after_len: usize,
+    pub frame: u64,
+}
+
+impl DisplayListInvalidationReport {
+    pub fn removed_count(&self) -> usize {
+        self.removed_keys.len()
+    }
+
+    pub fn removed_key(&self, key: &DisplayListKey) -> bool {
+        self.removed_keys.iter().any(|removed| removed == key)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RetainedDisplayListCache {
     entries: HashMap<DisplayListKey, RetainedDisplayList>,
+    evicted_keys: Vec<DisplayListKey>,
     max_entries: Option<usize>,
     frame: u64,
 }
+
+const MAX_EVICTION_HISTORY: usize = 64;
 
 impl RetainedDisplayListCache {
     pub fn new() -> Self {
@@ -228,6 +319,10 @@ impl RetainedDisplayListCache {
         self.entries.contains_key(key)
     }
 
+    pub fn was_evicted(&self, key: &DisplayListKey) -> bool {
+        self.evicted_keys.iter().any(|evicted| evicted == key)
+    }
+
     pub fn insert(
         &mut self,
         key: DisplayListKey,
@@ -236,6 +331,7 @@ impl RetainedDisplayListCache {
         paint: PaintList,
     ) {
         let entry = RetainedDisplayList::new(key.clone(), kind, invalidation, paint, self.frame);
+        self.evicted_keys.retain(|evicted| evicted != &key);
         self.entries.insert(key, entry);
         self.evict_to_limit();
     }
@@ -269,22 +365,90 @@ impl RetainedDisplayListCache {
         Some(&entry.paint)
     }
 
-    pub fn invalidate(&mut self, request: DisplayListInvalidationRequest) -> usize {
-        let before = self.entries.len();
-        match request {
-            DisplayListInvalidationRequest::All => self.entries.clear(),
-            DisplayListInvalidationRequest::Scope(scope) => {
-                self.entries.retain(|key, _| key.scope != scope);
+    pub fn reuse_report(
+        &mut self,
+        key: &DisplayListKey,
+        dirty: DirtyFlags,
+    ) -> DisplayListReuseReport {
+        if let Some(entry) = self.entries.get_mut(key) {
+            if entry.reusable_for(dirty) {
+                entry.last_used_frame = self.frame;
+                return DisplayListReuseReport::from_entry(
+                    entry,
+                    DisplayListReuseOutcome::Reused,
+                    dirty,
+                    self.frame,
+                );
             }
-            DisplayListInvalidationRequest::Id(id) => {
-                self.entries.retain(|key, _| key.id != id);
+            return DisplayListReuseReport::from_entry(
+                entry,
+                DisplayListReuseOutcome::MissDirty,
+                dirty,
+                self.frame,
+            );
+        }
+
+        let outcome = if self.was_evicted(key) {
+            DisplayListReuseOutcome::MissEvicted
+        } else {
+            DisplayListReuseOutcome::MissAbsent
+        };
+        DisplayListReuseReport::missing(key.clone(), outcome, dirty, self.frame)
+    }
+
+    pub fn invalidate(&mut self, request: DisplayListInvalidationRequest) -> usize {
+        self.invalidate_with_report(request).removed_count()
+    }
+
+    pub fn invalidate_with_report(
+        &mut self,
+        request: DisplayListInvalidationRequest,
+    ) -> DisplayListInvalidationReport {
+        let before_len = self.entries.len();
+        let mut removed_keys = Vec::new();
+        match request {
+            DisplayListInvalidationRequest::All => {
+                removed_keys.extend(self.entries.keys().cloned());
+                self.entries.clear();
+            }
+            DisplayListInvalidationRequest::Scope(ref scope) => {
+                self.entries.retain(|key, _| {
+                    if key.scope == *scope {
+                        removed_keys.push(key.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            DisplayListInvalidationRequest::Id(ref id) => {
+                self.entries.retain(|key, _| {
+                    if key.id == *id {
+                        removed_keys.push(key.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
             DisplayListInvalidationRequest::Dirty(dirty) => {
-                self.entries
-                    .retain(|_, entry| !entry.invalidation.invalidated_by(dirty));
+                self.entries.retain(|key, entry| {
+                    if entry.invalidation.invalidated_by(dirty) {
+                        removed_keys.push(key.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
         }
-        before - self.entries.len()
+        DisplayListInvalidationReport {
+            request,
+            removed_keys,
+            before_len,
+            after_len: self.entries.len(),
+            frame: self.frame,
+        }
     }
 
     fn evict_to_limit(&mut self) {
@@ -300,7 +464,18 @@ impl RetainedDisplayListCache {
             else {
                 break;
             };
-            self.entries.remove(&key);
+            if self.entries.remove(&key).is_some() {
+                self.record_eviction(key);
+            }
+        }
+    }
+
+    fn record_eviction(&mut self, key: DisplayListKey) {
+        self.evicted_keys.retain(|evicted| evicted != &key);
+        self.evicted_keys.push(key);
+        if self.evicted_keys.len() > MAX_EVICTION_HISTORY {
+            let excess = self.evicted_keys.len() - MAX_EVICTION_HISTORY;
+            self.evicted_keys.drain(0..excess);
         }
     }
 }
@@ -358,7 +533,17 @@ mod tests {
             cache.get_reusable(&key, input_dirty).unwrap().items.len(),
             3
         );
+        let reused = cache.reuse_report(&key, input_dirty);
+        assert_eq!(reused.outcome, DisplayListReuseOutcome::Reused);
+        assert_eq!(reused.item_count, Some(3));
+        assert_eq!(reused.kind, Some(DisplayListKind::StaticBackground));
         assert!(cache.get_reusable(&key, paint_dirty).is_none());
+        let dirty_miss = cache.reuse_report(&key, paint_dirty);
+        assert_eq!(dirty_miss.outcome, DisplayListReuseOutcome::MissDirty);
+        assert_eq!(
+            dirty_miss.invalidation,
+            Some(DisplayListInvalidation::STATIC_EDITOR_BACKGROUND)
+        );
         assert!(cache.contains_key(&key));
 
         assert_eq!(
@@ -401,6 +586,17 @@ mod tests {
         assert!(cache.contains_key(&first));
         assert!(!cache.contains_key(&second));
         assert!(cache.contains_key(&third));
+        assert!(cache.was_evicted(&second));
+        let evicted = cache.reuse_report(&second, DirtyFlags::NONE);
+        assert_eq!(evicted.outcome, DisplayListReuseOutcome::MissEvicted);
+
+        cache.insert(
+            second.clone(),
+            DisplayListKind::StaticPanel,
+            DisplayListInvalidation::STATIC_PANEL,
+            paint_list(4),
+        );
+        assert!(!cache.was_evicted(&second));
     }
 
     #[test]
@@ -429,12 +625,13 @@ mod tests {
             paint_list(3),
         );
 
-        assert_eq!(
-            cache.invalidate(DisplayListInvalidationRequest::Scope(
-                DisplayListScope::EditorSurface("timeline".into())
-            )),
-            1
-        );
+        let report = cache.invalidate_with_report(DisplayListInvalidationRequest::Scope(
+            DisplayListScope::EditorSurface("timeline".into()),
+        ));
+        assert_eq!(report.removed_count(), 1);
+        assert!(report.removed_key(&editor_key));
+        assert_eq!(report.before_len, 3);
+        assert_eq!(report.after_len, 2);
         assert!(!cache.contains_key(&editor_key));
         assert_eq!(
             cache.invalidate(DisplayListInvalidationRequest::Id(DisplayListId::new(

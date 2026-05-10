@@ -16,6 +16,9 @@ use crate::accessibility::{
     AccessibilityPreferences, AccessibilityRequestKind, FocusRestoreTarget,
 };
 use crate::commands::{CommandId, CommandRegistry};
+use crate::display::{
+    DisplayListInvalidationReport, DisplayListKey, DisplayListReuseOutcome, DisplayListReuseReport,
+};
 use crate::host::{
     process_document_frame, HostCommandDispatch, HostDocumentFrameOutput, HostDocumentFrameState,
     HostFrameOutput, HostInteractionState, HostNodeInteraction, HostShortcutRoute,
@@ -550,6 +553,110 @@ fn require_replay_node(kind: &str, node: UiNodeId, actual: Vec<UiNodeId>) -> Tes
         Err(TestFailure::new(format!(
             "expected event replay {kind} node {node:?}, got {actual:?}"
         )))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayListReuseAssertions<'a> {
+    report: &'a DisplayListReuseReport,
+}
+
+impl<'a> DisplayListReuseAssertions<'a> {
+    pub const fn new(report: &'a DisplayListReuseReport) -> Self {
+        Self { report }
+    }
+
+    pub const fn report(&self) -> &'a DisplayListReuseReport {
+        self.report
+    }
+
+    pub fn require_outcome(&self, expected: DisplayListReuseOutcome) -> TestResult {
+        if self.report.outcome == expected {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "display-list `{}` expected reuse outcome {expected:?}, got {:?}",
+                self.report.key.id.as_str(),
+                self.report.outcome
+            )))
+        }
+    }
+
+    pub fn require_reused(&self) -> TestResult {
+        self.require_outcome(DisplayListReuseOutcome::Reused)
+    }
+
+    pub fn require_miss_absent(&self) -> TestResult {
+        self.require_outcome(DisplayListReuseOutcome::MissAbsent)
+    }
+
+    pub fn require_miss_dirty(&self) -> TestResult {
+        self.require_outcome(DisplayListReuseOutcome::MissDirty)
+    }
+
+    pub fn require_miss_evicted(&self) -> TestResult {
+        self.require_outcome(DisplayListReuseOutcome::MissEvicted)
+    }
+
+    pub fn require_item_count(&self, expected: usize) -> TestResult {
+        if self.report.item_count == Some(expected) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "display-list `{}` expected {expected} retained paint item(s), got {:?}",
+                self.report.key.id.as_str(),
+                self.report.item_count
+            )))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayListInvalidationAssertions<'a> {
+    report: &'a DisplayListInvalidationReport,
+}
+
+impl<'a> DisplayListInvalidationAssertions<'a> {
+    pub const fn new(report: &'a DisplayListInvalidationReport) -> Self {
+        Self { report }
+    }
+
+    pub const fn report(&self) -> &'a DisplayListInvalidationReport {
+        self.report
+    }
+
+    pub fn require_removed_count(&self, expected: usize) -> TestResult {
+        let actual = self.report.removed_count();
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "display-list invalidation expected {expected} removed entry/entries, got {actual}"
+            )))
+        }
+    }
+
+    pub fn require_removed_key(&self, key: &DisplayListKey) -> TestResult {
+        if self.report.removed_key(key) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "display-list invalidation did not remove key `{}`; removed keys: {:?}",
+                key.id.as_str(),
+                self.report.removed_keys
+            )))
+        }
+    }
+
+    pub fn require_after_len(&self, expected: usize) -> TestResult {
+        if self.report.after_len == expected {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "display-list invalidation expected cache length {expected}, got {}",
+                self.report.after_len
+            )))
+        }
     }
 }
 
@@ -5083,6 +5190,108 @@ mod tests {
                 .require_average_within(Duration::from_millis(1))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn display_list_reuse_assertions_cover_hits_misses_and_invalidation() {
+        use crate::display::{
+            DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKind,
+            DisplayListScope, RetainedDisplayListCache,
+        };
+
+        fn retained_paint(items: usize) -> PaintList {
+            PaintList {
+                items: (0..items)
+                    .map(|index| PaintItem {
+                        node: UiNodeId(index),
+                        rect: UiRect::new(index as f32, 0.0, 1.0, 1.0),
+                        clip_rect: UiRect::new(0.0, 0.0, 16.0, 16.0),
+                        z_index: 0,
+                        layer_order: crate::platform::LayerOrder::DEFAULT,
+                        opacity: 1.0,
+                        transform: PaintTransform::default(),
+                        shader: None,
+                        kind: PaintKind::Rect {
+                            fill: ColorRgba::new(16, 24, 32, 255),
+                            stroke: None,
+                            corner_radius: 0.0,
+                        },
+                    })
+                    .collect(),
+            }
+        }
+
+        let input_dirty = DirtyFlags {
+            input: true,
+            ..DirtyFlags::NONE
+        };
+        let paint_dirty = DirtyFlags {
+            paint: true,
+            ..DirtyFlags::NONE
+        };
+        let mut cache = RetainedDisplayListCache::new();
+        let key = DisplayListKey::editor_background("scenario-editor", 7);
+        cache.insert(
+            key.clone(),
+            DisplayListKind::StaticBackground,
+            DisplayListInvalidation::STATIC_EDITOR_BACKGROUND,
+            retained_paint(3),
+        );
+
+        let reused = cache.reuse_report(&key, input_dirty);
+        DisplayListReuseAssertions::new(&reused)
+            .require_reused()
+            .expect("reused display list");
+        DisplayListReuseAssertions::new(&reused)
+            .require_item_count(3)
+            .expect("item count");
+
+        let dirty_miss = cache.reuse_report(&key, paint_dirty);
+        DisplayListReuseAssertions::new(&dirty_miss)
+            .require_miss_dirty()
+            .expect("dirty miss");
+
+        let absent = cache.reuse_report(
+            &DisplayListKey::new(DisplayListScope::Document, "missing", 0),
+            DirtyFlags::NONE,
+        );
+        DisplayListReuseAssertions::new(&absent)
+            .require_miss_absent()
+            .expect("absent miss");
+
+        let invalidation =
+            cache.invalidate_with_report(DisplayListInvalidationRequest::Dirty(paint_dirty));
+        let invalidation_assertions = DisplayListInvalidationAssertions::new(&invalidation);
+        invalidation_assertions
+            .require_removed_count(1)
+            .expect("removed count");
+        invalidation_assertions
+            .require_removed_key(&key)
+            .expect("removed key");
+        invalidation_assertions
+            .require_after_len(0)
+            .expect("after length");
+
+        let mut evicting_cache = RetainedDisplayListCache::with_capacity_limit(1);
+        let first = DisplayListKey::new(DisplayListScope::custom("cache"), "first", 0);
+        let second = DisplayListKey::new(DisplayListScope::custom("cache"), "second", 0);
+        evicting_cache.insert(
+            first.clone(),
+            DisplayListKind::StaticPanel,
+            DisplayListInvalidation::STATIC_PANEL,
+            retained_paint(1),
+        );
+        evicting_cache.advance_frame();
+        evicting_cache.insert(
+            second,
+            DisplayListKind::StaticPanel,
+            DisplayListInvalidation::STATIC_PANEL,
+            retained_paint(1),
+        );
+        let evicted = evicting_cache.reuse_report(&first, DirtyFlags::NONE);
+        DisplayListReuseAssertions::new(&evicted)
+            .require_miss_evicted()
+            .expect("evicted miss");
     }
 
     #[test]
