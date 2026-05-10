@@ -306,6 +306,10 @@ The branch starts from Operad 2.0.0 plus:
 - Property-inspector status contracts in `src/widget_ext/data.rs` for invalid,
   error, warning, help, changed, and pending row metadata, accessibility
   hints/live regions, and optional status visual/shader hooks.
+- Editable form/inspector contracts in `src/widget_ext/data.rs` for field
+  kinds, required/read-only/disabled state, validation/changed/pending state,
+  focus traversal, commit/cancel/picker outcomes, command actions, and field
+  accessibility metadata.
 - Dense data-view contracts in `src/widget_ext/data.rs` for empty states,
   section headers, flattened row projections, stable row identity remapping
   across filtering/sorting, and sticky header/leading-column partitions.
