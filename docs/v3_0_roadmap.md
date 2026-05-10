@@ -257,6 +257,9 @@ The branch starts from Operad 2.0.0 plus:
   columns, app-owned sort/filter/resize commands, accessibility sort state,
   active-cell copy/export contracts, row/cell action metadata, sticky column
   partitions, and row drag/drop descriptors.
+- Toggle-control state contracts in `src/widget_ext/data.rs` for switch,
+  checkbox, and toggle-button roles, including mixed state, disabled state,
+  edit phases, typed outcomes, and accessibility metadata.
 - Host adapter contracts in `src/host.rs` for hover, pressed, focused,
   drag-captured, text/IME, wheel-targeted, shortcut-routed, command dispatch,
   and repaint/platform-service state before paint, plus a document-frame
