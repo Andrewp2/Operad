@@ -741,6 +741,202 @@ fn surfaces_snapshot() {
     assert_snapshot("surfaces", &image, 0xe8a6f5c59d18077c);
 }
 
+#[test]
+fn editor_primitives_snapshot() {
+    let mut document = screen();
+    let root = document.root;
+    let panel = document.add_child(
+        root,
+        UiNode::container(
+            "editor.panel",
+            UiNodeStyle {
+                layout: absolute_style(16.0, 16.0, 608.0, 328.0),
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_visual(panel_visual())
+        .with_accessibility(
+            EditorSurfaceAccessibility::new("Editor primitives")
+                .description("Reusable range, lane, curve, and canvas-style editor geometry")
+                .visible_units(EditorAxisRange::new(0.0, 56.0))
+                .visible_lanes(VisibleLaneRange::new(0, 4))
+                .target_count(14)
+                .selected_count(2)
+                .active("range.review")
+                .instruction("Use arrow keys to move selected editor items")
+                .accessibility_meta(),
+        ),
+    );
+    label(
+        &mut document,
+        panel,
+        "editor.title",
+        "Reusable editor surface",
+        text_style(15.0, ColorRgba::new(230, 237, 247, 255)),
+        absolute_style(14.0, 10.0, 220.0, 24.0),
+    );
+    label(
+        &mut document,
+        panel,
+        "editor.caption",
+        "ranges, lanes, curve points, hit handles",
+        text_style(12.0, ColorRgba::new(148, 161, 176, 255)),
+        absolute_style(374.0, 12.0, 220.0, 20.0),
+    );
+
+    let transform = EditorTransform::new(UiRect::new(0.0, 0.0, 560.0, 248.0))
+        .with_scale(UiPoint::new(10.0, 1.0));
+    let arrangement = ArrangementGeometry::new(
+        transform,
+        LaneGeometry::new(30.0, 4)
+            .with_origin_y(36.0)
+            .with_lane_gap(9.0),
+    );
+    let timeline = arrangement.timeline;
+    let range_geometry =
+        TimelineRangeItemGeometry::new(arrangement).with_resize_handle_width_px(5.0);
+    let curve_geometry = CurveEditorGeometry::new(
+        timeline,
+        EditorAxisRange::new(0.0, 1.0),
+        UiRect::new(0.0, 194.0, 560.0, 44.0),
+    )
+    .with_point_radius_px(4.0);
+
+    let mut scene = Vec::new();
+    scene.push(ScenePrimitive::Rect(PaintRect::solid(
+        UiRect::new(0.0, 0.0, 560.0, 248.0),
+        ColorRgba::new(10, 14, 20, 255),
+    )));
+    for lane in 0..4 {
+        let lane_rect = arrangement
+            .view_clip_rect(lane, EditorAxisRange::new(0.0, 56.0))
+            .expect("lane rect");
+        let fill = if lane % 2 == 0 {
+            ColorRgba::new(14, 21, 29, 255)
+        } else {
+            ColorRgba::new(17, 25, 34, 255)
+        };
+        scene.push(ScenePrimitive::Rect(
+            PaintRect::solid(lane_rect, fill)
+                .stroke(StrokeStyle::new(ColorRgba::new(35, 48, 62, 255), 1.0)),
+        ));
+    }
+    for unit in (0..=56).step_by(4) {
+        let x = timeline.unit_to_view_x(unit as f32);
+        scene.push(ScenePrimitive::Line {
+            from: UiPoint::new(x, 28.0),
+            to: UiPoint::new(x, 238.0),
+            stroke: StrokeStyle::new(
+                if unit % 16 == 0 {
+                    ColorRgba::new(71, 90, 109, 255)
+                } else {
+                    ColorRgba::new(35, 47, 60, 255)
+                },
+                1.0,
+            ),
+        });
+    }
+
+    let items = [
+        (
+            TimelineRangeItem::new("range.lead", 0, 4.0, 10.0).selected(true),
+            ColorRgba::new(54, 132, 166, 255),
+        ),
+        (
+            TimelineRangeItem::new("range.review", 1, 15.0, 12.0).dragging(true),
+            ColorRgba::new(115, 101, 190, 255),
+        ),
+        (
+            TimelineRangeItem::new("range.disabled", 2, 8.0, 20.0).disabled(true),
+            ColorRgba::new(74, 83, 93, 255),
+        ),
+        (
+            TimelineRangeItem::new("range.tool", 3, 30.0, 18.0),
+            ColorRgba::new(79, 145, 103, 255),
+        ),
+    ];
+    for (item, fill) in &items {
+        let Some(rect) = range_geometry.item_view_rect(item) else {
+            continue;
+        };
+        scene.push(ScenePrimitive::Rect(
+            PaintRect::solid(rect, *fill)
+                .stroke(StrokeStyle::new(ColorRgba::new(187, 210, 222, 255), 1.0))
+                .corner_radii(CornerRadii::uniform(4.0)),
+        ));
+        if !item.disabled {
+            for edge in [TimelineRangeItemEdge::Start, TimelineRangeItemEdge::End] {
+                let handle = range_geometry
+                    .edge_world_rect(item, edge)
+                    .map(|rect| transform.world_to_view_rect(rect))
+                    .expect("range handle");
+                scene.push(ScenePrimitive::Rect(PaintRect::solid(
+                    handle,
+                    ColorRgba::new(230, 237, 247, 210),
+                )));
+            }
+        }
+    }
+
+    let playhead = timeline.playhead_rect(22.5, 28.0, 210.0, 2.0);
+    scene.push(ScenePrimitive::Rect(PaintRect::solid(
+        playhead,
+        ColorRgba::new(244, 94, 104, 255),
+    )));
+    scene.push(ScenePrimitive::Rect(PaintRect::solid(
+        curve_geometry.view_rect,
+        ColorRgba::new(12, 18, 24, 255),
+    )));
+    let curve_points = vec![
+        CurvePoint::new("curve.a", 2.0, 0.25),
+        CurvePoint::new("curve.b", 12.0, 0.72).selected(true),
+        CurvePoint::new("curve.c", 25.0, 0.42),
+        CurvePoint::new("curve.d", 38.0, 0.9).dragging(true),
+        CurvePoint::new("curve.e", 52.0, 0.35),
+    ];
+    let path_points = curve_geometry.segment_view_path(&curve_points, CurveInterpolation::Step);
+    let mut path = PaintPath::new();
+    if let Some(first) = path_points.first().copied() {
+        path = path.move_to(first);
+        for point in path_points.into_iter().skip(1) {
+            path = path.line_to(point);
+        }
+    }
+    scene.push(ScenePrimitive::Path(
+        path.stroke(StrokeStyle::new(ColorRgba::new(246, 190, 92, 255), 2.0)),
+    ));
+    for point in &curve_points {
+        let center = curve_geometry.point_view_position(point);
+        scene.push(ScenePrimitive::Circle {
+            center,
+            radius: if point.selected || point.dragging {
+                5.0
+            } else {
+                4.0
+            },
+            fill: if point.dragging {
+                ColorRgba::new(255, 235, 146, 255)
+            } else {
+                ColorRgba::new(246, 190, 92, 255)
+            },
+            stroke: Some(StrokeStyle::new(ColorRgba::new(52, 40, 21, 255), 1.0)),
+        });
+    }
+
+    document.add_child(
+        panel,
+        UiNode::scene(
+            "editor.surface",
+            scene,
+            absolute_style(14.0, 46.0, 580.0, 260.0),
+        ),
+    );
+
+    let image = render_document(&mut document, VIEWPORT);
+    assert_snapshot("editor_primitives", &image, 0x1be24b70e9df5d9c);
+}
+
 fn screen() -> UiDocument {
     let mut document = UiDocument::new(root_style(VIEWPORT.width, VIEWPORT.height));
     let root = document.root;

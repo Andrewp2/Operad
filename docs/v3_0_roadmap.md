@@ -256,6 +256,9 @@ The branch starts from Operad 2.0.0 plus:
   live regions, focus order, active descendants, and render-frame conformance
   assertions for canvas/image handler coverage, dirty regions, host input
   capture, and per-node interaction state.
+- E2E snapshot coverage in `tests/e2e_render.rs` now includes a reusable editor
+  surface scene built from timeline range-item, lane, ruler, playhead, curve
+  point, interpolation path, and resize-handle primitives.
 - Layout audit checks in `src/lib.rs` now cover duplicate node names,
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   nodes outside the root, empty paint clips, and focusable controls missing from
