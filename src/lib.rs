@@ -120,11 +120,12 @@ pub use shell::{
 pub use testing::{
     diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, AuditAssertions,
     CommandReplayReport, CommandReplayStepResult, CpuSnapshotImage, CpuSnapshotRenderer,
-    DirtyFlags, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
-    FrameTiming, FrameTimingAssertions, FrameTimingSection, LayoutAssertions, PaintAssertions,
-    PaintKindSelector, PerformanceAssertions, PerformanceSamples, PixelDiffReport,
-    PixelDiffTolerance, PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput,
-    RgbaImageView, SnapshotAssertions, TestFailure, TestResult, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
+    DirtyFlags, EmptyResourceResolver, EventReplay, EventReplayReport, EventReplayStep,
+    EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
+    LayoutAssertions, PaintAssertions, PaintKindSelector, PerformanceAssertions,
+    PerformanceSamples, PixelDiffReport, PixelDiffTolerance, PlatformAssertions, RenderAssertions,
+    RenderOutputAssertions, ReplayInput, RgbaImageView, ScenarioFrameReport, ScenarioHarness,
+    SnapshotAssertions, TestFailure, TestResult, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,

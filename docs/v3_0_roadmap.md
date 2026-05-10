@@ -225,6 +225,9 @@ The branch starts from Operad 2.0.0 plus:
 - Host document-frame state snapshots let consumers carry reusable interaction
   and previous accessibility inputs across host/document frames without
   rebuilding previous-frame plumbing by hand.
+- Renderer-neutral scenario testing now combines input replay, document-frame
+  processing, CPU snapshot rendering, platform request collection, and reusable
+  assertions without depending on egui harness types.
 - Document keyboard focus traversal now follows accessibility focus ordering and
   modal-scope containment before falling back to input-only document order.
 - Accessibility preference resolution in `src/theme.rs`, `src/renderer.rs`,

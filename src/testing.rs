@@ -17,28 +17,28 @@ use crate::accessibility::{
 };
 use crate::commands::{CommandId, CommandRegistry};
 use crate::host::{
-    HostCommandDispatch, HostDocumentFrameOutput, HostFrameOutput, HostInteractionState,
-    HostNodeInteraction, HostShortcutRoute,
+    process_document_frame, HostCommandDispatch, HostDocumentFrameOutput, HostDocumentFrameState,
+    HostFrameOutput, HostInteractionState, HostNodeInteraction, HostShortcutRoute,
 };
 use crate::platform::{
     AppLifecycleResponse, BackendAdapterKind, BackendCapabilities, ClipboardResponse,
     CursorResponse, DragDropResponse, FileDialogResponse, LayerCapabilities, NotificationResponse,
     OpenUrlResponse, PixelSize, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
     PlatformServiceKind, PlatformServiceRequest, PlatformServiceResponse, RenderingCapabilities,
-    RepaintResponse, ResourceCapabilities, ScreenshotResponse, TextImeResponse,
+    RepaintResponse, ResourceCapabilities, ResourceId, ScreenshotResponse, TextImeResponse,
 };
 use crate::renderer::{
     CanvasHitCollection, CanvasHitTarget, CanvasRenderRegistry, CanvasRenderReport,
     CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest, RenderError, RenderFrameOutput,
     RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, RendererAdapter,
-    ResourceFormat, ResourceResolver,
+    ResourceDescriptor, ResourceFormat, ResourceResolver,
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
     AccessibilityStateKind, AccessibilityTree, ApproxTextMeasurer, AuditWarning, CanvasContent,
     ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem, PaintKind, PaintList,
-    PaintTransform, PathVerb, RawInputEvent, StrokeStyle, TextContent, UiDocument, UiInputEvent,
-    UiInputResult, UiNode, UiNodeId, UiPoint, UiRect, UiSize,
+    PaintTransform, PathVerb, RawInputEvent, StrokeStyle, TextContent, TextMeasurer, UiDocument,
+    UiInputEvent, UiInputResult, UiNode, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +63,15 @@ impl fmt::Display for TestFailure {
 impl std::error::Error for TestFailure {}
 
 pub type TestResult<T = ()> = Result<T, TestFailure>;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmptyResourceResolver;
+
+impl ResourceResolver for EmptyResourceResolver {
+    fn resolve_resource(&self, _id: &ResourceId) -> Option<ResourceDescriptor> {
+        None
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReplayInput {
@@ -189,14 +198,7 @@ impl EventReplay {
     pub fn run(&self, document: &mut UiDocument) -> EventReplayReport {
         let mut steps = Vec::with_capacity(self.steps.len());
         for step in &self.steps {
-            let converted = match &step.input {
-                ReplayInput::Ui(event) => Some(event.clone()),
-                ReplayInput::Raw {
-                    event,
-                    line_size,
-                    page_size,
-                } => event.to_ui_input_event_with_wheel_scale(*line_size, *page_size),
-            };
+            let converted = replay_input_to_ui_event(&step.input);
             let result = converted.clone().map(|event| document.handle_input(event));
             steps.push(EventReplayStepResult {
                 label: step.label.clone(),
@@ -217,14 +219,7 @@ impl EventReplay {
         let mut state = state;
         let mut steps = Vec::with_capacity(self.steps.len());
         for step in &self.steps {
-            let converted = match &step.input {
-                ReplayInput::Ui(event) => Some(event.clone()),
-                ReplayInput::Raw {
-                    event,
-                    line_size,
-                    page_size,
-                } => event.to_ui_input_event_with_wheel_scale(*line_size, *page_size),
-            };
+            let converted = replay_input_to_ui_event(&step.input);
             let result = converted.clone().map(|event| document.handle_input(event));
             let updates_host_state = converted
                 .as_ref()
@@ -262,6 +257,178 @@ impl EventReplay {
 
 fn replay_input_updates_host_state(event: &UiInputEvent) -> bool {
     !matches!(event, UiInputEvent::Key { .. } | UiInputEvent::TextInput(_))
+}
+
+fn replay_input_to_ui_event(input: &ReplayInput) -> Option<UiInputEvent> {
+    match input {
+        ReplayInput::Ui(event) => Some(event.clone()),
+        ReplayInput::Raw {
+            event,
+            line_size,
+            page_size,
+        } => event.to_ui_input_event_with_wheel_scale(*line_size, *page_size),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioFrameReport {
+    pub label: String,
+    pub events: EventReplayReport,
+    pub document: HostDocumentFrameOutput,
+    pub render: RenderFrameOutput,
+    pub platform_requests: Vec<PlatformServiceRequest>,
+}
+
+impl ScenarioFrameReport {
+    pub fn render_assertions(&self) -> RenderOutputAssertions<'_> {
+        RenderOutputAssertions::new(&self.render)
+    }
+
+    pub fn platform_assertions(&self) -> PlatformAssertions<'_> {
+        PlatformAssertions::new(
+            &self.platform_requests,
+            &self.document.host_output.platform_responses,
+        )
+    }
+
+    pub fn snapshot_assertions(
+        &self,
+        name: impl Into<String>,
+    ) -> TestResult<SnapshotAssertions<'_>> {
+        self.render_assertions().require_snapshot_rgba8(name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioHarness {
+    pub viewport: UiSize,
+    pub target: RenderTarget,
+    pub state: HostDocumentFrameState,
+    pub platform_allocator: PlatformRequestIdAllocator,
+}
+
+impl ScenarioHarness {
+    pub fn new(viewport: UiSize) -> Self {
+        Self {
+            viewport,
+            target: RenderTarget::snapshot(pixel_size_for_scenario_viewport(viewport)),
+            state: HostDocumentFrameState::new(),
+            platform_allocator: PlatformRequestIdAllocator::new(1),
+        }
+    }
+
+    pub fn target(mut self, target: RenderTarget) -> Self {
+        self.target = target;
+        self
+    }
+
+    pub fn state(mut self, state: HostDocumentFrameState) -> Self {
+        self.state = state;
+        self
+    }
+
+    pub const fn current_state(&self) -> &HostDocumentFrameState {
+        &self.state
+    }
+
+    pub fn run_frame(
+        &mut self,
+        label: impl Into<String>,
+        document: &mut UiDocument,
+        replay: EventReplay,
+    ) -> TestResult<ScenarioFrameReport> {
+        let mut measurer = ApproxTextMeasurer;
+        let mut renderer = CpuSnapshotRenderer::default();
+        self.run_frame_with_measurer_and_renderer(
+            label,
+            document,
+            replay,
+            &mut measurer,
+            &mut renderer,
+            &EmptyResourceResolver,
+        )
+    }
+
+    pub fn run_frame_with_measurer_and_renderer(
+        &mut self,
+        label: impl Into<String>,
+        document: &mut UiDocument,
+        replay: EventReplay,
+        measurer: &mut impl TextMeasurer,
+        renderer: &mut impl RendererAdapter,
+        resolver: &dyn ResourceResolver,
+    ) -> TestResult<ScenarioFrameReport> {
+        let label = label.into();
+        document
+            .compute_layout(self.viewport, measurer)
+            .map_err(|error| {
+                TestFailure::new(format!(
+                    "scenario `{label}` pre-input layout failed: {error}"
+                ))
+            })?;
+        let (host_output, mut events) =
+            scenario_host_output_from_replay(&replay, self.state.interaction.clone());
+        let request =
+            self.state
+                .document_frame_request(self.viewport, self.target.clone(), host_output);
+        let document_output =
+            process_document_frame(document, measurer, request).map_err(|error| {
+                TestFailure::new(format!("scenario `{label}` document frame failed: {error}"))
+            })?;
+        attach_scenario_input_results(&mut events, &document_output.input_results);
+        let render_output = renderer
+            .render_frame(document_output.render_request.clone(), resolver)
+            .map_err(|error| {
+                TestFailure::new(format!("scenario `{label}` render frame failed: {error}"))
+            })?;
+        let platform_requests =
+            document_output.platform_service_requests(&mut self.platform_allocator);
+        self.state.apply_document_frame_output(&document_output);
+        Ok(ScenarioFrameReport {
+            label,
+            events,
+            document: document_output,
+            render: render_output,
+            platform_requests,
+        })
+    }
+}
+
+fn scenario_host_output_from_replay(
+    replay: &EventReplay,
+    state: HostInteractionState,
+) -> (HostFrameOutput, EventReplayReport) {
+    let mut output = HostFrameOutput::new(state);
+    let mut steps = Vec::with_capacity(replay.steps.len());
+    for step in &replay.steps {
+        let converted = replay_input_to_ui_event(&step.input);
+        if let Some(event) = converted.clone() {
+            output.ui_events.push(event);
+        }
+        steps.push(EventReplayStepResult {
+            label: step.label.clone(),
+            input: step.input.clone(),
+            converted,
+            result: None,
+        });
+    }
+    (output, EventReplayReport { steps })
+}
+
+fn attach_scenario_input_results(events: &mut EventReplayReport, input_results: &[UiInputResult]) {
+    let mut results = input_results.iter().cloned();
+    for step in &mut events.steps {
+        if step.converted.is_some() {
+            step.result = results.next();
+        }
+    }
+}
+
+fn pixel_size_for_scenario_viewport(viewport: UiSize) -> PixelSize {
+    PixelSize::new(
+        viewport.width.max(0.0).round().min(u32::MAX as f32) as u32,
+        viewport.height.max(0.0).round().min(u32::MAX as f32) as u32,
+    )
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -3507,6 +3674,75 @@ mod tests {
         assert_eq!(report.dispatched_commands(), Vec::<CommandId>::new());
         report.require_no_commands().expect("no commands");
         assert!(report.require_command_dispatched("edit.cut").is_err());
+    }
+
+    #[test]
+    fn scenario_harness_runs_replay_document_frame_and_cpu_snapshot() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        let root = document.root;
+        let button = document.add_child(
+            root,
+            UiNode::container("menu.open", fixed_style(96.0, 32.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_visual(UiVisual::panel(
+                    ColorRgba::new(32, 44, 58, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(98, 128, 164, 255), 1.0)),
+                    4.0,
+                ))
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Open menu")
+                        .focusable()
+                        .action(AccessibilityAction::new("open", "Open")),
+                ),
+        );
+        document.add_child(
+            button,
+            UiNode::text(
+                "menu.open.label",
+                "Open",
+                TextStyle::default(),
+                fixed_style(52.0, 18.0).layout,
+            ),
+        );
+
+        let mut harness = ScenarioHarness::new(UiSize::new(180.0, 100.0));
+        let report = harness
+            .run_frame(
+                "open-menu",
+                &mut document,
+                EventReplay::new().pointer_click("open", UiPoint::new(16.0, 16.0)),
+            )
+            .expect("scenario frame");
+
+        assert_eq!(report.label, "open-menu");
+        assert_eq!(report.document.input_results.len(), 3);
+        report
+            .events
+            .require_clicked(button)
+            .expect("clicked button");
+        report
+            .events
+            .require_focused(button)
+            .expect("focused button");
+        report
+            .render_assertions()
+            .require_target_kind(RenderTargetKind::Snapshot)
+            .expect("snapshot target");
+        report
+            .render_assertions()
+            .require_min_painted_items(2)
+            .expect("painted items");
+        report
+            .snapshot_assertions("open-menu")
+            .expect("snapshot")
+            .require_min_changed_pixels_from(DEFAULT_CPU_SNAPSHOT_BACKGROUND, 1)
+            .expect("snapshot content");
+        report
+            .platform_assertions()
+            .require_no_error_responses()
+            .expect("no platform errors");
+        assert_eq!(harness.current_state().interaction.focused, Some(button));
     }
 
     #[test]
