@@ -176,6 +176,44 @@ fn core_controls_snapshot() {
 }
 
 #[test]
+fn built_in_icon_fallbacks_snapshot() {
+    let mut document = screen();
+    let root = document.root;
+    let icons = [
+        BuiltInIcon::Play,
+        BuiltInIcon::Record,
+        BuiltInIcon::Search,
+        BuiltInIcon::Folder,
+        BuiltInIcon::Grid,
+    ];
+
+    for (index, icon) in icons.into_iter().enumerate() {
+        let tint = match icon {
+            BuiltInIcon::Record => ColorRgba::new(238, 76, 92, 255),
+            BuiltInIcon::Folder => ColorRgba::new(246, 190, 92, 255),
+            BuiltInIcon::Grid => ColorRgba::new(132, 220, 172, 255),
+            _ => ColorRgba::new(152, 222, 255, 255),
+        };
+        document.add_child(
+            root,
+            UiNode::scene(
+                format!("builtin.{}", icon.key()),
+                icon.fallback_scene(UiRect::new(5.0, 5.0, 26.0, 26.0), tint),
+                absolute_style(40.0 + index as f32 * 54.0, 44.0, 36.0, 36.0),
+            )
+            .with_visual(UiVisual::panel(
+                ColorRgba::new(16, 23, 31, 255),
+                Some(StrokeStyle::new(ColorRgba::new(73, 91, 109, 255), 1.0)),
+                4.0,
+            )),
+        );
+    }
+
+    let image = render_document(&mut document, VIEWPORT);
+    assert_snapshot("built_in_icon_fallbacks", &image, 0xd56578109ab09ee1);
+}
+
+#[test]
 fn menus_and_command_palette_snapshot() {
     let mut document = screen();
     let root = document.root;

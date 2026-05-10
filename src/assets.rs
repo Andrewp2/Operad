@@ -7,8 +7,11 @@
 
 use std::collections::HashMap;
 
-use crate::platform::{IconHandle, ImageHandle, ResourceHandle, ResourceId};
-use crate::{ColorRgba, ImageAlignment, ImageContent, UiSize};
+use crate::platform::{IconHandle, ImageHandle, ResourceDomain, ResourceHandle, ResourceId};
+use crate::{
+    ColorRgba, ImageAlignment, ImageContent, PaintPath, ScenePrimitive, StrokeStyle, UiPoint,
+    UiRect, UiSize,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltInIcon {
@@ -188,6 +191,51 @@ impl BuiltInIcon {
         }
     }
 
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "icons.play" => Some(Self::Play),
+            "icons.pause" => Some(Self::Pause),
+            "icons.stop" => Some(Self::Stop),
+            "icons.record" => Some(Self::Record),
+            "icons.loop" => Some(Self::Loop),
+            "icons.metronome" => Some(Self::Metronome),
+            "icons.rewind" => Some(Self::Rewind),
+            "icons.fast-forward" => Some(Self::FastForward),
+            "icons.settings" => Some(Self::Settings),
+            "icons.add" => Some(Self::Add),
+            "icons.search" => Some(Self::Search),
+            "icons.folder" => Some(Self::Folder),
+            "icons.collapse" => Some(Self::Collapse),
+            "icons.expand" => Some(Self::Expand),
+            "icons.mute" => Some(Self::Mute),
+            "icons.solo" => Some(Self::Solo),
+            "icons.lock" => Some(Self::Lock),
+            "icons.unlock" => Some(Self::Unlock),
+            "icons.snap" => Some(Self::Snap),
+            "icons.zoom-in" => Some(Self::ZoomIn),
+            "icons.zoom-out" => Some(Self::ZoomOut),
+            "icons.link" => Some(Self::Link),
+            "icons.unlink" => Some(Self::Unlink),
+            "icons.scissors" => Some(Self::Scissors),
+            "icons.pencil" => Some(Self::Pencil),
+            "icons.pointer" => Some(Self::Pointer),
+            "icons.grid" => Some(Self::Grid),
+            "icons.check" => Some(Self::Check),
+            "icons.close" => Some(Self::Close),
+            "icons.warning" => Some(Self::Warning),
+            "icons.info" => Some(Self::Info),
+            _ => None,
+        }
+    }
+
+    pub fn from_handle(handle: &IconHandle) -> Option<Self> {
+        if handle.id.domain == ResourceDomain::BuiltIn {
+            Self::from_key(&handle.id.key)
+        } else {
+            None
+        }
+    }
+
     pub fn handle(self) -> IconHandle {
         IconHandle::built_in(self.key())
     }
@@ -200,6 +248,346 @@ impl BuiltInIcon {
             descriptor = descriptor.keyword(*keyword);
         }
         descriptor
+    }
+
+    pub fn fallback_paths(self, rect: UiRect, tint: ColorRgba) -> Vec<PaintPath> {
+        let icon = IconPathBuilder::new(rect, tint);
+        match self {
+            Self::Play => vec![icon.filled(&[(8.0, 5.0), (18.0, 12.0), (8.0, 19.0)])],
+            Self::Pause => vec![
+                icon.filled_rect(7.0, 5.0, 3.5, 14.0),
+                icon.filled_rect(13.5, 5.0, 3.5, 14.0),
+            ],
+            Self::Stop => vec![icon.filled_rect(6.0, 6.0, 12.0, 12.0)],
+            Self::Record => vec![icon.circle(12.0, 12.0, 7.0, true)],
+            Self::Loop => vec![
+                icon.polyline(&[(6.0, 10.0), (6.0, 7.0), (17.0, 7.0), (19.0, 10.0)]),
+                icon.filled(&[(19.0, 10.0), (16.0, 9.0), (18.0, 13.0)]),
+                icon.polyline(&[(18.0, 14.0), (18.0, 17.0), (7.0, 17.0), (5.0, 14.0)]),
+                icon.filled(&[(5.0, 14.0), (8.0, 15.0), (6.0, 11.0)]),
+            ],
+            Self::Metronome => vec![
+                icon.filled(&[(8.0, 20.0), (11.0, 4.0), (13.0, 4.0), (16.0, 20.0)]),
+                icon.polyline(&[(12.0, 5.0), (15.0, 16.0)]),
+                icon.circle(15.0, 16.0, 1.5, true),
+            ],
+            Self::Rewind => vec![
+                icon.filled(&[(6.0, 12.0), (13.0, 6.0), (13.0, 18.0)]),
+                icon.filled(&[(12.0, 12.0), (19.0, 6.0), (19.0, 18.0)]),
+            ],
+            Self::FastForward => vec![
+                icon.filled(&[(5.0, 6.0), (12.0, 12.0), (5.0, 18.0)]),
+                icon.filled(&[(11.0, 6.0), (18.0, 12.0), (11.0, 18.0)]),
+            ],
+            Self::Settings => {
+                let mut paths = vec![icon.circle(12.0, 12.0, 4.5, false)];
+                for (from, to) in [
+                    ((12.0, 3.5), (12.0, 6.0)),
+                    ((12.0, 18.0), (12.0, 20.5)),
+                    ((3.5, 12.0), (6.0, 12.0)),
+                    ((18.0, 12.0), (20.5, 12.0)),
+                    ((6.0, 6.0), (7.8, 7.8)),
+                    ((16.2, 16.2), (18.0, 18.0)),
+                    ((18.0, 6.0), (16.2, 7.8)),
+                    ((7.8, 16.2), (6.0, 18.0)),
+                ] {
+                    paths.push(icon.line(from, to));
+                }
+                paths
+            }
+            Self::Add => vec![
+                icon.line((12.0, 5.0), (12.0, 19.0)),
+                icon.line((5.0, 12.0), (19.0, 12.0)),
+            ],
+            Self::Search => vec![
+                icon.circle(10.5, 10.5, 5.5, false),
+                icon.line((15.0, 15.0), (20.0, 20.0)),
+            ],
+            Self::Folder => vec![icon.filled(&[
+                (3.0, 8.0),
+                (9.0, 8.0),
+                (11.0, 10.0),
+                (21.0, 10.0),
+                (21.0, 19.0),
+                (3.0, 19.0),
+            ])],
+            Self::Collapse => vec![icon.polyline(&[(7.0, 10.0), (12.0, 15.0), (17.0, 10.0)])],
+            Self::Expand => vec![icon.polyline(&[(9.0, 7.0), (14.0, 12.0), (9.0, 17.0)])],
+            Self::Mute => vec![
+                icon.filled(&[
+                    (4.0, 10.0),
+                    (8.0, 10.0),
+                    (13.0, 6.0),
+                    (13.0, 18.0),
+                    (8.0, 14.0),
+                    (4.0, 14.0),
+                ]),
+                icon.line((16.0, 9.0), (21.0, 15.0)),
+                icon.line((21.0, 9.0), (16.0, 15.0)),
+            ],
+            Self::Solo => vec![
+                icon.circle(12.0, 12.0, 8.0, false),
+                icon.polyline(&[
+                    (15.0, 8.0),
+                    (10.0, 8.0),
+                    (9.0, 12.0),
+                    (14.0, 12.0),
+                    (13.0, 16.0),
+                    (8.0, 16.0),
+                ]),
+            ],
+            Self::Lock => vec![
+                icon.lock_body(),
+                icon.polyline(&[
+                    (8.0, 10.0),
+                    (8.0, 7.0),
+                    (12.0, 4.5),
+                    (16.0, 7.0),
+                    (16.0, 10.0),
+                ]),
+            ],
+            Self::Unlock => vec![
+                icon.lock_body(),
+                icon.polyline(&[(8.0, 10.0), (8.0, 7.0), (12.0, 4.5), (16.5, 6.5)]),
+            ],
+            Self::Snap => vec![
+                icon.polyline(&[
+                    (6.0, 5.0),
+                    (6.0, 14.0),
+                    (9.0, 18.0),
+                    (15.0, 18.0),
+                    (18.0, 14.0),
+                    (18.0, 5.0),
+                ]),
+                icon.line((6.0, 9.0), (10.0, 9.0)),
+                icon.line((14.0, 9.0), (18.0, 9.0)),
+            ],
+            Self::ZoomIn => vec![
+                icon.circle(10.5, 10.5, 5.5, false),
+                icon.line((10.5, 7.5), (10.5, 13.5)),
+                icon.line((7.5, 10.5), (13.5, 10.5)),
+                icon.line((15.0, 15.0), (20.0, 20.0)),
+            ],
+            Self::ZoomOut => vec![
+                icon.circle(10.5, 10.5, 5.5, false),
+                icon.line((7.5, 10.5), (13.5, 10.5)),
+                icon.line((15.0, 15.0), (20.0, 20.0)),
+            ],
+            Self::Link => vec![
+                icon.polyline(&[
+                    (9.0, 8.0),
+                    (6.0, 8.0),
+                    (4.0, 10.0),
+                    (4.0, 14.0),
+                    (6.0, 16.0),
+                    (10.0, 16.0),
+                    (13.0, 13.0),
+                ]),
+                icon.polyline(&[
+                    (15.0, 8.0),
+                    (18.0, 8.0),
+                    (20.0, 10.0),
+                    (20.0, 14.0),
+                    (18.0, 16.0),
+                    (14.0, 16.0),
+                    (11.0, 13.0),
+                ]),
+                icon.line((8.0, 12.0), (16.0, 12.0)),
+            ],
+            Self::Unlink => vec![
+                icon.polyline(&[
+                    (9.0, 8.0),
+                    (6.0, 8.0),
+                    (4.0, 10.0),
+                    (4.0, 14.0),
+                    (6.0, 16.0),
+                    (9.0, 16.0),
+                ]),
+                icon.polyline(&[
+                    (15.0, 8.0),
+                    (18.0, 8.0),
+                    (20.0, 10.0),
+                    (20.0, 14.0),
+                    (18.0, 16.0),
+                    (15.0, 16.0),
+                ]),
+                icon.line((8.0, 20.0), (16.0, 4.0)),
+            ],
+            Self::Scissors => vec![
+                icon.circle(7.0, 7.0, 2.5, false),
+                icon.circle(7.0, 17.0, 2.5, false),
+                icon.line((9.0, 9.0), (19.0, 19.0)),
+                icon.line((9.0, 15.0), (19.0, 5.0)),
+            ],
+            Self::Pencil => vec![
+                icon.filled(&[
+                    (5.0, 18.0),
+                    (7.0, 13.0),
+                    (16.0, 4.0),
+                    (20.0, 8.0),
+                    (11.0, 17.0),
+                ]),
+                icon.line((14.5, 5.5), (18.5, 9.5)),
+            ],
+            Self::Pointer => vec![icon.filled(&[
+                (6.0, 4.0),
+                (18.0, 13.0),
+                (12.0, 14.0),
+                (15.0, 20.0),
+                (12.0, 21.0),
+                (9.0, 15.0),
+                (6.0, 18.0),
+            ])],
+            Self::Grid => vec![
+                icon.rect_outline(5.0, 5.0, 14.0, 14.0),
+                icon.line((12.0, 5.0), (12.0, 19.0)),
+                icon.line((5.0, 12.0), (19.0, 12.0)),
+            ],
+            Self::Check => vec![icon.polyline(&[(5.0, 12.0), (10.0, 17.0), (19.0, 7.0)])],
+            Self::Close => vec![
+                icon.line((6.0, 6.0), (18.0, 18.0)),
+                icon.line((18.0, 6.0), (6.0, 18.0)),
+            ],
+            Self::Warning => vec![
+                icon.filled(&[(12.0, 4.0), (21.0, 20.0), (3.0, 20.0)]),
+                icon.warning_cutout_line(),
+                icon.warning_cutout_dot(),
+            ],
+            Self::Info => vec![
+                icon.circle(12.0, 12.0, 8.0, false),
+                icon.line((12.0, 10.0), (12.0, 17.0)),
+                icon.circle(12.0, 7.5, 1.0, true),
+            ],
+        }
+    }
+
+    pub fn fallback_scene(self, rect: UiRect, tint: ColorRgba) -> Vec<ScenePrimitive> {
+        self.fallback_paths(rect, tint)
+            .into_iter()
+            .map(ScenePrimitive::Path)
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IconPathBuilder {
+    rect: UiRect,
+    tint: ColorRgba,
+    stroke_width: f32,
+}
+
+impl IconPathBuilder {
+    fn new(rect: UiRect, tint: ColorRgba) -> Self {
+        let size = rect.width.min(rect.height).max(0.0);
+        let rect = UiRect::new(
+            rect.x + (rect.width - size) * 0.5,
+            rect.y + (rect.height - size) * 0.5,
+            size,
+            size,
+        );
+        Self {
+            rect,
+            tint,
+            stroke_width: (size / 12.0).clamp(1.0, 2.5),
+        }
+    }
+
+    fn point(self, x: f32, y: f32) -> UiPoint {
+        UiPoint::new(
+            self.rect.x + self.rect.width * (x / 24.0),
+            self.rect.y + self.rect.height * (y / 24.0),
+        )
+    }
+
+    fn stroke(self) -> StrokeStyle {
+        StrokeStyle::new(self.tint, self.stroke_width)
+    }
+
+    fn line(self, from: (f32, f32), to: (f32, f32)) -> PaintPath {
+        PaintPath::new()
+            .move_to(self.point(from.0, from.1))
+            .line_to(self.point(to.0, to.1))
+            .stroke(self.stroke())
+    }
+
+    fn polyline(self, points: &[(f32, f32)]) -> PaintPath {
+        let mut path = PaintPath::new();
+        for (index, point) in points.iter().copied().enumerate() {
+            if index == 0 {
+                path = path.move_to(self.point(point.0, point.1));
+            } else {
+                path = path.line_to(self.point(point.0, point.1));
+            }
+        }
+        path.stroke(self.stroke())
+    }
+
+    fn filled(self, points: &[(f32, f32)]) -> PaintPath {
+        let mut path = PaintPath::new();
+        for (index, point) in points.iter().copied().enumerate() {
+            if index == 0 {
+                path = path.move_to(self.point(point.0, point.1));
+            } else {
+                path = path.line_to(self.point(point.0, point.1));
+            }
+        }
+        path.close().fill(self.tint)
+    }
+
+    fn filled_rect(self, x: f32, y: f32, width: f32, height: f32) -> PaintPath {
+        self.filled(&[
+            (x, y),
+            (x + width, y),
+            (x + width, y + height),
+            (x, y + height),
+        ])
+    }
+
+    fn rect_outline(self, x: f32, y: f32, width: f32, height: f32) -> PaintPath {
+        self.polyline(&[
+            (x, y),
+            (x + width, y),
+            (x + width, y + height),
+            (x, y + height),
+            (x, y),
+        ])
+    }
+
+    fn circle(self, cx: f32, cy: f32, radius: f32, filled: bool) -> PaintPath {
+        let segments = 16;
+        let mut points = Vec::with_capacity(segments + 1);
+        for index in 0..segments {
+            let angle = (index as f32 / segments as f32) * std::f32::consts::TAU;
+            points.push((cx + radius * angle.cos(), cy + radius * angle.sin()));
+        }
+        if filled {
+            self.filled(&points)
+        } else {
+            points.push(points[0]);
+            self.polyline(&points)
+        }
+    }
+
+    fn lock_body(self) -> PaintPath {
+        self.filled_rect(6.0, 10.0, 12.0, 9.0)
+    }
+
+    fn warning_cutout_line(self) -> PaintPath {
+        PaintPath::new()
+            .move_to(self.point(12.0, 9.0))
+            .line_to(self.point(12.0, 14.5))
+            .stroke(StrokeStyle::new(
+                ColorRgba::new(0, 0, 0, self.tint.a),
+                self.stroke_width,
+            ))
+    }
+
+    fn warning_cutout_dot(self) -> PaintPath {
+        IconPathBuilder {
+            tint: ColorRgba::new(0, 0, 0, self.tint.a),
+            ..self
+        }
+        .circle(12.0, 17.0, 1.0, true)
     }
 }
 
@@ -352,6 +740,21 @@ impl IconAsset {
         } else {
             content
         }
+    }
+
+    pub fn fallback_paths(&self) -> Option<Vec<PaintPath>> {
+        let tint = self.tint.unwrap_or(ColorRgba::WHITE);
+        let rect = UiRect::new(0.0, 0.0, self.size.width, self.size.height);
+        BuiltInIcon::from_handle(&self.handle).map(|icon| icon.fallback_paths(rect, tint))
+    }
+
+    pub fn fallback_scene(&self) -> Option<Vec<ScenePrimitive>> {
+        self.fallback_paths().map(|paths| {
+            paths
+                .into_iter()
+                .map(ScenePrimitive::Path)
+                .collect::<Vec<_>>()
+        })
     }
 }
 
@@ -578,6 +981,61 @@ mod tests {
         assert_eq!(icon.alignment, ImageAlignment::End);
         assert_eq!(content.key, "icons.record");
         assert_eq!(content.tint, Some(ColorRgba::new(220, 42, 58, 255)));
+    }
+
+    #[test]
+    fn built_in_icons_provide_vector_fallback_paths() {
+        for icon in BuiltInIcon::COMMON {
+            let paths = icon.fallback_paths(
+                UiRect::new(0.0, 0.0, 24.0, 24.0),
+                ColorRgba::new(120, 180, 255, 255),
+            );
+            assert!(!paths.is_empty(), "{icon:?} has no fallback paths");
+            assert!(
+                paths
+                    .iter()
+                    .any(|path| path.fill.is_some() || path.stroke.is_some()),
+                "{icon:?} fallback paths are not paintable"
+            );
+            assert!(
+                paths
+                    .iter()
+                    .any(|path| path.bounds().width > 0.0 || path.bounds().height > 0.0),
+                "{icon:?} fallback paths have empty bounds"
+            );
+        }
+    }
+
+    #[test]
+    fn icon_asset_fallback_scene_uses_tint_size_and_built_in_domain() {
+        let registry = AssetRegistry::with_common_icons();
+        let tint = ColorRgba::new(220, 42, 58, 255);
+        let icon = registry
+            .built_in_icon_asset(BuiltInIcon::Record)
+            .expect("record icon")
+            .tint(tint)
+            .size(UiSize::new(18.0, 20.0));
+
+        let paths = icon.fallback_paths().expect("built-in fallback paths");
+        let scene = icon.fallback_scene().expect("built-in fallback scene");
+
+        assert!(paths.iter().any(|path| {
+            path.fill
+                .as_ref()
+                .is_some_and(|fill| fill.fallback_color() == tint)
+                || path.stroke.is_some_and(|stroke| stroke.style.color == tint)
+        }));
+        assert_eq!(scene.len(), paths.len());
+        assert!(matches!(scene[0], ScenePrimitive::Path(_)));
+
+        let app_icon = IconAsset {
+            handle: IconHandle::app("icons.record"),
+            label: "Record".to_string(),
+            size: UiSize::new(18.0, 18.0),
+            alignment: ImageAlignment::Center,
+            tint: Some(tint),
+        };
+        assert!(app_icon.fallback_paths().is_none());
     }
 
     #[test]

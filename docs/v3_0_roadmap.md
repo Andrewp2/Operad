@@ -290,7 +290,9 @@ The branch starts from Operad 2.0.0 plus:
   cache eviction.
 - Asset registry contracts in `src/assets.rs` for built-in common action icons,
   app-provided icon/image descriptors, sizing, tinting, alignment, compact
-  icon-button metadata, tooltip text, and accessibility labels.
+  icon-button metadata, tooltip text, accessibility labels, and deterministic
+  vector fallback paths for built-in icons when no texture/image handler is
+  registered.
 - Tooltip and shortcut-display contracts in `src/tooltips.rs` for platform-aware
   shortcut labels, command metadata tooltips, disabled reasons, and
   renderer-neutral tooltip requests.
