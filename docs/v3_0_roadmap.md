@@ -410,6 +410,9 @@ The branch starts from Operad 2.0.0 plus:
 - Menu and command-palette helpers in `src/widget_ext/menu.rs` for building
   items from the command registry, preserving enabled/disabled command state,
   displaying scoped shortcuts, and returning typed `CommandId` selections.
+- Nested menu navigation state in `src/widget_ext/menu.rs` for submenu
+  open/close, scoped typeahead, arrow traversal, and stable command selection
+  paths without requiring consumers to inspect node names.
 - Active-descendant accessibility relationships for select menus, menu lists,
   menu bars, dropdown popups, and command palette result navigation.
 - Searchable select/listbox state in `src/widget_ext/menu.rs` for filtered

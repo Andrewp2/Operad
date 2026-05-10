@@ -396,6 +396,208 @@ pub enum NavigationDirection {
     Previous,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MenuNavigationState {
+    pub active_path: Vec<usize>,
+}
+
+impl MenuNavigationState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_active_path(active_path: impl Into<Vec<usize>>) -> Self {
+        Self {
+            active_path: active_path.into(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.active_path.clear();
+    }
+
+    pub fn open_root(&mut self, items: &[MenuItem]) -> Option<Vec<usize>> {
+        let index = first_navigable_index(items)?;
+        self.active_path = vec![index];
+        Some(self.active_path.clone())
+    }
+
+    pub fn active_item<'a>(&self, items: &'a [MenuItem]) -> Option<&'a MenuItem> {
+        menu_item_at_path(items, &self.active_path)
+    }
+
+    pub fn active_parent_path(&self) -> &[usize] {
+        self.active_path
+            .split_last()
+            .map(|(_, parent)| parent)
+            .unwrap_or(&[])
+    }
+
+    pub fn move_active(
+        &mut self,
+        items: &[MenuItem],
+        direction: NavigationDirection,
+    ) -> Option<Vec<usize>> {
+        let (level_items, parent_path, current) = self.current_level(items)?;
+        let index = next_navigable_index(level_items, current, direction)?;
+        self.active_path = parent_path;
+        self.active_path.push(index);
+        Some(self.active_path.clone())
+    }
+
+    pub fn open_submenu(&mut self, items: &[MenuItem]) -> Option<Vec<usize>> {
+        let item = self.active_item(items)?;
+        let child_index = first_navigable_index(item.children()?)?;
+        self.active_path.push(child_index);
+        Some(self.active_path.clone())
+    }
+
+    pub fn close_submenu(&mut self) -> Option<Vec<usize>> {
+        if self.active_path.len() <= 1 {
+            return None;
+        }
+        self.active_path.pop();
+        Some(self.active_path.clone())
+    }
+
+    pub fn select_active(&self, items: &[MenuItem]) -> Option<MenuSelection> {
+        menu_selection_at_path(items, &self.active_path)
+    }
+
+    pub fn activate_active(&mut self, items: &[MenuItem]) -> MenuNavigationOutcome {
+        let mut outcome = MenuNavigationOutcome::default();
+        if let Some(selection) = self.select_active(items) {
+            outcome.selected = Some(selection);
+            outcome.closed = true;
+            self.clear();
+        } else if let Some(path) = self.open_submenu(items) {
+            outcome.active_path = Some(path);
+            outcome.opened_submenu = true;
+        }
+        outcome
+    }
+
+    pub fn handle_event(
+        &mut self,
+        items: &[MenuItem],
+        event: &UiInputEvent,
+    ) -> MenuNavigationOutcome {
+        let mut outcome = MenuNavigationOutcome::default();
+        if let UiInputEvent::Key {
+            key: KeyCode::Escape,
+            ..
+        } = event
+        {
+            self.clear();
+            outcome.closed = true;
+            return outcome;
+        }
+
+        if self.active_path.is_empty() {
+            outcome.active_path = self.open_root(items);
+            if self.active_path.is_empty() {
+                return outcome;
+            }
+        }
+
+        if let UiInputEvent::TextInput(text) = event {
+            if let Some(character) = first_typeahead_character(text) {
+                outcome.active_path = self.move_active_to_match(items, character);
+            }
+            return outcome;
+        }
+
+        let UiInputEvent::Key { key, .. } = event else {
+            return outcome;
+        };
+
+        match *key {
+            KeyCode::ArrowDown => {
+                outcome.active_path = self.move_active(items, NavigationDirection::Next);
+            }
+            KeyCode::ArrowUp => {
+                outcome.active_path = self.move_active(items, NavigationDirection::Previous);
+            }
+            KeyCode::Home => {
+                outcome.active_path = self.move_to_edge(items, NavigationDirection::Next);
+            }
+            KeyCode::End => {
+                outcome.active_path = self.move_to_edge(items, NavigationDirection::Previous);
+            }
+            KeyCode::ArrowRight => {
+                outcome.active_path = self.open_submenu(items);
+                outcome.opened_submenu = outcome.active_path.is_some();
+            }
+            KeyCode::ArrowLeft => {
+                outcome.active_path = self.close_submenu();
+                outcome.closed_submenu = outcome.active_path.is_some();
+            }
+            KeyCode::Enter | KeyCode::Character(' ') => {
+                outcome = self.activate_active(items);
+            }
+            KeyCode::Character(character) if is_typeahead_character(character) => {
+                outcome.active_path = self.move_active_to_match(items, character);
+            }
+            _ => {}
+        }
+
+        outcome
+    }
+
+    fn current_level<'a>(
+        &self,
+        items: &'a [MenuItem],
+    ) -> Option<(&'a [MenuItem], Vec<usize>, Option<usize>)> {
+        let (current, parent_path) = self
+            .active_path
+            .split_last()
+            .map(|(current, parent)| (Some(*current), parent.to_vec()))
+            .unwrap_or((None, Vec::new()));
+        let level_items = menu_items_at_path(items, &parent_path)?;
+        Some((level_items, parent_path, current))
+    }
+
+    fn move_to_edge(
+        &mut self,
+        items: &[MenuItem],
+        direction: NavigationDirection,
+    ) -> Option<Vec<usize>> {
+        let (level_items, mut parent_path, _) = self.current_level(items)?;
+        let index = match direction {
+            NavigationDirection::Next => first_navigable_index(level_items),
+            NavigationDirection::Previous => last_navigable_index(level_items),
+        }?;
+        parent_path.push(index);
+        self.active_path = parent_path;
+        Some(self.active_path.clone())
+    }
+
+    fn move_active_to_match(&mut self, items: &[MenuItem], character: char) -> Option<Vec<usize>> {
+        let (level_items, mut parent_path, current) = self.current_level(items)?;
+        let index = next_menu_typeahead_index(level_items, current, character)?;
+        parent_path.push(index);
+        self.active_path = parent_path;
+        Some(self.active_path.clone())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MenuNavigationOutcome {
+    pub active_path: Option<Vec<usize>>,
+    pub opened_submenu: bool,
+    pub closed_submenu: bool,
+    pub closed: bool,
+    pub selected: Option<MenuSelection>,
+}
+
+impl MenuNavigationOutcome {
+    pub fn selected_command(&self) -> Option<MenuCommandSelection> {
+        self.selected
+            .as_ref()
+            .and_then(MenuSelection::command_selection)
+    }
+}
+
 pub fn menu_item_at_path<'a>(items: &'a [MenuItem], path: &[usize]) -> Option<&'a MenuItem> {
     let (first, rest) = path.split_first()?;
     let item = items.get(*first)?;
@@ -403,6 +605,13 @@ pub fn menu_item_at_path<'a>(items: &'a [MenuItem], path: &[usize]) -> Option<&'
         return Some(item);
     }
     menu_item_at_path(item.children()?, rest)
+}
+
+pub fn menu_items_at_path<'a>(items: &'a [MenuItem], path: &[usize]) -> Option<&'a [MenuItem]> {
+    if path.is_empty() {
+        return Some(items);
+    }
+    menu_item_at_path(items, path)?.children()
 }
 
 pub fn menu_selection_at_path(items: &[MenuItem], path: &[usize]) -> Option<MenuSelection> {
@@ -3438,7 +3647,8 @@ fn select_row_node(
     let active = state.active == Some(index);
     let mut accessibility = AccessibilityMeta::new(AccessibilityRole::ListItem)
         .label(option_accessibility_label(option))
-        .value(if selected { "selected" } else { "not selected" });
+        .value(if selected { "selected" } else { "not selected" })
+        .selected(selected);
     if active {
         accessibility = accessibility.hint("Active option");
     }
@@ -4951,12 +5161,14 @@ mod tests {
         let first_row = document.node(nodes.rows[0]);
         let first_accessibility = first_row.accessibility.as_ref().unwrap();
         assert_eq!(first_accessibility.value.as_deref(), Some("selected"));
+        assert_eq!(first_accessibility.selected, Some(true));
         assert!(first_row.children.iter().any(|child| matches!(
             &document.node(*child).content,
             UiContent::Image(image) if image.key == "icons.compact"
         )));
 
         let active_accessibility = document.node(nodes.rows[1]).accessibility.as_ref().unwrap();
+        assert_eq!(active_accessibility.selected, Some(false));
         assert_eq!(
             active_accessibility.label.as_deref(),
             Some("Comfortable density")
@@ -4991,6 +5203,115 @@ mod tests {
             next_navigable_index(&items, None, NavigationDirection::Next),
             Some(0)
         );
+    }
+
+    #[test]
+    fn nested_menu_navigation_opens_submenus_and_selects_index_path() {
+        let items = vec![MenuItem::submenu(
+            "file",
+            "File",
+            vec![
+                MenuItem::command("new", "New"),
+                MenuItem::separator(),
+                MenuItem::submenu(
+                    "recent",
+                    "Recent",
+                    vec![
+                        MenuItem::command("recent-a", "Recent A").disabled(),
+                        MenuItem::command("recent-b", "Recent B"),
+                    ],
+                ),
+            ],
+        )];
+        let mut state = MenuNavigationState::new();
+
+        assert_eq!(state.open_root(&items), Some(vec![0]));
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowRight,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.opened_submenu);
+        assert_eq!(outcome.active_path, Some(vec![0, 0]));
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowDown,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(outcome.active_path, Some(vec![0, 2]));
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowRight,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.opened_submenu);
+        assert_eq!(outcome.active_path, Some(vec![0, 2, 1]));
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(
+            outcome.selected,
+            Some(MenuSelection {
+                id: Some("recent-b".to_string()),
+                index_path: vec![0, 2, 1],
+            })
+        );
+        assert!(outcome.closed);
+        assert!(state.active_path.is_empty());
+    }
+
+    #[test]
+    fn nested_menu_navigation_typeahead_scopes_to_current_menu_level() {
+        let items = vec![
+            MenuItem::submenu(
+                "file",
+                "File",
+                vec![
+                    MenuItem::command("new", "New"),
+                    MenuItem::command("open", "Open"),
+                ],
+            ),
+            MenuItem::command("view", "View"),
+        ];
+        let mut state = MenuNavigationState::new();
+        assert_eq!(state.open_root(&items), Some(vec![0]));
+
+        state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowRight,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        let outcome = state.handle_event(&items, &UiInputEvent::TextInput("o".to_string()));
+        assert_eq!(outcome.active_path, Some(vec![0, 1]));
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowLeft,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.closed_submenu);
+        assert_eq!(outcome.active_path, Some(vec![0]));
+
+        let outcome = state.handle_event(&items, &UiInputEvent::TextInput("v".to_string()));
+        assert_eq!(outcome.active_path, Some(vec![1]));
     }
 
     #[test]
