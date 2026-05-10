@@ -29,9 +29,9 @@ use crate::renderer::{
     RenderFrameRequest,
 };
 use crate::{
-    AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree, PaintItem,
-    PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId,
-    UiRect, UiSize,
+    AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree, ColorRgba,
+    PaintItem, PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent, UiInputResult,
+    UiNode, UiNodeId, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1049,6 +1049,22 @@ impl<'a> RgbaImageView<'a> {
             pixels,
         })
     }
+
+    pub fn hash(self) -> u64 {
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in self.pixels {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    pub fn changed_pixels_from(self, color: ColorRgba) -> usize {
+        self.pixels
+            .chunks_exact(4)
+            .filter(|pixel| *pixel != [color.r, color.g, color.b, color.a])
+            .count()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1120,6 +1136,90 @@ pub fn diff_rgba8(
     }
 
     Ok(report)
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotAssertions<'a> {
+    name: String,
+    image: RgbaImageView<'a>,
+}
+
+impl<'a> SnapshotAssertions<'a> {
+    pub fn new(name: impl Into<String>, image: RgbaImageView<'a>) -> Self {
+        Self {
+            name: name.into(),
+            image,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn image(&self) -> RgbaImageView<'a> {
+        self.image
+    }
+
+    pub fn hash(&self) -> u64 {
+        self.image.hash()
+    }
+
+    pub fn changed_pixels_from(&self, color: ColorRgba) -> usize {
+        self.image.changed_pixels_from(color)
+    }
+
+    pub fn require_hash(&self, expected_hash: u64) -> TestResult<u64> {
+        let actual = self.hash();
+        if expected_hash == 0 {
+            return Err(TestFailure::new(format!(
+                "{} snapshot hash: {actual:#018x}",
+                self.name
+            )));
+        }
+        if actual == expected_hash {
+            Ok(actual)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} snapshot hash changed: expected {expected_hash:#018x}, got {actual:#018x}",
+                self.name
+            )))
+        }
+    }
+
+    pub fn require_min_changed_pixels_from(
+        &self,
+        color: ColorRgba,
+        minimum_changed_pixels: usize,
+    ) -> TestResult<usize> {
+        let changed_pixels = self.changed_pixels_from(color);
+        if changed_pixels >= minimum_changed_pixels {
+            Ok(changed_pixels)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} rendered too little content: expected at least {minimum_changed_pixels} changed pixels, got {changed_pixels}",
+                self.name
+            )))
+        }
+    }
+
+    pub fn require_matches(
+        &self,
+        expected: RgbaImageView<'_>,
+        tolerance: PixelDiffTolerance,
+    ) -> TestResult<PixelDiffReport> {
+        let report = diff_rgba8(expected, self.image)?;
+        if report.is_within(tolerance) {
+            Ok(report)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} snapshot differed beyond tolerance: {} changed pixels, max channel delta {}, total channel delta {}",
+                self.name,
+                report.changed_pixels,
+                report.max_channel_delta,
+                report.total_channel_delta
+            )))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1916,6 +2016,45 @@ mod tests {
             max_total_channel_delta: 6,
         }));
         assert!(!report.is_within(PixelDiffTolerance::EXACT));
+    }
+
+    #[test]
+    fn snapshot_assertions_hash_content_and_tolerance() {
+        let expected = [0, 0, 0, 255, 10, 20, 30, 255];
+        let actual = [0, 0, 0, 255, 11, 20, 30, 255];
+        let view = RgbaImageView::new(2, 1, &actual).expect("actual view");
+        let snapshot = SnapshotAssertions::new("snapshot", view);
+        let hash = snapshot.hash();
+
+        snapshot.require_hash(hash).expect("matching snapshot hash");
+        assert!(snapshot.require_hash(0).is_err());
+        assert_eq!(
+            snapshot
+                .require_min_changed_pixels_from(ColorRgba::new(0, 0, 0, 255), 1)
+                .expect("changed pixels"),
+            1
+        );
+        assert!(snapshot
+            .require_min_changed_pixels_from(ColorRgba::new(0, 0, 0, 255), 2)
+            .is_err());
+
+        let report = snapshot
+            .require_matches(
+                RgbaImageView::new(2, 1, &expected).expect("expected view"),
+                PixelDiffTolerance {
+                    max_changed_pixels: 1,
+                    max_channel_delta: 1,
+                    max_total_channel_delta: 1,
+                },
+            )
+            .expect("within tolerance");
+        assert_eq!(report.changed_pixels, 1);
+        assert!(snapshot
+            .require_matches(
+                RgbaImageView::new(2, 1, &expected).expect("expected view"),
+                PixelDiffTolerance::EXACT,
+            )
+            .is_err());
     }
 
     #[test]

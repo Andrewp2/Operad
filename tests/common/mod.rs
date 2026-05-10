@@ -5,7 +5,8 @@ use std::path::Path;
 
 use operad::{
     ApproxTextMeasurer, CanvasContent, ColorRgba, PaintItem, PaintKind, PaintTransform,
-    StrokeStyle, TextContent, UiDocument, UiPoint, UiRect, UiSize,
+    RgbaImageView, SnapshotAssertions, StrokeStyle, TextContent, UiDocument, UiPoint, UiRect,
+    UiSize,
 };
 
 pub const SNAPSHOT_BACKGROUND: ColorRgba = ColorRgba::new(9, 12, 16, 255);
@@ -33,20 +34,16 @@ impl RasterImage {
         }
     }
 
+    pub fn view(&self) -> RgbaImageView<'_> {
+        RgbaImageView::new(self.width, self.height, &self.pixels).expect("valid raster image")
+    }
+
     pub fn hash(&self) -> u64 {
-        let mut hash = 0xcbf29ce484222325_u64;
-        for byte in &self.pixels {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        hash
+        self.view().hash()
     }
 
     pub fn changed_pixels_from(&self, color: ColorRgba) -> usize {
-        self.pixels
-            .chunks_exact(4)
-            .filter(|pixel| *pixel != [color.r, color.g, color.b, color.a])
-            .count()
+        self.view().changed_pixels_from(color)
     }
 
     pub fn write_ppm(&self, path: impl AsRef<Path>) {
@@ -78,16 +75,13 @@ pub fn assert_snapshot(name: &str, image: &RasterImage, expected_hash: u64) {
         fs::create_dir_all(&dir).expect("create snapshot directory");
         image.write_ppm(Path::new(&dir).join(format!("{name}.ppm")));
     }
-    let changed_pixels = image.changed_pixels_from(SNAPSHOT_BACKGROUND);
-    assert!(
-        changed_pixels > image.width * image.height / 40,
-        "{name} rendered too little content: {changed_pixels} changed pixels"
-    );
-    let actual = image.hash();
-    if expected_hash == 0 {
-        panic!("{name} snapshot hash: {actual:#018x}");
-    }
-    assert_eq!(actual, expected_hash, "{name} snapshot hash changed");
+    let assertions = SnapshotAssertions::new(name, image.view());
+    assertions
+        .require_min_changed_pixels_from(SNAPSHOT_BACKGROUND, image.width * image.height / 40 + 1)
+        .unwrap_or_else(|failure| panic!("{failure}"));
+    assertions
+        .require_hash(expected_hash)
+        .unwrap_or_else(|failure| panic!("{failure}"));
 }
 
 fn draw_item(image: &mut RasterImage, item: &PaintItem) {
