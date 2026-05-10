@@ -26,7 +26,7 @@ use crate::platform::{
 };
 use crate::renderer::{
     CanvasRenderRegistry, CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest,
-    RenderFrameRequest,
+    RenderFrameOutput, RenderFrameRequest, RenderTargetKind, RenderedImage, ResourceFormat,
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree, ColorRgba,
@@ -1002,6 +1002,125 @@ impl<'a> RenderAssertions<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RenderOutputAssertions<'a> {
+    output: &'a RenderFrameOutput,
+}
+
+impl<'a> RenderOutputAssertions<'a> {
+    pub const fn new(output: &'a RenderFrameOutput) -> Self {
+        Self { output }
+    }
+
+    pub const fn output(&self) -> &'a RenderFrameOutput {
+        self.output
+    }
+
+    pub fn timing_assertions(&self) -> FrameTimingAssertions<'a> {
+        FrameTimingAssertions::new(&self.output.timings)
+    }
+
+    pub fn require_target_kind(&self, kind: RenderTargetKind) -> TestResult {
+        let actual = self.output.target.kind();
+        if actual == kind {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected render target kind {kind:?}, got {actual:?}"
+            )))
+        }
+    }
+
+    pub fn require_painted_items(&self, expected_count: usize) -> TestResult {
+        if self.output.painted_items == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected {expected_count} painted items, got {}",
+                self.output.painted_items
+            )))
+        }
+    }
+
+    pub fn require_min_painted_items(&self, minimum_count: usize) -> TestResult {
+        if self.output.painted_items >= minimum_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected at least {minimum_count} painted items, got {}",
+                self.output.painted_items
+            )))
+        }
+    }
+
+    pub fn require_batch_count(&self, expected_count: usize) -> TestResult {
+        let actual = self.output.batches.len();
+        if actual == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected {expected_count} render batches, got {actual}"
+            )))
+        }
+    }
+
+    pub fn require_min_batch_count(&self, minimum_count: usize) -> TestResult {
+        let actual = self.output.batches.len();
+        if actual >= minimum_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected at least {minimum_count} render batches, got {actual}"
+            )))
+        }
+    }
+
+    pub fn require_snapshot(&self) -> TestResult<&'a RenderedImage> {
+        self.output.snapshot.as_ref().ok_or_else(|| {
+            TestFailure::new(format!(
+                "render target {:?} did not produce a snapshot",
+                self.output.target.kind()
+            ))
+        })
+    }
+
+    pub fn require_no_snapshot(&self) -> TestResult {
+        if self.output.snapshot.is_none() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "render target {:?} unexpectedly produced a snapshot",
+                self.output.target.kind()
+            )))
+        }
+    }
+
+    pub fn require_snapshot_format(&self, format: ResourceFormat) -> TestResult<&'a RenderedImage> {
+        let image = self.require_snapshot()?;
+        if image.format == format {
+            Ok(image)
+        } else {
+            Err(TestFailure::new(format!(
+                "expected snapshot format {format:?}, got {:?}",
+                image.format
+            )))
+        }
+    }
+
+    pub fn require_snapshot_rgba8(
+        &self,
+        name: impl Into<String>,
+    ) -> TestResult<SnapshotAssertions<'a>> {
+        let image = self.require_snapshot_format(ResourceFormat::Rgba8)?;
+        let view = RgbaImageView::new(
+            image.size.width as usize,
+            image.size.height as usize,
+            &image.pixels,
+        )?;
+        Ok(SnapshotAssertions::new(name, view))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PlatformAssertions<'a> {
     requests: Cow<'a, [PlatformServiceRequest]>,
@@ -1550,9 +1669,10 @@ mod tests {
         Command, CommandId, CommandMeta, CommandRegistry, CommandScope, Shortcut,
     };
     use crate::platform::{
-        ClipboardRequest, ClipboardResponse, CursorRequest, LogicalRect, PlatformErrorCode,
-        PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,
-        PlatformServiceError, PlatformServiceKind, RepaintRequest, RepaintResponse,
+        ClipboardRequest, ClipboardResponse, CursorRequest, LogicalRect, PixelSize,
+        PlatformErrorCode, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
+        PlatformResponse, PlatformServiceError, PlatformServiceKind, RepaintRequest,
+        RepaintResponse,
     };
     use crate::{
         length, process_document_frame, root_style, AccessibilityLiveRegion, AccessibilityMeta,
@@ -1560,9 +1680,10 @@ mod tests {
         CanvasInteractionPolicy, CanvasRenderContext, CanvasRenderOutput, CanvasRenderRegistry,
         ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest, HostFrameOutput,
         HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
-        ImageRenderRegistry, InputBehavior, RawKeyboardEvent, RawWheelEvent, RenderFrameRequest,
-        RenderTarget, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent, UiDocument,
-        UiNode, UiNodeStyle, UiPoint, UiVisual,
+        ImageRenderRegistry, InputBehavior, PaintBatch, PaintBatchKey, RawKeyboardEvent,
+        RawWheelEvent, RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind,
+        RenderedImage, ResourceFormat, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent,
+        UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -1985,6 +2106,75 @@ mod tests {
             .require_all_canvas_handlers(&empty_canvas_registry)
             .expect_err("missing canvas handler");
         assert!(missing.message.contains("editor.viewport"));
+    }
+
+    #[test]
+    fn render_output_assertions_check_snapshots_timings_and_counts() {
+        let mut output = RenderFrameOutput::new(RenderTarget::snapshot(PixelSize::new(2, 1)));
+        output.painted_items = 3;
+        output.batches = vec![PaintBatch {
+            key: PaintBatchKey {
+                kind: crate::PaintBatchKind::Rect,
+                z_index: 0,
+                clip_rect: UiRect::new(0.0, 0.0, 2.0, 1.0),
+                layer_order: crate::platform::LayerOrder::DEFAULT,
+                shader: None,
+            },
+            item_indices: vec![0, 1, 2],
+            bounds: UiRect::new(0.0, 0.0, 2.0, 1.0),
+        }];
+        output.timings = FrameTiming::new()
+            .section("paint-build", Duration::from_millis(2))
+            .section("render", Duration::from_millis(3));
+        output.snapshot = Some(RenderedImage::new(
+            PixelSize::new(2, 1),
+            ResourceFormat::Rgba8,
+            vec![0, 0, 0, 255, 12, 24, 36, 255],
+        ));
+
+        let assertions = RenderOutputAssertions::new(&output);
+        assertions
+            .require_target_kind(RenderTargetKind::Snapshot)
+            .expect("snapshot target");
+        assertions
+            .require_painted_items(3)
+            .expect("painted item count");
+        assertions
+            .require_min_painted_items(2)
+            .expect("minimum painted items");
+        assertions.require_batch_count(1).expect("batch count");
+        assertions
+            .require_min_batch_count(1)
+            .expect("minimum batch count");
+        assertions
+            .timing_assertions()
+            .require_section_within("render", Duration::from_millis(3))
+            .expect("render timing");
+        let snapshot = assertions
+            .require_snapshot_rgba8("render-output")
+            .expect("snapshot view");
+        assert_eq!(snapshot.image().width, 2);
+        snapshot
+            .require_min_changed_pixels_from(ColorRgba::new(0, 0, 0, 255), 1)
+            .expect("snapshot content");
+        assert!(assertions.require_painted_items(4).is_err());
+        assert!(assertions.require_no_snapshot().is_err());
+
+        let window_output =
+            RenderFrameOutput::new(RenderTarget::window("main", UiSize::new(24.0, 24.0)));
+        RenderOutputAssertions::new(&window_output)
+            .require_no_snapshot()
+            .expect("window output has no snapshot");
+
+        let mut bgra_output = RenderFrameOutput::new(RenderTarget::snapshot(PixelSize::new(1, 1)));
+        bgra_output.snapshot = Some(RenderedImage::new(
+            PixelSize::new(1, 1),
+            ResourceFormat::Bgra8,
+            vec![0, 0, 0, 255],
+        ));
+        assert!(RenderOutputAssertions::new(&bgra_output)
+            .require_snapshot_rgba8("bgra")
+            .is_err());
     }
 
     #[test]

@@ -122,8 +122,8 @@ pub use testing::{
     CommandReplayStepResult, DirtyFlags, EventReplay, EventReplayReport, EventReplayStep,
     EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
     LayoutAssertions, PaintAssertions, PaintKindSelector, PixelDiffReport, PixelDiffTolerance,
-    PlatformAssertions, RenderAssertions, ReplayInput, RgbaImageView, SnapshotAssertions,
-    TestFailure, TestResult,
+    PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput, RgbaImageView,
+    SnapshotAssertions, TestFailure, TestResult,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,
