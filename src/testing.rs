@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::accessibility::{
     AccessibilityAdapterRequest, AccessibilityAdapterResponse, AccessibilityAnnouncement,
@@ -2518,17 +2518,24 @@ impl RendererAdapter for CpuSnapshotRenderer {
         request: RenderFrameRequest,
         _resolver: &dyn ResourceResolver,
     ) -> Result<RenderFrameOutput, RenderError> {
+        let batch_started = Instant::now();
         let batches = request.batches();
+        let batch_duration = batch_started.elapsed();
         let painted_items = request.paint.items.len();
         let dirty_regions = request.dirty_regions.clone();
+        let render_started = Instant::now();
         let snapshot = self
             .render_request(&request)
             .map_err(|failure| RenderError::Backend(failure.message))?
             .into_rendered_image();
+        let render_duration = render_started.elapsed();
         let mut output = RenderFrameOutput::new(request.target);
         output.painted_items = painted_items;
         output.batches = batches;
         output.dirty_regions = dirty_regions;
+        output.timings = FrameTiming::new()
+            .section("batch", batch_duration)
+            .section("render", render_duration);
         output.snapshot = Some(snapshot);
         Ok(output)
     }
@@ -4768,6 +4775,10 @@ mod tests {
             .require_snapshot_rgba8("adapter")
             .expect("adapter snapshot");
         assert_eq!(snapshot.hash(), first_hash);
+        RenderOutputAssertions::new(&output)
+            .timing_assertions()
+            .require_sections(["batch", "render"])
+            .expect("cpu snapshot timing sections");
         assert_eq!(
             adapter.capabilities().adapter,
             crate::platform::BackendAdapterKind::CpuSnapshot

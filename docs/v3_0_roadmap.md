@@ -228,6 +228,8 @@ The branch starts from Operad 2.0.0 plus:
 - Renderer-neutral scenario testing now combines input replay, document-frame
   processing, CPU snapshot rendering, platform request collection, and reusable
   assertions without depending on egui harness types.
+- CPU snapshot render frames now report batch and render timing sections through
+  the shared `RenderFrameOutput` timing surface.
 - Document keyboard focus traversal now follows accessibility focus ordering and
   modal-scope containment before falling back to input-only document order.
 - Accessibility preference resolution in `src/theme.rs`, `src/renderer.rs`,
