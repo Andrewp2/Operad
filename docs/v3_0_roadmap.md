@@ -256,10 +256,10 @@ The branch starts from Operad 2.0.0 plus:
 - Renderer-neutral testing helpers in `src/testing.rs` for event replay with
   click/drag/wheel/key/focus builders and interaction assertions, raw input
   conversion checks, platform-output assertions, stable-name layout assertions,
-  paint-list kind/node/shader assertions, RGBA pixel diffs with tolerances,
-  dirty flags, deterministic snapshot hash/content assertions, frame timing
-  section/budget assertions, command-aware shortcut replay assertions, and
-  stable-name accessibility assertions for roles, labels, values, summaries,
+  audit warning assertions, paint-list kind/node/shader assertions, RGBA pixel
+  diffs with tolerances, dirty flags, deterministic snapshot hash/content
+  assertions, frame timing section/budget assertions, command-aware shortcut
+  replay assertions, and stable-name accessibility assertions for roles, labels, values, summaries,
   live regions, focus order, active descendants, document-frame generated
   platform-service requests, request/response coverage, correlated unsupported
   platform-service responses, render-frame conformance assertions for

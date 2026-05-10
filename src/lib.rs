@@ -118,9 +118,9 @@ pub use shell::{
     ShellRegionDocumentNode, ShellRegionLayout, ShellWorkspaceState, SplitPaneSide,
 };
 pub use testing::{
-    diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, CommandReplayReport,
-    CommandReplayStepResult, DirtyFlags, EventReplay, EventReplayReport, EventReplayStep,
-    EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
+    diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, AuditAssertions,
+    CommandReplayReport, CommandReplayStepResult, DirtyFlags, EventReplay, EventReplayReport,
+    EventReplayStep, EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
     LayoutAssertions, PaintAssertions, PaintKindSelector, PixelDiffReport, PixelDiffTolerance,
     PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput, RgbaImageView,
     SnapshotAssertions, TestFailure, TestResult,

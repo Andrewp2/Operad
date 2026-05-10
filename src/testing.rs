@@ -29,9 +29,10 @@ use crate::renderer::{
     RenderFrameOutput, RenderFrameRequest, RenderTargetKind, RenderedImage, ResourceFormat,
 };
 use crate::{
-    AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree, ColorRgba,
-    FocusDirection, KeyCode, KeyModifiers, PaintItem, PaintKind, PaintList, RawInputEvent,
-    UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId, UiPoint, UiRect, UiSize,
+    AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
+    AccessibilityTree, AuditWarning, ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem,
+    PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId,
+    UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -471,6 +472,178 @@ impl<'a> LayoutAssertions<'a> {
                 "node `{outer}` does not contain `{inner}`"
             )))
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuditAssertions<'a> {
+    document: &'a UiDocument,
+    warnings: Vec<AuditWarning>,
+}
+
+impl<'a> AuditAssertions<'a> {
+    pub fn new(document: &'a UiDocument) -> Self {
+        Self {
+            document,
+            warnings: document.audit_layout(),
+        }
+    }
+
+    pub fn warnings(&self) -> &[AuditWarning] {
+        &self.warnings
+    }
+
+    pub fn require_no_warnings(&self) -> TestResult {
+        if self.warnings.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no audit warnings, got {:?}",
+                self.warnings
+            )))
+        }
+    }
+
+    pub fn require_no_accessibility_warnings(&self) -> TestResult {
+        let warnings = self
+            .warnings
+            .iter()
+            .filter(|warning| is_accessibility_audit_warning(warning))
+            .collect::<Vec<_>>();
+        if warnings.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no accessibility audit warnings, got {warnings:?}"
+            )))
+        }
+    }
+
+    pub fn require_accessible_name_gap(&self, name: &str) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibleNameMissing { .. })
+        })
+    }
+
+    pub fn require_no_accessible_name_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibleNameMissing { .. })
+        })
+    }
+
+    pub fn require_accessibility_action_gap(&self, name: &str) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityActionMissing { .. })
+        })
+    }
+
+    pub fn require_no_accessibility_action_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityActionMissing { .. })
+        })
+    }
+
+    pub fn require_relation_target_gap(
+        &self,
+        name: &str,
+        relation: AccessibilityRelationKind,
+        target_name: &str,
+    ) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        let target = self.node_id(target_name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::AccessibilityRelationTargetMissing {
+                    relation: actual,
+                    target: actual_target,
+                    ..
+                } if *actual == relation && *actual_target == target
+            )
+        })
+    }
+
+    pub fn require_no_relation_target_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::AccessibilityRelationTargetMissing { .. }
+            )
+        })
+    }
+
+    fn node_id(&self, name: &str) -> TestResult<UiNodeId> {
+        LayoutAssertions::new(self.document)
+            .node(name)
+            .map(|(id, _)| id)
+    }
+
+    fn require_warning_for(
+        &self,
+        name: &str,
+        node: UiNodeId,
+        mut predicate: impl FnMut(&AuditWarning) -> bool,
+    ) -> TestResult<&AuditWarning> {
+        self.warnings
+            .iter()
+            .find(|warning| warning_node(warning) == Some(node) && predicate(warning))
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing expected audit warning for node `{name}`; got {:?}",
+                    self.warnings
+                ))
+            })
+    }
+
+    fn require_no_warning_for(
+        &self,
+        name: &str,
+        node: UiNodeId,
+        mut predicate: impl FnMut(&AuditWarning) -> bool,
+    ) -> TestResult {
+        if let Some(warning) = self
+            .warnings
+            .iter()
+            .find(|warning| warning_node(warning) == Some(node) && predicate(warning))
+        {
+            Err(TestFailure::new(format!(
+                "node `{name}` had unexpected audit warning {warning:?}"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
+    matches!(
+        warning,
+        AuditWarning::AccessibleNameMissing { .. }
+            | AuditWarning::AccessibilityActionMissing { .. }
+            | AuditWarning::AccessibilityRelationTargetMissing { .. }
+            | AuditWarning::FocusableMissingFromAccessibilityTree { .. }
+    )
+}
+
+fn warning_node(warning: &AuditWarning) -> Option<UiNodeId> {
+    match warning {
+        AuditWarning::NonFiniteRect { node, .. }
+        | AuditWarning::InvisibleInteractiveNode { node, .. }
+        | AuditWarning::EmptyInteractiveClip { node, .. }
+        | AuditWarning::InteractiveTooSmall { node, .. }
+        | AuditWarning::FocusableMissingFromAccessibilityTree { node, .. }
+        | AuditWarning::AccessibleNameMissing { node, .. }
+        | AuditWarning::AccessibilityActionMissing { node, .. }
+        | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
+        | AuditWarning::TextClipped { node, .. }
+        | AuditWarning::NodeOutsideRoot { node, .. }
+        | AuditWarning::PaintItemEmptyClip { node } => Some(*node),
+        AuditWarning::DuplicateNodeName { .. } => None,
     }
 }
 
@@ -1675,11 +1848,11 @@ mod tests {
         RepaintResponse,
     };
     use crate::{
-        length, process_document_frame, root_style, AccessibilityLiveRegion, AccessibilityMeta,
-        AccessibilityRole, AccessibilitySummary, ApproxTextMeasurer, CanvasContent,
-        CanvasInteractionPolicy, CanvasRenderContext, CanvasRenderOutput, CanvasRenderRegistry,
-        ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest, HostFrameOutput,
-        HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
+        length, process_document_frame, root_style, AccessibilityAction, AccessibilityLiveRegion,
+        AccessibilityMeta, AccessibilityRole, AccessibilitySummary, ApproxTextMeasurer,
+        CanvasContent, CanvasInteractionPolicy, CanvasRenderContext, CanvasRenderOutput,
+        CanvasRenderRegistry, ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest,
+        HostFrameOutput, HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
         ImageRenderRegistry, InputBehavior, PaintBatch, PaintBatchKey, RawKeyboardEvent,
         RawWheelEvent, RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind,
         RenderedImage, ResourceFormat, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent,
@@ -2021,6 +2194,78 @@ mod tests {
         paint
             .require_node_kind("panel.label", PaintKindSelector::Text)
             .expect("text paint");
+    }
+
+    #[test]
+    fn audit_assertions_report_accessibility_gaps_by_stable_name() {
+        let mut document = UiDocument::new(root_style(260.0, 120.0));
+        let root = document.root;
+        document.add_child(
+            root,
+            UiNode::container("unlabeled", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button).focusable()),
+        );
+        let label = document.add_child(
+            root,
+            UiNode::text(
+                "relation_label",
+                "Relation label",
+                TextStyle::default(),
+                fixed_style(80.0, 20.0).layout,
+            ),
+        );
+        document.add_child(
+            root,
+            UiNode::container("relation_gap", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .labelled_by(label)
+                        .action(AccessibilityAction::new("activate", "Activate"))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
+            UiNode::container("complete", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Complete")
+                        .action(AccessibilityAction::new("activate", "Activate"))
+                        .focusable(),
+                ),
+        );
+        document
+            .compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let audit = AuditAssertions::new(&document);
+        assert!(audit.require_no_warnings().is_err());
+        assert!(audit.require_no_accessibility_warnings().is_err());
+        audit
+            .require_accessible_name_gap("unlabeled")
+            .expect("missing name");
+        audit
+            .require_accessibility_action_gap("unlabeled")
+            .expect("missing action");
+        audit
+            .require_relation_target_gap(
+                "relation_gap",
+                AccessibilityRelationKind::LabelledBy,
+                "relation_label",
+            )
+            .expect("missing relation target");
+        audit
+            .require_no_accessible_name_gap("complete")
+            .expect("complete label");
+        audit
+            .require_no_accessibility_action_gap("complete")
+            .expect("complete action");
+        audit
+            .require_no_relation_target_gap("complete")
+            .expect("complete relations");
     }
 
     #[test]
