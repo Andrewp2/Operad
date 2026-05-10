@@ -85,7 +85,7 @@ pub use input::{
 pub use paint::{
     AlignedStroke, CornerRadii, GradientStop, ImageAlignment, ImageFit, LinearGradient, PaintBrush,
     PaintEffect, PaintEffectKind, PaintImage, PaintPath, PaintRect, PaintText, PathVerb,
-    StrokeAlignment, TextHorizontalAlign, TextOverflow, TextVerticalAlign,
+    PixelSnapPolicy, StrokeAlignment, TextHorizontalAlign, TextOverflow, TextVerticalAlign,
 };
 pub use renderer::{
     CanvasRenderContext, CanvasRenderHandler, CanvasRenderOutcome, CanvasRenderOutput,

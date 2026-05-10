@@ -2,6 +2,104 @@
 
 use crate::{ColorRgba, StrokeStyle, TextStyle, UiPoint, UiRect};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PixelSnapPolicy {
+    pub scale_factor: f32,
+}
+
+impl PixelSnapPolicy {
+    pub const DISABLED: Self = Self { scale_factor: 0.0 };
+
+    pub fn new(scale_factor: f32) -> Self {
+        if scale_factor.is_finite() && scale_factor > 0.0 {
+            Self { scale_factor }
+        } else {
+            Self::DISABLED
+        }
+    }
+
+    pub const fn disabled() -> Self {
+        Self::DISABLED
+    }
+
+    pub const fn enabled(self) -> bool {
+        self.scale_factor > 0.0
+    }
+
+    pub fn pixel_size(self) -> f32 {
+        if self.enabled() {
+            1.0 / self.scale_factor
+        } else {
+            0.0
+        }
+    }
+
+    pub fn snap_value(self, value: f32) -> f32 {
+        if !self.enabled() || !value.is_finite() {
+            return value;
+        }
+        (value * self.scale_factor).round() / self.scale_factor
+    }
+
+    pub fn snap_center_value(self, value: f32) -> f32 {
+        if !self.enabled() || !value.is_finite() {
+            return value;
+        }
+        ((value * self.scale_factor).floor() + 0.5) / self.scale_factor
+    }
+
+    pub fn snap_point(self, point: UiPoint) -> UiPoint {
+        UiPoint::new(self.snap_value(point.x), self.snap_value(point.y))
+    }
+
+    pub fn snap_center_point(self, point: UiPoint) -> UiPoint {
+        UiPoint::new(
+            self.snap_center_value(point.x),
+            self.snap_center_value(point.y),
+        )
+    }
+
+    pub fn snap_rect(self, rect: UiRect) -> UiRect {
+        if !self.enabled() {
+            return rect;
+        }
+        let left = self.snap_value(rect.x);
+        let top = self.snap_value(rect.y);
+        let right = self.snap_value(rect.right());
+        let bottom = self.snap_value(rect.bottom());
+        UiRect::new(left, top, (right - left).max(0.0), (bottom - top).max(0.0))
+    }
+
+    pub fn snap_line_segment(self, from: UiPoint, to: UiPoint) -> (UiPoint, UiPoint) {
+        if (from.x - to.x).abs() <= f32::EPSILON {
+            let x = self.snap_center_value(from.x);
+            return (
+                UiPoint::new(x, self.snap_value(from.y)),
+                UiPoint::new(x, self.snap_value(to.y)),
+            );
+        }
+        if (from.y - to.y).abs() <= f32::EPSILON {
+            let y = self.snap_center_value(from.y);
+            return (
+                UiPoint::new(self.snap_value(from.x), y),
+                UiPoint::new(self.snap_value(to.x), y),
+            );
+        }
+        (self.snap_point(from), self.snap_point(to))
+    }
+
+    pub fn snap_stroke_width(self, width: f32) -> f32 {
+        if !self.enabled() || !width.is_finite() || width <= 0.0 {
+            return width;
+        }
+        ((width * self.scale_factor).ceil().max(1.0)) / self.scale_factor
+    }
+
+    pub fn snap_stroke(self, stroke: StrokeStyle) -> StrokeStyle {
+        StrokeStyle::new(stroke.color, self.snap_stroke_width(stroke.width))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum StrokeAlignment {
     Inside,
@@ -276,6 +374,17 @@ impl PaintRect {
         self.fill = self.fill.translated(offset);
         self
     }
+
+    pub fn pixel_snapped(mut self, policy: PixelSnapPolicy) -> Self {
+        self.rect = policy.snap_rect(self.rect);
+        if let Some(stroke) = self.stroke {
+            self.stroke = Some(AlignedStroke {
+                style: policy.snap_stroke(stroke.style),
+                alignment: stroke.alignment,
+            });
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -452,6 +561,27 @@ impl PathVerb {
             Self::Close => Self::Close,
         }
     }
+
+    pub fn pixel_snapped(self, policy: PixelSnapPolicy) -> Self {
+        match self {
+            Self::MoveTo(point) => Self::MoveTo(policy.snap_point(point)),
+            Self::LineTo(point) => Self::LineTo(policy.snap_point(point)),
+            Self::QuadraticTo { control, to } => Self::QuadraticTo {
+                control: policy.snap_point(control),
+                to: policy.snap_point(to),
+            },
+            Self::CubicTo {
+                control_a,
+                control_b,
+                to,
+            } => Self::CubicTo {
+                control_a: policy.snap_point(control_a),
+                control_b: policy.snap_point(control_b),
+                to: policy.snap_point(to),
+            },
+            Self::Close => Self::Close,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -521,6 +651,21 @@ impl PaintPath {
         self
     }
 
+    pub fn pixel_snapped(mut self, policy: PixelSnapPolicy) -> Self {
+        self.verbs = self
+            .verbs
+            .into_iter()
+            .map(|verb| verb.pixel_snapped(policy))
+            .collect();
+        if let Some(stroke) = self.stroke {
+            self.stroke = Some(AlignedStroke {
+                style: policy.snap_stroke(stroke.style),
+                alignment: stroke.alignment,
+            });
+        }
+        self
+    }
+
     pub fn bounds(&self) -> UiRect {
         let mut points = Vec::new();
         for verb in &self.verbs {
@@ -574,4 +719,79 @@ fn rect_from_points(points: &[UiPoint]) -> UiRect {
     }
 
     UiRect::new(left, top, right - left, bottom - top)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pixel_snap_policy_maps_values_rects_and_hairline_segments() {
+        let policy = PixelSnapPolicy::new(2.0);
+
+        assert!(policy.enabled());
+        assert_eq!(policy.pixel_size(), 0.5);
+        assert_eq!(policy.snap_value(10.26), 10.5);
+        assert_eq!(policy.snap_center_value(10.26), 10.25);
+        assert_eq!(
+            policy.snap_point(UiPoint::new(0.24, 0.26)),
+            UiPoint::new(0.0, 0.5)
+        );
+        assert_eq!(
+            policy.snap_rect(UiRect::new(0.24, 0.26, 10.51, 4.49)),
+            UiRect::new(0.0, 0.5, 11.0, 4.5)
+        );
+
+        let (from, to) = PixelSnapPolicy::new(1.0)
+            .snap_line_segment(UiPoint::new(10.1, 0.2), UiPoint::new(10.1, 9.8));
+        assert_eq!(from, UiPoint::new(10.5, 0.0));
+        assert_eq!(to, UiPoint::new(10.5, 10.0));
+
+        let (from, to) = PixelSnapPolicy::new(1.0)
+            .snap_line_segment(UiPoint::new(0.2, 5.1), UiPoint::new(9.8, 5.1));
+        assert_eq!(from, UiPoint::new(0.0, 5.5));
+        assert_eq!(to, UiPoint::new(10.0, 5.5));
+    }
+
+    #[test]
+    fn pixel_snap_policy_preserves_disabled_and_snaps_stroke_widths_up() {
+        let disabled = PixelSnapPolicy::disabled();
+        assert!(!disabled.enabled());
+        assert_eq!(disabled.snap_value(10.26), 10.26);
+        assert_eq!(PixelSnapPolicy::new(f32::NAN), PixelSnapPolicy::DISABLED);
+
+        let policy = PixelSnapPolicy::new(2.0);
+        assert_eq!(policy.snap_stroke_width(0.1), 0.5);
+        assert_eq!(policy.snap_stroke_width(1.2), 1.5);
+        assert_eq!(policy.snap_stroke_width(0.0), 0.0);
+    }
+
+    #[test]
+    fn paint_rect_and_path_can_be_pixel_snapped() {
+        let policy = PixelSnapPolicy::new(2.0);
+        let rect = PaintRect::solid(UiRect::new(1.24, 2.26, 10.51, 4.49), ColorRgba::WHITE)
+            .stroke(AlignedStroke::inside(StrokeStyle::new(
+                ColorRgba::WHITE,
+                0.3,
+            )))
+            .pixel_snapped(policy);
+
+        assert_eq!(rect.rect, UiRect::new(1.0, 2.5, 11.0, 4.5));
+        assert_eq!(rect.stroke.unwrap().style.width, 0.5);
+
+        let path = PaintPath::new()
+            .move_to(UiPoint::new(0.24, 0.26))
+            .line_to(UiPoint::new(4.74, 3.24))
+            .stroke(StrokeStyle::new(ColorRgba::WHITE, 0.2))
+            .pixel_snapped(policy);
+
+        assert_eq!(
+            path.verbs,
+            vec![
+                PathVerb::MoveTo(UiPoint::new(0.0, 0.5)),
+                PathVerb::LineTo(UiPoint::new(4.5, 3.0))
+            ]
+        );
+        assert_eq!(path.stroke.unwrap().style.width, 0.5);
+    }
 }
