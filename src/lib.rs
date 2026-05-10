@@ -2426,6 +2426,10 @@ pub enum AuditWarning {
     DuplicateNodeName {
         name: String,
     },
+    FocusableMissingFromAccessibilityTree {
+        node: UiNodeId,
+        name: String,
+    },
     TextClipped {
         node: UiNodeId,
         name: String,
@@ -2538,6 +2542,10 @@ impl UiDocument {
         let mut warnings = Vec::new();
         let mut names = HashSet::new();
         let root_rect = self.nodes[self.root.0].layout.rect;
+        let focus_order = self
+            .accessibility_focus_order()
+            .into_iter()
+            .collect::<HashSet<_>>();
         for (index, node) in self.nodes.iter().enumerate() {
             let id = UiNodeId(index);
             if !node.name.is_empty() && !names.insert(node.name.clone()) {
@@ -2585,6 +2593,12 @@ impl UiDocument {
                         rect: hit_rect,
                     });
                 }
+            }
+            if node.input.focusable && !focus_order.contains(&id) {
+                warnings.push(AuditWarning::FocusableMissingFromAccessibilityTree {
+                    node: id,
+                    name: node.name.clone(),
+                });
             }
             if matches!(node.content, UiContent::Text(_))
                 && !node.layout.clip_rect.contains_rect(node.layout.rect)
@@ -5831,6 +5845,58 @@ mod tests {
 
         assert_eq!(input.scrolled, Some(scroll_area));
         assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 30.0);
+    }
+
+    #[test]
+    fn audit_layout_reports_focusable_nodes_missing_accessibility_traversal() {
+        let mut doc = UiDocument::new(root_style(200.0, 80.0));
+        let missing = doc.add_child(
+            doc.root,
+            UiNode::container("missing_semantics", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON),
+        );
+        let hidden = doc.add_child(
+            doc.root,
+            UiNode::container("hidden_semantics", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Hidden")
+                        .hidden(),
+                ),
+        );
+        let accessible = doc.add_child(
+            doc.root,
+            UiNode::container("accessible", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Accessible")
+                        .focusable(),
+                ),
+        );
+        doc.compute_layout(UiSize::new(200.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let warnings = doc.audit_layout();
+        assert!(
+            warnings.contains(&AuditWarning::FocusableMissingFromAccessibilityTree {
+                node: missing,
+                name: "missing_semantics".to_string(),
+            })
+        );
+        assert!(
+            warnings.contains(&AuditWarning::FocusableMissingFromAccessibilityTree {
+                node: hidden,
+                name: "hidden_semantics".to_string(),
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::FocusableMissingFromAccessibilityTree {
+                node: accessible,
+                name: "accessible".to_string(),
+            })
+        );
     }
 
     #[test]

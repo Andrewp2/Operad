@@ -204,6 +204,10 @@ The branch starts from Operad 2.0.0 plus:
   flags, frame timing sections, and stable-name accessibility assertions for
   roles, labels, values, summaries, live regions, focus order, and active
   descendants.
+- Layout audit checks in `src/lib.rs` now cover duplicate node names,
+  non-finite rects, invisible or too-small interactive nodes, text clipping,
+  nodes outside the root, empty paint clips, and focusable controls missing from
+  the accessibility traversal.
 - Renderer-neutral debug snapshots in `src/debug.rs` for layout bounds, clip
   rects, paint primitive counts, z ranges, host interaction flags, command
   scopes, active gestures, repaint reasons, frame timings, theme token
