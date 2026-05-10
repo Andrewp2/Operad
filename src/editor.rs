@@ -1,9 +1,9 @@
 //! Renderer-neutral editor surface geometry and interaction helpers.
 //!
-//! These contracts are for custom surfaces such as piano rolls, timelines,
-//! automation lanes, arrangement clips, and game editor canvases. Consumers own
-//! the domain model; Operad provides reusable transforms, hit testing, snapping,
-//! marquee state, cursor/tool metadata, and overlay ordering.
+//! These contracts are for custom lane timelines, range items, curve editors,
+//! value-lane grids, and canvas-like editor surfaces. Consumers own the domain
+//! model; Operad provides reusable transforms, hit testing, snapping, marquee
+//! state, cursor/tool metadata, and overlay ordering.
 
 use crate::input::{DragGesture, GestureEvent, GesturePhase, PointerCapture};
 use crate::platform::{LayerOrder, UiLayer};
@@ -563,12 +563,12 @@ impl LaneGeometry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ArrangementGeometry {
+pub struct LaneTimelineGeometry {
     pub timeline: TimelineGeometry,
     pub lanes: LaneGeometry,
 }
 
-impl ArrangementGeometry {
+impl LaneTimelineGeometry {
     pub const fn new(transform: EditorTransform, lanes: LaneGeometry) -> Self {
         Self {
             timeline: TimelineGeometry::new(transform),
@@ -585,12 +585,12 @@ impl ArrangementGeometry {
             .visible_lanes(self.timeline.transform.visible_world_rect())
     }
 
-    pub fn world_clip_rect(self, lane_index: usize, range: EditorAxisRange) -> Option<UiRect> {
+    pub fn world_range_rect(self, lane_index: usize, range: EditorAxisRange) -> Option<UiRect> {
         self.lanes.lane_rect(lane_index, range)
     }
 
-    pub fn view_clip_rect(self, lane_index: usize, range: EditorAxisRange) -> Option<UiRect> {
-        self.world_clip_rect(lane_index, range)
+    pub fn view_range_rect(self, lane_index: usize, range: EditorAxisRange) -> Option<UiRect> {
+        self.world_range_rect(lane_index, range)
             .map(|rect| self.timeline.transform.world_to_view_rect(rect))
     }
 
@@ -705,14 +705,14 @@ impl TimelineRangeItem {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimelineRangeItemGeometry {
-    pub arrangement: ArrangementGeometry,
+    pub lane_timeline: LaneTimelineGeometry,
     pub resize_handle_width_px: f32,
 }
 
 impl TimelineRangeItemGeometry {
-    pub const fn new(arrangement: ArrangementGeometry) -> Self {
+    pub const fn new(lane_timeline: LaneTimelineGeometry) -> Self {
         Self {
-            arrangement,
+            lane_timeline,
             resize_handle_width_px: 6.0,
         }
     }
@@ -728,13 +728,17 @@ impl TimelineRangeItemGeometry {
         if item.range.is_empty() {
             return None;
         }
-        self.arrangement
-            .world_clip_rect(item.lane_index, item.range)
+        self.lane_timeline
+            .world_range_rect(item.lane_index, item.range)
     }
 
     pub fn item_view_rect(self, item: &TimelineRangeItem) -> Option<UiRect> {
-        self.item_world_rect(item)
-            .map(|rect| self.arrangement.timeline.transform.world_to_view_rect(rect))
+        self.item_world_rect(item).map(|rect| {
+            self.lane_timeline
+                .timeline
+                .transform
+                .world_to_view_rect(rect)
+        })
     }
 
     pub fn edge_world_rect(
@@ -744,7 +748,7 @@ impl TimelineRangeItemGeometry {
     ) -> Option<UiRect> {
         let rect = self.item_world_rect(item)?;
         let width = self
-            .arrangement
+            .lane_timeline
             .timeline
             .view_width_to_span(self.resize_handle_width_px)
             .max(MIN_SCALE);
@@ -811,13 +815,13 @@ impl TimelineRangeItemGeometry {
         } else {
             item.lane_index.checked_add(lane_delta as usize)?
         };
-        if lane_index >= self.arrangement.lanes.lane_count || !unit_delta.is_finite() {
+        if lane_index >= self.lane_timeline.lanes.lane_count || !unit_delta.is_finite() {
             return None;
         }
         let duration = item.range.length();
         let start = item.range.start + unit_delta;
         let start = if grid.enabled {
-            self.arrangement.timeline.snap_unit(start, grid)
+            self.lane_timeline.timeline.snap_unit(start, grid)
         } else {
             start
         };
@@ -852,7 +856,7 @@ impl TimelineRangeItemGeometry {
             return item.range;
         }
         let unit = if grid.enabled {
-            self.arrangement.timeline.snap_unit(unit, grid)
+            self.lane_timeline.timeline.snap_unit(unit, grid)
         } else {
             unit
         };
@@ -1153,45 +1157,45 @@ fn sorted_curve_points(points: &[CurvePoint]) -> Vec<&CurvePoint> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PianoRollPitchRange {
-    pub min_pitch: i16,
-    pub max_pitch: i16,
+pub struct LaneValueRange {
+    pub min_value: i16,
+    pub max_value: i16,
 }
 
-impl PianoRollPitchRange {
-    pub const fn new(min_pitch: i16, max_pitch: i16) -> Self {
-        if min_pitch <= max_pitch {
+impl LaneValueRange {
+    pub const fn new(min_value: i16, max_value: i16) -> Self {
+        if min_value <= max_value {
             Self {
-                min_pitch,
-                max_pitch,
+                min_value,
+                max_value,
             }
         } else {
             Self {
-                min_pitch: max_pitch,
-                max_pitch: min_pitch,
+                min_value: max_value,
+                max_value: min_value,
             }
         }
     }
 
-    pub fn pitch_count(self) -> usize {
-        (i32::from(self.max_pitch) - i32::from(self.min_pitch) + 1).max(0) as usize
+    pub fn value_count(self) -> usize {
+        (i32::from(self.max_value) - i32::from(self.min_value) + 1).max(0) as usize
     }
 
-    pub const fn contains(self, pitch: i16) -> bool {
-        pitch >= self.min_pitch && pitch <= self.max_pitch
+    pub const fn contains(self, value: i16) -> bool {
+        value >= self.min_value && value <= self.max_value
     }
 
-    pub fn lane_index_for_pitch(self, pitch: i16) -> Option<usize> {
-        if self.contains(pitch) {
-            Some((i32::from(self.max_pitch) - i32::from(pitch)) as usize)
+    pub fn lane_index_for_value(self, value: i16) -> Option<usize> {
+        if self.contains(value) {
+            Some((i32::from(self.max_value) - i32::from(value)) as usize)
         } else {
             None
         }
     }
 
-    pub fn pitch_for_lane_index(self, lane_index: usize) -> Option<i16> {
-        if lane_index < self.pitch_count() {
-            Some((i32::from(self.max_pitch) - lane_index as i32) as i16)
+    pub fn value_for_lane_index(self, lane_index: usize) -> Option<i16> {
+        if lane_index < self.value_count() {
+            Some((i32::from(self.max_value) - lane_index as i32) as i16)
         } else {
             None
         }
@@ -1199,16 +1203,16 @@ impl PianoRollPitchRange {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PianoRollNote {
+pub struct LaneValueRangeItem {
     pub id: EditorHitId,
-    pub pitch: i16,
+    pub value: i16,
     pub range: EditorAxisRange,
-    pub velocity: f32,
+    pub magnitude: f32,
     pub selected: bool,
 }
 
-impl PianoRollNote {
-    pub fn new(id: impl Into<EditorHitId>, pitch: i16, start_unit: f32, duration: f32) -> Self {
+impl LaneValueRangeItem {
+    pub fn new(id: impl Into<EditorHitId>, value: i16, start_unit: f32, duration: f32) -> Self {
         let start_unit = if start_unit.is_finite() {
             start_unit
         } else {
@@ -1221,16 +1225,16 @@ impl PianoRollNote {
         };
         Self {
             id: id.into(),
-            pitch,
+            value,
             range: EditorAxisRange::new(start_unit, start_unit + duration),
-            velocity: 1.0,
+            magnitude: 1.0,
             selected: false,
         }
     }
 
-    pub fn velocity(mut self, velocity: f32) -> Self {
-        if velocity.is_finite() {
-            self.velocity = velocity.clamp(0.0, 1.0);
+    pub fn magnitude(mut self, magnitude: f32) -> Self {
+        if magnitude.is_finite() {
+            self.magnitude = magnitude.clamp(0.0, 1.0);
         }
         self
     }
@@ -1242,31 +1246,31 @@ impl PianoRollNote {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PianoRollGeometry {
-    pub arrangement: ArrangementGeometry,
-    pub pitches: PianoRollPitchRange,
+pub struct LaneValueGeometry {
+    pub lane_timeline: LaneTimelineGeometry,
+    pub values: LaneValueRange,
     pub resize_handle_width_px: f32,
 }
 
-impl PianoRollGeometry {
-    pub fn new(transform: EditorTransform, pitches: PianoRollPitchRange, lane_height: f32) -> Self {
+impl LaneValueGeometry {
+    pub fn new(transform: EditorTransform, values: LaneValueRange, lane_height: f32) -> Self {
         Self {
-            arrangement: ArrangementGeometry::new(
+            lane_timeline: LaneTimelineGeometry::new(
                 transform,
-                LaneGeometry::new(lane_height, pitches.pitch_count()),
+                LaneGeometry::new(lane_height, values.value_count()),
             ),
-            pitches,
+            values,
             resize_handle_width_px: 6.0,
         }
     }
 
-    pub const fn with_arrangement(
-        arrangement: ArrangementGeometry,
-        pitches: PianoRollPitchRange,
+    pub const fn with_lane_timeline(
+        lane_timeline: LaneTimelineGeometry,
+        values: LaneValueRange,
     ) -> Self {
         Self {
-            arrangement,
-            pitches,
+            lane_timeline,
+            values,
             resize_handle_width_px: 6.0,
         }
     }
@@ -1278,83 +1282,92 @@ impl PianoRollGeometry {
         self
     }
 
-    pub fn pitch_lane_index(self, pitch: i16) -> Option<usize> {
-        self.pitches.lane_index_for_pitch(pitch)
+    pub fn value_lane_index(self, value: i16) -> Option<usize> {
+        self.values.lane_index_for_value(value)
     }
 
-    pub fn pitch_at_view_y(self, view_y: f32) -> Option<i16> {
-        self.arrangement
+    pub fn value_at_view_y(self, view_y: f32) -> Option<i16> {
+        self.lane_timeline
             .lane_at_view_y(view_y)
-            .and_then(|index| self.pitches.pitch_for_lane_index(index))
+            .and_then(|index| self.values.value_for_lane_index(index))
     }
 
-    pub fn pitch_lane_world_rect(self, pitch: i16, range: EditorAxisRange) -> Option<UiRect> {
-        self.pitch_lane_index(pitch)
-            .and_then(|lane| self.arrangement.world_clip_rect(lane, range))
+    pub fn value_lane_world_rect(self, value: i16, range: EditorAxisRange) -> Option<UiRect> {
+        self.value_lane_index(value)
+            .and_then(|lane| self.lane_timeline.world_range_rect(lane, range))
     }
 
-    pub fn pitch_lane_view_rect(self, pitch: i16, range: EditorAxisRange) -> Option<UiRect> {
-        self.pitch_lane_world_rect(pitch, range)
-            .map(|rect| self.arrangement.timeline.transform.world_to_view_rect(rect))
+    pub fn value_lane_view_rect(self, value: i16, range: EditorAxisRange) -> Option<UiRect> {
+        self.value_lane_world_rect(value, range).map(|rect| {
+            self.lane_timeline
+                .timeline
+                .transform
+                .world_to_view_rect(rect)
+        })
     }
 
-    pub fn note_world_rect(self, note: &PianoRollNote) -> Option<UiRect> {
-        if note.range.is_empty() {
+    pub fn item_world_rect(self, item: &LaneValueRangeItem) -> Option<UiRect> {
+        if item.range.is_empty() {
             return None;
         }
-        self.pitch_lane_world_rect(note.pitch, note.range)
+        self.value_lane_world_rect(item.value, item.range)
     }
 
-    pub fn note_view_rects(
+    pub fn item_view_rects(
         self,
-        note: &PianoRollNote,
+        item: &LaneValueRangeItem,
         loop_range: Option<EditorAxisRange>,
     ) -> Vec<UiRect> {
-        self.note_world_rects(note, loop_range)
+        self.item_world_rects(item, loop_range)
             .into_iter()
-            .map(|rect| self.arrangement.timeline.transform.world_to_view_rect(rect))
+            .map(|rect| {
+                self.lane_timeline
+                    .timeline
+                    .transform
+                    .world_to_view_rect(rect)
+            })
             .collect()
     }
 
-    pub fn note_world_rects(
+    pub fn item_world_rects(
         self,
-        note: &PianoRollNote,
+        item: &LaneValueRangeItem,
         loop_range: Option<EditorAxisRange>,
     ) -> Vec<UiRect> {
-        let Some(lane_index) = self.pitch_lane_index(note.pitch) else {
+        let Some(lane_index) = self.value_lane_index(item.value) else {
             return Vec::new();
         };
-        wrapped_note_ranges(note.range, loop_range)
+        wrapped_item_ranges(item.range, loop_range)
             .into_iter()
-            .filter_map(|range| self.arrangement.world_clip_rect(lane_index, range))
+            .filter_map(|range| self.lane_timeline.world_range_rect(lane_index, range))
             .collect()
     }
 
-    pub fn note_hit_targets(
+    pub fn item_hit_targets(
         self,
-        note: &PianoRollNote,
+        item: &LaneValueRangeItem,
         loop_range: Option<EditorAxisRange>,
     ) -> Vec<EditorHitTarget> {
-        let rects = self.note_world_rects(note, loop_range);
+        let rects = self.item_world_rects(item, loop_range);
         if rects.is_empty() {
             return Vec::new();
         }
 
         let handle_width = self
-            .arrangement
+            .lane_timeline
             .timeline
             .view_width_to_span(self.resize_handle_width_px)
             .max(MIN_SCALE);
         let mut targets = Vec::with_capacity(rects.len() + 2);
-        let body_z = if note.selected { 20 } else { 10 };
+        let body_z = if item.selected { 20 } else { 10 };
 
         for (index, rect) in rects.iter().copied().enumerate() {
             targets.push(
                 EditorHitTarget::new(
                     if index == 0 {
-                        note.id.clone()
+                        item.id.clone()
                     } else {
-                        EditorHitId::new(format!("{}.wrap.{index}", note.id.as_str()))
+                        EditorHitId::new(format!("{}.wrap.{index}", item.id.as_str()))
                     },
                     EditorHitKind::Item,
                     rect,
@@ -1367,7 +1380,7 @@ impl PianoRollGeometry {
         let start_rect = edge_handle_rect(rects[0], handle_width, TimelineRangeItemEdge::Start);
         targets.push(
             EditorHitTarget::new(
-                format!("{}.start", note.id.as_str()),
+                format!("{}.start", item.id.as_str()),
                 EditorHitKind::ResizeHandle,
                 start_rect,
             )
@@ -1382,7 +1395,7 @@ impl PianoRollGeometry {
         );
         targets.push(
             EditorHitTarget::new(
-                format!("{}.end", note.id.as_str()),
+                format!("{}.end", item.id.as_str()),
                 EditorHitKind::ResizeHandle,
                 end_rect,
             )
@@ -1393,21 +1406,21 @@ impl PianoRollGeometry {
         targets
     }
 
-    pub fn velocity_bar_rect(
+    pub fn magnitude_bar_rect(
         self,
-        note: &PianoRollNote,
-        velocity_lane_view_rect: UiRect,
+        item: &LaneValueRangeItem,
+        magnitude_lane_view_rect: UiRect,
         bar_width_px: f32,
     ) -> Option<UiRect> {
-        if !self.pitches.contains(note.pitch) || note.range.is_empty() {
+        if !self.values.contains(item.value) || item.range.is_empty() {
             return None;
         }
-        let center_x = self.arrangement.timeline.unit_to_view_x(note.range.start);
+        let center_x = self.lane_timeline.timeline.unit_to_view_x(item.range.start);
         let width = bar_width_px.max(1.0);
-        let height = velocity_lane_view_rect.height * note.velocity.clamp(0.0, 1.0);
+        let height = magnitude_lane_view_rect.height * item.magnitude.clamp(0.0, 1.0);
         Some(UiRect::new(
             center_x - width * 0.5,
-            velocity_lane_view_rect.bottom() - height,
+            magnitude_lane_view_rect.bottom() - height,
             width,
             height,
         ))
@@ -1423,7 +1436,7 @@ fn edge_handle_rect(rect: UiRect, width: f32, edge: TimelineRangeItemEdge) -> Ui
     UiRect::new(x, rect.y, width, rect.height)
 }
 
-fn wrapped_note_ranges(
+fn wrapped_item_ranges(
     range: EditorAxisRange,
     loop_range: Option<EditorAxisRange>,
 ) -> Vec<EditorAxisRange> {
@@ -2331,36 +2344,36 @@ mod tests {
     }
 
     #[test]
-    fn arrangement_geometry_builds_clip_selection_and_overlay_rects() {
-        let arrangement = ArrangementGeometry::new(
+    fn lane_timeline_geometry_builds_range_selection_and_overlay_rects() {
+        let lane_timeline = LaneTimelineGeometry::new(
             transform(),
             LaneGeometry::new(5.0, 6)
                 .with_origin_y(50.0)
                 .with_lane_gap(1.0),
         );
 
-        assert_eq!(arrangement.visible_lanes(), VisibleLaneRange::new(0, 6));
-        assert_eq!(arrangement.lane_at_view_y(20.0), Some(0));
-        assert_eq!(arrangement.lane_at_view_y(42.0), None);
+        assert_eq!(lane_timeline.visible_lanes(), VisibleLaneRange::new(0, 6));
+        assert_eq!(lane_timeline.lane_at_view_y(20.0), Some(0));
+        assert_eq!(lane_timeline.lane_at_view_y(42.0), None);
         assert_eq!(
-            arrangement.range_at_view_rect(UiRect::new(10.0, 20.0, 20.0, 10.0)),
+            lane_timeline.range_at_view_rect(UiRect::new(10.0, 20.0, 20.0, 10.0)),
             EditorAxisRange::new(100.0, 110.0)
         );
 
         assert_eq!(
-            arrangement.world_clip_rect(2, EditorAxisRange::new(120.0, 132.0)),
+            lane_timeline.world_range_rect(2, EditorAxisRange::new(120.0, 132.0)),
             Some(UiRect::new(120.0, 62.0, 12.0, 5.0))
         );
         assert_eq!(
-            arrangement.view_clip_rect(2, EditorAxisRange::new(120.0, 132.0)),
+            lane_timeline.view_range_rect(2, EditorAxisRange::new(120.0, 132.0)),
             Some(UiRect::new(50.0, 68.0, 24.0, 20.0))
         );
         assert_eq!(
-            arrangement.loop_overlay_rect(EditorAxisRange::new(120.0, 132.0)),
+            lane_timeline.loop_overlay_rect(EditorAxisRange::new(120.0, 132.0)),
             UiRect::new(50.0, 20.0, 24.0, 140.0)
         );
         assert_eq!(
-            arrangement.selection_rect(
+            lane_timeline.selection_rect(
                 VisibleLaneRange::new(1, 4),
                 EditorAxisRange::new(110.0, 120.0)
             ),
@@ -2370,7 +2383,7 @@ mod tests {
 
     #[test]
     fn timeline_range_items_build_rects_and_hit_targets() {
-        let geometry = TimelineRangeItemGeometry::new(ArrangementGeometry::new(
+        let geometry = TimelineRangeItemGeometry::new(LaneTimelineGeometry::new(
             transform(),
             LaneGeometry::new(5.0, 6)
                 .with_origin_y(50.0)
@@ -2419,7 +2432,7 @@ mod tests {
 
     #[test]
     fn timeline_range_items_translate_preview_and_resize_neutrally() {
-        let geometry = TimelineRangeItemGeometry::new(ArrangementGeometry::new(
+        let geometry = TimelineRangeItemGeometry::new(LaneTimelineGeometry::new(
             transform(),
             LaneGeometry::new(5.0, 6)
                 .with_origin_y(50.0)
@@ -2636,55 +2649,55 @@ mod tests {
     }
 
     #[test]
-    fn piano_roll_geometry_maps_pitches_lanes_and_notes() {
-        let piano = PianoRollGeometry::with_arrangement(
-            ArrangementGeometry::new(
+    fn lane_value_geometry_maps_values_lanes_and_items() {
+        let lane_grid = LaneValueGeometry::with_lane_timeline(
+            LaneTimelineGeometry::new(
                 transform(),
                 LaneGeometry::new(5.0, 12)
                     .with_origin_y(50.0)
                     .with_lane_gap(1.0),
             ),
-            PianoRollPitchRange::new(60, 71),
+            LaneValueRange::new(60, 71),
         );
-        let note = PianoRollNote::new("note.1", 69, 120.0, 4.0);
+        let item = LaneValueRangeItem::new("item.1", 69, 120.0, 4.0);
 
-        assert_eq!(piano.pitches.pitch_count(), 12);
-        assert_eq!(piano.pitch_lane_index(71), Some(0));
-        assert_eq!(piano.pitch_lane_index(60), Some(11));
-        assert_eq!(piano.pitch_at_view_y(68.0), Some(69));
-        assert_eq!(piano.pitch_at_view_y(66.0), None);
+        assert_eq!(lane_grid.values.value_count(), 12);
+        assert_eq!(lane_grid.value_lane_index(71), Some(0));
+        assert_eq!(lane_grid.value_lane_index(60), Some(11));
+        assert_eq!(lane_grid.value_at_view_y(68.0), Some(69));
+        assert_eq!(lane_grid.value_at_view_y(66.0), None);
         assert_eq!(
-            piano.note_world_rect(&note),
+            lane_grid.item_world_rect(&item),
             Some(UiRect::new(120.0, 62.0, 4.0, 5.0))
         );
         assert_eq!(
-            piano.note_view_rects(&note, None),
+            lane_grid.item_view_rects(&item, None),
             vec![UiRect::new(50.0, 68.0, 8.0, 20.0)]
         );
     }
 
     #[test]
-    fn piano_roll_wraps_notes_across_loop_boundaries() {
-        let piano = PianoRollGeometry::with_arrangement(
-            ArrangementGeometry::new(
+    fn lane_value_geometry_wraps_items_across_loop_boundaries() {
+        let lane_grid = LaneValueGeometry::with_lane_timeline(
+            LaneTimelineGeometry::new(
                 transform(),
                 LaneGeometry::new(5.0, 12)
                     .with_origin_y(50.0)
                     .with_lane_gap(1.0),
             ),
-            PianoRollPitchRange::new(60, 71),
+            LaneValueRange::new(60, 71),
         );
-        let note = PianoRollNote::new("note.wrap", 69, 114.0, 6.0);
+        let item = LaneValueRangeItem::new("item.wrap", 69, 114.0, 6.0);
 
         assert_eq!(
-            piano.note_world_rects(&note, Some(EditorAxisRange::new(100.0, 116.0))),
+            lane_grid.item_world_rects(&item, Some(EditorAxisRange::new(100.0, 116.0))),
             vec![
                 UiRect::new(114.0, 62.0, 2.0, 5.0),
                 UiRect::new(100.0, 62.0, 4.0, 5.0)
             ]
         );
         assert_eq!(
-            piano.note_view_rects(&note, Some(EditorAxisRange::new(100.0, 116.0))),
+            lane_grid.item_view_rects(&item, Some(EditorAxisRange::new(100.0, 116.0))),
             vec![
                 UiRect::new(38.0, 68.0, 4.0, 20.0),
                 UiRect::new(10.0, 68.0, 8.0, 20.0)
@@ -2693,27 +2706,27 @@ mod tests {
     }
 
     #[test]
-    fn piano_roll_hit_targets_distinguish_body_and_resize_handles() {
-        let piano = PianoRollGeometry::with_arrangement(
-            ArrangementGeometry::new(
+    fn lane_value_geometry_hit_targets_distinguish_body_and_resize_handles() {
+        let lane_grid = LaneValueGeometry::with_lane_timeline(
+            LaneTimelineGeometry::new(
                 transform(),
                 LaneGeometry::new(5.0, 12)
                     .with_origin_y(50.0)
                     .with_lane_gap(1.0),
             ),
-            PianoRollPitchRange::new(60, 71),
+            LaneValueRange::new(60, 71),
         )
         .with_resize_handle_width_px(6.0);
-        let note = PianoRollNote::new("note.hit", 69, 114.0, 6.0).selected(true);
-        let targets = piano.note_hit_targets(&note, Some(EditorAxisRange::new(100.0, 116.0)));
+        let item = LaneValueRangeItem::new("item.hit", 69, 114.0, 6.0).selected(true);
+        let targets = lane_grid.item_hit_targets(&item, Some(EditorAxisRange::new(100.0, 116.0)));
 
         assert_eq!(targets.len(), 4);
-        assert_eq!(targets[0].id.as_str(), "note.hit");
+        assert_eq!(targets[0].id.as_str(), "item.hit");
         assert_eq!(targets[0].kind, EditorHitKind::Item);
-        assert_eq!(targets[2].id.as_str(), "note.hit.start");
+        assert_eq!(targets[2].id.as_str(), "item.hit.start");
         assert_eq!(targets[2].kind, EditorHitKind::ResizeHandle);
         assert_eq!(targets[2].world_rect, UiRect::new(114.0, 62.0, 1.0, 5.0));
-        assert_eq!(targets[3].id.as_str(), "note.hit.end");
+        assert_eq!(targets[3].id.as_str(), "item.hit.end");
         assert_eq!(targets[3].world_rect, UiRect::new(102.0, 62.0, 2.0, 5.0));
 
         let tester = targets
@@ -2727,7 +2740,7 @@ mod tests {
         );
         assert_eq!(
             start_hit.target.as_ref().map(|target| target.id.as_str()),
-            Some("note.hit.start")
+            Some("item.hit.start")
         );
         let end_hit = tester.hit_test(
             transform(),
@@ -2735,7 +2748,7 @@ mod tests {
         );
         assert_eq!(
             end_hit.target.as_ref().map(|target| target.id.as_str()),
-            Some("note.hit.end")
+            Some("item.hit.end")
         );
         let body_hit = tester.hit_test(
             transform(),
@@ -2743,30 +2756,30 @@ mod tests {
         );
         assert_eq!(
             body_hit.target.as_ref().map(|target| target.id.as_str()),
-            Some("note.hit.wrap.1")
+            Some("item.hit.wrap.1")
         );
     }
 
     #[test]
-    fn piano_roll_velocity_bars_use_note_velocity_and_timeline_position() {
-        let piano = PianoRollGeometry::with_arrangement(
-            ArrangementGeometry::new(
+    fn lane_value_geometry_magnitude_bars_use_item_magnitude_and_timeline_position() {
+        let lane_grid = LaneValueGeometry::with_lane_timeline(
+            LaneTimelineGeometry::new(
                 transform(),
                 LaneGeometry::new(5.0, 12)
                     .with_origin_y(50.0)
                     .with_lane_gap(1.0),
             ),
-            PianoRollPitchRange::new(60, 71),
+            LaneValueRange::new(60, 71),
         );
-        let note = PianoRollNote::new("note.velocity", 69, 120.0, 4.0).velocity(0.75);
+        let item = LaneValueRangeItem::new("item.magnitude", 69, 120.0, 4.0).magnitude(0.75);
 
         assert_eq!(
-            piano.velocity_bar_rect(&note, UiRect::new(10.0, 180.0, 200.0, 40.0), 6.0),
+            lane_grid.magnitude_bar_rect(&item, UiRect::new(10.0, 180.0, 200.0, 40.0), 6.0),
             Some(UiRect::new(47.0, 190.0, 6.0, 30.0))
         );
-        assert!(piano
-            .velocity_bar_rect(
-                &PianoRollNote::new("outside", 10, 120.0, 4.0),
+        assert!(lane_grid
+            .magnitude_bar_rect(
+                &LaneValueRangeItem::new("outside", 10, 120.0, 4.0),
                 UiRect::new(10.0, 180.0, 200.0, 40.0),
                 6.0,
             )
@@ -2794,22 +2807,22 @@ mod tests {
     #[test]
     fn hit_tester_returns_topmost_target_and_marquee_selection() {
         let transform = transform();
-        let clip = EditorHitTarget::new(
-            "clip",
+        let range_item = EditorHitTarget::new(
+            "range-item",
             EditorHitKind::Item,
             UiRect::new(120.0, 60.0, 30.0, 10.0),
         )
         .z_index(2)
         .cursor(EditorCursor::Grab);
         let handle = EditorHitTarget::new(
-            "clip.resize",
+            "range-item.resize",
             EditorHitKind::ResizeHandle,
             UiRect::new(145.0, 60.0, 5.0, 10.0),
         )
         .z_index(4)
         .cursor(EditorCursor::ResizeHorizontal);
         let tester = EditorHitTester::new()
-            .target(clip.clone())
+            .target(range_item.clone())
             .target(handle.clone());
 
         let hit = tester.hit_test(
@@ -2826,7 +2839,7 @@ mod tests {
         );
 
         let selected = tester.selectable_in_rect(UiRect::new(118.0, 58.0, 40.0, 16.0));
-        assert_eq!(selected, vec![clip.id, handle.id]);
+        assert_eq!(selected, vec![range_item.id, handle.id]);
     }
 
     #[test]
@@ -2891,10 +2904,10 @@ mod tests {
         let tool = EditorToolMode::new("select", "Select")
             .cursor(EditorCursor::Pointer)
             .marquee_selection(true);
-        let mut state = EditorSurfaceState::new("piano-roll", node, transform, tool)
+        let mut state = EditorSurfaceState::new("lane_grid-roll", node, transform, tool)
             .with_snap_grid(SnapGrid::new(UiPoint::new(0.25, 1.0)));
         let target = EditorHitTarget::new(
-            "note.1",
+            "item.1",
             EditorHitKind::Item,
             UiRect::new(120.0, 60.0, 10.0, 4.0),
         )
@@ -2908,7 +2921,7 @@ mod tests {
         state.apply_hit_test(&hit);
         assert_eq!(
             state.hovered.as_ref().map(EditorHitId::as_str),
-            Some("note.1")
+            Some("item.1")
         );
         assert_eq!(state.cursor(), EditorCursor::Grab);
 
@@ -2924,7 +2937,7 @@ mod tests {
         );
         assert_eq!(
             state.active.as_ref().map(EditorHitId::as_str),
-            Some("note.1")
+            Some("item.1")
         );
         assert!(state.drag_capture.is_some());
 

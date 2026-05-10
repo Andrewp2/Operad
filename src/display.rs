@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn static_editor_background_reuses_across_input_dirty_and_blocks_paint_dirty() {
         let mut cache = RetainedDisplayListCache::new();
-        let key = cache.insert_static_editor_background("piano-roll", 4, paint_list(3));
+        let key = cache.insert_static_editor_background("value-grid", 4, paint_list(3));
 
         let input_dirty = DirtyFlags {
             input: true,
@@ -407,7 +407,7 @@ mod tests {
     fn invalidation_requests_remove_matching_scope_id_and_all_entries() {
         let mut cache = RetainedDisplayListCache::new();
         let node_key = DisplayListKey::node(UiNodeId(4), "grid", 1);
-        let editor_key = DisplayListKey::editor_background("arrangement", 1);
+        let editor_key = DisplayListKey::editor_background("timeline", 1);
         let custom_key = DisplayListKey::new(DisplayListScope::custom("meter"), "peak", 0);
 
         cache.insert(
@@ -431,7 +431,7 @@ mod tests {
 
         assert_eq!(
             cache.invalidate(DisplayListInvalidationRequest::Scope(
-                DisplayListScope::EditorSurface("arrangement".into())
+                DisplayListScope::EditorSurface("timeline".into())
             )),
             1
         );

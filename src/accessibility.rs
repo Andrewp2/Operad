@@ -799,16 +799,16 @@ mod tests {
     #[test]
     fn accessibility_summaries_round_trip_for_custom_editor_surfaces() {
         let mut doc = UiDocument::new(fixed_style(480.0, 240.0));
-        let summary = AccessibilitySummary::new("Piano roll")
-            .description("Clip editor with note lanes and velocity lane")
-            .item("Visible bars", "1 through 8")
-            .item("Selected notes", "3")
-            .instruction("Use arrow keys to move selected notes");
+        let summary = AccessibilitySummary::new("Value grid")
+            .description("Range editor with value lanes and magnitude lane")
+            .item("Visible units", "1 through 8")
+            .item("Selected items", "3")
+            .instruction("Use arrow keys to move selected items");
         let editor = doc.add_child(
             doc.root,
-            UiNode::container("piano-roll", fixed_style(420.0, 180.0)).with_accessibility(
+            UiNode::container("value-grid", fixed_style(420.0, 180.0)).with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::EditorSurface)
-                    .label("Piano roll")
+                    .label("Value grid")
                     .focusable()
                     .summary(summary.clone()),
             ),
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(
             tree.screen_reader_summary(editor).as_deref(),
             Some(
-                "Piano roll. Clip editor with note lanes and velocity lane. Visible bars: 1 through 8. Selected notes: 3. Use arrow keys to move selected notes"
+                "Value grid. Range editor with value lanes and magnitude lane. Visible units: 1 through 8. Selected items: 3. Use arrow keys to move selected items"
             )
         );
     }

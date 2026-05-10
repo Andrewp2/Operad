@@ -25,8 +25,8 @@ pub enum ShellRegion {
     RightPanel,
     BottomPanel,
     StatusBar,
-    TrackList,
-    Arrangement,
+    LaneList,
+    Timeline,
     Editor,
     CenterWorkspace,
     Custom(String),
@@ -51,7 +51,7 @@ impl ShellRegion {
     }
 
     pub fn is_editor_surface(&self) -> bool {
-        matches!(self, Self::TrackList | Self::Arrangement | Self::Editor)
+        matches!(self, Self::LaneList | Self::Timeline | Self::Editor)
     }
 
     pub fn stable_key(&self) -> String {
@@ -63,8 +63,8 @@ impl ShellRegion {
             Self::RightPanel => "right-panel".to_string(),
             Self::BottomPanel => "bottom-panel".to_string(),
             Self::StatusBar => "status-bar".to_string(),
-            Self::TrackList => "track-list".to_string(),
-            Self::Arrangement => "arrangement".to_string(),
+            Self::LaneList => "lane-list".to_string(),
+            Self::Timeline => "timeline".to_string(),
             Self::Editor => "editor".to_string(),
             Self::CenterWorkspace => "center-workspace".to_string(),
             Self::Custom(id) => format!("custom.{id}"),
@@ -80,8 +80,8 @@ impl ShellRegion {
             Self::RightPanel => "Right panel".to_string(),
             Self::BottomPanel => "Bottom panel".to_string(),
             Self::StatusBar => "Status bar".to_string(),
-            Self::TrackList => "Track list".to_string(),
-            Self::Arrangement => "Arrangement".to_string(),
+            Self::LaneList => "Lane list".to_string(),
+            Self::Timeline => "Timeline".to_string(),
             Self::Editor => "Editor".to_string(),
             Self::CenterWorkspace => "Center workspace".to_string(),
             Self::Custom(id) => id.clone(),
@@ -1522,7 +1522,7 @@ fn panel_state_value(panel: &ShellPanelLayout) -> String {
 
 fn panel_extent(panel: &ShellPanelLayout) -> f32 {
     match panel.region {
-        ShellRegion::LeftPanel | ShellRegion::RightPanel | ShellRegion::TrackList => {
+        ShellRegion::LeftPanel | ShellRegion::RightPanel | ShellRegion::LaneList => {
             panel.rect.width
         }
         ShellRegion::MenuBar
@@ -1531,7 +1531,7 @@ fn panel_extent(panel: &ShellPanelLayout) -> f32 {
         | ShellRegion::BottomPanel
         | ShellRegion::StatusBar
         | ShellRegion::Editor => panel.rect.height,
-        ShellRegion::Arrangement | ShellRegion::CenterWorkspace | ShellRegion::Custom(_) => {
+        ShellRegion::Timeline | ShellRegion::CenterWorkspace | ShellRegion::Custom(_) => {
             panel.rect.width.max(panel.rect.height)
         }
     }
@@ -1551,8 +1551,8 @@ fn resize_handle_rect(panel: &ShellPanelLayout, thickness: f32) -> UiRect {
             thickness,
         ),
         ShellRegion::LeftPanel
-        | ShellRegion::TrackList
-        | ShellRegion::Arrangement
+        | ShellRegion::LaneList
+        | ShellRegion::Timeline
         | ShellRegion::CenterWorkspace
         | ShellRegion::Custom(_) => UiRect::new(
             (panel.rect.width - thickness).max(0.0),
@@ -1713,19 +1713,19 @@ impl<'a> ShellLayoutPlanner<'a> {
             self.push_panel_region(ShellRegion::Editor, rect, editor_panels);
         }
 
-        let track_panels = self.visible_docked_panels(ShellRegion::TrackList);
-        let track_extent = region_extent(&track_panels);
-        if track_extent > f32::EPSILON {
-            let width = track_extent.min(center.width);
+        let lane_panels = self.visible_docked_panels(ShellRegion::LaneList);
+        let lane_extent = region_extent(&lane_panels);
+        if lane_extent > f32::EPSILON {
+            let width = lane_extent.min(center.width);
             let rect = UiRect::new(center.x, center.y, width, center.height);
             center.x += width;
             center.width = (center.width - width).max(0.0);
-            self.push_panel_region(ShellRegion::TrackList, rect, track_panels);
+            self.push_panel_region(ShellRegion::LaneList, rect, lane_panels);
         }
 
-        let arrangement_panels = self.visible_docked_panels(ShellRegion::Arrangement);
-        if !arrangement_panels.is_empty() || center.width > 0.0 || center.height > 0.0 {
-            self.push_panel_region(ShellRegion::Arrangement, center, arrangement_panels);
+        let timeline_panels = self.visible_docked_panels(ShellRegion::Timeline);
+        if !timeline_panels.is_empty() || center.width > 0.0 || center.height > 0.0 {
+            self.push_panel_region(ShellRegion::Timeline, center, timeline_panels);
         }
     }
 
@@ -2017,14 +2017,14 @@ mod tests {
 
     #[test]
     fn scroll_sync_group_mirrors_configured_axes() {
-        let mut group = ScrollSyncGroup::new("arrangement", ScrollSyncAxes::VERTICAL)
-            .add_member("track-list", UiPoint::new(12.0, 0.0))
+        let mut group = ScrollSyncGroup::new("timeline", ScrollSyncAxes::VERTICAL)
+            .add_member("lane-list", UiPoint::new(12.0, 0.0))
             .add_member("timeline", UiPoint::new(40.0, 0.0));
 
         let changed = group.set_offset("timeline", UiPoint::new(90.0, 320.0));
-        assert_eq!(changed, vec!["track-list"]);
+        assert_eq!(changed, vec!["lane-list"]);
         assert_eq!(
-            group.member_offset("track-list"),
+            group.member_offset("lane-list"),
             Some(UiPoint::new(12.0, 320.0))
         );
         assert_eq!(
@@ -2049,9 +2049,9 @@ mod tests {
             .splits
             .insert("main".to_string(), PersistentSplitState::new(0.72));
         workspace.scroll_groups.push(
-            ScrollSyncGroup::new("tracks", ScrollSyncAxes::VERTICAL)
-                .add_member("track-list", UiPoint::new(0.0, 0.0))
-                .add_member("arrangement", UiPoint::new(0.0, 0.0)),
+            ScrollSyncGroup::new("lanes", ScrollSyncAxes::VERTICAL)
+                .add_member("lane-list", UiPoint::new(0.0, 0.0))
+                .add_member("timeline", UiPoint::new(0.0, 0.0)),
         );
         workspace.set_focused_panel("inspector", FocusRestoreTarget::Previous);
 
@@ -2063,8 +2063,8 @@ mod tests {
             vec!["inspector"]
         );
         assert_eq!(
-            workspace.apply_scroll("tracks", "arrangement", UiPoint::new(0.0, 128.0)),
-            vec!["track-list"]
+            workspace.apply_scroll("lanes", "timeline", UiPoint::new(0.0, 128.0)),
+            vec!["lane-list"]
         );
         assert_eq!(
             workspace.panel("inspector").map(|panel| panel.extent.max),
@@ -2105,20 +2105,20 @@ mod tests {
                 .active_tab("scale-lab"),
         );
         workspace.upsert_panel(ShellPanelState::new(
-            "tracks",
-            "Tracks",
-            ShellRegion::TrackList,
+            "lanes",
+            "Lanes",
+            ShellRegion::LaneList,
             140.0,
         ));
         workspace.upsert_panel(ShellPanelState::new(
-            "arrangement",
-            "Arrangement",
-            ShellRegion::Arrangement,
+            "timeline",
+            "Timeline",
+            ShellRegion::Timeline,
             1.0,
         ));
         workspace.upsert_panel(ShellPanelState::new(
-            "piano-roll",
-            "Piano Roll",
+            "value-grid",
+            "Value Grid",
             ShellRegion::Editor,
             160.0,
         ));
@@ -2151,11 +2151,11 @@ mod tests {
             Some(UiRect::new(180.0, 520.0, 600.0, 160.0))
         );
         assert_eq!(
-            plan.region_rect(&ShellRegion::TrackList),
+            plan.region_rect(&ShellRegion::LaneList),
             Some(UiRect::new(180.0, 64.0, 140.0, 456.0))
         );
         assert_eq!(
-            plan.region_rect(&ShellRegion::Arrangement),
+            plan.region_rect(&ShellRegion::Timeline),
             Some(UiRect::new(320.0, 64.0, 460.0, 456.0))
         );
         assert_eq!(
@@ -2171,7 +2171,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_layout_tracks_hidden_floating_and_collapsed_panels() {
+    fn workspace_layout_lanes_hidden_floating_and_collapsed_panels() {
         let mut workspace = ShellWorkspaceState::new();
         let mut left = ShellPanelState::new("left", "Left", ShellRegion::LeftPanel, 240.0);
         left.collapsed_extent = 32.0;
@@ -2216,14 +2216,14 @@ mod tests {
         assert!(browser.collapse());
         workspace.upsert_panel(browser);
         workspace.upsert_panel(ShellPanelState::new(
-            "arrangement",
-            "Arrangement",
-            ShellRegion::Arrangement,
+            "timeline",
+            "Timeline",
+            ShellRegion::Timeline,
             1.0,
         ));
         workspace.upsert_panel(ShellPanelState::new(
-            "piano-roll",
-            "Piano Roll",
+            "value-grid",
+            "Value Grid",
             ShellRegion::Editor,
             160.0,
         ));
@@ -2267,7 +2267,7 @@ mod tests {
         assert_eq!(document.node(nodes.root).name, "shell");
         assert!(nodes.region_node(&ShellRegion::MenuBar).is_some());
         assert!(nodes.region_node(&ShellRegion::LeftPanel).is_some());
-        assert!(nodes.panel("arrangement").is_some());
+        assert!(nodes.panel("timeline").is_some());
 
         let browser = nodes.panel("browser").expect("browser node");
         assert!(browser.collapsed);

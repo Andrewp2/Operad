@@ -81,8 +81,8 @@ and accessibility capabilities integrated into backend capability descriptors.
 Add a first-class theme model with semantic tokens:
 
 - Color, typography, spacing, radius, stroke, shadow, opacity, and motion tokens.
-- Component tokens for buttons, tabs, search fields, track headers, clip blocks,
-  piano-roll lanes, property rows, menu rows, and transport controls.
+- Component tokens for buttons, tabs, search fields, lane headers, range items,
+  editor lanes, property rows, menu rows, and transport controls.
 - Scoped theme inheritance so editor surfaces can use musical colors while shell
   widgets remain visually consistent.
 - One excellent dark theme before broad light-theme work.
@@ -144,8 +144,8 @@ Add app-owned command routing without importing app semantics:
   and other app-owned effects.
 - Pointer capture, drag thresholds, double-click timing, cancellation, modifiers,
   high-resolution wheel deltas, and edit phase coalescing.
-- Drag capture for sliders, splitters, note handles, clip handles, automation
-  curves, and host-embedded editor surfaces.
+- Drag capture for sliders, splitters, range-item handles, curve handles, and
+  host-embedded editor surfaces.
 
 ## Shell And Editor Track
 
@@ -233,6 +233,9 @@ The branch starts from Operad 2.0.0 plus:
 - Cross-application reuse criteria in this roadmap now require new primitives
   to be named and tested as neutral toolkit mechanics, with product-specific
   concepts passed in as app-owned data rather than embedded in Operad APIs.
+- Public theme, shell, editor, and drag/drop APIs now use lane, timeline, range
+  item, editor lane, and lane-value terminology instead of app-specific track,
+  clip, note, piano-roll, or arrangement names.
 - Renderer-neutral paint extensions in `src/paint.rs` for gradient brushes,
   stroke alignment, corner radii, shadows/glows/inset shadows, anchored scene
   text with alignment and overflow policy, image placement, path primitives,
@@ -244,11 +247,11 @@ The branch starts from Operad 2.0.0 plus:
   gesture-to-edit phases.
 - Persistable app-shell state contracts in `src/shell.rs` for docked/floating
   panel visibility, saved extents, collapse/restore, keyboard-resizable split
-  state, active tabs, focus restore, and synchronized track/arrangement scroll
+  state, active tabs, focus restore, and synchronized lane/timeline scroll
   offsets.
 - Shell layout planning in `src/shell.rs` for top/menu/transport/tool/status
-  bars, left/right/bottom dock regions, central workspace, track list,
-  arrangement, editor, hidden panels, floating panels, and persisted panel
+  bars, left/right/bottom dock regions, central workspace, lane list,
+  timeline, editor, hidden panels, floating panels, and persisted panel
   scroll offsets.
 - Shell layout document bridges in `src/shell.rs` for turning persisted shell
   plans into stable region, panel, panel-content, hidden-panel, and accessible
@@ -384,9 +387,9 @@ The branch starts from Operad 2.0.0 plus:
   targets, resize handles, rulers, overlays, active selections, visible ranges,
   and keyboard actions into screen-reader metadata for app-owned custom
   surfaces.
-- Arrangement and lane geometry helpers in `src/editor.rs` for unit-to-x
-  timelines, lane y/index mapping, visible ranges, clip/selection/playhead
-  rectangles, ruler ticks, and grid snapping.
+- Lane timeline geometry helpers in `src/editor.rs` for unit-to-x timelines,
+  lane y/index mapping, visible ranges, range/selection/playhead rectangles,
+  ruler ticks, and grid snapping.
 - Timeline range-item geometry helpers in `src/editor.rs` for app-owned spans
   on lane/timeline surfaces, including body and resize hit targets, snapped drag
   previews, constrained resizing, and selected/disabled/dragging interaction
@@ -396,9 +399,9 @@ The branch starts from Operad 2.0.0 plus:
   view geometry, interpolation paths, snapped point translation, and clamped
   value edits without naming product-specific parameters, measurements, or
   gameplay curves.
-- Piano-roll geometry helpers in `src/editor.rs` for pitch-to-lane mapping,
-  note rectangles, loop-wrapped note segments, body versus resize-handle hit
-  targets, and velocity-bar geometry.
+- Lane-value geometry helpers in `src/editor.rs` for value-to-lane mapping,
+  range-item rectangles, loop-wrapped item segments, body versus resize-handle
+  hit targets, and magnitude-bar geometry.
 - Retained display-list cache contracts in `src/display.rs` for static editor
   backgrounds, snapshot/display-list reuse, dirty-flag invalidation, and bounded
   cache eviction.

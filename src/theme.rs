@@ -467,9 +467,9 @@ pub enum ComponentRole {
     Button,
     Tab,
     SearchField,
-    TrackHeader,
-    ClipBlock,
-    PianoRollLane,
+    LaneHeader,
+    RangeItem,
+    EditorLane,
     PropertyRow,
     MenuRow,
     TransportControl,
@@ -676,13 +676,13 @@ pub struct ColorTokens {
     pub editor_background: ColorRgba,
     pub editor_grid_major: ColorRgba,
     pub editor_grid_minor: ColorRgba,
-    pub track_header: ColorRgba,
-    pub track_header_selected: ColorRgba,
-    pub clip_audio: ColorRgba,
-    pub clip_midi: ColorRgba,
-    pub clip_automation: ColorRgba,
-    pub piano_roll_lane: ColorRgba,
-    pub piano_roll_lane_alt: ColorRgba,
+    pub lane_header: ColorRgba,
+    pub lane_header_selected: ColorRgba,
+    pub range_item_primary: ColorRgba,
+    pub range_item_secondary: ColorRgba,
+    pub range_item_accent: ColorRgba,
+    pub editor_lane: ColorRgba,
+    pub editor_lane_alternate: ColorRgba,
     pub transport_active: ColorRgba,
 }
 
@@ -723,13 +723,13 @@ impl ColorTokens {
             editor_background: ColorRgba::new(10, 13, 18, 255),
             editor_grid_major: ColorRgba::new(55, 66, 82, 255),
             editor_grid_minor: ColorRgba::new(31, 38, 49, 255),
-            track_header: ColorRgba::new(25, 31, 41, 255),
-            track_header_selected: ColorRgba::new(35, 55, 78, 255),
-            clip_audio: ColorRgba::new(62, 157, 184, 255),
-            clip_midi: ColorRgba::new(116, 176, 98, 255),
-            clip_automation: ColorRgba::new(187, 126, 220, 255),
-            piano_roll_lane: ColorRgba::new(17, 22, 30, 255),
-            piano_roll_lane_alt: ColorRgba::new(14, 18, 25, 255),
+            lane_header: ColorRgba::new(25, 31, 41, 255),
+            lane_header_selected: ColorRgba::new(35, 55, 78, 255),
+            range_item_primary: ColorRgba::new(62, 157, 184, 255),
+            range_item_secondary: ColorRgba::new(116, 176, 98, 255),
+            range_item_accent: ColorRgba::new(187, 126, 220, 255),
+            editor_lane: ColorRgba::new(17, 22, 30, 255),
+            editor_lane_alternate: ColorRgba::new(14, 18, 25, 255),
             transport_active: ColorRgba::new(92, 212, 165, 255),
         }
     }
@@ -1057,9 +1057,9 @@ pub struct ComponentTokens {
     pub button: ComponentStyle,
     pub tab: ComponentStyle,
     pub search_field: ComponentStyle,
-    pub track_header: ComponentStyle,
-    pub clip_block: ComponentStyle,
-    pub piano_roll_lane: ComponentStyle,
+    pub lane_header: ComponentStyle,
+    pub range_item: ComponentStyle,
+    pub editor_lane: ComponentStyle,
     pub property_row: ComponentStyle,
     pub menu_row: ComponentStyle,
     pub transport_control: ComponentStyle,
@@ -1071,9 +1071,9 @@ impl ComponentTokens {
             ComponentRole::Button => &self.button,
             ComponentRole::Tab => &self.tab,
             ComponentRole::SearchField => &self.search_field,
-            ComponentRole::TrackHeader => &self.track_header,
-            ComponentRole::ClipBlock => &self.clip_block,
-            ComponentRole::PianoRollLane => &self.piano_roll_lane,
+            ComponentRole::LaneHeader => &self.lane_header,
+            ComponentRole::RangeItem => &self.range_item,
+            ComponentRole::EditorLane => &self.editor_lane,
             ComponentRole::PropertyRow => &self.property_row,
             ComponentRole::MenuRow => &self.menu_row,
             ComponentRole::TransportControl => &self.transport_control,
@@ -1092,9 +1092,9 @@ impl ComponentTokens {
             button: button_tokens(colors, spacing, typography, radius, stroke, opacity),
             tab: tab_tokens(colors, spacing, typography, radius, stroke, opacity),
             search_field: search_field_tokens(colors, spacing, typography, radius, stroke, opacity),
-            track_header: track_header_tokens(colors, spacing, typography, radius, stroke, opacity),
-            clip_block: clip_block_tokens(colors, spacing, typography, radius, stroke, opacity),
-            piano_roll_lane: piano_roll_lane_tokens(colors, spacing, typography, radius, stroke),
+            lane_header: lane_header_tokens(colors, spacing, typography, radius, stroke, opacity),
+            range_item: range_item_tokens(colors, spacing, typography, radius, stroke, opacity),
+            editor_lane: editor_lane_tokens(colors, spacing, typography, radius, stroke),
             property_row: property_row_tokens(colors, spacing, typography, radius, stroke, opacity),
             menu_row: menu_row_tokens(colors, spacing, typography, radius, stroke, opacity),
             transport_control: transport_tokens(
@@ -1736,13 +1736,13 @@ fn color_tokens_without_transparency(mut colors: ColorTokens) -> ColorTokens {
     colors.editor_background = color_without_transparency(colors.editor_background);
     colors.editor_grid_major = color_without_transparency(colors.editor_grid_major);
     colors.editor_grid_minor = color_without_transparency(colors.editor_grid_minor);
-    colors.track_header = color_without_transparency(colors.track_header);
-    colors.track_header_selected = color_without_transparency(colors.track_header_selected);
-    colors.clip_audio = color_without_transparency(colors.clip_audio);
-    colors.clip_midi = color_without_transparency(colors.clip_midi);
-    colors.clip_automation = color_without_transparency(colors.clip_automation);
-    colors.piano_roll_lane = color_without_transparency(colors.piano_roll_lane);
-    colors.piano_roll_lane_alt = color_without_transparency(colors.piano_roll_lane_alt);
+    colors.lane_header = color_without_transparency(colors.lane_header);
+    colors.lane_header_selected = color_without_transparency(colors.lane_header_selected);
+    colors.range_item_primary = color_without_transparency(colors.range_item_primary);
+    colors.range_item_secondary = color_without_transparency(colors.range_item_secondary);
+    colors.range_item_accent = color_without_transparency(colors.range_item_accent);
+    colors.editor_lane = color_without_transparency(colors.editor_lane);
+    colors.editor_lane_alternate = color_without_transparency(colors.editor_lane_alternate);
     colors.transport_active = color_without_transparency(colors.transport_active);
     colors
 }
@@ -1824,9 +1824,9 @@ fn map_component_tokens(
         button: map(&tokens.button),
         tab: map(&tokens.tab),
         search_field: map(&tokens.search_field),
-        track_header: map(&tokens.track_header),
-        clip_block: map(&tokens.clip_block),
-        piano_roll_lane: map(&tokens.piano_roll_lane),
+        lane_header: map(&tokens.lane_header),
+        range_item: map(&tokens.range_item),
+        editor_lane: map(&tokens.editor_lane),
         property_row: map(&tokens.property_row),
         menu_row: map(&tokens.menu_row),
         transport_control: map(&tokens.transport_control),
@@ -2399,7 +2399,7 @@ fn search_field_tokens(
     }
 }
 
-fn track_header_tokens(
+fn lane_header_tokens(
     colors: &ColorTokens,
     spacing: &SpacingTokens,
     typography: &TypographyTokens,
@@ -2407,7 +2407,7 @@ fn track_header_tokens(
     stroke: &StrokeTokens,
     opacity: &OpacityTokens,
 ) -> ComponentStyle {
-    let base = UiVisual::panel(colors.track_header, Some(stroke.surface), radius.none);
+    let base = UiVisual::panel(colors.lane_header, Some(stroke.surface), radius.none);
 
     ComponentStyle {
         visual: ComponentVisualStates {
@@ -2417,12 +2417,12 @@ fn track_header_tokens(
                 radius.none,
             )),
             selected: Some(UiVisual::panel(
-                colors.track_header_selected,
+                colors.lane_header_selected,
                 Some(stroke.selected),
                 radius.none,
             )),
             focused: Some(UiVisual::panel(
-                colors.track_header_selected,
+                colors.lane_header_selected,
                 Some(stroke.focus),
                 radius.none,
             )),
@@ -2437,7 +2437,7 @@ fn track_header_tokens(
                 radius.none,
             )),
             disabled: Some(UiVisual::panel(
-                color_with_alpha(colors.track_header, 150),
+                color_with_alpha(colors.lane_header, 150),
                 Some(StrokeStyle::new(
                     color_with_alpha(colors.border_muted, 120),
                     stroke.thin_width,
@@ -2480,7 +2480,7 @@ fn track_header_tokens(
     }
 }
 
-fn clip_block_tokens(
+fn range_item_tokens(
     colors: &ColorTokens,
     spacing: &SpacingTokens,
     typography: &TypographyTokens,
@@ -2488,7 +2488,11 @@ fn clip_block_tokens(
     stroke: &StrokeTokens,
     opacity: &OpacityTokens,
 ) -> ComponentStyle {
-    let base = UiVisual::panel(colors.clip_audio, Some(stroke.surface_strong), radius.sm);
+    let base = UiVisual::panel(
+        colors.range_item_primary,
+        Some(stroke.surface_strong),
+        radius.sm,
+    );
 
     ComponentStyle {
         visual: ComponentVisualStates {
@@ -2503,7 +2507,7 @@ fn clip_block_tokens(
                 radius.sm,
             )),
             focused: Some(UiVisual::panel(
-                colors.clip_audio,
+                colors.range_item_primary,
                 Some(stroke.focus),
                 radius.sm,
             )),
@@ -2528,7 +2532,7 @@ fn clip_block_tokens(
                 radius.sm,
             )),
             disabled: Some(UiVisual::panel(
-                color_with_alpha(colors.clip_audio, 135),
+                color_with_alpha(colors.range_item_primary, 135),
                 Some(StrokeStyle::new(
                     color_with_alpha(colors.border_muted, 120),
                     stroke.thin_width,
@@ -2585,14 +2589,14 @@ fn clip_block_tokens(
     }
 }
 
-fn piano_roll_lane_tokens(
+fn editor_lane_tokens(
     colors: &ColorTokens,
     spacing: &SpacingTokens,
     typography: &TypographyTokens,
     radius: &RadiusTokens,
     stroke: &StrokeTokens,
 ) -> ComponentStyle {
-    let base = UiVisual::panel(colors.piano_roll_lane, None, radius.none);
+    let base = UiVisual::panel(colors.editor_lane, None, radius.none);
 
     ComponentStyle {
         visual: ComponentVisualStates {
@@ -2600,12 +2604,12 @@ fn piano_roll_lane_tokens(
             selected: Some(UiVisual::panel(colors.selected, None, radius.none)),
             active: Some(UiVisual::panel(colors.accent_muted, None, radius.none)),
             focused: Some(UiVisual::panel(
-                colors.piano_roll_lane,
+                colors.editor_lane,
                 Some(stroke.focus),
                 radius.none,
             )),
             disabled: Some(UiVisual::panel(
-                color_with_alpha(colors.piano_roll_lane_alt, 150),
+                color_with_alpha(colors.editor_lane_alternate, 150),
                 None,
                 radius.none,
             )),
@@ -3040,11 +3044,11 @@ mod tests {
         let base = Theme::dark();
         let mut editor_colors = base.colors;
         editor_colors.editor_background = ColorRgba::new(4, 8, 12, 255);
-        editor_colors.piano_roll_lane = ColorRgba::new(18, 24, 36, 255);
-        editor_colors.clip_midi = ColorRgba::new(36, 180, 118, 255);
+        editor_colors.editor_lane = ColorRgba::new(18, 24, 36, 255);
+        editor_colors.range_item_secondary = ColorRgba::new(36, 180, 118, 255);
 
         let shell_id = ThemeScopeId::new("shell");
-        let editor_id = ThemeScopeId::new("piano-roll");
+        let editor_id = ThemeScopeId::new("value-grid");
         let registry = ScopedThemeRegistry::new(base.clone())
             .with_scope(ThemeScope::shell(shell_id.clone()))
             .with_scope(
@@ -3070,9 +3074,9 @@ mod tests {
         );
         assert_eq!(
             editor
-                .resolve_visual(ComponentRole::PianoRollLane, ComponentState::NORMAL)
+                .resolve_visual(ComponentRole::EditorLane, ComponentState::NORMAL)
                 .fill,
-            editor_colors.piano_roll_lane
+            editor_colors.editor_lane
         );
     }
 

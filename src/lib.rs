@@ -65,14 +65,13 @@ pub use drag_drop::{
     DropPayloadFilter, DropTargetDescriptor, DropTargetHit, DropTargetId,
 };
 pub use editor::{
-    generate_ruler_ticks, ArrangementGeometry, CurveEditorGeometry, CurveInterpolation, CurvePoint,
-    CurveSegment, EditorAccessibleTarget, EditorAxisRange, EditorCursor, EditorHitId,
-    EditorHitKind, EditorHitTarget, EditorHitTest, EditorHitTester, EditorOverlay,
-    EditorOverlayStack, EditorSurfaceAccessibility, EditorSurfaceId, EditorSurfaceState,
-    EditorToolId, EditorToolMode, EditorTransform, LaneGeometry, MarqueeSelection,
-    PianoRollGeometry, PianoRollNote, PianoRollPitchRange, RulerTickConfig, SnapGrid,
-    TimelineGeometry, TimelineRangeItem, TimelineRangeItemEdge, TimelineRangeItemGeometry,
-    VisibleLaneRange,
+    generate_ruler_ticks, CurveEditorGeometry, CurveInterpolation, CurvePoint, CurveSegment,
+    EditorAccessibleTarget, EditorAxisRange, EditorCursor, EditorHitId, EditorHitKind,
+    EditorHitTarget, EditorHitTest, EditorHitTester, EditorOverlay, EditorOverlayStack,
+    EditorSurfaceAccessibility, EditorSurfaceId, EditorSurfaceState, EditorToolId, EditorToolMode,
+    EditorTransform, LaneGeometry, LaneTimelineGeometry, LaneValueGeometry, LaneValueRange,
+    LaneValueRangeItem, MarqueeSelection, RulerTickConfig, SnapGrid, TimelineGeometry,
+    TimelineRangeItem, TimelineRangeItemEdge, TimelineRangeItemGeometry, VisibleLaneRange,
 };
 #[cfg(feature = "egui")]
 pub use egui_host::{
@@ -7187,8 +7186,8 @@ mod tests {
         let _canvas = doc.add_child(
             doc.root,
             UiNode::canvas(
-                "piano_roll",
-                "orbifold.piano_roll",
+                "editor_surface",
+                "app.editor_surface",
                 Style {
                     size: TaffySize {
                         width: length(100.0),

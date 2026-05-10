@@ -159,7 +159,7 @@ fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
         let root = document.root;
         let transform = EditorTransform::new(UiRect::new(0.0, 0.0, 900.0, 500.0))
             .with_scale(UiPoint::new(12.0, 1.0));
-        let arrangement = ArrangementGeometry::new(
+        let arrangement = LaneTimelineGeometry::new(
             transform,
             LaneGeometry::new(18.0, 16)
                 .with_origin_y(24.0)
@@ -180,7 +180,7 @@ fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
             ColorRgba::new(9, 13, 18, 255),
         )));
         for lane in 0..16 {
-            if let Some(rect) = arrangement.view_clip_rect(lane, EditorAxisRange::new(0.0, 75.0)) {
+            if let Some(rect) = arrangement.view_range_rect(lane, EditorAxisRange::new(0.0, 75.0)) {
                 scene.push(ScenePrimitive::Rect(PaintRect::solid(
                     rect,
                     if lane % 2 == 0 {

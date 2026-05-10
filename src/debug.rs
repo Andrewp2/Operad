@@ -637,28 +637,32 @@ fn collect_theme_tokens(theme: &Theme, tokens: &mut Vec<DebugThemeToken>) {
         "colors.editor_grid_minor",
         theme.colors.editor_grid_minor,
     );
-    push_color(tokens, "colors.track_header", theme.colors.track_header);
+    push_color(tokens, "colors.lane_header", theme.colors.lane_header);
     push_color(
         tokens,
-        "colors.track_header_selected",
-        theme.colors.track_header_selected,
-    );
-    push_color(tokens, "colors.clip_audio", theme.colors.clip_audio);
-    push_color(tokens, "colors.clip_midi", theme.colors.clip_midi);
-    push_color(
-        tokens,
-        "colors.clip_automation",
-        theme.colors.clip_automation,
+        "colors.lane_header_selected",
+        theme.colors.lane_header_selected,
     );
     push_color(
         tokens,
-        "colors.piano_roll_lane",
-        theme.colors.piano_roll_lane,
+        "colors.range_item_primary",
+        theme.colors.range_item_primary,
     );
     push_color(
         tokens,
-        "colors.piano_roll_lane_alt",
-        theme.colors.piano_roll_lane_alt,
+        "colors.range_item_secondary",
+        theme.colors.range_item_secondary,
+    );
+    push_color(
+        tokens,
+        "colors.range_item_accent",
+        theme.colors.range_item_accent,
+    );
+    push_color(tokens, "colors.editor_lane", theme.colors.editor_lane);
+    push_color(
+        tokens,
+        "colors.editor_lane_alternate",
+        theme.colors.editor_lane_alternate,
     );
     push_color(
         tokens,
@@ -1066,9 +1070,9 @@ fn component_roles() -> [(ComponentRole, &'static str); 9] {
         (ComponentRole::Button, "button"),
         (ComponentRole::Tab, "tab"),
         (ComponentRole::SearchField, "search_field"),
-        (ComponentRole::TrackHeader, "track_header"),
-        (ComponentRole::ClipBlock, "clip_block"),
-        (ComponentRole::PianoRollLane, "piano_roll_lane"),
+        (ComponentRole::LaneHeader, "lane_header"),
+        (ComponentRole::RangeItem, "range_item"),
+        (ComponentRole::EditorLane, "editor_lane"),
         (ComponentRole::PropertyRow, "property_row"),
         (ComponentRole::MenuRow, "menu_row"),
         (ComponentRole::TransportControl, "transport_control"),
@@ -1416,11 +1420,12 @@ mod tests {
         let mut editor_colors = base.colors;
         editor_colors.editor_background = ColorRgba::new(1, 2, 3, 255);
         let registry = ScopedThemeRegistry::new(base).with_scope(
-            ThemeScope::editor_surface("piano").with_patch(ThemePatch::new().colors(editor_colors)),
+            ThemeScope::editor_surface("editor-grid")
+                .with_patch(ThemePatch::new().colors(editor_colors)),
         );
 
         let snapshot =
-            DebugThemeSnapshot::from_registry_scope(&registry, &ThemeScopeId::new("piano"))
+            DebugThemeSnapshot::from_registry_scope(&registry, &ThemeScopeId::new("editor-grid"))
                 .unwrap();
 
         assert_eq!(

@@ -69,8 +69,8 @@ pub enum DragDropSurfaceKind {
     TableRow,
     TreeItem,
     EditorSurface,
-    EditorTrack,
-    EditorClip,
+    EditorLane,
+    EditorRangeItem,
     Canvas,
     Custom(String),
 }
@@ -83,7 +83,7 @@ impl DragDropSurfaceKind {
             Self::TableRow => AccessibilityRole::Row,
             Self::TreeItem => AccessibilityRole::TreeItem,
             Self::EditorSurface => AccessibilityRole::EditorSurface,
-            Self::EditorTrack | Self::EditorClip | Self::Canvas | Self::Custom(_) => {
+            Self::EditorLane | Self::EditorRangeItem | Self::Canvas | Self::Custom(_) => {
                 AccessibilityRole::Group
             }
         }
@@ -97,8 +97,8 @@ impl DragDropSurfaceKind {
             Self::TableRow => "Table row",
             Self::TreeItem => "Tree item",
             Self::EditorSurface => "Editor surface",
-            Self::EditorTrack => "Editor track",
-            Self::EditorClip => "Editor clip",
+            Self::EditorLane => "Editor lane",
+            Self::EditorRangeItem => "Editor range item",
             Self::Canvas => "Canvas",
             Self::Custom(label) => label.as_str(),
         }
@@ -514,7 +514,7 @@ mod tests {
     fn drag_source_builds_platform_start_request_when_available() {
         let source = DragSourceDescriptor::new(
             "clip.1",
-            DragDropSurfaceKind::EditorClip,
+            DragDropSurfaceKind::EditorRangeItem,
             UiRect::new(10.0, 20.0, 100.0, 30.0),
             DragPayload::text("clip"),
         )
@@ -548,7 +548,7 @@ mod tests {
         let targets = vec![
             DropTargetDescriptor::new(
                 "track.1",
-                DragDropSurfaceKind::EditorTrack,
+                DragDropSurfaceKind::EditorLane,
                 UiRect::new(0.0, 0.0, 300.0, 60.0),
             )
             .accept_mime_type("audio/*")
@@ -556,7 +556,7 @@ mod tests {
             .z_index(1),
             DropTargetDescriptor::new(
                 "clip.1",
-                DragDropSurfaceKind::EditorClip,
+                DragDropSurfaceKind::EditorRangeItem,
                 UiRect::new(50.0, 10.0, 100.0, 30.0),
             )
             .accept_mime_type("audio/wav")

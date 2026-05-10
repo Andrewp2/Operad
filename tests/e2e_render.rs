@@ -787,7 +787,7 @@ fn editor_primitives_snapshot() {
 
     let transform = EditorTransform::new(UiRect::new(0.0, 0.0, 560.0, 248.0))
         .with_scale(UiPoint::new(10.0, 1.0));
-    let arrangement = ArrangementGeometry::new(
+    let arrangement = LaneTimelineGeometry::new(
         transform,
         LaneGeometry::new(30.0, 4)
             .with_origin_y(36.0)
@@ -810,7 +810,7 @@ fn editor_primitives_snapshot() {
     )));
     for lane in 0..4 {
         let lane_rect = arrangement
-            .view_clip_rect(lane, EditorAxisRange::new(0.0, 56.0))
+            .view_range_rect(lane, EditorAxisRange::new(0.0, 56.0))
             .expect("lane rect");
         let fill = if lane % 2 == 0 {
             ColorRgba::new(14, 21, 29, 255)
