@@ -92,10 +92,10 @@ pub use shell::{
     ShellRegionLayout, ShellWorkspaceState, SplitPaneSide,
 };
 pub use testing::{
-    diff_rgba8, DirtyFlags, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
-    FrameTiming, FrameTimingSection, LayoutAssertions, PaintAssertions, PaintKindSelector,
-    PixelDiffReport, PixelDiffTolerance, PlatformAssertions, ReplayInput, RgbaImageView,
-    TestFailure, TestResult,
+    diff_rgba8, AccessibilityAssertions, DirtyFlags, EventReplay, EventReplayReport,
+    EventReplayStep, EventReplayStepResult, FrameTiming, FrameTimingSection, LayoutAssertions,
+    PaintAssertions, PaintKindSelector, PixelDiffReport, PixelDiffTolerance, PlatformAssertions,
+    ReplayInput, RgbaImageView, TestFailure, TestResult,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, ColorTokens, ComponentIconStates,

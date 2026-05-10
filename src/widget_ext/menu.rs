@@ -716,6 +716,213 @@ impl SelectMenuOutcome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectOptionFilterMatch {
+    pub visible_index: usize,
+    pub option_index: usize,
+    pub id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectOptionFilterEmptyState {
+    pub query: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectOptionFilterState {
+    pub query: String,
+    pub active_match: Option<usize>,
+    pub empty_label: String,
+}
+
+impl SelectOptionFilterState {
+    pub fn new() -> Self {
+        Self {
+            query: String::new(),
+            active_match: None,
+            empty_label: "No options".to_string(),
+        }
+    }
+
+    pub fn with_query(mut self, query: impl Into<String>) -> Self {
+        self.query = query.into();
+        self.active_match = None;
+        self
+    }
+
+    pub fn with_empty_label(mut self, label: impl Into<String>) -> Self {
+        self.empty_label = label.into();
+        self
+    }
+
+    pub fn filtered_indices(&self, options: &[SelectOption]) -> Vec<usize> {
+        filter_select_option_indices(options, &self.query)
+    }
+
+    pub fn matches(&self, options: &[SelectOption]) -> Vec<SelectOptionFilterMatch> {
+        filter_select_options(options, &self.query)
+    }
+
+    pub fn visible_count(&self, options: &[SelectOption]) -> usize {
+        self.filtered_indices(options).len()
+    }
+
+    pub fn is_empty(&self, options: &[SelectOption]) -> bool {
+        self.filtered_indices(options).is_empty()
+    }
+
+    pub fn empty_state(&self, options: &[SelectOption]) -> Option<SelectOptionFilterEmptyState> {
+        self.is_empty(options)
+            .then(|| SelectOptionFilterEmptyState {
+                query: self.query.clone(),
+                label: self.empty_label.clone(),
+            })
+    }
+
+    pub fn set_query(&mut self, query: impl Into<String>, options: &[SelectOption]) {
+        self.query = query.into();
+        let matches = self.matches(options);
+        self.active_match = first_enabled_select_option_match(options, &matches);
+    }
+
+    pub fn active_option_index(&self, options: &[SelectOption]) -> Option<usize> {
+        let matches = self.matches(options);
+        self.active_match
+            .and_then(|index| matches.get(index))
+            .map(|option_match| option_match.option_index)
+    }
+
+    pub fn active_option<'a>(&self, options: &'a [SelectOption]) -> Option<&'a SelectOption> {
+        self.active_option_index(options)
+            .and_then(|index| options.get(index))
+    }
+
+    pub fn active_id<'a>(&self, options: &'a [SelectOption]) -> Option<&'a str> {
+        self.active_option(options).map(|option| option.id.as_str())
+    }
+
+    pub fn active_label<'a>(&self, options: &'a [SelectOption]) -> Option<&'a str> {
+        self.active_option(options)
+            .map(|option| option.label.as_str())
+    }
+
+    pub fn active_accessibility_label(&self, options: &[SelectOption]) -> Option<String> {
+        self.active_option(options).map(option_accessibility_label)
+    }
+
+    pub fn accessibility_value(&self, options: &[SelectOption]) -> String {
+        let count = self.visible_count(options);
+        if count == 0 {
+            self.empty_label.clone()
+        } else if self.query.is_empty() {
+            format!("{count} options")
+        } else {
+            format!("{count} filtered options")
+        }
+    }
+
+    pub fn move_active(
+        &mut self,
+        options: &[SelectOption],
+        direction: NavigationDirection,
+    ) -> Option<usize> {
+        let matches = self.matches(options);
+        let active =
+            next_enabled_select_option_match(options, &matches, self.active_match, direction);
+        self.active_match = active;
+        active
+    }
+
+    pub fn select_active(&self, options: &[SelectOption]) -> Option<SelectSelection> {
+        let matches = self.matches(options);
+        let active = self.active_match?;
+        let option_match = matches.get(active)?;
+        let option = options.get(option_match.option_index)?;
+        if !option.enabled {
+            return None;
+        }
+        Some(SelectSelection {
+            index: option_match.option_index,
+            id: option.id.clone(),
+        })
+    }
+
+    pub fn handle_event(
+        &mut self,
+        options: &[SelectOption],
+        event: &UiInputEvent,
+    ) -> SelectOptionFilterOutcome {
+        let mut outcome = SelectOptionFilterOutcome::default();
+        match event {
+            UiInputEvent::TextInput(text) => {
+                self.query.push_str(text);
+                let matches = self.matches(options);
+                self.active_match = first_enabled_select_option_match(options, &matches);
+                outcome.query_changed = true;
+                outcome.active_match = self.active_match;
+            }
+            UiInputEvent::Key { key, .. } => match key {
+                KeyCode::Backspace => {
+                    if pop_last_char(&mut self.query) {
+                        let matches = self.matches(options);
+                        self.active_match = first_enabled_select_option_match(options, &matches);
+                        outcome.query_changed = true;
+                        outcome.active_match = self.active_match;
+                    }
+                }
+                KeyCode::ArrowDown => {
+                    outcome.active_match = self.move_active(options, NavigationDirection::Next);
+                }
+                KeyCode::ArrowUp => {
+                    outcome.active_match = self.move_active(options, NavigationDirection::Previous);
+                }
+                KeyCode::Home => {
+                    let matches = self.matches(options);
+                    self.active_match = first_enabled_select_option_match(options, &matches);
+                    outcome.active_match = self.active_match;
+                }
+                KeyCode::End => {
+                    let matches = self.matches(options);
+                    self.active_match = last_enabled_select_option_match(options, &matches);
+                    outcome.active_match = self.active_match;
+                }
+                KeyCode::Enter => {
+                    outcome.selected = self.select_active(options);
+                }
+                KeyCode::Escape => outcome.closed = true,
+                _ => {}
+            },
+            _ => {}
+        }
+        outcome
+    }
+}
+
+impl Default for SelectOptionFilterState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelectOptionFilterOutcome {
+    pub query_changed: bool,
+    pub active_match: Option<usize>,
+    pub selected: Option<SelectSelection>,
+    pub closed: bool,
+}
+
+impl SelectOptionFilterOutcome {
+    pub fn is_empty(&self) -> bool {
+        !self.query_changed
+            && self.active_match.is_none()
+            && self.selected.is_none()
+            && !self.closed
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SelectMenuOptions {
     pub width: f32,
@@ -2449,6 +2656,99 @@ fn next_select_typeahead_index(
     })
 }
 
+pub fn filter_select_option_indices(options: &[SelectOption], query: &str) -> Vec<usize> {
+    let query = normalize(query);
+    if query.trim().is_empty() {
+        return (0..options.len()).collect();
+    }
+
+    options
+        .iter()
+        .enumerate()
+        .filter_map(|(index, option)| select_option_matches_query(option, &query).then_some(index))
+        .collect()
+}
+
+pub fn filter_select_options(
+    options: &[SelectOption],
+    query: &str,
+) -> Vec<SelectOptionFilterMatch> {
+    filter_select_option_indices(options, query)
+        .into_iter()
+        .enumerate()
+        .map(|(visible_index, option_index)| {
+            let option = &options[option_index];
+            SelectOptionFilterMatch {
+                visible_index,
+                option_index,
+                id: option.id.clone(),
+                enabled: option.enabled,
+            }
+        })
+        .collect()
+}
+
+fn select_option_matches_query(option: &SelectOption, query: &str) -> bool {
+    let tokens = query.split_whitespace().collect::<Vec<_>>();
+    let id = normalize(&option.id);
+    let label = normalize(&option.label);
+    let accessibility_label = option.accessibility_label.as_deref().map(normalize);
+
+    tokens.iter().all(|token| {
+        id.contains(token)
+            || label.contains(token)
+            || accessibility_label
+                .as_deref()
+                .is_some_and(|label| label.contains(token))
+    })
+}
+
+fn first_enabled_select_option_match(
+    options: &[SelectOption],
+    matches: &[SelectOptionFilterMatch],
+) -> Option<usize> {
+    matches
+        .iter()
+        .position(|option_match| options[option_match.option_index].enabled)
+}
+
+fn last_enabled_select_option_match(
+    options: &[SelectOption],
+    matches: &[SelectOptionFilterMatch],
+) -> Option<usize> {
+    matches
+        .iter()
+        .rposition(|option_match| options[option_match.option_index].enabled)
+}
+
+fn next_enabled_select_option_match(
+    options: &[SelectOption],
+    matches: &[SelectOptionFilterMatch],
+    current: Option<usize>,
+    direction: NavigationDirection,
+) -> Option<usize> {
+    let len = matches.len();
+    if len == 0 {
+        return None;
+    }
+    let start = match (current.filter(|index| *index < len), direction) {
+        (Some(index), NavigationDirection::Next) => (index + 1) % len,
+        (Some(index), NavigationDirection::Previous) => (index + len - 1) % len,
+        (None, NavigationDirection::Next) => 0,
+        (None, NavigationDirection::Previous) => len - 1,
+    };
+    for offset in 0..len {
+        let index = match direction {
+            NavigationDirection::Next => (start + offset) % len,
+            NavigationDirection::Previous => (start + len - offset) % len,
+        };
+        if options[matches[index].option_index].enabled {
+            return Some(index);
+        }
+    }
+    None
+}
+
 fn active_select_row(
     options: &[SelectOption],
     rows: &[UiNodeId],
@@ -3324,6 +3624,116 @@ mod tests {
         let outcome = state.handle_event(&options, &UiInputEvent::TextInput("a".to_string()));
         assert_eq!(outcome.active, Some(0));
         assert_eq!(state.active, Some(0));
+    }
+
+    #[test]
+    fn select_option_filter_preserves_option_indices_and_searches_option_metadata() {
+        let options = vec![
+            SelectOption::new("lofi", "Low fidelity").accessibility_label("Preview quality"),
+            SelectOption::new("studio", "Studio").disabled(),
+            SelectOption::new("high", "High fidelity"),
+        ];
+        let mut state = SelectOptionFilterState::new();
+
+        state.set_query("fidelity", &options);
+        assert_eq!(state.filtered_indices(&options), vec![0, 2]);
+        assert_eq!(state.active_match, Some(0));
+        assert_eq!(state.active_option_index(&options), Some(0));
+        assert_eq!(state.active_id(&options), Some("lofi"));
+        assert_eq!(
+            state.active_accessibility_label(&options).as_deref(),
+            Some("Preview quality")
+        );
+        assert_eq!(state.accessibility_value(&options), "2 filtered options");
+
+        state.set_query("studio", &options);
+        assert_eq!(state.filtered_indices(&options), vec![1]);
+        assert_eq!(state.active_match, None);
+        assert_eq!(state.select_active(&options), None);
+    }
+
+    #[test]
+    fn select_option_filter_moves_through_filtered_enabled_options_and_selects_existing_shape() {
+        let options = vec![
+            SelectOption::new("alpha", "Alpha"),
+            SelectOption::new("alpine", "Alpine").disabled(),
+            SelectOption::new("atlas", "Atlas"),
+            SelectOption::new("beta", "Beta"),
+        ];
+        let mut state = SelectOptionFilterState::new().with_query("a");
+        state.set_query("a", &options);
+
+        assert_eq!(state.filtered_indices(&options), vec![0, 1, 2, 3]);
+        assert_eq!(state.active_match, Some(0));
+
+        let active = state.move_active(&options, NavigationDirection::Next);
+        assert_eq!(active, Some(2));
+        assert_eq!(
+            state.select_active(&options),
+            Some(SelectSelection {
+                index: 2,
+                id: "atlas".to_string(),
+            })
+        );
+
+        let active = state.move_active(&options, NavigationDirection::Previous);
+        assert_eq!(active, Some(0));
+    }
+
+    #[test]
+    fn select_option_filter_handles_text_input_backspace_empty_and_escape() {
+        let options = vec![
+            SelectOption::new("alpha", "Alpha"),
+            SelectOption::new("beta", "Beta"),
+        ];
+        let mut state = SelectOptionFilterState::new().with_empty_label("No matching options");
+
+        let outcome = state.handle_event(&options, &UiInputEvent::TextInput("zz".to_string()));
+        assert!(outcome.query_changed);
+        assert_eq!(state.query, "zz");
+        assert_eq!(
+            state.empty_state(&options),
+            Some(SelectOptionFilterEmptyState {
+                query: "zz".to_string(),
+                label: "No matching options".to_string(),
+            })
+        );
+        assert_eq!(state.accessibility_value(&options), "No matching options");
+
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Backspace,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.query_changed);
+        assert_eq!(state.query, "z");
+
+        state.set_query("beta", &options);
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(
+            outcome.selected,
+            Some(SelectSelection {
+                index: 1,
+                id: "beta".to_string(),
+            })
+        );
+
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Escape,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.closed);
     }
 
     #[test]

@@ -15,6 +15,7 @@ use crate::platform::{
     ScreenshotResponse, TextImeResponse,
 };
 use crate::{
+    AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree,
     HostFrameOutput, PaintItem, PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent,
     UiInputResult, UiNode, UiNodeId, UiRect, UiSize,
 };
@@ -229,6 +230,140 @@ impl<'a> LayoutAssertions<'a> {
         } else {
             Err(TestFailure::new(format!(
                 "node `{outer}` does not contain `{inner}`"
+            )))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AccessibilityAssertions<'a> {
+    document: &'a UiDocument,
+    tree: AccessibilityTree,
+}
+
+impl<'a> AccessibilityAssertions<'a> {
+    pub fn new(document: &'a UiDocument) -> Self {
+        Self {
+            document,
+            tree: document.accessibility_snapshot(),
+        }
+    }
+
+    pub fn tree(&self) -> &AccessibilityTree {
+        &self.tree
+    }
+
+    pub fn node(&self, name: &str) -> TestResult<&AccessibilityNode> {
+        let (id, _) = LayoutAssertions::new(self.document).node(name)?;
+        self.tree
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .ok_or_else(|| TestFailure::new(format!("node `{name}` has no accessibility node")))
+    }
+
+    pub fn require_role(&self, name: &str, role: AccessibilityRole) -> TestResult {
+        let node = self.node(name)?;
+        if node.role == role {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected accessibility role {role:?}, got {:?}",
+                node.role
+            )))
+        }
+    }
+
+    pub fn require_label(&self, name: &str, label: &str) -> TestResult {
+        let node = self.node(name)?;
+        if node.label.as_deref() == Some(label) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected accessibility label `{label}`, got {:?}",
+                node.label
+            )))
+        }
+    }
+
+    pub fn require_value_contains(&self, name: &str, text: &str) -> TestResult {
+        let node = self.node(name)?;
+        if node
+            .value
+            .as_deref()
+            .is_some_and(|value| value.contains(text))
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected accessibility value containing `{text}`, got {:?}",
+                node.value
+            )))
+        }
+    }
+
+    pub fn require_summary_contains(&self, name: &str, text: &str) -> TestResult {
+        let node = self.node(name)?;
+        let screen_reader_text = node
+            .summary
+            .as_ref()
+            .map(|summary| summary.screen_reader_text());
+        if screen_reader_text
+            .as_deref()
+            .is_some_and(|summary| summary.contains(text))
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected accessibility summary containing `{text}`, got {screen_reader_text:?}"
+            )))
+        }
+    }
+
+    pub fn require_live_region(
+        &self,
+        name: &str,
+        live_region: AccessibilityLiveRegion,
+    ) -> TestResult {
+        let node = self.node(name)?;
+        if node.live_region == live_region {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected live region {live_region:?}, got {:?}",
+                node.live_region
+            )))
+        }
+    }
+
+    pub fn require_active_descendant(&self, owner: &str, descendant: &str) -> TestResult {
+        let owner_node = self.node(owner)?;
+        let descendant_id = LayoutAssertions::new(self.document).node(descendant)?.0;
+        if owner_node.relations.active_descendant == Some(descendant_id) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{owner}` expected active descendant `{descendant}`, got {:?}",
+                owner_node.relations.active_descendant
+            )))
+        }
+    }
+
+    pub fn require_focus_order(&self, names: &[&str]) -> TestResult {
+        let expected = names
+            .iter()
+            .map(|name| {
+                LayoutAssertions::new(self.document)
+                    .node(name)
+                    .map(|(id, _)| id)
+            })
+            .collect::<TestResult<Vec<_>>>()?;
+        if self.tree.focus_order == expected {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected accessibility focus order {expected:?}, got {:?}",
+                self.tree.focus_order
             )))
         }
     }
@@ -633,7 +768,8 @@ mod tests {
         RepaintResponse,
     };
     use crate::{
-        length, root_style, ApproxTextMeasurer, ClipBehavior, ColorRgba, HostFrameOutput,
+        length, root_style, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
+        AccessibilitySummary, ApproxTextMeasurer, ClipBehavior, ColorRgba, HostFrameOutput,
         HostInteractionState, ImageContent, InputBehavior, RawKeyboardEvent, RawPointerEvent,
         RawWheelEvent, StrokeStyle, TextStyle, UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
@@ -754,6 +890,85 @@ mod tests {
         paint
             .require_node_kind("panel.label", PaintKindSelector::Text)
             .expect("text paint");
+    }
+
+    #[test]
+    fn accessibility_assertions_use_stable_node_names() {
+        let mut document = UiDocument::new(root_style(260.0, 120.0));
+        let root = document.root;
+        let list = document.add_child(
+            root,
+            UiNode::container("choices", fixed_style(160.0, 80.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::List)
+                    .label("Choices")
+                    .value("2 options")
+                    .focusable()
+                    .focus_order(0),
+            ),
+        );
+        let first = document.add_child(
+            list,
+            UiNode::container("choices.alpha", fixed_style(140.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::ListItem)
+                    .label("Alpha")
+                    .selected(true)
+                    .focusable()
+                    .focus_order(1),
+            ),
+        );
+        document.add_child(
+            list,
+            UiNode::container("choices.beta", fixed_style(140.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::ListItem)
+                    .label("Beta")
+                    .focusable()
+                    .focus_order(2),
+            ),
+        );
+        document.node_mut(list).accessibility = Some(
+            AccessibilityMeta::new(AccessibilityRole::List)
+                .label("Choices")
+                .value("2 options")
+                .active_descendant(first)
+                .focusable()
+                .focus_order(0),
+        );
+        document.add_child(
+            root,
+            UiNode::container("status", fixed_style(160.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Status)
+                    .label("Sync")
+                    .value("Ready")
+                    .live_region(AccessibilityLiveRegion::Polite)
+                    .summary(AccessibilitySummary::new("Sync").item("State", "Ready")),
+            ),
+        );
+        document
+            .compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let accessibility = AccessibilityAssertions::new(&document);
+        accessibility
+            .require_role("choices", AccessibilityRole::List)
+            .expect("list role");
+        accessibility
+            .require_label("choices.alpha", "Alpha")
+            .expect("option label");
+        accessibility
+            .require_value_contains("choices", "2 options")
+            .expect("list value");
+        accessibility
+            .require_active_descendant("choices", "choices.alpha")
+            .expect("active descendant");
+        accessibility
+            .require_focus_order(&["choices", "choices.alpha", "choices.beta"])
+            .expect("focus order");
+        accessibility
+            .require_live_region("status", AccessibilityLiveRegion::Polite)
+            .expect("status live region");
+        accessibility
+            .require_summary_contains("status", "State: Ready")
+            .expect("status summary");
     }
 
     #[test]

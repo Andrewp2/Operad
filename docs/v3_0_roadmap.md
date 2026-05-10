@@ -201,7 +201,9 @@ The branch starts from Operad 2.0.0 plus:
 - Renderer-neutral testing helpers in `src/testing.rs` for event replay, raw
   input conversion checks, platform-output assertions, stable-name layout
   assertions, paint-list assertions, RGBA pixel diffs with tolerances, dirty
-  flags, and frame timing sections.
+  flags, frame timing sections, and stable-name accessibility assertions for
+  roles, labels, values, summaries, live regions, focus order, and active
+  descendants.
 - Renderer-neutral debug snapshots in `src/debug.rs` for layout bounds, clip
   rects, paint primitive counts, z ranges, host interaction flags, command
   scopes, active gestures, repaint reasons, frame timings, theme token
@@ -242,6 +244,10 @@ The branch starts from Operad 2.0.0 plus:
   displaying scoped shortcuts, and returning typed `CommandId` selections.
 - Active-descendant accessibility relationships for select menus, menu lists,
   menu bars, dropdown popups, and command palette result navigation.
+- Searchable select/listbox state in `src/widget_ext/menu.rs` for filtered
+  option indices, active enabled option navigation, empty-state metadata,
+  accessibility values, and selection results using existing `SelectSelection`
+  shapes.
 - Numeric parameter contracts in `src/widget_ext/pickers.rs` for unit
   prefixes/suffixes, normalized linear/logarithmic value mapping, formatted
   parameter accessibility metadata, and parameter-aware commit/cancel text
