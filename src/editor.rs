@@ -7,7 +7,10 @@
 
 use crate::input::{DragGesture, GestureEvent, GesturePhase, PointerCapture};
 use crate::platform::{LayerOrder, UiLayer};
-use crate::{KeyModifiers, UiNodeId, UiPoint, UiRect};
+use crate::{
+    AccessibilityAction, AccessibilityMeta, AccessibilityRole, AccessibilitySummary,
+    AccessibilityValueRange, KeyModifiers, UiNodeId, UiPoint, UiRect,
+};
 
 const MIN_SCALE: f32 = 0.0001;
 
@@ -1523,6 +1526,19 @@ pub enum EditorHitKind {
     Custom(String),
 }
 
+impl EditorHitKind {
+    pub const fn accessibility_role(&self) -> AccessibilityRole {
+        match self {
+            Self::Surface => AccessibilityRole::EditorSurface,
+            Self::Item => AccessibilityRole::ListItem,
+            Self::ResizeHandle => AccessibilityRole::Slider,
+            Self::Ruler => AccessibilityRole::Ruler,
+            Self::GridLine => AccessibilityRole::Separator,
+            Self::Overlay | Self::Custom(_) => AccessibilityRole::Group,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditorHitTarget {
     pub id: EditorHitId,
@@ -1569,6 +1585,242 @@ impl EditorHitTarget {
 
     pub fn contains_world_point(&self, point: UiPoint) -> bool {
         self.world_rect.contains_point(point)
+    }
+
+    pub fn accessible_target(&self, label: impl Into<String>) -> EditorAccessibleTarget {
+        EditorAccessibleTarget::from_hit_target(self, label)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditorAccessibleTarget {
+    pub id: EditorHitId,
+    pub role: AccessibilityRole,
+    pub label: String,
+    pub value: Option<String>,
+    pub hint: Option<String>,
+    pub selected: Option<bool>,
+    pub disabled: bool,
+    pub read_only: bool,
+    pub focusable: bool,
+    pub value_range: Option<AccessibilityValueRange>,
+    pub key_shortcuts: Vec<String>,
+    pub actions: Vec<AccessibilityAction>,
+}
+
+impl EditorAccessibleTarget {
+    pub fn new(
+        id: impl Into<EditorHitId>,
+        role: AccessibilityRole,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            role,
+            label: label.into(),
+            value: None,
+            hint: None,
+            selected: None,
+            disabled: false,
+            read_only: false,
+            focusable: true,
+            value_range: None,
+            key_shortcuts: Vec::new(),
+            actions: Vec::new(),
+        }
+    }
+
+    pub fn from_hit_target(target: &EditorHitTarget, label: impl Into<String>) -> Self {
+        Self {
+            focusable: target.selectable || target.draggable,
+            ..Self::new(target.id.clone(), target.kind.accessibility_role(), label)
+        }
+    }
+
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    pub const fn selected(mut self, selected: bool) -> Self {
+        self.selected = Some(selected);
+        self
+    }
+
+    pub const fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub const fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    pub const fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
+    }
+
+    pub const fn value_range(mut self, range: AccessibilityValueRange) -> Self {
+        self.value_range = Some(range);
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.key_shortcuts.push(shortcut.into());
+        self
+    }
+
+    pub fn action(mut self, action: AccessibilityAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(self.role).label(self.label.clone());
+        if let Some(value) = &self.value {
+            meta = meta.value(value.clone());
+        }
+        if let Some(hint) = &self.hint {
+            meta = meta.hint(hint.clone());
+        }
+        if self.disabled {
+            meta = meta.disabled();
+        } else if self.focusable {
+            meta = meta.focusable();
+        }
+        if let Some(selected) = self.selected {
+            meta = meta.selected(selected);
+        }
+        if self.read_only {
+            meta = meta.read_only();
+        }
+        if let Some(range) = self.value_range {
+            meta = meta.value_range(range);
+        }
+        for shortcut in &self.key_shortcuts {
+            meta = meta.shortcut(shortcut.clone());
+        }
+        for action in &self.actions {
+            meta = meta.action(action.clone());
+        }
+        meta
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditorSurfaceAccessibility {
+    pub label: String,
+    pub description: Option<String>,
+    pub visible_units: Option<EditorAxisRange>,
+    pub visible_lanes: Option<VisibleLaneRange>,
+    pub target_count: Option<usize>,
+    pub selected_count: Option<usize>,
+    pub active: Option<EditorHitId>,
+    pub instructions: Vec<String>,
+    pub actions: Vec<AccessibilityAction>,
+}
+
+impl EditorSurfaceAccessibility {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            description: None,
+            visible_units: None,
+            visible_lanes: None,
+            target_count: None,
+            selected_count: None,
+            active: None,
+            instructions: Vec::new(),
+            actions: Vec::new(),
+        }
+    }
+
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub const fn visible_units(mut self, range: EditorAxisRange) -> Self {
+        self.visible_units = Some(range);
+        self
+    }
+
+    pub const fn visible_lanes(mut self, range: VisibleLaneRange) -> Self {
+        self.visible_lanes = Some(range);
+        self
+    }
+
+    pub const fn target_count(mut self, count: usize) -> Self {
+        self.target_count = Some(count);
+        self
+    }
+
+    pub const fn selected_count(mut self, count: usize) -> Self {
+        self.selected_count = Some(count);
+        self
+    }
+
+    pub fn active(mut self, id: impl Into<EditorHitId>) -> Self {
+        self.active = Some(id.into());
+        self
+    }
+
+    pub fn instruction(mut self, instruction: impl Into<String>) -> Self {
+        self.instructions.push(instruction.into());
+        self
+    }
+
+    pub fn action(mut self, action: AccessibilityAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub fn summary(&self) -> AccessibilitySummary {
+        let mut summary = AccessibilitySummary::new(self.label.clone());
+        if let Some(description) = &self.description {
+            summary = summary.description(description.clone());
+        }
+        if let Some(range) = self.visible_units {
+            summary = summary.item("Visible units", format_axis_range(range));
+        }
+        if let Some(range) = self.visible_lanes {
+            summary = summary.item("Visible lanes", format_visible_lanes(range));
+        }
+        if let Some(count) = self.target_count {
+            summary = summary.item("Targets", count.to_string());
+        }
+        if let Some(count) = self.selected_count {
+            summary = summary.item("Selected", count.to_string());
+        }
+        if let Some(active) = &self.active {
+            summary = summary.item("Active", active.as_str());
+        }
+        for instruction in &self.instructions {
+            summary = summary.instruction(instruction.clone());
+        }
+        summary
+    }
+
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::EditorSurface)
+            .label(self.label.clone())
+            .focusable()
+            .summary(self.summary());
+        if let Some(count) = self.target_count {
+            let selected = self.selected_count.unwrap_or(0);
+            meta = meta.value(format!("{count} targets, {selected} selected"));
+        }
+        for action in &self.actions {
+            meta = meta.action(action.clone());
+        }
+        meta
     }
 }
 
@@ -1894,6 +2146,39 @@ fn clamp_to_axis_range(value: f32, range: EditorAxisRange) -> f32 {
         return range.start;
     }
     value.clamp(range.start, range.end)
+}
+
+fn format_axis_range(range: EditorAxisRange) -> String {
+    format!(
+        "{} to {}",
+        format_f32_compact(range.start),
+        format_f32_compact(range.end)
+    )
+}
+
+fn format_visible_lanes(range: VisibleLaneRange) -> String {
+    if range.is_empty() {
+        "none".to_string()
+    } else {
+        format!(
+            "{} to {}",
+            range.start_index,
+            range.end_index.saturating_sub(1)
+        )
+    }
+}
+
+fn format_f32_compact(value: f32) -> String {
+    if value.is_finite() {
+        let rounded = value.round();
+        if (value - rounded).abs() <= 0.0001 {
+            format!("{rounded:.0}")
+        } else {
+            format!("{value:.3}")
+        }
+    } else {
+        "0".to_string()
+    }
 }
 
 fn finite_or_zero(value: f32) -> f32 {
@@ -2277,6 +2562,77 @@ mod tests {
         assert_eq!(created.id.as_str(), "curve.new");
         assert_eq!(created.unit, 125.0);
         assert_eq!(created.value, 0.75);
+    }
+
+    #[test]
+    fn editor_accessibility_helpers_describe_targets_and_surfaces() {
+        let handle = EditorHitTarget::new(
+            "range.1.start",
+            EditorHitKind::ResizeHandle,
+            UiRect::new(120.0, 62.0, 3.0, 5.0),
+        )
+        .selectable(false)
+        .cursor(EditorCursor::ResizeHorizontal);
+        let target = handle
+            .accessible_target("Range start")
+            .value("Start 120")
+            .hint("Resize with arrow keys or drag")
+            .selected(true)
+            .value_range(AccessibilityValueRange::new(0.0, 240.0).with_step(0.25))
+            .shortcut("Left")
+            .action(AccessibilityAction::new("nudge.left", "Nudge left").shortcut("Left"));
+        let meta = target.accessibility_meta();
+
+        assert_eq!(handle.kind.accessibility_role(), AccessibilityRole::Slider);
+        assert_eq!(meta.role, AccessibilityRole::Slider);
+        assert_eq!(meta.label.as_deref(), Some("Range start"));
+        assert_eq!(meta.value.as_deref(), Some("Start 120"));
+        assert_eq!(meta.hint.as_deref(), Some("Resize with arrow keys or drag"));
+        assert_eq!(meta.selected, Some(true));
+        assert!(meta.focusable);
+        assert_eq!(
+            meta.value_range,
+            Some(AccessibilityValueRange::new(0.0, 240.0).with_step(0.25))
+        );
+        assert_eq!(meta.key_shortcuts, vec!["Left".to_string()]);
+        assert_eq!(meta.actions[0].id, "nudge.left");
+
+        let disabled_meta = EditorHitTarget::new(
+            "grid.1",
+            EditorHitKind::GridLine,
+            UiRect::new(128.0, 50.0, 0.5, 120.0),
+        )
+        .selectable(false)
+        .draggable(false)
+        .accessible_target("Grid line")
+        .disabled(true)
+        .read_only(true)
+        .accessibility_meta();
+        assert_eq!(disabled_meta.role, AccessibilityRole::Separator);
+        assert!(!disabled_meta.enabled);
+        assert!(!disabled_meta.focusable);
+        assert!(disabled_meta.read_only);
+
+        let surface = EditorSurfaceAccessibility::new("Timeline editor")
+            .description("Custom editor surface")
+            .visible_units(EditorAxisRange::new(100.0, 132.5))
+            .visible_lanes(VisibleLaneRange::new(2, 6))
+            .target_count(8)
+            .selected_count(2)
+            .active("range.1")
+            .instruction("Use arrow keys to move selected items")
+            .action(AccessibilityAction::new("delete", "Delete selected"));
+        let surface_meta = surface.accessibility_meta();
+        let summary_text = surface.summary().screen_reader_text();
+
+        assert_eq!(surface_meta.role, AccessibilityRole::EditorSurface);
+        assert_eq!(surface_meta.label.as_deref(), Some("Timeline editor"));
+        assert_eq!(surface_meta.value.as_deref(), Some("8 targets, 2 selected"));
+        assert!(surface_meta.focusable);
+        assert_eq!(surface_meta.actions[0].id, "delete");
+        assert!(summary_text.contains("Visible units: 100 to 132.500"));
+        assert!(summary_text.contains("Visible lanes: 2 to 5"));
+        assert!(summary_text.contains("Active: range.1"));
     }
 
     #[test]

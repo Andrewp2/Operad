@@ -64,12 +64,13 @@ pub use drag_drop::{
 };
 pub use editor::{
     generate_ruler_ticks, ArrangementGeometry, CurveEditorGeometry, CurveInterpolation, CurvePoint,
-    CurveSegment, EditorAxisRange, EditorCursor, EditorHitId, EditorHitKind, EditorHitTarget,
-    EditorHitTest, EditorHitTester, EditorOverlay, EditorOverlayStack, EditorSurfaceId,
-    EditorSurfaceState, EditorToolId, EditorToolMode, EditorTransform, LaneGeometry,
-    MarqueeSelection, PianoRollGeometry, PianoRollNote, PianoRollPitchRange, RulerTickConfig,
-    SnapGrid, TimelineGeometry, TimelineRangeItem, TimelineRangeItemEdge,
-    TimelineRangeItemGeometry, VisibleLaneRange,
+    CurveSegment, EditorAccessibleTarget, EditorAxisRange, EditorCursor, EditorHitId,
+    EditorHitKind, EditorHitTarget, EditorHitTest, EditorHitTester, EditorOverlay,
+    EditorOverlayStack, EditorSurfaceAccessibility, EditorSurfaceId, EditorSurfaceState,
+    EditorToolId, EditorToolMode, EditorTransform, LaneGeometry, MarqueeSelection,
+    PianoRollGeometry, PianoRollNote, PianoRollPitchRange, RulerTickConfig, SnapGrid,
+    TimelineGeometry, TimelineRangeItem, TimelineRangeItemEdge, TimelineRangeItemGeometry,
+    VisibleLaneRange,
 };
 pub use host::{
     process_document_frame, process_shell_frame, text_input_id_for_node, HostAdapter,

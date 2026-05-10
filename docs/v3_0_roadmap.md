@@ -329,6 +329,10 @@ The branch starts from Operad 2.0.0 plus:
 - Editor-surface helpers in `src/editor.rs` for world/view transforms, hit
   testing, snapping, cursor/tool modes, marquee selection, drag capture, and
   overlay ordering.
+- Editor accessibility helpers in `src/editor.rs` for mapping generic hit
+  targets, resize handles, rulers, overlays, active selections, visible ranges,
+  and keyboard actions into screen-reader metadata for app-owned custom
+  surfaces.
 - Arrangement and lane geometry helpers in `src/editor.rs` for unit-to-x
   timelines, lane y/index mapping, visible ranges, clip/selection/playhead
   rectangles, ruler ticks, and grid snapping.
