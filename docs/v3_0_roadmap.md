@@ -293,6 +293,9 @@ The branch starts from Operad 2.0.0 plus:
 - Feature-gated egui platform-output plans in `src/egui_host.rs` for mapping
   supported Operad clipboard-write, open-URL, cursor, and repaint requests into
   egui-compatible output while reporting unsupported host services explicitly.
+- Feature-gated egui texture-delta plans in `src/egui_host.rs` for converting
+  renderer-neutral resource updates into stable egui user texture deltas without
+  storing egui texture handles in app-owned UI state.
 - Embedded canvas/native viewport contracts for callback, texture, and
   native-viewport render modes, host input capture policies, pointer-lock
   requests, domain hit-testing flags, renderer-facing canvas extraction, and

@@ -10,8 +10,10 @@ use crate::input::{
     RawPointerEvent, RawTextInputEvent, RawWheelEvent,
 };
 use crate::platform::{
-    ClipboardRequest, CursorRequest, CursorShape, PlatformRequest, RepaintRequest,
+    ClipboardRequest, CursorRequest, CursorShape, PlatformRequest, RepaintRequest, ResourceDomain,
+    ResourceHandle, ResourceKind,
 };
+use crate::renderer::{PixelRect, ResourceFormat, ResourceUpdate};
 use crate::{FocusDirection, KeyCode, KeyModifiers, UiPoint};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,6 +253,69 @@ impl fmt::Debug for EguiPlatformOutputPlan {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct EguiTextureDeltaPlan {
+    pub textures_delta: egui::TexturesDelta,
+    pub rejected_updates: Vec<ResourceUpdate>,
+}
+
+impl EguiTextureDeltaPlan {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_resource_updates<'a>(
+        updates: impl IntoIterator<Item = &'a ResourceUpdate>,
+        options: egui::TextureOptions,
+    ) -> Self {
+        let mut plan = Self::new();
+        for update in updates {
+            plan.push_update(update, options);
+        }
+        plan
+    }
+
+    pub fn push_update(&mut self, update: &ResourceUpdate, options: egui::TextureOptions) -> bool {
+        let Some(image) = egui_color_image_for_update(update) else {
+            self.rejected_updates.push(update.clone());
+            return false;
+        };
+        let texture = egui_texture_id_for_resource(&update.descriptor.handle);
+        let image = egui::ImageData::Color(std::sync::Arc::new(image));
+        let delta = match update.dirty_rect {
+            Some(rect) => egui::epaint::ImageDelta::partial(
+                [
+                    usize::try_from(rect.x).unwrap_or(usize::MAX),
+                    usize::try_from(rect.y).unwrap_or(usize::MAX),
+                ],
+                image,
+                options,
+            ),
+            None => egui::epaint::ImageDelta::full(image, options),
+        };
+        self.textures_delta.set.push((texture, delta));
+        true
+    }
+
+    pub fn is_fully_supported(&self) -> bool {
+        self.rejected_updates.is_empty()
+    }
+}
+
+impl fmt::Debug for EguiTextureDeltaPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EguiTextureDeltaPlan")
+            .field("textures_delta", &self.textures_delta)
+            .field("rejected_updates", &self.rejected_updates)
+            .finish()
+    }
+}
+
+pub fn egui_texture_id_for_resource(handle: &ResourceHandle) -> egui::TextureId {
+    egui::TextureId::User(stable_resource_hash(handle))
+}
+
 pub fn egui_cursor_icon(shape: CursorShape) -> egui::CursorIcon {
     match shape {
         CursorShape::Default => egui::CursorIcon::Default,
@@ -270,6 +335,80 @@ pub fn egui_cursor_icon(shape: CursorShape) -> egui::CursorIcon {
         CursorShape::ZoomIn => egui::CursorIcon::ZoomIn,
         CursorShape::ZoomOut => egui::CursorIcon::ZoomOut,
     }
+}
+
+fn egui_color_image_for_update(update: &ResourceUpdate) -> Option<egui::ColorImage> {
+    if !update.has_expected_byte_len() || !update.dirty_rect_is_valid() {
+        return None;
+    }
+    let size = update.dirty_rect.map(pixel_rect_size).unwrap_or_else(|| {
+        pixel_size(update.descriptor.size.width, update.descriptor.size.height)
+    })?;
+    if size[0] == 0 || size[1] == 0 {
+        return None;
+    }
+    match update.descriptor.format {
+        ResourceFormat::Rgba8 => Some(egui::ColorImage::from_rgba_unmultiplied(
+            size,
+            &update.bytes,
+        )),
+        ResourceFormat::Bgra8 => {
+            let mut rgba = Vec::with_capacity(update.bytes.len());
+            for bgra in update.bytes.chunks_exact(4) {
+                rgba.extend_from_slice(&[bgra[2], bgra[1], bgra[0], bgra[3]]);
+            }
+            Some(egui::ColorImage::from_rgba_unmultiplied(size, &rgba))
+        }
+        ResourceFormat::Alpha8 => {
+            let pixels = update
+                .bytes
+                .iter()
+                .map(|alpha| egui::Color32::from_rgba_unmultiplied(255, 255, 255, *alpha))
+                .collect::<Vec<_>>();
+            Some(egui::ColorImage::new(size, pixels))
+        }
+    }
+}
+
+fn pixel_rect_size(rect: PixelRect) -> Option<[usize; 2]> {
+    pixel_size(rect.width, rect.height)
+}
+
+fn pixel_size(width: u32, height: u32) -> Option<[usize; 2]> {
+    Some([usize::try_from(width).ok()?, usize::try_from(height).ok()?])
+}
+
+fn stable_resource_hash(handle: &ResourceHandle) -> u64 {
+    let mut hash = 0xcbf29ce484222325;
+    hash = fnv1a(hash, &[resource_domain_byte(handle.id().domain)]);
+    hash = fnv1a(hash, &[resource_kind_byte(handle.kind())]);
+    fnv1a(hash, handle.id().key.as_bytes())
+}
+
+fn resource_domain_byte(domain: ResourceDomain) -> u8 {
+    match domain {
+        ResourceDomain::BuiltIn => 1,
+        ResourceDomain::App => 2,
+        ResourceDomain::Host => 3,
+    }
+}
+
+fn resource_kind_byte(kind: ResourceKind) -> u8 {
+    match kind {
+        ResourceKind::Image => 1,
+        ResourceKind::Icon => 2,
+        ResourceKind::Texture => 3,
+        ResourceKind::Thumbnail => 4,
+    }
+}
+
+fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    const PRIME: u64 = 0x100000001b3;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 pub fn egui_modifiers(modifiers: egui::Modifiers) -> KeyModifiers {
@@ -387,8 +526,10 @@ mod tests {
     use crate::input::{WheelDeltaUnit, WheelPhase};
     use crate::platform::{
         ClipboardRequest, CursorRequest, CursorShape, FileDialogMode, FileDialogRequest,
-        LogicalPoint, OpenUrlRequest, PlatformRequest, RepaintRequest,
+        ImageHandle, LogicalPoint, OpenUrlRequest, PixelSize, PlatformRequest, RepaintRequest,
+        ResourceHandle, TextureHandle,
     };
+    use crate::renderer::{PixelRect, ResourceDescriptor, ResourceFormat, ResourceUpdate};
     use crate::{
         ApproxTextMeasurer, InputBehavior, UiDocument, UiInputEvent, UiNode, UiNodeStyle, UiSize,
     };
@@ -772,5 +913,139 @@ mod tests {
         assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::None);
         assert!(plan.push_request(&PlatformRequest::Cursor(CursorRequest::SetVisible(true,))));
         assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::Default);
+    }
+
+    #[test]
+    fn egui_texture_delta_plan_maps_full_rgba_updates() {
+        let handle = ResourceHandle::Texture(TextureHandle::app("menu.thumbnail"));
+        let descriptor =
+            ResourceDescriptor::new(handle.clone(), PixelSize::new(2, 1), ResourceFormat::Rgba8)
+                .version(7);
+        let update = ResourceUpdate::full(descriptor, vec![10, 20, 30, 40, 50, 60, 70, 80]);
+
+        let plan =
+            EguiTextureDeltaPlan::from_resource_updates([&update], egui::TextureOptions::NEAREST);
+
+        assert!(plan.is_fully_supported());
+        assert!(plan.rejected_updates.is_empty());
+        assert_eq!(plan.textures_delta.set.len(), 1);
+        assert_eq!(
+            plan.textures_delta.set[0].0,
+            egui_texture_id_for_resource(&handle)
+        );
+        let delta = &plan.textures_delta.set[0].1;
+        assert_eq!(delta.pos, None);
+        assert_eq!(delta.options, egui::TextureOptions::NEAREST);
+        let egui::ImageData::Color(image) = &delta.image;
+        assert_eq!(image.size, [2, 1]);
+        assert_eq!(
+            image.pixels,
+            vec![
+                egui::Color32::from_rgba_unmultiplied(10, 20, 30, 40),
+                egui::Color32::from_rgba_unmultiplied(50, 60, 70, 80),
+            ]
+        );
+    }
+
+    #[test]
+    fn egui_texture_delta_plan_maps_partial_bgra_and_alpha_updates() {
+        let bgra_handle = ResourceHandle::Image(ImageHandle::app("cover.partial"));
+        let bgra = ResourceUpdate::partial(
+            ResourceDescriptor::new(
+                bgra_handle.clone(),
+                PixelSize::new(4, 4),
+                ResourceFormat::Bgra8,
+            ),
+            PixelRect::new(1, 2, 2, 1),
+            vec![30, 20, 10, 40, 70, 60, 50, 80],
+        );
+        let alpha_handle = ResourceHandle::Texture(TextureHandle::app("mask.alpha"));
+        let alpha = ResourceUpdate::full(
+            ResourceDescriptor::new(alpha_handle, PixelSize::new(1, 2), ResourceFormat::Alpha8),
+            vec![64, 192],
+        );
+
+        let plan = EguiTextureDeltaPlan::from_resource_updates(
+            [&bgra, &alpha],
+            egui::TextureOptions::LINEAR,
+        );
+
+        assert!(plan.is_fully_supported());
+        assert_eq!(plan.textures_delta.set.len(), 2);
+        assert_eq!(
+            plan.textures_delta.set[0].0,
+            egui_texture_id_for_resource(&bgra_handle)
+        );
+        assert_eq!(plan.textures_delta.set[0].1.pos, Some([1, 2]));
+        let egui::ImageData::Color(bgra_image) = &plan.textures_delta.set[0].1.image;
+        assert_eq!(bgra_image.size, [2, 1]);
+        assert_eq!(
+            bgra_image.pixels,
+            vec![
+                egui::Color32::from_rgba_unmultiplied(10, 20, 30, 40),
+                egui::Color32::from_rgba_unmultiplied(50, 60, 70, 80),
+            ]
+        );
+
+        let egui::ImageData::Color(alpha_image) = &plan.textures_delta.set[1].1.image;
+        assert_eq!(alpha_image.size, [1, 2]);
+        assert_eq!(
+            alpha_image.pixels,
+            vec![
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 64),
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 192),
+            ]
+        );
+    }
+
+    #[test]
+    fn egui_texture_delta_plan_rejects_invalid_resource_updates() {
+        let invalid_len = ResourceUpdate::full(
+            ResourceDescriptor::new(
+                ResourceHandle::Image(ImageHandle::app("bad.len")),
+                PixelSize::new(2, 2),
+                ResourceFormat::Rgba8,
+            ),
+            vec![0; 3],
+        );
+        let invalid_rect = ResourceUpdate::partial(
+            ResourceDescriptor::new(
+                ResourceHandle::Image(ImageHandle::app("bad.rect")),
+                PixelSize::new(2, 2),
+                ResourceFormat::Rgba8,
+            ),
+            PixelRect::new(2, 2, 1, 1),
+            vec![0; 4],
+        );
+
+        let plan = EguiTextureDeltaPlan::from_resource_updates(
+            [&invalid_len, &invalid_rect],
+            egui::TextureOptions::LINEAR,
+        );
+
+        assert!(!plan.is_fully_supported());
+        assert!(plan.textures_delta.set.is_empty());
+        assert_eq!(plan.rejected_updates, vec![invalid_len, invalid_rect]);
+    }
+
+    #[test]
+    fn egui_texture_ids_are_stable_across_resource_domains_and_kinds() {
+        let app_texture = ResourceHandle::Texture(TextureHandle::app("shared"));
+        let same_app_texture = ResourceHandle::Texture(TextureHandle::app("shared"));
+        let image = ResourceHandle::Image(ImageHandle::app("shared"));
+        let host_texture = ResourceHandle::Texture(TextureHandle::host("shared"));
+
+        assert_eq!(
+            egui_texture_id_for_resource(&app_texture),
+            egui_texture_id_for_resource(&same_app_texture)
+        );
+        assert_ne!(
+            egui_texture_id_for_resource(&app_texture),
+            egui_texture_id_for_resource(&image)
+        );
+        assert_ne!(
+            egui_texture_id_for_resource(&app_texture),
+            egui_texture_id_for_resource(&host_texture)
+        );
     }
 }
