@@ -217,7 +217,8 @@ The branch starts from Operad 2.0.0 plus:
   inspection, resolved component state previews, and hit-test traces.
 - Renderer/backend adapter contracts in `src/renderer.rs` for render targets,
   resource deltas, dirty regions, paint batching, deterministic snapshots, and
-  backend capability negotiation.
+  backend capability negotiation, with renderer-facing image extraction and
+  image callback registries for app-owned icon/image/texture draw paths.
 - Embedded canvas/native viewport contracts for callback, texture, and
   native-viewport render modes, host input capture policies, pointer-lock
   requests, domain hit-testing flags, renderer-facing canvas extraction, and

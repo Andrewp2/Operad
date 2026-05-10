@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use crate::host::HostNodeInteraction;
 use crate::platform::{BackendCapabilities, PixelSize, ResourceHandle, ResourceId, ResourceKind};
 use crate::{
-    CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintItem, PaintKind, PaintList,
+    CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintImage, PaintItem, PaintKind, PaintList,
     PaintTransform, ShaderEffect, UiNodeId, UiRect, UiSize,
 };
 
@@ -347,6 +347,14 @@ impl RenderFrameRequest {
             .collect()
     }
 
+    pub fn image_requests(&self) -> Vec<ImageRenderRequest> {
+        self.paint
+            .items
+            .iter()
+            .filter_map(ImageRenderRequest::from_paint_item)
+            .collect()
+    }
+
     pub fn requires_full_repaint(&self) -> bool {
         self.dirty_regions.is_empty()
             || self.dirty_flags.layout
@@ -663,6 +671,325 @@ impl<B> Default for CanvasRenderRegistry<B> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImageRenderKind {
+    NodeImage,
+    ImagePlacement,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageRenderRequest {
+    pub node: UiNodeId,
+    pub kind: ImageRenderKind,
+    pub image: PaintImage,
+    pub clip_rect: UiRect,
+    pub z_index: i16,
+    pub opacity: f32,
+    pub transform: PaintTransform,
+}
+
+impl ImageRenderRequest {
+    pub fn from_paint_item(item: &PaintItem) -> Option<Self> {
+        let (kind, image) = match &item.kind {
+            PaintKind::Image { key, tint } => {
+                let mut image = PaintImage::new(key.clone(), item.rect);
+                if let Some(tint) = *tint {
+                    image = image.tinted(tint);
+                }
+                (ImageRenderKind::NodeImage, image)
+            }
+            PaintKind::ImagePlacement(image) => (ImageRenderKind::ImagePlacement, image.clone()),
+            _ => return None,
+        };
+        Some(Self {
+            node: item.node,
+            kind,
+            image,
+            clip_rect: item.clip_rect,
+            z_index: item.z_index,
+            opacity: item.opacity,
+            transform: item.transform,
+        })
+    }
+
+    pub fn key(&self) -> &str {
+        &self.image.key
+    }
+}
+
+#[derive(Debug)]
+pub struct ImageRenderContext<'a, B> {
+    pub request: &'a ImageRenderRequest,
+    pub scale_factor: f32,
+    pub dirty_regions: &'a DirtyRegionSet,
+    pub interaction: HostNodeInteraction,
+    pub backend: &'a mut B,
+}
+
+impl<B> ImageRenderContext<'_, B> {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty_regions.is_empty() || self.dirty_regions.covers(self.request.image.rect)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageRenderOutput {
+    pub dirty_region: Option<UiRect>,
+    pub resource_updates: Vec<ResourceUpdate>,
+    pub repaint_requested: bool,
+}
+
+impl ImageRenderOutput {
+    pub fn new() -> Self {
+        Self {
+            dirty_region: None,
+            resource_updates: Vec::new(),
+            repaint_requested: false,
+        }
+    }
+
+    pub fn dirty_region(mut self, dirty_region: UiRect) -> Self {
+        self.dirty_region = Some(dirty_region);
+        self
+    }
+
+    pub fn resource_update(mut self, update: ResourceUpdate) -> Self {
+        self.resource_updates.push(update);
+        self
+    }
+
+    pub fn repaint_requested(mut self, repaint_requested: bool) -> Self {
+        self.repaint_requested = repaint_requested;
+        self
+    }
+}
+
+impl Default for ImageRenderOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub trait ImageRenderHandler<B> {
+    fn render_image(
+        &mut self,
+        context: ImageRenderContext<'_, B>,
+    ) -> Result<ImageRenderOutput, RenderError>;
+}
+
+impl<B, F> ImageRenderHandler<B> for F
+where
+    F: for<'a> FnMut(ImageRenderContext<'a, B>) -> Result<ImageRenderOutput, RenderError>,
+{
+    fn render_image(
+        &mut self,
+        context: ImageRenderContext<'_, B>,
+    ) -> Result<ImageRenderOutput, RenderError> {
+        self(context)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImageRenderOutcome {
+    Rendered {
+        request: ImageRenderRequest,
+        output: ImageRenderOutput,
+    },
+    Missing {
+        request: ImageRenderRequest,
+    },
+    Failed {
+        request: ImageRenderRequest,
+        error: RenderError,
+    },
+}
+
+impl ImageRenderOutcome {
+    pub const fn request(&self) -> &ImageRenderRequest {
+        match self {
+            Self::Rendered { request, .. }
+            | Self::Missing { request }
+            | Self::Failed { request, .. } => request,
+        }
+    }
+
+    pub const fn is_rendered(&self) -> bool {
+        matches!(self, Self::Rendered { .. })
+    }
+
+    pub const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing { .. })
+    }
+
+    pub const fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ImageRenderReport {
+    pub outcomes: Vec<ImageRenderOutcome>,
+}
+
+impl ImageRenderReport {
+    pub fn rendered_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.is_rendered())
+            .count()
+    }
+
+    pub fn missing_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.is_missing())
+            .count()
+    }
+
+    pub fn failed_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.is_failed())
+            .count()
+    }
+
+    pub fn repaint_requested(&self) -> bool {
+        self.outcomes.iter().any(|outcome| {
+            matches!(
+                outcome,
+                ImageRenderOutcome::Rendered {
+                    output: ImageRenderOutput {
+                        repaint_requested: true,
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+    }
+
+    pub fn first_failure(&self) -> Option<&RenderError> {
+        self.outcomes.iter().find_map(|outcome| match outcome {
+            ImageRenderOutcome::Failed { error, .. } => Some(error),
+            _ => None,
+        })
+    }
+
+    pub fn first_missing(&self) -> Option<&ImageRenderRequest> {
+        self.outcomes.iter().find_map(|outcome| match outcome {
+            ImageRenderOutcome::Missing { request } => Some(request),
+            _ => None,
+        })
+    }
+
+    pub fn resource_updates(&self) -> Vec<ResourceUpdate> {
+        let mut updates = Vec::new();
+        for outcome in &self.outcomes {
+            if let ImageRenderOutcome::Rendered { output, .. } = outcome {
+                updates.extend(output.resource_updates.iter().cloned());
+            }
+        }
+        updates
+    }
+
+    pub fn into_strict_result(self) -> Result<Self, RenderError> {
+        if let Some(error) = self.first_failure().cloned() {
+            return Err(error);
+        }
+        if let Some(missing) = self.first_missing() {
+            return Err(RenderError::MissingImageRenderer(missing.image.key.clone()));
+        }
+        Ok(self)
+    }
+}
+
+pub struct ImageRenderRegistry<B> {
+    handlers: HashMap<String, Box<dyn ImageRenderHandler<B>>>,
+}
+
+impl<B> ImageRenderRegistry<B> {
+    pub fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+
+    pub fn register(
+        &mut self,
+        key: impl Into<String>,
+        handler: impl ImageRenderHandler<B> + 'static,
+    ) -> bool {
+        self.handlers
+            .insert(key.into(), Box::new(handler))
+            .is_some()
+    }
+
+    pub fn unregister(&mut self, key: &str) -> bool {
+        self.handlers.remove(key).is_some()
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        self.handlers.contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.handlers.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+
+    pub fn render_frame_images(
+        &mut self,
+        request: &RenderFrameRequest,
+        backend: &mut B,
+    ) -> ImageRenderReport {
+        let mut report = ImageRenderReport::default();
+        for image_request in request.image_requests() {
+            let Some(handler) = self.handlers.get_mut(&image_request.image.key) else {
+                report.outcomes.push(ImageRenderOutcome::Missing {
+                    request: image_request,
+                });
+                continue;
+            };
+            let outcome = match handler.render_image(ImageRenderContext {
+                scale_factor: request.options.scale_factor,
+                dirty_regions: &request.dirty_regions,
+                interaction: request.interaction_for(image_request.node),
+                request: &image_request,
+                backend,
+            }) {
+                Ok(output) => ImageRenderOutcome::Rendered {
+                    request: image_request,
+                    output,
+                },
+                Err(error) => ImageRenderOutcome::Failed {
+                    request: image_request,
+                    error,
+                },
+            };
+            report.outcomes.push(outcome);
+        }
+        report
+    }
+
+    pub fn render_frame_images_strict(
+        &mut self,
+        request: &RenderFrameRequest,
+        backend: &mut B,
+    ) -> Result<ImageRenderReport, RenderError> {
+        self.render_frame_images(request, backend)
+            .into_strict_result()
+    }
+}
+
+impl<B> Default for ImageRenderRegistry<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaintBatchKind {
     Rect,
     Text,
@@ -775,6 +1102,7 @@ pub enum RenderError {
     UnsupportedResource(ResourceKind),
     MissingResource(ResourceId),
     MissingCanvasRenderer(String),
+    MissingImageRenderer(String),
     InvalidResourceUpdate(String),
     Backend(String),
 }
@@ -793,6 +1121,9 @@ impl std::fmt::Display for RenderError {
             }
             Self::MissingCanvasRenderer(key) => {
                 write!(formatter, "missing canvas renderer for {key:?}")
+            }
+            Self::MissingImageRenderer(key) => {
+                write!(formatter, "missing image renderer for {key:?}")
             }
             Self::InvalidResourceUpdate(reason) => {
                 write!(formatter, "invalid render resource update: {reason}")
@@ -876,8 +1207,8 @@ mod tests {
         ResourceDomain,
     };
     use crate::{
-        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, PaintTransform, ShaderEffect,
-        StrokeStyle, TextContent, TextStyle, UiNodeId,
+        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ImageAlignment, ImageFit,
+        PaintImage, PaintTransform, ShaderEffect, StrokeStyle, TextContent, TextStyle, UiNodeId,
     };
 
     fn paint_item(index: usize, rect: UiRect, kind: PaintKind) -> PaintItem {
@@ -1135,6 +1466,153 @@ mod tests {
         assert_eq!(
             report.into_strict_result().unwrap_err(),
             RenderError::MissingCanvasRenderer("missing.viewport".to_string())
+        );
+    }
+
+    #[test]
+    fn render_request_extracts_image_requests_for_nodes_and_scene_placements() {
+        let mut paint = PaintList::default();
+        paint.items.push(paint_item(
+            2,
+            UiRect::new(8.0, 10.0, 24.0, 18.0),
+            PaintKind::Image {
+                key: "icons.play".to_string(),
+                tint: Some(ColorRgba::new(120, 180, 255, 255)),
+            },
+        ));
+        paint.items.push(paint_item(
+            3,
+            UiRect::new(40.0, 12.0, 64.0, 48.0),
+            PaintKind::ImagePlacement(
+                PaintImage::new("covers.scale", UiRect::new(40.0, 12.0, 64.0, 48.0))
+                    .fit(ImageFit::Contain)
+                    .align(ImageAlignment::End, ImageAlignment::Start),
+            ),
+        ));
+        let request = RenderFrameRequest::new(
+            RenderTarget::window("main", UiSize::new(160.0, 90.0)),
+            UiSize::new(160.0, 90.0),
+            paint,
+        );
+
+        let images = request.image_requests();
+
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].kind, ImageRenderKind::NodeImage);
+        assert_eq!(images[0].key(), "icons.play");
+        assert_eq!(images[0].image.rect, UiRect::new(8.0, 10.0, 24.0, 18.0));
+        assert_eq!(
+            images[0].image.tint,
+            Some(ColorRgba::new(120, 180, 255, 255))
+        );
+        assert_eq!(images[1].kind, ImageRenderKind::ImagePlacement);
+        assert_eq!(images[1].key(), "covers.scale");
+        assert_eq!(images[1].image.fit, ImageFit::Contain);
+        assert_eq!(images[1].image.horizontal_align, ImageAlignment::End);
+    }
+
+    #[derive(Debug, Default)]
+    struct ImageBackend {
+        rendered: Vec<String>,
+        scale_factors: Vec<f32>,
+        hovered: Vec<bool>,
+        dirty: Vec<bool>,
+    }
+
+    #[derive(Debug)]
+    struct RecordingImageHandler;
+
+    impl ImageRenderHandler<ImageBackend> for RecordingImageHandler {
+        fn render_image(
+            &mut self,
+            context: ImageRenderContext<'_, ImageBackend>,
+        ) -> Result<ImageRenderOutput, RenderError> {
+            context
+                .backend
+                .rendered
+                .push(context.request.image.key.clone());
+            context.backend.scale_factors.push(context.scale_factor);
+            context.backend.hovered.push(context.interaction.hovered);
+            context.backend.dirty.push(context.is_dirty());
+            Ok(ImageRenderOutput::new()
+                .dirty_region(context.request.image.rect)
+                .repaint_requested(context.interaction.hovered))
+        }
+    }
+
+    #[test]
+    fn image_render_registry_dispatches_requests_with_context() {
+        let mut paint = PaintList::default();
+        paint.items.push(paint_item(
+            5,
+            UiRect::new(10.0, 12.0, 32.0, 32.0),
+            PaintKind::Image {
+                key: "icons.record".to_string(),
+                tint: None,
+            },
+        ));
+        let request = RenderFrameRequest::new(
+            RenderTarget::window("main", UiSize::new(160.0, 90.0)),
+            UiSize::new(160.0, 90.0),
+            paint,
+        )
+        .options(RenderOptions {
+            scale_factor: 1.5,
+            ..RenderOptions::default()
+        })
+        .node_interaction(
+            UiNodeId(5),
+            HostNodeInteraction {
+                hovered: true,
+                ..HostNodeInteraction::default()
+            },
+        );
+        let mut backend = ImageBackend::default();
+        let mut registry = ImageRenderRegistry::new();
+        assert!(!registry.register("icons.record", RecordingImageHandler));
+
+        let report = registry
+            .render_frame_images_strict(&request, &mut backend)
+            .expect("image dispatch");
+
+        assert_eq!(report.rendered_count(), 1);
+        assert_eq!(report.missing_count(), 0);
+        assert_eq!(report.failed_count(), 0);
+        assert!(report.repaint_requested());
+        assert_eq!(backend.rendered, vec!["icons.record".to_string()]);
+        assert_eq!(backend.scale_factors, vec![1.5]);
+        assert_eq!(backend.hovered, vec![true]);
+        assert_eq!(backend.dirty, vec![true]);
+        assert_eq!(report.outcomes[0].request().node, UiNodeId(5));
+        assert_eq!(report.resource_updates(), Vec::<ResourceUpdate>::new());
+    }
+
+    #[test]
+    fn image_render_registry_reports_missing_handlers() {
+        let mut paint = PaintList::default();
+        paint.items.push(paint_item(
+            8,
+            UiRect::new(0.0, 0.0, 120.0, 80.0),
+            PaintKind::Image {
+                key: "missing.image".to_string(),
+                tint: None,
+            },
+        ));
+        let request = RenderFrameRequest::new(
+            RenderTarget::app_owned("main", UiSize::new(640.0, 480.0)),
+            UiSize::new(640.0, 480.0),
+            paint,
+        );
+        let mut backend = ImageBackend::default();
+        let mut registry = ImageRenderRegistry::new();
+
+        let report = registry.render_frame_images(&request, &mut backend);
+        assert_eq!(report.rendered_count(), 0);
+        assert_eq!(report.missing_count(), 1);
+        assert_eq!(report.first_missing().unwrap().image.key, "missing.image");
+        assert_eq!(
+            report.into_strict_result().unwrap_err(),
+            RenderError::MissingImageRenderer("missing.image".to_string())
         );
     }
 
