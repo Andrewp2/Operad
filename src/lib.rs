@@ -1496,21 +1496,60 @@ pub enum FocusDirection {
     Previous,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiWheelEvent {
+    pub position: UiPoint,
+    pub delta: UiPoint,
+    pub unit: input::WheelDeltaUnit,
+    pub phase: input::WheelPhase,
+}
+
+impl UiWheelEvent {
+    pub const fn pixels(position: UiPoint, delta: UiPoint) -> Self {
+        Self {
+            position,
+            delta,
+            unit: input::WheelDeltaUnit::Pixel,
+            phase: input::WheelPhase::Moved,
+        }
+    }
+
+    pub const fn unit(mut self, unit: input::WheelDeltaUnit) -> Self {
+        self.unit = unit;
+        self
+    }
+
+    pub const fn phase(mut self, phase: input::WheelPhase) -> Self {
+        self.phase = phase;
+        self
+    }
+
+    pub const fn scrolls_document(self) -> bool {
+        matches!(
+            self.phase,
+            input::WheelPhase::Moved | input::WheelPhase::Momentum
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiInputEvent {
     PointerMove(UiPoint),
     PointerDown(UiPoint),
     PointerUp(UiPoint),
-    Wheel {
-        position: UiPoint,
-        delta: UiPoint,
-    },
+    Wheel(UiWheelEvent),
     TextInput(String),
     Key {
         key: KeyCode,
         modifiers: KeyModifiers,
     },
     Focus(FocusDirection),
+}
+
+impl UiInputEvent {
+    pub const fn wheel(position: UiPoint, delta: UiPoint) -> Self {
+        Self::Wheel(UiWheelEvent::pixels(position, delta))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1916,8 +1955,8 @@ impl UiDocument {
                 self.focus.pressed = None;
                 clicked
             }
-            UiInputEvent::Wheel { position, delta } => {
-                scrolled = self.apply_wheel_scroll(position, delta);
+            UiInputEvent::Wheel(wheel) => {
+                scrolled = self.apply_wheel_scroll(wheel);
                 None
             }
             UiInputEvent::TextInput(_) | UiInputEvent::Key { .. } => None,
@@ -1935,7 +1974,10 @@ impl UiDocument {
         }
     }
 
-    fn apply_wheel_scroll(&mut self, position: UiPoint, delta: UiPoint) -> Option<UiNodeId> {
+    fn apply_wheel_scroll(&mut self, wheel: UiWheelEvent) -> Option<UiNodeId> {
+        if !wheel.scrolls_document() {
+            return None;
+        }
         let targets = self
             .visual_order()
             .into_iter()
@@ -1943,8 +1985,8 @@ impl UiDocument {
             .filter_map(|index| {
                 let node = &self.nodes[index];
                 (node.layout.visible
-                    && node.layout.clip_rect.contains_point(position)
-                    && self.node_paint_rect(index).contains_point(position)
+                    && node.layout.clip_rect.contains_point(wheel.position)
+                    && self.node_paint_rect(index).contains_point(wheel.position)
                     && node
                         .scroll
                         .is_some_and(|scroll| scroll.axes.horizontal || scroll.axes.vertical))
@@ -1954,7 +1996,7 @@ impl UiDocument {
 
         targets
             .into_iter()
-            .find(|&target| self.scroll_by(target, delta))
+            .find(|&target| self.scroll_by(target, wheel.delta))
     }
 
     fn next_focus(&self, current: Option<UiNodeId>, direction: FocusDirection) -> Option<UiNodeId> {
@@ -6610,10 +6652,10 @@ mod tests {
         assert_eq!(scroll.viewport_size, UiSize::new(100.0, 60.0));
         assert_eq!(scroll.content_size, UiSize::new(100.0, 120.0));
 
-        let input = doc.handle_input(UiInputEvent::Wheel {
-            position: UiPoint::new(10.0, 10.0),
-            delta: UiPoint::new(0.0, 30.0),
-        });
+        let input = doc.handle_input(UiInputEvent::wheel(
+            UiPoint::new(10.0, 10.0),
+            UiPoint::new(0.0, 30.0),
+        ));
         assert_eq!(input.scrolled, Some(scroll_area));
 
         doc.compute_layout(UiSize::new(120.0, 120.0), &mut ApproxTextMeasurer)
@@ -6650,12 +6692,62 @@ mod tests {
         doc.compute_layout(UiSize::new(120.0, 120.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
-        let input = doc.handle_input(UiInputEvent::Wheel {
-            position: UiPoint::new(90.0, 50.0),
-            delta: UiPoint::new(0.0, 30.0),
-        });
+        let input = doc.handle_input(UiInputEvent::wheel(
+            UiPoint::new(90.0, 50.0),
+            UiPoint::new(0.0, 30.0),
+        ));
 
         assert_eq!(input.scrolled, Some(scroll_area));
+        assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 30.0);
+    }
+
+    #[test]
+    fn wheel_scroll_only_mutates_offsets_for_motion_phases() {
+        let mut doc = UiDocument::new(root_style(120.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: Style {
+                        size: TaffySize {
+                            width: length(100.0),
+                            height: length(60.0),
+                        },
+                        ..Default::default()
+                    },
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll_area,
+            UiNode::container("content", button_style(100.0, 140.0)),
+        );
+        doc.compute_layout(UiSize::new(120.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let started = doc.handle_input(UiInputEvent::Wheel(
+            UiWheelEvent::pixels(UiPoint::new(20.0, 20.0), UiPoint::new(0.0, 30.0))
+                .phase(WheelPhase::Started),
+        ));
+        assert_eq!(started.scrolled, None);
+        assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 0.0);
+
+        let ended = doc.handle_input(UiInputEvent::Wheel(
+            UiWheelEvent::pixels(UiPoint::new(20.0, 20.0), UiPoint::new(0.0, 30.0))
+                .phase(WheelPhase::Ended),
+        ));
+        assert_eq!(ended.scrolled, None);
+        assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 0.0);
+
+        let momentum = doc.handle_input(UiInputEvent::Wheel(
+            UiWheelEvent::pixels(UiPoint::new(20.0, 20.0), UiPoint::new(0.0, 30.0))
+                .phase(WheelPhase::Momentum),
+        ));
+        assert_eq!(momentum.scrolled, Some(scroll_area));
         assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 30.0);
     }
 
@@ -6697,17 +6789,17 @@ mod tests {
         doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
-        let stale_layout_input = doc.handle_input(UiInputEvent::Wheel {
-            position: UiPoint::new(45.0, 20.0),
-            delta: UiPoint::new(0.0, 30.0),
-        });
+        let stale_layout_input = doc.handle_input(UiInputEvent::wheel(
+            UiPoint::new(45.0, 20.0),
+            UiPoint::new(0.0, 30.0),
+        ));
         assert_eq!(stale_layout_input.scrolled, None);
         assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 0.0);
 
-        let input = doc.handle_input(UiInputEvent::Wheel {
-            position: UiPoint::new(20.0, 20.0),
-            delta: UiPoint::new(0.0, 30.0),
-        });
+        let input = doc.handle_input(UiInputEvent::wheel(
+            UiPoint::new(20.0, 20.0),
+            UiPoint::new(0.0, 30.0),
+        ));
         assert_eq!(input.scrolled, Some(scroll_area));
         assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 30.0);
     }

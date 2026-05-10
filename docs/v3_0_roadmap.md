@@ -245,6 +245,9 @@ The branch starts from Operad 2.0.0 plus:
   identity/buttons, high-resolution wheel units, keyboard/text conversion,
   pointer capture, drag thresholds, double-click counting, cancellation, and
   gesture-to-edit phases.
+- Document-facing wheel events now preserve wheel unit and phase metadata from
+  raw input conversion, and document scroll handling mutates offsets only for
+  moved or momentum wheel phases.
 - Persistable app-shell state contracts in `src/shell.rs` for docked/floating
   panel visibility, saved extents, collapse/restore, keyboard-resizable split
   state, active tabs, focus restore, and synchronized lane/timeline scroll

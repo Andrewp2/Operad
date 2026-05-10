@@ -144,7 +144,7 @@ impl EventReplay {
     }
 
     pub fn wheel(self, label: impl Into<String>, position: UiPoint, delta: UiPoint) -> Self {
-        self.ui(label, UiInputEvent::Wheel { position, delta })
+        self.ui(label, UiInputEvent::wheel(position, delta))
     }
 
     pub fn key(self, label: impl Into<String>, key: KeyCode, modifiers: KeyModifiers) -> Self {
@@ -4248,10 +4248,10 @@ mod tests {
 
         assert_eq!(
             report.steps[0].converted,
-            Some(UiInputEvent::Wheel {
-                position: UiPoint::new(1.0, 1.0),
-                delta: UiPoint::new(0.0, 20.0),
-            })
+            Some(UiInputEvent::Wheel(
+                crate::UiWheelEvent::pixels(UiPoint::new(1.0, 1.0), UiPoint::new(0.0, 20.0))
+                    .unit(crate::WheelDeltaUnit::Line)
+            ))
         );
         assert!(report.steps[1].converted.is_none());
         assert!(report.require_all_converted().is_err());

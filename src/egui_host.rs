@@ -933,10 +933,10 @@ mod tests {
         assert_eq!(line.unit, WheelDeltaUnit::Line);
         assert_eq!(
             translated[1].to_ui_input_event_with_wheel_scale(12.0, UiSize::new(100.0, 80.0)),
-            Some(UiInputEvent::Wheel {
-                position: UiPoint::new(40.0, 50.0),
-                delta: UiPoint::new(12.0, -24.0),
-            })
+            Some(UiInputEvent::Wheel(
+                crate::UiWheelEvent::pixels(UiPoint::new(40.0, 50.0), UiPoint::new(12.0, -24.0))
+                    .unit(WheelDeltaUnit::Line)
+            ))
         );
 
         let RawInputEvent::Wheel(page) = translated[2] else {
@@ -945,10 +945,10 @@ mod tests {
         assert_eq!(page.unit, WheelDeltaUnit::Page);
         assert_eq!(
             translated[2].to_ui_input_event_with_wheel_scale(12.0, UiSize::new(100.0, 80.0)),
-            Some(UiInputEvent::Wheel {
-                position: UiPoint::new(40.0, 50.0),
-                delta: UiPoint::new(0.0, 80.0),
-            })
+            Some(UiInputEvent::Wheel(
+                crate::UiWheelEvent::pixels(UiPoint::new(40.0, 50.0), UiPoint::new(0.0, 80.0))
+                    .unit(WheelDeltaUnit::Page)
+            ))
         );
     }
 

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use crate::{
     EditPhase, FocusDirection, KeyCode, KeyModifiers, UiInputEvent, UiNodeId, UiPoint, UiSize,
+    UiWheelEvent,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -301,10 +302,11 @@ impl RawInputEvent {
                 PointerEventKind::Up(_) => Some(UiInputEvent::PointerUp(event.position)),
                 PointerEventKind::Cancel => None,
             },
-            Self::Wheel(event) => Some(UiInputEvent::Wheel {
-                position: event.position,
-                delta: event.pixel_delta(line_size, page_size),
-            }),
+            Self::Wheel(event) => Some(UiInputEvent::Wheel(
+                UiWheelEvent::pixels(event.position, event.pixel_delta(line_size, page_size))
+                    .unit(event.unit)
+                    .phase(event.phase),
+            )),
             Self::Keyboard(event) if event.pressed => Some(UiInputEvent::Key {
                 key: event.key,
                 modifiers: event.modifiers,
@@ -703,18 +705,18 @@ mod tests {
     }
 
     #[test]
-    fn raw_input_events_convert_to_legacy_document_events() {
-        let wheel = RawInputEvent::Wheel(RawWheelEvent::lines(
-            UiPoint::new(10.0, 20.0),
-            UiPoint::new(0.5, -2.0),
-            5,
-        ));
+    fn raw_input_events_convert_to_document_events_with_wheel_metadata() {
+        let wheel = RawInputEvent::Wheel(
+            RawWheelEvent::lines(UiPoint::new(10.0, 20.0), UiPoint::new(0.5, -2.0), 5)
+                .phase(WheelPhase::Started),
+        );
         assert_eq!(
             wheel.to_ui_input_event_with_wheel_scale(18.0, UiSize::new(400.0, 300.0)),
-            Some(UiInputEvent::Wheel {
-                position: UiPoint::new(10.0, 20.0),
-                delta: UiPoint::new(9.0, -36.0),
-            })
+            Some(UiInputEvent::Wheel(
+                UiWheelEvent::pixels(UiPoint::new(10.0, 20.0), UiPoint::new(9.0, -36.0))
+                    .unit(WheelDeltaUnit::Line)
+                    .phase(WheelPhase::Started)
+            ))
         );
 
         let key = RawInputEvent::Keyboard(RawKeyboardEvent::press(

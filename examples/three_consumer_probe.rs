@@ -143,10 +143,10 @@ fn build_fabricad_panel() -> UiDocument {
         );
     }
 
-    document.handle_input(UiInputEvent::Wheel {
-        position: UiPoint::new(12.0, 12.0),
-        delta: UiPoint::new(0.0, 24.0),
-    });
+    document.handle_input(UiInputEvent::wheel(
+        UiPoint::new(12.0, 12.0),
+        UiPoint::new(0.0, 24.0),
+    ));
 
     document
 }
