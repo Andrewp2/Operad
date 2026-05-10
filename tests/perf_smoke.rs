@@ -14,10 +14,11 @@ const PERF_VIEWPORT: UiSize = UiSize::new(960.0, 540.0);
 
 #[test]
 fn virtualized_table_layout_and_raster_smoke_stays_under_budget() {
-    let started = Instant::now();
+    let mut perf = PerformanceSamples::new("virtualized table render smoke");
     let mut combined_hash = 0_u64;
 
     for frame in 0..12 {
+        let started = Instant::now();
         let mut document = perf_screen();
         let root = document.root;
         virtualized_data_table(
@@ -85,14 +86,18 @@ fn virtualized_table_layout_and_raster_smoke_stays_under_budget() {
         let image = render_document(&mut document, PERF_VIEWPORT);
         combined_hash ^= image.hash();
         black_box(document.node_count());
+        perf.push(started.elapsed());
     }
 
-    let elapsed = started.elapsed();
     assert_ne!(combined_hash, 0);
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "virtualized table render smoke exceeded budget: {elapsed:?}"
-    );
+    let budget = PerformanceAssertions::new(&perf);
+    budget.require_sample_count(12).expect("sample count");
+    budget
+        .require_total_within(Duration::from_secs(5))
+        .expect("total budget");
+    budget
+        .require_average_within(Duration::from_millis(500))
+        .expect("average budget");
 }
 
 #[test]
@@ -107,8 +112,9 @@ fn command_palette_filter_build_and_paint_stays_under_budget() {
     let mut state = CommandPaletteState::new().with_query("trans 42");
     state.move_active(&items, NavigationDirection::Next);
 
-    let started = Instant::now();
+    let mut perf = PerformanceSamples::new("command palette build and paint smoke");
     for _ in 0..20 {
+        let started = Instant::now();
         let mut document = perf_screen();
         let root = document.root;
         command_palette(
@@ -128,22 +134,27 @@ fn command_palette_filter_build_and_paint_stays_under_budget() {
             .compute_layout(PERF_VIEWPORT, &mut ApproxTextMeasurer)
             .expect("layout");
         black_box(document.paint_list().items.len());
+        perf.push(started.elapsed());
     }
 
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_secs(3),
-        "command palette smoke exceeded budget: {elapsed:?}"
-    );
+    let budget = PerformanceAssertions::new(&perf);
+    budget.require_sample_count(20).expect("sample count");
+    budget
+        .require_total_within(Duration::from_secs(3))
+        .expect("total budget");
+    budget
+        .require_average_within(Duration::from_millis(150))
+        .expect("average budget");
 }
 
 #[test]
 fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
-    let started = Instant::now();
+    let mut perf = PerformanceSamples::new("editor geometry render smoke");
     let mut combined_hash = 0_u64;
     let mut combined_hits = 0_usize;
 
     for frame in 0..10 {
+        let started = Instant::now();
         let mut document = perf_screen();
         let root = document.root;
         let transform = EditorTransform::new(UiRect::new(0.0, 0.0, 900.0, 500.0))
@@ -245,15 +256,19 @@ fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
         let image = render_document(&mut document, PERF_VIEWPORT);
         combined_hash ^= image.hash();
         black_box(document.paint_list().items.len());
+        perf.push(started.elapsed());
     }
 
-    let elapsed = started.elapsed();
     assert_ne!(combined_hash, 0);
     assert!(combined_hits > 1_000);
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "editor geometry render smoke exceeded budget: {elapsed:?}"
-    );
+    let budget = PerformanceAssertions::new(&perf);
+    budget.require_sample_count(10).expect("sample count");
+    budget
+        .require_total_within(Duration::from_secs(5))
+        .expect("total budget");
+    budget
+        .require_average_within(Duration::from_millis(500))
+        .expect("average budget");
 }
 
 fn perf_screen() -> UiDocument {

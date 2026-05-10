@@ -1835,6 +1835,151 @@ impl<'a> FrameTimingAssertions<'a> {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PerformanceSamples {
+    name: String,
+    samples: Vec<Duration>,
+}
+
+impl PerformanceSamples {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            samples: Vec::new(),
+        }
+    }
+
+    pub fn single(name: impl Into<String>, duration: Duration) -> Self {
+        Self::new(name).sample(duration)
+    }
+
+    pub fn sample(mut self, duration: Duration) -> Self {
+        self.push(duration);
+        self
+    }
+
+    pub fn push(&mut self, duration: Duration) {
+        self.samples.push(duration);
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn samples(&self) -> &[Duration] {
+        &self.samples
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    pub fn total(&self) -> Duration {
+        self.samples.iter().copied().sum()
+    }
+
+    pub fn max_sample(&self) -> Option<Duration> {
+        self.samples.iter().copied().max()
+    }
+
+    pub fn average(&self) -> Option<Duration> {
+        (!self.samples.is_empty()).then(|| {
+            Duration::from_secs_f64(self.total().as_secs_f64() / self.samples.len() as f64)
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PerformanceAssertions<'a> {
+    samples: &'a PerformanceSamples,
+}
+
+impl<'a> PerformanceAssertions<'a> {
+    pub const fn new(samples: &'a PerformanceSamples) -> Self {
+        Self { samples }
+    }
+
+    pub const fn samples(&self) -> &'a PerformanceSamples {
+        self.samples
+    }
+
+    pub fn require_sample_count(&self, expected_count: usize) -> TestResult {
+        let actual = self.samples.len();
+        if actual == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected {expected_count} performance samples, got {actual}",
+                self.samples.name()
+            )))
+        }
+    }
+
+    pub fn require_min_sample_count(&self, minimum_count: usize) -> TestResult {
+        let actual = self.samples.len();
+        if actual >= minimum_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected at least {minimum_count} performance samples, got {actual}",
+                self.samples.name()
+            )))
+        }
+    }
+
+    pub fn require_total_within(&self, budget: Duration) -> TestResult<Duration> {
+        let total = self.samples.total();
+        if total <= budget {
+            Ok(total)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} total duration {total:?} exceeded budget {budget:?} across {} sample(s)",
+                self.samples.name(),
+                self.samples.len()
+            )))
+        }
+    }
+
+    pub fn require_average_within(&self, budget: Duration) -> TestResult<Duration> {
+        let average = self.samples.average().ok_or_else(|| {
+            TestFailure::new(format!(
+                "{} has no performance samples",
+                self.samples.name()
+            ))
+        })?;
+        if average <= budget {
+            Ok(average)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} average duration {average:?} exceeded budget {budget:?} across {} sample(s)",
+                self.samples.name(),
+                self.samples.len()
+            )))
+        }
+    }
+
+    pub fn require_max_sample_within(&self, budget: Duration) -> TestResult<Duration> {
+        let max_sample = self.samples.max_sample().ok_or_else(|| {
+            TestFailure::new(format!(
+                "{} has no performance samples",
+                self.samples.name()
+            ))
+        })?;
+        if max_sample <= budget {
+            Ok(max_sample)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} max sample duration {max_sample:?} exceeded budget {budget:?}",
+                self.samples.name()
+            )))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2834,6 +2979,45 @@ mod tests {
             .require_section_within("paint", Duration::from_millis(3))
             .is_err());
         assert!(assertions.require_section("input").is_err());
+
+        let mut samples = PerformanceSamples::new("render smoke");
+        samples.push(Duration::from_millis(4));
+        samples.push(Duration::from_millis(6));
+        samples.push(Duration::from_millis(5));
+        assert_eq!(samples.len(), 3);
+        assert_eq!(samples.total(), Duration::from_millis(15));
+        assert_eq!(samples.max_sample(), Some(Duration::from_millis(6)));
+        assert_eq!(samples.average(), Some(Duration::from_millis(5)));
+
+        let performance = PerformanceAssertions::new(&samples);
+        performance.require_sample_count(3).expect("sample count");
+        performance
+            .require_min_sample_count(2)
+            .expect("minimum sample count");
+        performance
+            .require_total_within(Duration::from_millis(16))
+            .expect("total budget");
+        performance
+            .require_average_within(Duration::from_millis(5))
+            .expect("average budget");
+        performance
+            .require_max_sample_within(Duration::from_millis(6))
+            .expect("max sample budget");
+        assert!(performance.require_sample_count(4).is_err());
+        assert!(performance
+            .require_total_within(Duration::from_millis(14))
+            .is_err());
+        assert!(performance
+            .require_average_within(Duration::from_millis(4))
+            .is_err());
+        assert!(performance
+            .require_max_sample_within(Duration::from_millis(5))
+            .is_err());
+        assert!(
+            PerformanceAssertions::new(&PerformanceSamples::new("empty"))
+                .require_average_within(Duration::from_millis(1))
+                .is_err()
+        );
     }
 
     #[test]
