@@ -275,8 +275,9 @@ The branch starts from Operad 2.0.0 plus:
   platform-service requests, request/response coverage, correlated unsupported
   platform-service responses, render-frame conformance assertions for
   canvas/image handler coverage, dirty regions, host input capture, and
-  per-node interaction state, plus render-output snapshot, batch, painted-item,
-  and timing assertions.
+  per-node interaction state, canvas hit-report assertions for target ids,
+  topmost hits, accessibility labels, disabled targets, and metadata, plus
+  render-output snapshot, batch, painted-item, and timing assertions.
 - Public CPU snapshot rendering in `src/testing.rs` gives consumers a
   deterministic renderer adapter and document raster path for E2E screenshots
   without depending on egui or Operad's private integration-test harness.

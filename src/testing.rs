@@ -28,9 +28,10 @@ use crate::platform::{
     RepaintResponse, ResourceCapabilities, ScreenshotResponse, TextImeResponse,
 };
 use crate::renderer::{
-    CanvasRenderRegistry, CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest,
-    RenderError, RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind,
-    RenderedImage, RendererAdapter, ResourceFormat, ResourceResolver,
+    CanvasHitCollection, CanvasHitTarget, CanvasRenderRegistry, CanvasRenderReport,
+    CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest, RenderError, RenderFrameOutput,
+    RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, RendererAdapter,
+    ResourceFormat, ResourceResolver,
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
@@ -1384,6 +1385,207 @@ impl<'a> RenderAssertions<'a> {
             .into_iter()
             .map(|request| request.image.key)
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CanvasHitAssertions<'a> {
+    report: &'a CanvasRenderReport,
+}
+
+impl<'a> CanvasHitAssertions<'a> {
+    pub const fn new(report: &'a CanvasRenderReport) -> Self {
+        Self { report }
+    }
+
+    pub const fn report(&self) -> &'a CanvasRenderReport {
+        self.report
+    }
+
+    pub fn collections(&self) -> Vec<CanvasHitCollection> {
+        self.report.hit_collections()
+    }
+
+    pub fn targets(&self) -> Vec<CanvasHitTarget> {
+        self.report.hit_targets()
+    }
+
+    pub fn require_collection_count(&self, expected_count: usize) -> TestResult {
+        let actual = self.collections().len();
+        if actual == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected {expected_count} canvas hit collections, got {actual}"
+            )))
+        }
+    }
+
+    pub fn require_collection(&self, key: &str) -> TestResult<CanvasHitCollection> {
+        let collections = self.collections();
+        collections
+            .into_iter()
+            .find(|collection| collection.key == key)
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing canvas hit collection `{key}`; available collections: {:?}",
+                    self.collection_keys()
+                ))
+            })
+    }
+
+    pub fn require_collection_for_node(
+        &self,
+        node: UiNodeId,
+        key: &str,
+    ) -> TestResult<CanvasHitCollection> {
+        let collections = self.collections();
+        collections
+            .into_iter()
+            .find(|collection| collection.node == node && collection.key == key)
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing canvas hit collection `{key}` for node {node:?}; available collections: {:?}",
+                    self.collection_keys()
+                ))
+            })
+    }
+
+    pub fn require_target_ids(&self, key: &str, expected_ids: &[&str]) -> TestResult {
+        let collection = self.require_collection(key)?;
+        let actual = collection
+            .targets
+            .iter()
+            .map(|target| target.id.as_str())
+            .collect::<Vec<_>>();
+        if actual == expected_ids {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "canvas `{key}` expected hit target ids {expected_ids:?}, got {actual:?}"
+            )))
+        }
+    }
+
+    pub fn require_target(&self, key: &str, target_id: &str) -> TestResult<CanvasHitTarget> {
+        let collection = self.require_collection(key)?;
+        collection
+            .targets
+            .into_iter()
+            .find(|target| target.id == target_id)
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "canvas `{key}` missing hit target `{target_id}`; available targets: {:?}",
+                    self.target_ids(key).unwrap_or_default()
+                ))
+            })
+    }
+
+    pub fn require_topmost_target_at(
+        &self,
+        key: &str,
+        point: UiPoint,
+        expected_target_id: &str,
+    ) -> TestResult {
+        let collection = self.require_collection(key)?;
+        let actual = collection
+            .topmost_at(point)
+            .map(|target| target.id.as_str());
+        if actual == Some(expected_target_id) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "canvas `{key}` expected topmost hit target `{expected_target_id}` at {point:?}, got {actual:?}"
+            )))
+        }
+    }
+
+    pub fn require_target_accessibility_label(
+        &self,
+        key: &str,
+        target_id: &str,
+        expected_label: &str,
+    ) -> TestResult {
+        let collection = self.require_collection(key)?;
+        let Some((index, target)) = collection
+            .targets
+            .iter()
+            .enumerate()
+            .find(|(_, target)| target.id == target_id)
+        else {
+            return Err(TestFailure::new(format!(
+                "canvas `{key}` missing hit target `{target_id}`; available targets: {:?}",
+                self.target_ids(key).unwrap_or_default()
+            )));
+        };
+        let meta = target.accessibility_meta(index, collection.targets.len(), false);
+        if meta.label.as_deref() == Some(expected_label) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "canvas `{key}` target `{target_id}` expected accessibility label `{expected_label}`, got {:?}",
+                meta.label
+            )))
+        }
+    }
+
+    pub fn require_target_disabled(
+        &self,
+        key: &str,
+        target_id: &str,
+        expected_disabled: bool,
+    ) -> TestResult {
+        let target = self.require_target(key, target_id)?;
+        if target.disabled == expected_disabled {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "canvas `{key}` target `{target_id}` expected disabled={expected_disabled}, got {}",
+                target.disabled
+            )))
+        }
+    }
+
+    pub fn require_target_metadata(
+        &self,
+        key: &str,
+        target_id: &str,
+        metadata_key: &str,
+        expected_value: &str,
+    ) -> TestResult {
+        let target = self.require_target(key, target_id)?;
+        if target
+            .metadata
+            .iter()
+            .any(|(key, value)| key == metadata_key && value == expected_value)
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "canvas `{key}` target `{target_id}` expected metadata `{metadata_key}`=`{expected_value}`, got {:?}",
+                target.metadata
+            )))
+        }
+    }
+
+    fn collection_keys(&self) -> Vec<String> {
+        self.collections()
+            .into_iter()
+            .map(|collection| collection.key)
+            .collect()
+    }
+
+    fn target_ids(&self, key: &str) -> Option<Vec<String>> {
+        self.collections()
+            .into_iter()
+            .find(|collection| collection.key == key)
+            .map(|collection| {
+                collection
+                    .targets
+                    .into_iter()
+                    .map(|target| target.id)
+                    .collect()
+            })
     }
 }
 
@@ -3553,6 +3755,72 @@ mod tests {
             .require_all_canvas_handlers(&empty_canvas_registry)
             .expect_err("missing canvas handler");
         assert!(missing.message.contains("editor.viewport"));
+    }
+
+    #[test]
+    fn canvas_hit_assertions_check_targets_topmost_and_accessibility() {
+        let canvas = CanvasContent::new("editor.viewport").domain_hit_testing(true);
+        let mut paint = PaintList::default();
+        paint.items.push(PaintItem {
+            node: UiNodeId(3),
+            rect: UiRect::new(8.0, 10.0, 120.0, 64.0),
+            clip_rect: UiRect::new(0.0, 0.0, 160.0, 120.0),
+            z_index: 0,
+            layer_order: crate::platform::LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Canvas(canvas),
+        });
+        let request = RenderFrameRequest::new(
+            RenderTarget::snapshot(PixelSize::new(160, 120)),
+            UiSize::new(160.0, 120.0),
+            paint,
+        );
+        let mut registry: CanvasRenderRegistry<()> = CanvasRenderRegistry::new();
+        registry.register(
+            "editor.viewport",
+            |_context: CanvasRenderContext<'_, ()>| {
+                Ok(CanvasRenderOutput::new().hit_targets([
+                    CanvasHitTarget::new("item.body", UiRect::new(10.0, 12.0, 60.0, 24.0))
+                        .label("Item body")
+                        .metadata("kind", "range")
+                        .z_index(1),
+                    CanvasHitTarget::new("disabled.overlay", UiRect::new(10.0, 12.0, 60.0, 24.0))
+                        .label("Disabled overlay")
+                        .disabled(true)
+                        .z_index(10),
+                    CanvasHitTarget::new("item.resize", UiRect::new(14.0, 12.0, 12.0, 24.0))
+                        .label("Resize handle")
+                        .value("start edge")
+                        .z_index(4),
+                ]))
+            },
+        );
+        let report = registry.render_frame_canvases(&request, &mut ());
+        let hits = CanvasHitAssertions::new(&report);
+
+        hits.require_collection_count(1).expect("collection count");
+        hits.require_collection_for_node(UiNodeId(3), "editor.viewport")
+            .expect("node collection");
+        hits.require_target_ids(
+            "editor.viewport",
+            &["item.body", "disabled.overlay", "item.resize"],
+        )
+        .expect("target ids");
+        hits.require_target_metadata("editor.viewport", "item.body", "kind", "range")
+            .expect("target metadata");
+        hits.require_target_accessibility_label("editor.viewport", "item.resize", "Resize handle")
+            .expect("accessibility label");
+        hits.require_target_disabled("editor.viewport", "disabled.overlay", true)
+            .expect("disabled target");
+        hits.require_topmost_target_at("editor.viewport", UiPoint::new(16.0, 20.0), "item.resize")
+            .expect("topmost target");
+
+        assert!(hits.require_collection("missing.viewport").is_err());
+        assert!(hits
+            .require_target_ids("editor.viewport", &["item.body"])
+            .is_err());
     }
 
     #[test]
