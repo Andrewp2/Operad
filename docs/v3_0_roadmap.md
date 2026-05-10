@@ -442,7 +442,8 @@ The branch starts from Operad 2.0.0 plus:
 - Text-input platform helpers in `src/lib.rs` for deriving IME sessions from
   caret geometry, producing activate/update/deactivate and keyboard
   show/hide requests, mapping clipboard outcomes to platform clipboard
-  requests, and applying IME commit/preedit/delete responses.
+  requests, applying IME commit/preedit/delete responses, and target-checking
+  text IME responses before mutating a focused field.
 - Programmatic scroll helpers in `src/lib.rs` for bringing explicit document
   rects or nested target nodes into scroll-container view with axis-aware
   clamping.

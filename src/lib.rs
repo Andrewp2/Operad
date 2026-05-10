@@ -3890,6 +3890,16 @@ pub mod widgets {
             TextInputOutcome::new(phase, before != self.text, None)
         }
 
+        pub fn apply_ime_response_for_input(
+            &mut self,
+            input: &TextInputId,
+            response: &TextImeResponse,
+        ) -> Option<TextInputOutcome> {
+            response
+                .is_for_input(input)
+                .then(|| self.apply_ime_response(response))
+        }
+
         pub fn select_all(&mut self) {
             self.selection_anchor = Some(0);
             self.caret = self.text.len();
@@ -8284,6 +8294,48 @@ mod tests {
         state.composing = Some("x".to_string());
         state.apply_ime_response(&platform::TextImeResponse::Deactivated { input });
         assert_eq!(state.composing, None);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_ignores_ime_responses_for_other_inputs() {
+        let input = platform::TextInputId::new("field");
+        let other = platform::TextInputId::new("other");
+        let mut state = widgets::TextInputState::new("abcd");
+        state.caret = 2;
+        state.composing = Some("候".to_string());
+
+        let ignored = state.apply_ime_response_for_input(
+            &input,
+            &platform::TextImeResponse::Commit {
+                input: other.clone(),
+                text: "X".to_string(),
+            },
+        );
+        assert_eq!(ignored, None);
+        assert_eq!(state.text, "abcd");
+        assert_eq!(state.caret, 2);
+        assert_eq!(state.composing.as_deref(), Some("候"));
+
+        let applied = state
+            .apply_ime_response_for_input(
+                &input,
+                &platform::TextImeResponse::Commit {
+                    input: input.clone(),
+                    text: "Y".to_string(),
+                },
+            )
+            .expect("matching input response");
+        assert!(applied.changed);
+        assert_eq!(state.text, "abYcd");
+        assert_eq!(state.composing, None);
+
+        let deactivated = state.apply_ime_response_for_input(
+            &input,
+            &platform::TextImeResponse::Deactivated { input: other },
+        );
+        assert_eq!(deactivated, None);
+        assert_eq!(state.text, "abYcd");
     }
 
     #[cfg(feature = "widgets")]

@@ -837,6 +837,26 @@ pub enum TextImeResponse {
     Error(PlatformServiceError),
 }
 
+impl TextImeResponse {
+    pub fn input(&self) -> Option<&TextInputId> {
+        match self {
+            Self::Activated { input }
+            | Self::Deactivated { input }
+            | Self::Commit { input, .. }
+            | Self::Preedit { input, .. }
+            | Self::DeleteSurrounding { input, .. } => Some(input),
+            Self::Unsupported | Self::Error(_) => None,
+        }
+    }
+
+    pub fn is_for_input(&self, input: &TextInputId) -> bool {
+        match self.input() {
+            Some(actual) => actual == input,
+            None => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DragId(pub String);
 
@@ -1574,5 +1594,15 @@ mod tests {
         assert!(ime.selection.is_caret());
         assert_eq!(payload.text.as_deref(), Some("clip"));
         assert!(LogicalRect::new(0.0, 0.0, 8.0, 8.0).contains(LogicalPoint::new(4.0, 4.0)));
+
+        let other = TextInputId::new("other");
+        let commit = TextImeResponse::Commit {
+            input: input.clone(),
+            text: "x".to_string(),
+        };
+        assert_eq!(commit.input(), Some(&input));
+        assert!(commit.is_for_input(&input));
+        assert!(!commit.is_for_input(&other));
+        assert!(TextImeResponse::Unsupported.is_for_input(&input));
     }
 }
