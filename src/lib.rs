@@ -2663,6 +2663,14 @@ pub enum AuditWarning {
         rect: UiRect,
         clip_rect: UiRect,
     },
+    TextContrastTooLow {
+        node: UiNodeId,
+        name: String,
+        text_color: ColorRgba,
+        background_color: ColorRgba,
+        contrast_ratio: f32,
+        required_ratio: f32,
+    },
     NodeOutsideRoot {
         node: UiNodeId,
         name: String,
@@ -2914,16 +2922,32 @@ impl UiDocument {
                     &accessibility.relations,
                 );
             }
-            if matches!(node.content, UiContent::Text(_))
-                && !node.layout.clip_rect.contains_rect(node.layout.rect)
-                && !self.has_scroll_ancestor(id)
-            {
-                warnings.push(AuditWarning::TextClipped {
-                    node: id,
-                    name: node.name.clone(),
-                    rect: node.layout.rect,
-                    clip_rect: node.layout.clip_rect,
-                });
+            if let UiContent::Text(text) = &node.content {
+                if !node.layout.clip_rect.contains_rect(node.layout.rect)
+                    && !self.has_scroll_ancestor(id)
+                {
+                    warnings.push(AuditWarning::TextClipped {
+                        node: id,
+                        name: node.name.clone(),
+                        rect: node.layout.rect,
+                        clip_rect: node.layout.clip_rect,
+                    });
+                }
+                if let Some(background_color) = self.effective_background_color(id) {
+                    let text_color = effective_foreground_color(text.style.color, background_color);
+                    let contrast_ratio = contrast_ratio(text_color, background_color);
+                    let required_ratio = required_text_contrast_ratio(&text.style);
+                    if contrast_ratio + f32::EPSILON < required_ratio {
+                        warnings.push(AuditWarning::TextContrastTooLow {
+                            node: id,
+                            name: node.name.clone(),
+                            text_color: text.style.color,
+                            background_color,
+                            contrast_ratio,
+                            required_ratio,
+                        });
+                    }
+                }
             }
             if id != self.root
                 && !root_rect.contains_rect(node.layout.rect)
@@ -2953,6 +2977,87 @@ impl UiDocument {
             id = parent;
         }
         false
+    }
+
+    fn effective_background_color(&self, mut id: UiNodeId) -> Option<ColorRgba> {
+        let mut lineage = Vec::new();
+        loop {
+            lineage.push(id);
+            let Some(parent) = self.nodes[id.0].parent else {
+                break;
+            };
+            id = parent;
+        }
+        let mut color = None;
+        for id in lineage.into_iter().rev() {
+            let fill = self.nodes[id.0].visual.fill;
+            if fill.a > 0 {
+                color = Some(match color {
+                    Some(background) => composite_color(fill, background),
+                    None => fill,
+                });
+            }
+        }
+        color
+    }
+}
+
+fn effective_foreground_color(foreground: ColorRgba, background: ColorRgba) -> ColorRgba {
+    if foreground.a == u8::MAX {
+        foreground
+    } else {
+        composite_color(foreground, background)
+    }
+}
+
+fn composite_color(foreground: ColorRgba, background: ColorRgba) -> ColorRgba {
+    let foreground_alpha = foreground.a as f32 / 255.0;
+    let background_alpha = background.a as f32 / 255.0;
+    let alpha = foreground_alpha + background_alpha * (1.0 - foreground_alpha);
+    if alpha <= f32::EPSILON {
+        return ColorRgba::TRANSPARENT;
+    }
+    let channel = |foreground: u8, background: u8| {
+        ((foreground as f32 * foreground_alpha
+            + background as f32 * background_alpha * (1.0 - foreground_alpha))
+            / alpha)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    ColorRgba::new(
+        channel(foreground.r, background.r),
+        channel(foreground.g, background.g),
+        channel(foreground.b, background.b),
+        (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
+fn contrast_ratio(first: ColorRgba, second: ColorRgba) -> f32 {
+    let first = relative_luminance(first);
+    let second = relative_luminance(second);
+    let lighter = first.max(second);
+    let darker = first.min(second);
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn relative_luminance(color: ColorRgba) -> f32 {
+    fn channel(value: u8) -> f32 {
+        let value = value as f32 / 255.0;
+        if value <= 0.03928 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+}
+
+fn required_text_contrast_ratio(style: &TextStyle) -> f32 {
+    if style.font_size >= 24.0 || (style.font_size >= 18.66 && style.weight.0 >= FontWeight::BOLD.0)
+    {
+        3.0
+    } else {
+        4.5
     }
 }
 
@@ -7121,6 +7226,74 @@ mod tests {
                 name: "accessible".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn audit_layout_reports_low_text_contrast_against_effective_background() {
+        let mut doc = UiDocument::new(root_style(240.0, 80.0));
+        doc.node_mut(doc.root).visual = UiVisual::panel(ColorRgba::new(18, 22, 28, 255), None, 0.0);
+        let panel = doc.add_child(
+            doc.root,
+            UiNode::container("panel", button_style(220.0, 64.0)).with_visual(UiVisual::panel(
+                ColorRgba::new(30, 36, 44, 255),
+                None,
+                0.0,
+            )),
+        );
+        let low = doc.add_child(
+            panel,
+            UiNode::text(
+                "low_contrast",
+                "Low contrast",
+                TextStyle {
+                    font_size: 12.0,
+                    line_height: 16.0,
+                    color: ColorRgba::new(42, 48, 56, 255),
+                    ..Default::default()
+                },
+                button_style(120.0, 20.0).layout,
+            ),
+        );
+        let good = doc.add_child(
+            panel,
+            UiNode::text(
+                "good_contrast",
+                "Readable",
+                TextStyle {
+                    font_size: 12.0,
+                    line_height: 16.0,
+                    color: ColorRgba::new(230, 238, 248, 255),
+                    ..Default::default()
+                },
+                button_style(120.0, 20.0).layout,
+            ),
+        );
+        doc.compute_layout(UiSize::new(240.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let warnings = doc.audit_layout();
+        assert!(warnings.iter().any(|warning| {
+            matches!(
+                warning,
+                AuditWarning::TextContrastTooLow {
+                    node,
+                    name,
+                    background_color,
+                    contrast_ratio,
+                    required_ratio,
+                    ..
+                } if *node == low
+                    && name == "low_contrast"
+                    && *background_color == ColorRgba::new(30, 36, 44, 255)
+                    && *contrast_ratio < *required_ratio
+            )
+        }));
+        assert!(!warnings.iter().any(|warning| {
+            matches!(
+                warning,
+                AuditWarning::TextContrastTooLow { node, .. } if *node == good
+            )
+        }));
     }
 
     #[test]

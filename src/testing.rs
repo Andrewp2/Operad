@@ -1151,6 +1151,20 @@ impl<'a> AuditAssertions<'a> {
         })
     }
 
+    pub fn require_text_contrast_gap(&self, name: &str) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::TextContrastTooLow { .. })
+        })
+    }
+
+    pub fn require_no_text_contrast_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::TextContrastTooLow { .. })
+        })
+    }
+
     fn node_id(&self, name: &str) -> TestResult<UiNodeId> {
         LayoutAssertions::new(self.document)
             .node(name)
@@ -1206,6 +1220,7 @@ fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
             | AuditWarning::AccessibilityValueMissing { .. }
             | AuditWarning::AccessibilityValueRangeMissing { .. }
             | AuditWarning::AccessibilityRelationTargetMissing { .. }
+            | AuditWarning::TextContrastTooLow { .. }
             | AuditWarning::FocusableMissingFromAccessibilityTree { .. }
     )
 }
@@ -1227,6 +1242,7 @@ fn warning_node(warning: &AuditWarning) -> Option<UiNodeId> {
         | AuditWarning::AccessibilityValueRangeMissing { node, .. }
         | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
         | AuditWarning::TextClipped { node, .. }
+        | AuditWarning::TextContrastTooLow { node, .. }
         | AuditWarning::NodeOutsideRoot { node, .. }
         | AuditWarning::PaintItemEmptyClip { node } => Some(*node),
         AuditWarning::DuplicateNodeName { .. } => None,
@@ -4519,6 +4535,52 @@ mod tests {
         audit
             .require_no_accessibility_state_gap("complete_toggle")
             .expect("complete toggle state");
+    }
+
+    #[test]
+    fn audit_assertions_report_text_contrast_by_stable_name() {
+        let mut document = UiDocument::new(root_style(180.0, 80.0));
+        document.node_mut(document.root).visual =
+            UiVisual::panel(ColorRgba::new(24, 30, 38, 255), None, 0.0);
+        document.add_child(
+            document.root,
+            UiNode::text(
+                "low_contrast_text",
+                "Low contrast",
+                TextStyle {
+                    font_size: 12.0,
+                    line_height: 16.0,
+                    color: ColorRgba::new(34, 40, 48, 255),
+                    ..Default::default()
+                },
+                fixed_style(120.0, 20.0).layout,
+            ),
+        );
+        document.add_child(
+            document.root,
+            UiNode::text(
+                "readable_text",
+                "Readable",
+                TextStyle {
+                    font_size: 12.0,
+                    line_height: 16.0,
+                    color: ColorRgba::new(232, 238, 246, 255),
+                    ..Default::default()
+                },
+                fixed_style(120.0, 20.0).layout,
+            ),
+        );
+        document
+            .compute_layout(UiSize::new(180.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let audit = AuditAssertions::new(&document);
+        audit
+            .require_text_contrast_gap("low_contrast_text")
+            .expect("low contrast");
+        audit
+            .require_no_text_contrast_gap("readable_text")
+            .expect("readable contrast");
     }
 
     #[test]
