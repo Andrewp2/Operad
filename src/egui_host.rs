@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use crate::accessibility::AccessibilityCapabilities;
 use crate::commands::CommandRegistry;
 use crate::host::{
     HostAdapter, HostAdapterError, HostCommandDispatch, HostDocumentFrameOutput, HostFrameOutput,
@@ -167,6 +168,11 @@ pub fn egui_host_capabilities() -> BackendCapabilities {
             ..PlatformServiceCapabilities::NONE
         })
         .rendering(RenderingCapabilities::STANDARD)
+        .accessibility(AccessibilityCapabilities {
+            clipboard: true,
+            text_ime: true,
+            ..AccessibilityCapabilities::NONE
+        })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -740,6 +746,7 @@ fn ui_point(pos: egui::Pos2) -> UiPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accessibility::AccessibilityRequestKind;
     use crate::commands::{Command, CommandMeta, CommandScope, Shortcut};
     use crate::input::{WheelDeltaUnit, WheelPhase};
     use crate::platform::{
@@ -834,6 +841,18 @@ mod tests {
         assert_eq!(output.commands[0].target, Some(UiNodeId(9)));
         assert_eq!(output.state.text_ime, None);
         assert_eq!(output.state.text_target, None);
+    }
+
+    #[test]
+    fn egui_host_capabilities_report_accessibility_bridge_surface() {
+        let capabilities = egui_host_capabilities();
+
+        assert_eq!(capabilities.adapter, BackendAdapterKind::Egui);
+        assert!(capabilities.accessibility.clipboard);
+        assert!(capabilities.accessibility.text_ime);
+        assert!(!capabilities.supports_accessibility(AccessibilityRequestKind::PublishTree));
+        assert!(!capabilities.supports_accessibility(AccessibilityRequestKind::SetFocusTrap));
+        assert!(!capabilities.accessibility.announcements);
     }
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {

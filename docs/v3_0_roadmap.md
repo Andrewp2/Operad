@@ -329,7 +329,8 @@ The branch starts from Operad 2.0.0 plus:
 - Feature-gated egui host adapter in `src/egui_host.rs` implements the
   backend-neutral `HostAdapter` trait, owns egui input translation and command
   routing, applies correlated platform responses, and advertises egui host
-  capabilities through the shared backend capability descriptor.
+  capabilities through the shared backend capability descriptor, including the
+  accessibility-adjacent clipboard and text/IME bridge surface egui owns today.
 - Feature-gated egui platform-output plans in `src/egui_host.rs` for mapping
   supported Operad clipboard-write, open-URL, cursor, and repaint requests into
   egui-compatible output while reporting unsupported host services explicitly,
