@@ -195,6 +195,9 @@ The branch starts from Operad 2.0.0 plus:
   bars, left/right/bottom dock regions, central workspace, track list,
   arrangement, editor, hidden panels, floating panels, and persisted panel
   scroll offsets.
+- Shell bar and transport planning in `src/shell.rs` for command/toggle/readout
+  item metadata, enabled/active/pressed state, width priorities, cluster spacing,
+  and deterministic overflow plans.
 - Renderer-neutral testing helpers in `src/testing.rs` for event replay, raw
   input conversion checks, platform-output assertions, stable-name layout
   assertions, paint-list assertions, RGBA pixel diffs with tolerances, dirty
@@ -209,6 +212,9 @@ The branch starts from Operad 2.0.0 plus:
 - Embedded canvas/native viewport contracts for callback, texture, and
   native-viewport render modes, host input capture policies, pointer-lock
   requests, domain hit-testing flags, and renderer-facing canvas extraction.
+- Chart, sparkline, and dense grid-map geometry helpers in `src/charts.rs` for
+  numeric range mapping, path generation, cell rectangles, hit testing, and
+  visible-cell queries.
 - Host adapter contracts in `src/host.rs` for hover, pressed, focused,
   drag-captured, text/IME, wheel-targeted, shortcut-routed, command dispatch,
   and repaint/platform-service state before paint.
@@ -218,6 +224,9 @@ The branch starts from Operad 2.0.0 plus:
 - Editor-surface helpers in `src/editor.rs` for world/view transforms, hit
   testing, snapping, cursor/tool modes, marquee selection, drag capture, and
   overlay ordering.
+- Arrangement and lane geometry helpers in `src/editor.rs` for unit-to-x
+  timelines, lane y/index mapping, visible ranges, clip/selection/playhead
+  rectangles, ruler ticks, and grid snapping.
 - Retained display-list cache contracts in `src/display.rs` for static editor
   backgrounds, snapshot/display-list reuse, dirty-flag invalidation, and bounded
   cache eviction.

@@ -96,6 +96,476 @@ impl ShellExtent {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShellBarItemRole {
+    Command,
+    Toggle,
+    Readout,
+    Separator,
+    Spacer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShellBarOverflowPolicy {
+    Never,
+    WhenNeeded,
+    Always,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellNumericReadout {
+    pub value: String,
+    pub unit: Option<String>,
+    pub precision: Option<u8>,
+    pub min_value: Option<f64>,
+    pub max_value: Option<f64>,
+}
+
+impl ShellNumericReadout {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            unit: None,
+            precision: None,
+            min_value: None,
+            max_value: None,
+        }
+    }
+
+    pub fn unit(mut self, unit: impl Into<String>) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+
+    pub const fn precision(mut self, precision: u8) -> Self {
+        self.precision = Some(precision);
+        self
+    }
+
+    pub const fn range(mut self, min_value: f64, max_value: f64) -> Self {
+        self.min_value = Some(min_value);
+        self.max_value = Some(max_value);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellBarItem {
+    pub id: String,
+    pub label: String,
+    pub command_id: Option<String>,
+    pub role: ShellBarItemRole,
+    pub enabled: bool,
+    pub active: bool,
+    pub pressed: bool,
+    pub priority: i32,
+    pub min_width: f32,
+    pub preferred_width: f32,
+    pub overflow_policy: ShellBarOverflowPolicy,
+    pub readout: Option<ShellNumericReadout>,
+}
+
+impl ShellBarItem {
+    pub fn new(id: impl Into<String>, label: impl Into<String>, role: ShellBarItemRole) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            command_id: None,
+            role,
+            enabled: true,
+            active: false,
+            pressed: false,
+            priority: 0,
+            min_width: 32.0,
+            preferred_width: 40.0,
+            overflow_policy: ShellBarOverflowPolicy::WhenNeeded,
+            readout: None,
+        }
+    }
+
+    pub fn command(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        command_id: impl Into<String>,
+    ) -> Self {
+        Self::new(id, label, ShellBarItemRole::Command).command_id(command_id)
+    }
+
+    pub fn toggle(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        command_id: impl Into<String>,
+    ) -> Self {
+        Self::new(id, label, ShellBarItemRole::Toggle).command_id(command_id)
+    }
+
+    pub fn readout(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        readout: ShellNumericReadout,
+    ) -> Self {
+        Self::new(id, label, ShellBarItemRole::Readout)
+            .with_readout(readout)
+            .overflow_policy(ShellBarOverflowPolicy::Never)
+            .widths(56.0, 72.0)
+    }
+
+    pub fn command_id(mut self, command_id: impl Into<String>) -> Self {
+        self.command_id = Some(command_id.into());
+        self
+    }
+
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub const fn active(mut self, active: bool) -> Self {
+        self.active = active;
+        self
+    }
+
+    pub const fn pressed(mut self, pressed: bool) -> Self {
+        self.pressed = pressed;
+        self
+    }
+
+    pub const fn priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    pub fn widths(mut self, min_width: f32, preferred_width: f32) -> Self {
+        self.min_width = finite_nonnegative(min_width);
+        self.preferred_width = finite_nonnegative(preferred_width).max(self.min_width);
+        self
+    }
+
+    pub const fn overflow_policy(mut self, overflow_policy: ShellBarOverflowPolicy) -> Self {
+        self.overflow_policy = overflow_policy;
+        self
+    }
+
+    pub fn with_readout(mut self, readout: ShellNumericReadout) -> Self {
+        self.readout = Some(readout);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellBarCluster {
+    pub id: String,
+    pub label: String,
+    pub items: Vec<ShellBarItem>,
+}
+
+impl ShellBarCluster {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            items: Vec::new(),
+        }
+    }
+
+    pub fn add_item(mut self, item: ShellBarItem) -> Self {
+        self.items.push(item);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellBarLayoutSpacing {
+    pub item_gap: f32,
+    pub cluster_gap: f32,
+}
+
+impl ShellBarLayoutSpacing {
+    pub fn new(item_gap: f32, cluster_gap: f32) -> Self {
+        Self {
+            item_gap: finite_nonnegative(item_gap),
+            cluster_gap: finite_nonnegative(cluster_gap),
+        }
+    }
+}
+
+impl Default for ShellBarLayoutSpacing {
+    fn default() -> Self {
+        Self::new(4.0, 8.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellBarItemLayout {
+    pub id: String,
+    pub cluster_id: Option<String>,
+    pub label: String,
+    pub command_id: Option<String>,
+    pub role: ShellBarItemRole,
+    pub enabled: bool,
+    pub active: bool,
+    pub pressed: bool,
+    pub x: f32,
+    pub width: f32,
+    pub min_width: f32,
+    pub preferred_width: f32,
+    pub readout: Option<ShellNumericReadout>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellBarOverflowItem {
+    pub id: String,
+    pub cluster_id: Option<String>,
+    pub label: String,
+    pub command_id: Option<String>,
+    pub role: ShellBarItemRole,
+    pub enabled: bool,
+    pub active: bool,
+    pub pressed: bool,
+    pub priority: i32,
+    pub readout: Option<ShellNumericReadout>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellBarLayoutPlan {
+    pub available_width: f32,
+    pub used_width: f32,
+    pub visible_items: Vec<ShellBarItemLayout>,
+    pub overflow_items: Vec<ShellBarOverflowItem>,
+    pub clipped: bool,
+}
+
+impl ShellBarLayoutPlan {
+    pub fn from_items(items: &[ShellBarItem], available_width: f32) -> Self {
+        Self::from_items_with_spacing(items, available_width, ShellBarLayoutSpacing::default())
+    }
+
+    pub fn from_items_with_spacing(
+        items: &[ShellBarItem],
+        available_width: f32,
+        spacing: ShellBarLayoutSpacing,
+    ) -> Self {
+        let entries = items
+            .iter()
+            .map(|item| ShellBarPlanEntry {
+                cluster_id: None,
+                item,
+            })
+            .collect::<Vec<_>>();
+        Self::from_entries(&entries, available_width, spacing)
+    }
+
+    pub fn from_clusters(clusters: &[ShellBarCluster], available_width: f32) -> Self {
+        Self::from_clusters_with_spacing(
+            clusters,
+            available_width,
+            ShellBarLayoutSpacing::default(),
+        )
+    }
+
+    pub fn from_clusters_with_spacing(
+        clusters: &[ShellBarCluster],
+        available_width: f32,
+        spacing: ShellBarLayoutSpacing,
+    ) -> Self {
+        let entries = clusters
+            .iter()
+            .flat_map(|cluster| {
+                cluster.items.iter().map(|item| ShellBarPlanEntry {
+                    cluster_id: Some(cluster.id.as_str()),
+                    item,
+                })
+            })
+            .collect::<Vec<_>>();
+        Self::from_entries(&entries, available_width, spacing)
+    }
+
+    fn from_entries(
+        entries: &[ShellBarPlanEntry<'_>],
+        available_width: f32,
+        spacing: ShellBarLayoutSpacing,
+    ) -> Self {
+        let available_width = finite_nonnegative(available_width);
+        let mut visible = entries
+            .iter()
+            .map(|entry| entry.item.overflow_policy != ShellBarOverflowPolicy::Always)
+            .collect::<Vec<_>>();
+
+        loop {
+            if bar_width(entries, &visible, spacing, BarWidthMode::Min) <= available_width {
+                break;
+            }
+
+            let Some(index) = visible
+                .iter()
+                .enumerate()
+                .filter(|(index, is_visible)| {
+                    **is_visible
+                        && entries[*index].item.overflow_policy
+                            == ShellBarOverflowPolicy::WhenNeeded
+                })
+                .min_by_key(|(index, _)| (entries[*index].item.priority, usize::MAX - *index))
+                .map(|(index, _)| index)
+            else {
+                break;
+            };
+
+            visible[index] = false;
+        }
+
+        let min_width = bar_width(entries, &visible, spacing, BarWidthMode::Min);
+        let preferred_width = bar_width(entries, &visible, spacing, BarWidthMode::Preferred);
+        let clipped = min_width > available_width;
+        let target_width = if preferred_width <= available_width {
+            preferred_width
+        } else {
+            min_width.max(available_width)
+        };
+        let extra_width = (target_width - min_width).max(0.0);
+        let flexible_width = entries
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| visible[*index])
+            .map(|(_, entry)| {
+                (item_preferred_width(entry.item) - item_min_width(entry.item)).max(0.0)
+            })
+            .sum::<f32>();
+
+        let mut visible_items = Vec::new();
+        let mut overflow_items = Vec::new();
+        let mut x = 0.0;
+        let mut previous_cluster_id: Option<&str> = None;
+
+        for (index, entry) in entries.iter().enumerate() {
+            if visible[index] {
+                if !visible_items.is_empty() {
+                    x += gap_between(previous_cluster_id, entry.cluster_id, spacing);
+                }
+
+                let min_width = item_min_width(entry.item);
+                let preferred_width = item_preferred_width(entry.item);
+                let flex = (preferred_width - min_width).max(0.0);
+                let width = if flexible_width > f32::EPSILON {
+                    min_width + extra_width * (flex / flexible_width)
+                } else {
+                    min_width
+                };
+
+                visible_items.push(entry.layout(x, width));
+                x += width;
+                previous_cluster_id = entry.cluster_id;
+            } else {
+                overflow_items.push(entry.overflow_item());
+            }
+        }
+
+        Self {
+            available_width,
+            used_width: x,
+            visible_items,
+            overflow_items,
+            clipped,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ShellBarPlanEntry<'a> {
+    cluster_id: Option<&'a str>,
+    item: &'a ShellBarItem,
+}
+
+impl ShellBarPlanEntry<'_> {
+    fn layout(self, x: f32, width: f32) -> ShellBarItemLayout {
+        ShellBarItemLayout {
+            id: self.item.id.clone(),
+            cluster_id: self.cluster_id.map(str::to_string),
+            label: self.item.label.clone(),
+            command_id: self.item.command_id.clone(),
+            role: self.item.role,
+            enabled: self.item.enabled,
+            active: self.item.active,
+            pressed: self.item.pressed,
+            x,
+            width,
+            min_width: item_min_width(self.item),
+            preferred_width: item_preferred_width(self.item),
+            readout: self.item.readout.clone(),
+        }
+    }
+
+    fn overflow_item(self) -> ShellBarOverflowItem {
+        ShellBarOverflowItem {
+            id: self.item.id.clone(),
+            cluster_id: self.cluster_id.map(str::to_string),
+            label: self.item.label.clone(),
+            command_id: self.item.command_id.clone(),
+            role: self.item.role,
+            enabled: self.item.enabled,
+            active: self.item.active,
+            pressed: self.item.pressed,
+            priority: self.item.priority,
+            readout: self.item.readout.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BarWidthMode {
+    Min,
+    Preferred,
+}
+
+fn bar_width(
+    entries: &[ShellBarPlanEntry<'_>],
+    visible: &[bool],
+    spacing: ShellBarLayoutSpacing,
+    mode: BarWidthMode,
+) -> f32 {
+    let mut width = 0.0;
+    let mut previous_cluster_id = None;
+    let mut has_visible_item = false;
+
+    for (index, entry) in entries.iter().enumerate() {
+        if !visible[index] {
+            continue;
+        }
+
+        if has_visible_item {
+            width += gap_between(previous_cluster_id, entry.cluster_id, spacing);
+        }
+
+        width += match mode {
+            BarWidthMode::Min => item_min_width(entry.item),
+            BarWidthMode::Preferred => item_preferred_width(entry.item),
+        };
+        previous_cluster_id = entry.cluster_id;
+        has_visible_item = true;
+    }
+
+    width
+}
+
+fn gap_between(
+    previous_cluster_id: Option<&str>,
+    cluster_id: Option<&str>,
+    spacing: ShellBarLayoutSpacing,
+) -> f32 {
+    if previous_cluster_id == cluster_id {
+        spacing.item_gap
+    } else {
+        spacing.cluster_gap
+    }
+}
+
+fn item_min_width(item: &ShellBarItem) -> f32 {
+    finite_nonnegative(item.min_width)
+}
+
+fn item_preferred_width(item: &ShellBarItem) -> f32 {
+    finite_nonnegative(item.preferred_width).max(item_min_width(item))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DockPlacement {
     Docked(ShellRegion),
@@ -790,6 +1260,108 @@ fn finite_nonnegative(value: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::UiNodeId;
+
+    #[test]
+    fn shell_bar_layout_keeps_transport_readouts_and_overflows_low_priority_items() {
+        let clusters = vec![
+            ShellBarCluster::new("transport", "Transport")
+                .add_item(
+                    ShellBarItem::command("stop", "Stop", "transport.stop")
+                        .overflow_policy(ShellBarOverflowPolicy::Never)
+                        .widths(28.0, 32.0),
+                )
+                .add_item(
+                    ShellBarItem::toggle("play", "Play", "transport.play")
+                        .priority(100)
+                        .active(true)
+                        .pressed(true)
+                        .widths(32.0, 40.0),
+                )
+                .add_item(ShellBarItem::readout(
+                    "tempo",
+                    "Tempo",
+                    ShellNumericReadout::new("120.0")
+                        .unit("bpm")
+                        .precision(1)
+                        .range(20.0, 300.0),
+                )),
+            ShellBarCluster::new("tools", "Tools")
+                .add_item(
+                    ShellBarItem::toggle("quantize", "Quantize", "edit.quantize")
+                        .priority(10)
+                        .widths(44.0, 64.0),
+                )
+                .add_item(
+                    ShellBarItem::toggle("metro", "Metronome", "transport.metronome")
+                        .priority(50)
+                        .enabled(false)
+                        .active(true)
+                        .widths(36.0, 44.0),
+                ),
+        ];
+
+        let plan = ShellBarLayoutPlan::from_clusters(&clusters, 160.0);
+
+        assert_eq!(
+            plan.visible_items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["stop", "play", "tempo"]
+        );
+        assert_eq!(
+            plan.overflow_items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["quantize", "metro"]
+        );
+        assert_eq!(
+            plan.visible_items[1].command_id.as_deref(),
+            Some("transport.play")
+        );
+        assert!(plan.visible_items[1].active);
+        assert!(plan.visible_items[1].pressed);
+        assert_eq!(
+            plan.visible_items[2].cluster_id.as_deref(),
+            Some("transport")
+        );
+        assert_eq!(
+            plan.visible_items[2]
+                .readout
+                .as_ref()
+                .and_then(|readout| readout.unit.as_deref()),
+            Some("bpm")
+        );
+        assert!(!plan.clipped);
+    }
+
+    #[test]
+    fn shell_bar_layout_shrinks_visible_items_before_overflowing_them() {
+        let items = vec![
+            ShellBarItem::command("select", "Select", "tool.select").widths(40.0, 80.0),
+            ShellBarItem::command("draw", "Draw", "tool.draw").widths(40.0, 80.0),
+        ];
+
+        let plan = ShellBarLayoutPlan::from_items_with_spacing(
+            &items,
+            100.0,
+            ShellBarLayoutSpacing::new(4.0, 4.0),
+        );
+
+        assert_eq!(plan.overflow_items, Vec::new());
+        assert_eq!(
+            plan.visible_items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["select", "draw"]
+        );
+        assert_eq!(plan.visible_items[0].width, 48.0);
+        assert_eq!(plan.visible_items[1].x, 52.0);
+        assert_eq!(plan.visible_items[1].width, 48.0);
+        assert_eq!(plan.used_width, 100.0);
+    }
 
     #[test]
     fn panel_state_clamps_resizes_collapses_and_restores() {

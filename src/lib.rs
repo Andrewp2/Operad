@@ -19,6 +19,7 @@ use taffy::prelude::{
 
 pub mod accessibility;
 pub mod assets;
+pub mod charts;
 pub mod commands;
 pub mod debug;
 pub mod display;
@@ -36,6 +37,10 @@ pub mod tooltips;
 pub use assets::{
     AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
 };
+pub use charts::{
+    ChartRange, ChartSample, ChartViewport, GridCell, GridCellRange, GridMapGeometry,
+    SparklineGeometry,
+};
 pub use commands::{
     Command, CommandEffect, CommandEffectInvocation, CommandId, CommandMeta, CommandRegistry,
     CommandRegistryError, CommandScope, Shortcut, ShortcutBinding, ShortcutConflict,
@@ -51,9 +56,11 @@ pub use display::{
     DisplayListKind, DisplayListScope, RetainedDisplayList, RetainedDisplayListCache,
 };
 pub use editor::{
-    EditorCursor, EditorHitId, EditorHitKind, EditorHitTarget, EditorHitTest, EditorHitTester,
-    EditorOverlay, EditorOverlayStack, EditorSurfaceId, EditorSurfaceState, EditorToolId,
-    EditorToolMode, EditorTransform, MarqueeSelection, SnapGrid,
+    generate_ruler_ticks, ArrangementGeometry, EditorAxisRange, EditorCursor, EditorHitId,
+    EditorHitKind, EditorHitTarget, EditorHitTest, EditorHitTester, EditorOverlay,
+    EditorOverlayStack, EditorSurfaceId, EditorSurfaceState, EditorToolId, EditorToolMode,
+    EditorTransform, LaneGeometry, MarqueeSelection, RulerTickConfig, SnapGrid, TimelineGeometry,
+    VisibleLaneRange,
 };
 pub use host::{
     text_input_id_for_node, HostAdapter, HostAdapterError, HostCommandDispatch, HostFrameOutput,
@@ -79,7 +86,9 @@ pub use renderer::{
 };
 pub use shell::{
     DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup, ScrollSyncMember,
-    ShellExtent, ShellLayoutPlan, ShellPanelLayout, ShellPanelState, ShellRegion,
+    ShellBarCluster, ShellBarItem, ShellBarItemLayout, ShellBarItemRole, ShellBarLayoutPlan,
+    ShellBarLayoutSpacing, ShellBarOverflowItem, ShellBarOverflowPolicy, ShellExtent,
+    ShellLayoutPlan, ShellNumericReadout, ShellPanelLayout, ShellPanelState, ShellRegion,
     ShellRegionLayout, ShellWorkspaceState, SplitPaneSide,
 };
 pub use testing::{

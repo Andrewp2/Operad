@@ -304,6 +304,394 @@ impl Default for SnapGrid {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorAxisRange {
+    pub start: f32,
+    pub end: f32,
+}
+
+impl EditorAxisRange {
+    pub fn new(start: f32, end: f32) -> Self {
+        if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        }
+    }
+
+    pub fn length(self) -> f32 {
+        (self.end - self.start).max(0.0)
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.length() <= f32::EPSILON
+    }
+
+    pub fn contains(self, value: f32) -> bool {
+        value >= self.start && value <= self.end
+    }
+
+    pub fn intersects(self, other: Self) -> bool {
+        self.start < other.end && self.end > other.start
+    }
+
+    pub fn padded(self, amount: f32) -> Self {
+        let amount = if amount.is_finite() {
+            amount.max(0.0)
+        } else {
+            0.0
+        };
+        Self {
+            start: self.start - amount,
+            end: self.end + amount,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimelineGeometry {
+    pub transform: EditorTransform,
+}
+
+impl TimelineGeometry {
+    pub const fn new(transform: EditorTransform) -> Self {
+        Self { transform }
+    }
+
+    pub fn unit_to_view_x(self, unit: f32) -> f32 {
+        self.transform
+            .world_to_view_point(UiPoint::new(unit, 0.0))
+            .x
+    }
+
+    pub fn view_x_to_unit(self, x: f32) -> f32 {
+        self.transform.view_to_world_point(UiPoint::new(x, 0.0)).x
+    }
+
+    pub fn span_to_view_width(self, span: f32) -> f32 {
+        span * self.transform.scale.x
+    }
+
+    pub fn view_width_to_span(self, width: f32) -> f32 {
+        width / self.transform.scale.x
+    }
+
+    pub fn visible_units(self) -> EditorAxisRange {
+        let visible = self.transform.visible_world_rect();
+        EditorAxisRange::new(visible.x, visible.right())
+    }
+
+    pub fn snap_unit(self, unit: f32, grid: SnapGrid) -> f32 {
+        grid.snap_point(UiPoint::new(unit, 0.0)).x
+    }
+
+    pub fn snap_range(self, range: EditorAxisRange, grid: SnapGrid) -> EditorAxisRange {
+        EditorAxisRange::new(
+            self.snap_unit(range.start, grid),
+            self.snap_unit(range.end, grid),
+        )
+    }
+
+    pub fn playhead_rect(
+        self,
+        unit: f32,
+        world_y: f32,
+        world_height: f32,
+        width_px: f32,
+    ) -> UiRect {
+        let x = self.unit_to_view_x(unit) - width_px.max(1.0) * 0.5;
+        let top = self
+            .transform
+            .world_to_view_point(UiPoint::new(unit, world_y))
+            .y;
+        UiRect::new(
+            x,
+            top,
+            width_px.max(1.0),
+            world_height * self.transform.scale.y,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibleLaneRange {
+    pub start_index: usize,
+    pub end_index: usize,
+}
+
+impl VisibleLaneRange {
+    pub const fn new(start_index: usize, end_index: usize) -> Self {
+        Self {
+            start_index,
+            end_index,
+        }
+    }
+
+    pub fn len(self) -> usize {
+        self.end_index.saturating_sub(self.start_index)
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.start_index >= self.end_index
+    }
+
+    pub fn contains(self, index: usize) -> bool {
+        index >= self.start_index && index < self.end_index
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LaneGeometry {
+    pub origin_y: f32,
+    pub lane_height: f32,
+    pub lane_gap: f32,
+    pub lane_count: usize,
+}
+
+impl LaneGeometry {
+    pub fn new(lane_height: f32, lane_count: usize) -> Self {
+        Self {
+            origin_y: 0.0,
+            lane_height: sanitize_positive(lane_height),
+            lane_gap: 0.0,
+            lane_count,
+        }
+    }
+
+    pub fn with_origin_y(mut self, origin_y: f32) -> Self {
+        if origin_y.is_finite() {
+            self.origin_y = origin_y;
+        }
+        self
+    }
+
+    pub fn with_lane_gap(mut self, lane_gap: f32) -> Self {
+        if lane_gap.is_finite() {
+            self.lane_gap = lane_gap.max(0.0);
+        }
+        self
+    }
+
+    pub fn lane_pitch(self) -> f32 {
+        self.lane_height + self.lane_gap
+    }
+
+    pub fn lane_y(self, index: usize) -> f32 {
+        self.origin_y + index as f32 * self.lane_pitch()
+    }
+
+    pub fn lane_rect(self, index: usize, x_range: EditorAxisRange) -> Option<UiRect> {
+        if index >= self.lane_count || x_range.is_empty() {
+            return None;
+        }
+        Some(UiRect::new(
+            x_range.start,
+            self.lane_y(index),
+            x_range.length(),
+            self.lane_height,
+        ))
+    }
+
+    pub fn index_at_y(self, y: f32) -> Option<usize> {
+        if !y.is_finite() || self.lane_count == 0 {
+            return None;
+        }
+        let offset = y - self.origin_y;
+        if offset < 0.0 {
+            return None;
+        }
+        let pitch = self.lane_pitch();
+        let index = (offset / pitch).floor() as usize;
+        if index >= self.lane_count {
+            return None;
+        }
+        let lane_offset = offset - index as f32 * pitch;
+        if lane_offset <= self.lane_height {
+            Some(index)
+        } else {
+            None
+        }
+    }
+
+    pub fn visible_lanes(self, world_rect: UiRect) -> VisibleLaneRange {
+        if self.lane_count == 0 || world_rect.height <= 0.0 {
+            return VisibleLaneRange::new(0, 0);
+        }
+        if world_rect.bottom() <= self.origin_y {
+            return VisibleLaneRange::new(0, 0);
+        }
+        if world_rect.y >= self.origin_y + self.total_height() {
+            return VisibleLaneRange::new(self.lane_count, self.lane_count);
+        }
+
+        let pitch = self.lane_pitch();
+        let mut first = ((world_rect.y - self.origin_y) / pitch).floor().max(0.0) as usize;
+        first = first.min(self.lane_count);
+        while first < self.lane_count && self.lane_y(first) + self.lane_height <= world_rect.y {
+            first += 1;
+        }
+        if first >= self.lane_count || self.lane_y(first) >= world_rect.bottom() {
+            return VisibleLaneRange::new(first, first);
+        }
+
+        let mut last = ((world_rect.bottom() - self.origin_y) / pitch)
+            .floor()
+            .max(0.0) as usize
+            + 1;
+        last = last.min(self.lane_count);
+        while last > first && self.lane_y(last - 1) >= world_rect.bottom() {
+            last -= 1;
+        }
+
+        VisibleLaneRange::new(first.min(self.lane_count), last.min(self.lane_count))
+    }
+
+    pub fn total_height(self) -> f32 {
+        if self.lane_count == 0 {
+            0.0
+        } else {
+            self.lane_count as f32 * self.lane_height
+                + self.lane_count.saturating_sub(1) as f32 * self.lane_gap
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArrangementGeometry {
+    pub timeline: TimelineGeometry,
+    pub lanes: LaneGeometry,
+}
+
+impl ArrangementGeometry {
+    pub const fn new(transform: EditorTransform, lanes: LaneGeometry) -> Self {
+        Self {
+            timeline: TimelineGeometry::new(transform),
+            lanes,
+        }
+    }
+
+    pub fn visible_units(self) -> EditorAxisRange {
+        self.timeline.visible_units()
+    }
+
+    pub fn visible_lanes(self) -> VisibleLaneRange {
+        self.lanes
+            .visible_lanes(self.timeline.transform.visible_world_rect())
+    }
+
+    pub fn world_clip_rect(self, lane_index: usize, range: EditorAxisRange) -> Option<UiRect> {
+        self.lanes.lane_rect(lane_index, range)
+    }
+
+    pub fn view_clip_rect(self, lane_index: usize, range: EditorAxisRange) -> Option<UiRect> {
+        self.world_clip_rect(lane_index, range)
+            .map(|rect| self.timeline.transform.world_to_view_rect(rect))
+    }
+
+    pub fn lane_at_view_y(self, y: f32) -> Option<usize> {
+        let world_y = self
+            .timeline
+            .transform
+            .view_to_world_point(UiPoint::new(0.0, y))
+            .y;
+        self.lanes.index_at_y(world_y)
+    }
+
+    pub fn range_at_view_rect(self, rect: UiRect) -> EditorAxisRange {
+        let world = self.timeline.transform.view_to_world_rect(rect);
+        EditorAxisRange::new(world.x, world.right())
+    }
+
+    pub fn loop_overlay_rect(self, range: EditorAxisRange) -> UiRect {
+        let top = self.lanes.origin_y;
+        let bottom = self.lanes.origin_y + self.lanes.total_height();
+        self.timeline.transform.world_to_view_rect(UiRect::new(
+            range.start,
+            top,
+            range.length(),
+            bottom - top,
+        ))
+    }
+
+    pub fn selection_rect(
+        self,
+        lane_range: VisibleLaneRange,
+        unit_range: EditorAxisRange,
+    ) -> UiRect {
+        let start_y = self.lanes.lane_y(lane_range.start_index);
+        let end_y = if lane_range.is_empty() {
+            start_y
+        } else {
+            self.lanes.lane_y(lane_range.end_index - 1) + self.lanes.lane_height
+        };
+        self.timeline.transform.world_to_view_rect(UiRect::new(
+            unit_range.start,
+            start_y,
+            unit_range.length(),
+            end_y - start_y,
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RulerTick {
+    pub unit: f32,
+    pub view_x: f32,
+    pub major: bool,
+    pub index: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RulerTickConfig {
+    pub major_step: f32,
+    pub minor_divisions: u16,
+}
+
+impl RulerTickConfig {
+    pub fn new(major_step: f32) -> Self {
+        Self {
+            major_step: sanitize_positive(major_step),
+            minor_divisions: 1,
+        }
+    }
+
+    pub fn with_minor_divisions(mut self, minor_divisions: u16) -> Self {
+        self.minor_divisions = minor_divisions.max(1);
+        self
+    }
+
+    pub fn minor_step(self) -> f32 {
+        self.major_step / self.minor_divisions as f32
+    }
+}
+
+pub fn generate_ruler_ticks(
+    timeline: TimelineGeometry,
+    config: RulerTickConfig,
+    visible_units: EditorAxisRange,
+) -> Vec<RulerTick> {
+    let minor_step = config.minor_step();
+    if minor_step <= MIN_SCALE {
+        return Vec::new();
+    }
+    let first = (visible_units.start / minor_step).floor() as i32;
+    let last = (visible_units.end / minor_step).ceil() as i32;
+    (first..=last)
+        .map(|index| {
+            let unit = index as f32 * minor_step;
+            RulerTick {
+                unit,
+                view_x: timeline.unit_to_view_x(unit),
+                major: index.rem_euclid(config.minor_divisions as i32) == 0,
+                index,
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EditorHitKind {
     Surface,
@@ -759,6 +1147,119 @@ mod tests {
             grid.snap_delta(UiPoint::new(0.5, 2.0), UiPoint::new(1.02, 23.2)),
             UiPoint::new(0.5, 20.0)
         );
+    }
+
+    #[test]
+    fn timeline_geometry_converts_visible_ranges_and_snap_units() {
+        let timeline = TimelineGeometry::new(transform());
+
+        assert_eq!(timeline.unit_to_view_x(125.0), 60.0);
+        assert_eq!(timeline.view_x_to_unit(60.0), 125.0);
+        assert_eq!(timeline.span_to_view_width(8.0), 16.0);
+        assert_eq!(timeline.view_width_to_span(16.0), 8.0);
+        assert_eq!(timeline.visible_units(), EditorAxisRange::new(100.0, 300.0));
+
+        let grid = SnapGrid::new(UiPoint::new(0.25, 1.0));
+        assert_eq!(timeline.snap_unit(12.37, grid), 12.25);
+        assert_eq!(
+            timeline.snap_range(EditorAxisRange::new(4.13, 8.88), grid),
+            EditorAxisRange::new(4.25, 9.0)
+        );
+
+        let playhead = timeline.playhead_rect(125.0, 50.0, 20.0, 3.0);
+        assert_eq!(playhead, UiRect::new(58.5, 20.0, 3.0, 80.0));
+    }
+
+    #[test]
+    fn lane_geometry_maps_indices_and_visible_lanes() {
+        let lanes = LaneGeometry::new(10.0, 8)
+            .with_origin_y(50.0)
+            .with_lane_gap(2.0);
+
+        assert_eq!(lanes.lane_pitch(), 12.0);
+        assert_eq!(lanes.lane_y(3), 86.0);
+        assert_eq!(lanes.index_at_y(50.0), Some(0));
+        assert_eq!(lanes.index_at_y(61.0), None);
+        assert_eq!(lanes.index_at_y(86.0), Some(3));
+        assert_eq!(lanes.index_at_y(200.0), None);
+        assert_eq!(lanes.total_height(), 94.0);
+
+        assert_eq!(
+            lanes.lane_rect(2, EditorAxisRange::new(12.0, 20.0)),
+            Some(UiRect::new(12.0, 74.0, 8.0, 10.0))
+        );
+        assert_eq!(
+            lanes.visible_lanes(UiRect::new(0.0, 59.0, 100.0, 29.0)),
+            VisibleLaneRange::new(0, 4)
+        );
+        assert_eq!(
+            lanes.visible_lanes(UiRect::new(0.0, 0.0, 100.0, 30.0)),
+            VisibleLaneRange::new(0, 0)
+        );
+        assert_eq!(
+            lanes.visible_lanes(UiRect::new(0.0, 60.25, 100.0, 1.5)),
+            VisibleLaneRange::new(1, 1)
+        );
+        assert_eq!(
+            lanes.visible_lanes(UiRect::new(0.0, 200.0, 100.0, 10.0)),
+            VisibleLaneRange::new(8, 8)
+        );
+    }
+
+    #[test]
+    fn arrangement_geometry_builds_clip_selection_and_overlay_rects() {
+        let arrangement = ArrangementGeometry::new(
+            transform(),
+            LaneGeometry::new(5.0, 6)
+                .with_origin_y(50.0)
+                .with_lane_gap(1.0),
+        );
+
+        assert_eq!(arrangement.visible_lanes(), VisibleLaneRange::new(0, 6));
+        assert_eq!(arrangement.lane_at_view_y(20.0), Some(0));
+        assert_eq!(arrangement.lane_at_view_y(42.0), None);
+        assert_eq!(
+            arrangement.range_at_view_rect(UiRect::new(10.0, 20.0, 20.0, 10.0)),
+            EditorAxisRange::new(100.0, 110.0)
+        );
+
+        assert_eq!(
+            arrangement.world_clip_rect(2, EditorAxisRange::new(120.0, 132.0)),
+            Some(UiRect::new(120.0, 62.0, 12.0, 5.0))
+        );
+        assert_eq!(
+            arrangement.view_clip_rect(2, EditorAxisRange::new(120.0, 132.0)),
+            Some(UiRect::new(50.0, 68.0, 24.0, 20.0))
+        );
+        assert_eq!(
+            arrangement.loop_overlay_rect(EditorAxisRange::new(120.0, 132.0)),
+            UiRect::new(50.0, 20.0, 24.0, 140.0)
+        );
+        assert_eq!(
+            arrangement.selection_rect(
+                VisibleLaneRange::new(1, 4),
+                EditorAxisRange::new(110.0, 120.0)
+            ),
+            UiRect::new(30.0, 44.0, 20.0, 68.0)
+        );
+    }
+
+    #[test]
+    fn ruler_ticks_include_major_and_minor_positions() {
+        let timeline = TimelineGeometry::new(transform());
+        let ticks = generate_ruler_ticks(
+            timeline,
+            RulerTickConfig::new(4.0).with_minor_divisions(4),
+            EditorAxisRange::new(101.25, 104.25),
+        );
+
+        assert_eq!(ticks.len(), 5);
+        assert_eq!(ticks[0].unit, 101.0);
+        assert_eq!(ticks[0].view_x, 12.0);
+        assert!(!ticks[0].major);
+        assert_eq!(ticks[3].unit, 104.0);
+        assert!(ticks[3].major);
+        assert_eq!(ticks[4].unit, 105.0);
     }
 
     #[test]
