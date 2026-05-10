@@ -217,6 +217,9 @@ The branch starts from Operad 2.0.0 plus:
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   nodes outside the root, empty paint clips, and focusable controls missing from
   the accessibility traversal.
+- Operad-owned layout helper APIs in `src/lib.rs` cover common fixed, fill,
+  centered flex, absolute, gap, min/max size, flex item, and clipped node-style
+  shapes so consumers can use fewer raw Taffy struct literals.
 - Accessibility adapter contracts in `src/accessibility.rs` now include
   deterministic live-region snapshots, live-region diffing, and announcement
   queues that can be converted into supported screen-reader adapter requests.

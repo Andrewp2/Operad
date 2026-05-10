@@ -5123,7 +5123,9 @@ pub fn length(value: f32) -> Dimension {
 }
 
 pub mod layout {
-    use taffy::prelude::{LengthPercentageAuto, Rect};
+    use taffy::prelude::{
+        AlignItems, JustifyContent, LengthPercentage, LengthPercentageAuto, Position, Rect,
+    };
 
     use super::*;
 
@@ -5135,11 +5137,35 @@ pub mod layout {
         Dimension::percent(value)
     }
 
+    pub fn auto() -> Dimension {
+        Dimension::auto()
+    }
+
+    pub fn spacing(value: f32) -> LengthPercentage {
+        LengthPercentage::length(value)
+    }
+
     pub fn fixed(width: f32, height: f32) -> Style {
         Style {
             size: TaffySize {
                 width: px(width),
                 height: px(height),
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn absolute(x: f32, y: f32, width: f32, height: f32) -> Style {
+        with_absolute_position(fixed(width, height), x, y)
+    }
+
+    pub fn absolute_fill() -> Style {
+        Style {
+            position: Position::Absolute,
+            inset: Rect::length(0.0),
+            size: TaffySize {
+                width: percent(1.0),
+                height: percent(1.0),
             },
             ..Default::default()
         }
@@ -5168,13 +5194,69 @@ pub mod layout {
         }
     }
 
+    pub fn centered_row() -> Style {
+        with_centered_children(row())
+    }
+
+    pub fn centered_column() -> Style {
+        with_centered_children(column())
+    }
+
     pub fn fill() -> Style {
         size(percent(1.0), percent(1.0))
+    }
+
+    pub fn flex_item(grow: f32, shrink: f32, basis: Dimension) -> Style {
+        with_flex(Style::default(), grow, shrink, basis)
     }
 
     pub fn with_size(mut style: Style, width: Dimension, height: Dimension) -> Style {
         style.size = TaffySize { width, height };
         style
+    }
+
+    pub fn with_min_size(mut style: Style, width: Dimension, height: Dimension) -> Style {
+        style.min_size = TaffySize { width, height };
+        style
+    }
+
+    pub fn with_max_size(mut style: Style, width: Dimension, height: Dimension) -> Style {
+        style.max_size = TaffySize { width, height };
+        style
+    }
+
+    pub fn with_absolute_position(mut style: Style, x: f32, y: f32) -> Style {
+        style.position = Position::Absolute;
+        style.inset.left = LengthPercentageAuto::length(x);
+        style.inset.top = LengthPercentageAuto::length(y);
+        style.inset.right = LengthPercentageAuto::auto();
+        style.inset.bottom = LengthPercentageAuto::auto();
+        style
+    }
+
+    pub fn with_flex(mut style: Style, grow: f32, shrink: f32, basis: Dimension) -> Style {
+        style.flex_grow = grow.max(0.0);
+        style.flex_shrink = shrink.max(0.0);
+        style.flex_basis = basis;
+        style
+    }
+
+    pub fn with_centered_children(mut style: Style) -> Style {
+        style.align_items = Some(AlignItems::Center);
+        style.justify_content = Some(JustifyContent::Center);
+        style
+    }
+
+    pub fn with_gap(mut style: Style, column_gap: f32, row_gap: f32) -> Style {
+        style.gap = TaffySize {
+            width: spacing(column_gap.max(0.0)),
+            height: spacing(row_gap.max(0.0)),
+        };
+        style
+    }
+
+    pub fn with_gap_all(style: Style, value: f32) -> Style {
+        with_gap(style, value, value)
     }
 
     pub fn with_margin_all(mut style: Style, value: f32) -> Style {
@@ -5191,6 +5273,21 @@ pub mod layout {
         style.margin.left = LengthPercentageAuto::auto();
         style.margin.right = LengthPercentageAuto::auto();
         style
+    }
+
+    pub fn node_style(layout: Style) -> UiNodeStyle {
+        UiNodeStyle {
+            layout,
+            ..Default::default()
+        }
+    }
+
+    pub fn clipped_node_style(layout: Style) -> UiNodeStyle {
+        UiNodeStyle {
+            layout,
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        }
     }
 }
 
@@ -5729,6 +5826,44 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn layout_helpers_cover_common_taffy_shapes() {
+        let absolute = layout::absolute(12.0, 18.0, 80.0, 40.0);
+        assert_eq!(absolute.position, Position::Absolute);
+        assert_eq!(absolute.inset.left, LengthPercentageAuto::length(12.0));
+        assert_eq!(absolute.inset.top, LengthPercentageAuto::length(18.0));
+        assert_eq!(absolute.inset.right, LengthPercentageAuto::auto());
+        assert_eq!(absolute.size.width, layout::px(80.0));
+        assert_eq!(absolute.size.height, layout::px(40.0));
+
+        let centered = layout::with_gap_all(layout::centered_row(), 6.0);
+        assert_eq!(centered.display, Display::Flex);
+        assert_eq!(centered.flex_direction, FlexDirection::Row);
+        assert_eq!(centered.align_items, Some(AlignItems::Center));
+        assert_eq!(centered.justify_content, Some(JustifyContent::Center));
+        assert_eq!(centered.gap.width, layout::spacing(6.0));
+        assert_eq!(centered.gap.height, layout::spacing(6.0));
+
+        let flex = layout::flex_item(2.0, 0.5, layout::px(64.0));
+        assert_eq!(flex.flex_grow, 2.0);
+        assert_eq!(flex.flex_shrink, 0.5);
+        assert_eq!(flex.flex_basis, layout::px(64.0));
+
+        let constrained = layout::with_max_size(
+            layout::with_min_size(layout::fill(), layout::px(120.0), layout::px(40.0)),
+            layout::px(240.0),
+            layout::auto(),
+        );
+        assert_eq!(constrained.min_size.width, layout::px(120.0));
+        assert_eq!(constrained.min_size.height, layout::px(40.0));
+        assert_eq!(constrained.max_size.width, layout::px(240.0));
+        assert_eq!(constrained.max_size.height, layout::auto());
+
+        let node_style = layout::clipped_node_style(absolute);
+        assert_eq!(node_style.clip, ClipBehavior::Clip);
+        assert_eq!(node_style.layout.position, Position::Absolute);
     }
 
     #[test]
