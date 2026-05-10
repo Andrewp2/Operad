@@ -5,6 +5,7 @@
 //! inspect paint lists, diff rgba snapshots with tolerances, and track simple
 //! frame timing sections.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
 
@@ -19,9 +20,9 @@ use crate::host::{
 };
 use crate::platform::{
     AppLifecycleResponse, ClipboardResponse, CursorResponse, DragDropResponse, FileDialogResponse,
-    NotificationResponse, OpenUrlResponse, PlatformResponse, PlatformServiceError,
-    PlatformServiceKind, PlatformServiceRequest, PlatformServiceResponse, RepaintResponse,
-    ScreenshotResponse, TextImeResponse,
+    NotificationResponse, OpenUrlResponse, PlatformRequestIdAllocator, PlatformResponse,
+    PlatformServiceError, PlatformServiceKind, PlatformServiceRequest, PlatformServiceResponse,
+    RepaintResponse, ScreenshotResponse, TextImeResponse,
 };
 use crate::renderer::{
     CanvasRenderRegistry, CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest,
@@ -829,20 +830,20 @@ impl<'a> RenderAssertions<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PlatformAssertions<'a> {
-    requests: &'a [PlatformServiceRequest],
-    responses: &'a [PlatformServiceResponse],
+    requests: Cow<'a, [PlatformServiceRequest]>,
+    responses: Cow<'a, [PlatformServiceResponse]>,
 }
 
 impl<'a> PlatformAssertions<'a> {
-    pub const fn new(
+    pub fn new(
         requests: &'a [PlatformServiceRequest],
         responses: &'a [PlatformServiceResponse],
     ) -> Self {
         Self {
-            requests,
-            responses,
+            requests: Cow::Borrowed(requests),
+            responses: Cow::Borrowed(responses),
         }
     }
 
@@ -850,12 +851,22 @@ impl<'a> PlatformAssertions<'a> {
         Self::new(&output.platform_requests, &output.platform_responses)
     }
 
-    pub fn requests(&self) -> &'a [PlatformServiceRequest] {
-        self.requests
+    pub fn from_document_frame(
+        output: &HostDocumentFrameOutput,
+        allocator: &mut PlatformRequestIdAllocator,
+    ) -> Self {
+        Self {
+            requests: Cow::Owned(output.platform_service_requests(allocator)),
+            responses: Cow::Owned(output.host_output.platform_responses.clone()),
+        }
     }
 
-    pub fn responses(&self) -> &'a [PlatformServiceResponse] {
-        self.responses
+    pub fn requests(&self) -> &[PlatformServiceRequest] {
+        self.requests.as_ref()
+    }
+
+    pub fn responses(&self) -> &[PlatformServiceResponse] {
+        self.responses.as_ref()
     }
 
     pub fn request_count(&self, kind: PlatformServiceKind) -> usize {
@@ -875,7 +886,7 @@ impl<'a> PlatformAssertions<'a> {
     pub fn require_request_kind(
         &self,
         kind: PlatformServiceKind,
-    ) -> TestResult<&'a PlatformServiceRequest> {
+    ) -> TestResult<&PlatformServiceRequest> {
         self.requests
             .iter()
             .find(|request| request.kind() == kind)
@@ -885,7 +896,7 @@ impl<'a> PlatformAssertions<'a> {
     pub fn require_response_kind(
         &self,
         kind: PlatformServiceKind,
-    ) -> TestResult<&'a PlatformServiceResponse> {
+    ) -> TestResult<&PlatformServiceResponse> {
         self.responses
             .iter()
             .find(|response| response.kind() == kind)
@@ -895,7 +906,7 @@ impl<'a> PlatformAssertions<'a> {
     pub fn require_response_for(
         &self,
         request: &PlatformServiceRequest,
-    ) -> TestResult<&'a PlatformServiceResponse> {
+    ) -> TestResult<&PlatformServiceResponse> {
         self.responses
             .iter()
             .find(|response| response.is_for(request) && response.kind() == request.kind())
@@ -909,7 +920,7 @@ impl<'a> PlatformAssertions<'a> {
     }
 
     pub fn require_all_responses_match_requests(&self) -> TestResult {
-        for response in self.responses {
+        for response in self.responses.iter() {
             if !self
                 .requests
                 .iter()
@@ -1148,18 +1159,19 @@ mod tests {
         Command, CommandId, CommandMeta, CommandRegistry, CommandScope, Shortcut,
     };
     use crate::platform::{
-        ClipboardRequest, ClipboardResponse, PlatformErrorCode, PlatformRequest, PlatformRequestId,
-        PlatformResponse, PlatformServiceError, PlatformServiceKind, RepaintRequest,
-        RepaintResponse,
+        ClipboardRequest, ClipboardResponse, CursorRequest, LogicalRect, PlatformErrorCode,
+        PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,
+        PlatformServiceError, PlatformServiceKind, RepaintRequest, RepaintResponse,
     };
     use crate::{
-        length, root_style, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
-        AccessibilitySummary, ApproxTextMeasurer, CanvasContent, CanvasRenderContext,
-        CanvasRenderOutput, CanvasRenderRegistry, ClipBehavior, ColorRgba, DirtyRegionSet,
-        HostFrameOutput, HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
+        length, process_document_frame, root_style, AccessibilityLiveRegion, AccessibilityMeta,
+        AccessibilityRole, AccessibilitySummary, ApproxTextMeasurer, CanvasContent,
+        CanvasInteractionPolicy, CanvasRenderContext, CanvasRenderOutput, CanvasRenderRegistry,
+        ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest, HostFrameOutput,
+        HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
         ImageRenderRegistry, InputBehavior, RawKeyboardEvent, RawPointerEvent, RawWheelEvent,
-        RenderFrameRequest, RenderTarget, StrokeStyle, TextStyle, UiContent, UiNode, UiNodeStyle,
-        UiPoint, UiVisual,
+        RenderFrameRequest, RenderTarget, StrokeStyle, TextStyle, UiContent, UiDocument, UiNode,
+        UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -1721,6 +1733,64 @@ mod tests {
         assert!(PlatformAssertions::from_host_frame(&error_output)
             .require_no_error_responses()
             .is_err());
+    }
+
+    #[test]
+    fn platform_assertions_can_use_document_frame_generated_requests() {
+        let viewport = UiSize::new(220.0, 120.0);
+        let mut document = UiDocument::new(root_style(viewport.width, viewport.height));
+        let canvas = document.add_child(
+            document.root,
+            UiNode::canvas("viewport", "app.viewport", fixed_style(120.0, 80.0).layout),
+        );
+        document.set_node_content(
+            canvas,
+            UiContent::Canvas(
+                CanvasContent::new("app.viewport")
+                    .native_viewport()
+                    .interaction(CanvasInteractionPolicy::NATIVE_VIEWPORT),
+            ),
+        );
+        let host_output = HostFrameOutput::new(HostInteractionState::default())
+            .repaint_next_frame(PlatformRequestId::new(4));
+        let frame = process_document_frame(
+            &mut document,
+            &mut ApproxTextMeasurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            ),
+        )
+        .expect("document frame");
+
+        let mut allocator = PlatformRequestIdAllocator::new(50);
+        let platform = PlatformAssertions::from_document_frame(&frame, &mut allocator);
+
+        assert_eq!(platform.request_count(PlatformServiceKind::Repaint), 1);
+        assert_eq!(platform.request_count(PlatformServiceKind::Cursor), 2);
+        assert_eq!(
+            platform
+                .requests()
+                .iter()
+                .map(|request| request.id)
+                .collect::<Vec<_>>(),
+            vec![
+                PlatformRequestId::new(4),
+                PlatformRequestId::new(50),
+                PlatformRequestId::new(51),
+            ]
+        );
+        assert_eq!(allocator.next_value(), 52);
+        let cursor_request = platform
+            .require_request_kind(PlatformServiceKind::Cursor)
+            .expect("cursor request");
+        assert_eq!(
+            cursor_request.request,
+            PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
+                0.0, 0.0, 120.0, 80.0
+            )))
+        );
     }
 
     #[test]
