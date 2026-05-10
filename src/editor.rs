@@ -881,6 +881,275 @@ impl TimelineRangeItemEdge {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurveInterpolation {
+    Linear,
+    Hold,
+    Step,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurvePoint {
+    pub id: EditorHitId,
+    pub unit: f32,
+    pub value: f32,
+    pub selected: bool,
+    pub disabled: bool,
+    pub dragging: bool,
+}
+
+impl CurvePoint {
+    pub fn new(id: impl Into<EditorHitId>, unit: f32, value: f32) -> Self {
+        Self {
+            id: id.into(),
+            unit: finite_or_zero(unit),
+            value: finite_or_zero(value),
+            selected: false,
+            disabled: false,
+            dragging: false,
+        }
+    }
+
+    pub const fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub const fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub const fn dragging(mut self, dragging: bool) -> Self {
+        self.dragging = dragging;
+        self
+    }
+
+    pub fn with_unit_value(mut self, unit: f32, value: f32) -> Self {
+        if unit.is_finite() {
+            self.unit = unit;
+        }
+        if value.is_finite() {
+            self.value = value;
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurveSegment {
+    pub from: UiPoint,
+    pub to: UiPoint,
+}
+
+impl CurveSegment {
+    pub const fn new(from: UiPoint, to: UiPoint) -> Self {
+        Self { from, to }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurveEditorGeometry {
+    pub timeline: TimelineGeometry,
+    pub value_range: EditorAxisRange,
+    pub view_rect: UiRect,
+    pub point_radius_px: f32,
+}
+
+impl CurveEditorGeometry {
+    pub fn new(
+        timeline: TimelineGeometry,
+        value_range: EditorAxisRange,
+        view_rect: UiRect,
+    ) -> Self {
+        Self {
+            timeline,
+            value_range: sanitize_axis_range(value_range),
+            view_rect,
+            point_radius_px: 5.0,
+        }
+    }
+
+    pub fn with_point_radius_px(mut self, radius: f32) -> Self {
+        if radius.is_finite() && radius > 0.0 {
+            self.point_radius_px = radius;
+        }
+        self
+    }
+
+    pub fn unit_to_view_x(self, unit: f32) -> f32 {
+        self.timeline.unit_to_view_x(unit)
+    }
+
+    pub fn view_x_to_unit(self, x: f32) -> f32 {
+        self.timeline.view_x_to_unit(x)
+    }
+
+    pub fn value_to_view_y(self, value: f32) -> f32 {
+        let span = self.value_range.length();
+        if span <= MIN_SCALE {
+            return self.view_rect.bottom();
+        }
+        let normalized =
+            (clamp_to_axis_range(value, self.value_range) - self.value_range.start) / span;
+        self.view_rect.bottom() - normalized * self.view_rect.height
+    }
+
+    pub fn view_y_to_value(self, y: f32) -> f32 {
+        if !y.is_finite() {
+            return self.value_range.start;
+        }
+        let height = self.view_rect.height.max(MIN_SCALE);
+        let normalized = ((self.view_rect.bottom() - y) / height).clamp(0.0, 1.0);
+        clamp_to_axis_range(
+            self.value_range.start + normalized * self.value_range.length(),
+            self.value_range,
+        )
+    }
+
+    pub fn point_view_position(self, point: &CurvePoint) -> UiPoint {
+        UiPoint::new(
+            self.unit_to_view_x(point.unit),
+            self.value_to_view_y(point.value),
+        )
+    }
+
+    pub fn point_world_rect(self, point: &CurvePoint) -> UiRect {
+        let center = self.point_view_position(point);
+        let radius = self.point_radius_px.max(MIN_SCALE);
+        self.timeline.transform.view_to_world_rect(UiRect::new(
+            center.x - radius,
+            center.y - radius,
+            radius * 2.0,
+            radius * 2.0,
+        ))
+    }
+
+    pub fn point_hit_target(self, point: &CurvePoint) -> EditorHitTarget {
+        let z_index = if point.disabled {
+            0
+        } else if point.dragging {
+            30
+        } else if point.selected {
+            20
+        } else {
+            10
+        };
+        let mut target = EditorHitTarget::new(
+            point.id.clone(),
+            EditorHitKind::Item,
+            self.point_world_rect(point),
+        )
+        .z_index(z_index)
+        .selectable(!point.disabled)
+        .draggable(!point.disabled);
+        if !point.disabled {
+            target = target.cursor(if point.dragging {
+                EditorCursor::Grabbing
+            } else {
+                EditorCursor::Grab
+            });
+        }
+        target
+    }
+
+    pub fn hit_targets(self, points: &[CurvePoint]) -> Vec<EditorHitTarget> {
+        points
+            .iter()
+            .map(|point| self.point_hit_target(point))
+            .collect()
+    }
+
+    pub fn segment_view_points(self, points: &[CurvePoint]) -> Vec<CurveSegment> {
+        let sorted = sorted_curve_points(points);
+        sorted
+            .windows(2)
+            .map(|window| {
+                CurveSegment::new(
+                    self.point_view_position(window[0]),
+                    self.point_view_position(window[1]),
+                )
+            })
+            .collect()
+    }
+
+    pub fn segment_view_path(
+        self,
+        points: &[CurvePoint],
+        interpolation: CurveInterpolation,
+    ) -> Vec<UiPoint> {
+        let sorted = sorted_curve_points(points);
+        let Some(first) = sorted.first() else {
+            return Vec::new();
+        };
+        let mut path = vec![self.point_view_position(first)];
+        for window in sorted.windows(2) {
+            let from = self.point_view_position(window[0]);
+            let to = self.point_view_position(window[1]);
+            match interpolation {
+                CurveInterpolation::Linear => path.push(to),
+                CurveInterpolation::Hold => {
+                    path.push(UiPoint::new(to.x, from.y));
+                    path.push(to);
+                }
+                CurveInterpolation::Step => {
+                    let midpoint_x = from.x + (to.x - from.x) * 0.5;
+                    path.push(UiPoint::new(midpoint_x, from.y));
+                    path.push(UiPoint::new(midpoint_x, to.y));
+                    path.push(to);
+                }
+            }
+        }
+        path
+    }
+
+    pub fn translated_point(
+        self,
+        point: &CurvePoint,
+        unit_delta: f32,
+        value_delta: f32,
+        unit_grid: SnapGrid,
+    ) -> Option<CurvePoint> {
+        if point.disabled || !unit_delta.is_finite() || !value_delta.is_finite() {
+            return None;
+        }
+        let unit = point.unit + unit_delta;
+        let unit = if unit_grid.enabled {
+            self.timeline.snap_unit(unit, unit_grid)
+        } else {
+            unit
+        };
+        Some(CurvePoint {
+            unit,
+            value: clamp_to_axis_range(point.value + value_delta, self.value_range),
+            dragging: true,
+            ..point.clone()
+        })
+    }
+
+    pub fn point_at_view_position(
+        self,
+        id: impl Into<EditorHitId>,
+        position: UiPoint,
+    ) -> CurvePoint {
+        CurvePoint::new(
+            id,
+            self.view_x_to_unit(position.x),
+            self.view_y_to_value(position.y),
+        )
+    }
+}
+
+fn sorted_curve_points(points: &[CurvePoint]) -> Vec<&CurvePoint> {
+    let mut sorted = points.iter().collect::<Vec<_>>();
+    sorted.sort_by(|left, right| {
+        left.unit
+            .total_cmp(&right.unit)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    sorted
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PianoRollPitchRange {
     pub min_pitch: i16,
     pub max_pitch: i16,
@@ -1604,6 +1873,10 @@ fn sanitize_scale(scale: UiPoint) -> UiPoint {
     UiPoint::new(sanitize_positive(scale.x), sanitize_positive(scale.y))
 }
 
+fn sanitize_axis_range(range: EditorAxisRange) -> EditorAxisRange {
+    EditorAxisRange::new(finite_or_zero(range.start), finite_or_zero(range.end))
+}
+
 fn sanitize_step(step: UiPoint) -> UiPoint {
     UiPoint::new(sanitize_positive(step.x), sanitize_positive(step.y))
 }
@@ -1613,6 +1886,21 @@ fn sanitize_positive(value: f32) -> f32 {
         value
     } else {
         1.0
+    }
+}
+
+fn clamp_to_axis_range(value: f32, range: EditorAxisRange) -> f32 {
+    if !value.is_finite() {
+        return range.start;
+    }
+    value.clamp(range.start, range.end)
+}
+
+fn finite_or_zero(value: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
     }
 }
 
@@ -1889,6 +2177,106 @@ mod tests {
             ),
             item.range
         );
+    }
+
+    #[test]
+    fn curve_editor_geometry_maps_points_segments_and_hit_targets() {
+        let geometry = CurveEditorGeometry::new(
+            TimelineGeometry::new(transform()),
+            EditorAxisRange::new(0.0, 1.0),
+            UiRect::new(10.0, 120.0, 200.0, 80.0),
+        )
+        .with_point_radius_px(5.0);
+        let point = CurvePoint::new("curve.1", 125.0, 0.75).selected(true);
+
+        assert_eq!(geometry.unit_to_view_x(125.0), 60.0);
+        assert_eq!(geometry.value_to_view_y(0.75), 140.0);
+        assert_eq!(
+            geometry.point_view_position(&point),
+            UiPoint::new(60.0, 140.0)
+        );
+        assert_eq!(
+            geometry.point_world_rect(&point),
+            UiRect::new(122.5, 78.75, 5.0, 2.5)
+        );
+
+        let targets = geometry.hit_targets(std::slice::from_ref(&point));
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id.as_str(), "curve.1");
+        assert_eq!(targets[0].kind, EditorHitKind::Item);
+        assert_eq!(targets[0].z_index, 20);
+        assert_eq!(targets[0].cursor, Some(EditorCursor::Grab));
+        assert!(targets[0].selectable);
+        assert!(targets[0].draggable);
+
+        let disabled = CurvePoint::new("curve.disabled", 125.0, 0.75).disabled(true);
+        let disabled_target = geometry.point_hit_target(&disabled);
+        assert_eq!(disabled_target.z_index, 0);
+        assert!(disabled_target.cursor.is_none());
+        assert!(!disabled_target.selectable);
+        assert!(!disabled_target.draggable);
+
+        let later = CurvePoint::new("curve.2", 130.0, 0.25);
+        let points = vec![later, point];
+        assert_eq!(
+            geometry.segment_view_points(&points),
+            vec![CurveSegment::new(
+                UiPoint::new(60.0, 140.0),
+                UiPoint::new(70.0, 180.0)
+            )]
+        );
+        assert_eq!(
+            geometry.segment_view_path(&points, CurveInterpolation::Linear),
+            vec![UiPoint::new(60.0, 140.0), UiPoint::new(70.0, 180.0)]
+        );
+        assert_eq!(
+            geometry.segment_view_path(&points, CurveInterpolation::Hold),
+            vec![
+                UiPoint::new(60.0, 140.0),
+                UiPoint::new(70.0, 140.0),
+                UiPoint::new(70.0, 180.0)
+            ]
+        );
+        assert_eq!(
+            geometry.segment_view_path(&points, CurveInterpolation::Step),
+            vec![
+                UiPoint::new(60.0, 140.0),
+                UiPoint::new(65.0, 140.0),
+                UiPoint::new(65.0, 180.0),
+                UiPoint::new(70.0, 180.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn curve_editor_geometry_translates_points_with_snapping_and_clamping() {
+        let geometry = CurveEditorGeometry::new(
+            TimelineGeometry::new(transform()),
+            EditorAxisRange::new(0.0, 1.0),
+            UiRect::new(10.0, 120.0, 200.0, 80.0),
+        );
+        let point = CurvePoint::new("curve.drag", 125.0, 0.75);
+        let grid = SnapGrid::new(UiPoint::new(0.25, 1.0));
+
+        let preview = geometry
+            .translated_point(&point, 0.13, 0.5, grid)
+            .expect("translated point");
+        assert_eq!(preview.unit, 125.25);
+        assert_eq!(preview.value, 1.0);
+        assert!(preview.dragging);
+        assert!(geometry
+            .translated_point(&point.clone().disabled(true), 0.13, 0.5, grid)
+            .is_none());
+
+        assert_eq!(geometry.view_y_to_value(120.0), 1.0);
+        assert_eq!(geometry.view_y_to_value(200.0), 0.0);
+        assert_eq!(geometry.view_y_to_value(80.0), 1.0);
+        assert_eq!(geometry.view_y_to_value(240.0), 0.0);
+
+        let created = geometry.point_at_view_position("curve.new", UiPoint::new(60.0, 140.0));
+        assert_eq!(created.id.as_str(), "curve.new");
+        assert_eq!(created.unit, 125.0);
+        assert_eq!(created.value, 0.75);
     }
 
     #[test]
