@@ -5189,7 +5189,7 @@ pub fn egui_color(color: ColorRgba, opacity: f32) -> egui::Color32 {
 
 #[cfg(feature = "egui")]
 pub fn paint_document_egui(document: &UiDocument, ctx: &egui::Context, layer: egui::LayerId) {
-    paint_document_egui_impl(document, ctx, layer, None, None);
+    paint_document_egui_impl(document, ctx, layer, None, None, None);
 }
 
 #[cfg(feature = "egui")]
@@ -5199,7 +5199,7 @@ pub fn paint_document_egui_clipped(
     layer: egui::LayerId,
     clip_rect: UiRect,
 ) {
-    paint_document_egui_impl(document, ctx, layer, Some(clip_rect), None);
+    paint_document_egui_impl(document, ctx, layer, Some(clip_rect), None, None);
 }
 
 #[cfg(feature = "egui")]
@@ -5209,8 +5209,39 @@ pub fn paint_document_egui_with_canvas(
     layer: egui::LayerId,
     mut paint_canvas: impl FnMut(&CanvasContent, &PaintItem, &egui::Painter),
 ) {
-    paint_document_egui_impl(document, ctx, layer, None, Some(&mut paint_canvas));
+    paint_document_egui_impl(document, ctx, layer, None, None, Some(&mut paint_canvas));
 }
+
+#[cfg(feature = "egui")]
+pub fn paint_document_egui_with_images(
+    document: &UiDocument,
+    ctx: &egui::Context,
+    layer: egui::LayerId,
+    mut paint_image: impl FnMut(&PaintImage, &PaintItem, &egui::Painter),
+) {
+    paint_document_egui_impl(document, ctx, layer, None, Some(&mut paint_image), None);
+}
+
+#[cfg(feature = "egui")]
+pub fn paint_document_egui_with_callbacks(
+    document: &UiDocument,
+    ctx: &egui::Context,
+    layer: egui::LayerId,
+    mut paint_image: impl FnMut(&PaintImage, &PaintItem, &egui::Painter),
+    mut paint_canvas: impl FnMut(&CanvasContent, &PaintItem, &egui::Painter),
+) {
+    paint_document_egui_impl(
+        document,
+        ctx,
+        layer,
+        None,
+        Some(&mut paint_image),
+        Some(&mut paint_canvas),
+    );
+}
+
+#[cfg(feature = "egui")]
+type EguiImageCallback<'a> = dyn FnMut(&PaintImage, &PaintItem, &egui::Painter) + 'a;
 
 #[cfg(feature = "egui")]
 type EguiCanvasCallback<'a> = dyn FnMut(&CanvasContent, &PaintItem, &egui::Painter) + 'a;
@@ -5221,6 +5252,7 @@ fn paint_document_egui_impl(
     ctx: &egui::Context,
     layer: egui::LayerId,
     outer_clip: Option<UiRect>,
+    mut paint_image: Option<&mut EguiImageCallback<'_>>,
     mut paint_canvas: Option<&mut EguiCanvasCallback<'_>>,
 ) {
     let painter = ctx.layer_painter(layer);
@@ -5353,8 +5385,13 @@ fn paint_document_egui_impl(
                     ));
                 }
             }
-            PaintKind::Image { .. } => {
+            PaintKind::Image { key, tint } => {
                 simple_rect_batch.flush(&painter, outer_clip);
+                if let Some(callback) = paint_image.as_deref_mut() {
+                    let mut image = PaintImage::new(key.clone(), item.rect);
+                    image.tint = *tint;
+                    callback(&image, &item, &painter.with_clip_rect(clip_rect));
+                }
             }
             PaintKind::Path(path) => {
                 simple_rect_batch.flush(&painter, outer_clip);
@@ -5385,8 +5422,11 @@ fn paint_document_egui_impl(
                     }
                 }
             }
-            PaintKind::ImagePlacement(_) => {
+            PaintKind::ImagePlacement(image) => {
                 simple_rect_batch.flush(&painter, outer_clip);
+                if let Some(callback) = paint_image.as_deref_mut() {
+                    callback(image, &item, &painter.with_clip_rect(clip_rect));
+                }
             }
         }
     }
@@ -6324,6 +6364,75 @@ mod tests {
             } if key == "icons.play"
         ));
         assert_eq!(item.shader.unwrap().key, "ui.glow");
+    }
+
+    #[cfg(feature = "egui")]
+    #[test]
+    fn egui_paint_callbacks_receive_image_and_canvas_items() {
+        let mut doc = UiDocument::new(root_style(160.0, 120.0));
+        doc.add_child(
+            doc.root,
+            UiNode::image(
+                "icon",
+                ImageContent::new("icons.play").tinted(ColorRgba::new(120, 180, 255, 255)),
+                Style {
+                    size: TaffySize {
+                        width: length(24.0),
+                        height: length(24.0),
+                    },
+                    ..Default::default()
+                },
+            ),
+        );
+        doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "preview",
+                vec![ScenePrimitive::ImagePlacement(
+                    PaintImage::new("thumbs.lot", UiRect::new(4.0, 6.0, 32.0, 20.0))
+                        .fit(ImageFit::Contain),
+                )],
+                Style {
+                    size: TaffySize {
+                        width: length(48.0),
+                        height: length(32.0),
+                    },
+                    ..Default::default()
+                },
+            ),
+        );
+        doc.add_child(
+            doc.root,
+            UiNode::canvas(
+                "mask",
+                "fabricad.mask.viewport",
+                Style {
+                    size: TaffySize {
+                        width: length(80.0),
+                        height: length(48.0),
+                    },
+                    ..Default::default()
+                },
+            ),
+        );
+        doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let ctx = egui::Context::default();
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("operad-test"));
+        let mut image_keys = Vec::new();
+        let mut canvas_keys = Vec::new();
+
+        paint_document_egui_with_callbacks(
+            &doc,
+            &ctx,
+            layer,
+            |image, _item, _painter| image_keys.push(image.key.clone()),
+            |canvas, _item, _painter| canvas_keys.push(canvas.key.clone()),
+        );
+
+        assert_eq!(image_keys, vec!["icons.play", "thumbs.lot"]);
+        assert_eq!(canvas_keys, vec!["fabricad.mask.viewport"]);
     }
 
     #[test]

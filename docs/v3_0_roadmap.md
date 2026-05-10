@@ -223,6 +223,9 @@ The branch starts from Operad 2.0.0 plus:
   resource deltas, dirty regions, paint batching, deterministic snapshots, and
   backend capability negotiation, with renderer-facing image extraction and
   image callback registries for app-owned icon/image/texture draw paths.
+- Egui paint callback hooks in `src/lib.rs` for forwarding renderer-neutral
+  image, image-placement, and canvas paint items to app-owned egui bridge code
+  instead of silently dropping asset-backed primitives.
 - Embedded canvas/native viewport contracts for callback, texture, and
   native-viewport render modes, host input capture policies, pointer-lock
   requests, domain hit-testing flags, renderer-facing canvas extraction, and
