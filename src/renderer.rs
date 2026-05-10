@@ -16,7 +16,7 @@ use crate::platform::{
 };
 use crate::{
     CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintImage, PaintItem, PaintKind, PaintList,
-    PaintTransform, ShaderEffect, UiNodeId, UiRect, UiSize,
+    PaintTransform, ShaderEffect, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -706,9 +706,105 @@ impl<B> CanvasRenderContext<'_, B> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CanvasHitTarget {
+    pub id: String,
+    pub rect: UiRect,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub metadata: Vec<(String, String)>,
+    pub z_index: i16,
+    pub disabled: bool,
+}
+
+impl CanvasHitTarget {
+    pub fn new(id: impl Into<String>, rect: UiRect) -> Self {
+        Self {
+            id: id.into(),
+            rect,
+            label: None,
+            value: None,
+            metadata: Vec::new(),
+            z_index: 0,
+            disabled: false,
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.push((key.into(), value.into()));
+        self
+    }
+
+    pub const fn z_index(mut self, z_index: i16) -> Self {
+        self.z_index = z_index;
+        self
+    }
+
+    pub const fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn contains(&self, point: UiPoint) -> bool {
+        !self.disabled && self.rect.contains_point(point)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasHitCollection {
+    pub node: UiNodeId,
+    pub key: String,
+    pub targets: Vec<CanvasHitTarget>,
+}
+
+impl CanvasHitCollection {
+    pub fn new(node: UiNodeId, key: impl Into<String>) -> Self {
+        Self {
+            node,
+            key: key.into(),
+            targets: Vec::new(),
+        }
+    }
+
+    pub fn target(mut self, target: CanvasHitTarget) -> Self {
+        self.targets.push(target);
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.targets.len()
+    }
+
+    pub fn topmost_at(&self, point: UiPoint) -> Option<&CanvasHitTarget> {
+        self.targets
+            .iter()
+            .filter(|target| target.contains(point))
+            .max_by(|left, right| {
+                left.z_index
+                    .cmp(&right.z_index)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CanvasRenderOutput {
     pub dirty_region: Option<UiRect>,
     pub resource_updates: Vec<ResourceUpdate>,
+    pub hit_targets: Vec<CanvasHitTarget>,
     pub repaint_requested: bool,
 }
 
@@ -717,6 +813,7 @@ impl CanvasRenderOutput {
         Self {
             dirty_region: None,
             resource_updates: Vec::new(),
+            hit_targets: Vec::new(),
             repaint_requested: false,
         }
     }
@@ -728,6 +825,16 @@ impl CanvasRenderOutput {
 
     pub fn resource_update(mut self, update: ResourceUpdate) -> Self {
         self.resource_updates.push(update);
+        self
+    }
+
+    pub fn hit_target(mut self, target: CanvasHitTarget) -> Self {
+        self.hit_targets.push(target);
+        self
+    }
+
+    pub fn hit_targets(mut self, targets: impl IntoIterator<Item = CanvasHitTarget>) -> Self {
+        self.hit_targets.extend(targets);
         self
     }
 
@@ -863,6 +970,30 @@ impl CanvasRenderReport {
             }
         }
         updates
+    }
+
+    pub fn hit_collections(&self) -> Vec<CanvasHitCollection> {
+        let mut collections = Vec::new();
+        for outcome in &self.outcomes {
+            if let CanvasRenderOutcome::Rendered { request, output } = outcome {
+                if output.hit_targets.is_empty() {
+                    continue;
+                }
+                collections.push(CanvasHitCollection {
+                    node: request.node,
+                    key: request.canvas.key.clone(),
+                    targets: output.hit_targets.clone(),
+                });
+            }
+        }
+        collections
+    }
+
+    pub fn hit_targets(&self) -> Vec<CanvasHitTarget> {
+        self.hit_collections()
+            .into_iter()
+            .flat_map(|collection| collection.targets)
+            .collect()
     }
 
     pub fn into_strict_result(self) -> Result<Self, RenderError> {
@@ -1930,9 +2061,26 @@ mod tests {
             context.backend.scale_factors.push(context.scale_factor);
             context.backend.focused.push(context.interaction.focused);
             context.backend.dirty.push(context.is_dirty());
-            Ok(CanvasRenderOutput::new()
+            let mut output = CanvasRenderOutput::new()
                 .dirty_region(context.request.rect)
-                .repaint_requested(context.interaction.focused))
+                .repaint_requested(context.interaction.focused);
+            if context.request.canvas.interaction.domain_hit_testing {
+                output = output.hit_targets([
+                    CanvasHitTarget::new("background", context.request.rect)
+                        .label("Background")
+                        .z_index(1),
+                    CanvasHitTarget::new("disabled-overlay", context.request.rect)
+                        .label("Disabled overlay")
+                        .disabled(true)
+                        .z_index(10),
+                    CanvasHitTarget::new("primary-range", context.request.rect)
+                        .label("Primary range")
+                        .value("active")
+                        .metadata("kind", "range")
+                        .z_index(4),
+                ]);
+            }
+            Ok(output)
         }
     }
 
@@ -1941,7 +2089,8 @@ mod tests {
         let canvas = CanvasContent::new("fabricad.mask.viewport")
             .callback()
             .pointer_capture(true)
-            .keyboard_capture(true);
+            .keyboard_capture(true)
+            .domain_hit_testing(true);
         let mut paint = PaintList::default();
         paint.items.push(paint_item(
             7,
@@ -1982,6 +2131,21 @@ mod tests {
         assert_eq!(backend.dirty, vec![true]);
         assert_eq!(report.outcomes[0].request().node, UiNodeId(7));
         assert_eq!(report.resource_updates(), Vec::<ResourceUpdate>::new());
+        let hit_collections = report.hit_collections();
+        assert_eq!(hit_collections.len(), 1);
+        assert_eq!(hit_collections[0].node, UiNodeId(7));
+        assert_eq!(hit_collections[0].key, "fabricad.mask.viewport");
+        assert_eq!(hit_collections[0].len(), 3);
+        assert_eq!(hit_collections[0].targets[2].id, "primary-range");
+        assert_eq!(
+            hit_collections[0].targets[2].metadata,
+            vec![("kind".to_string(), "range".to_string())]
+        );
+        assert_eq!(
+            hit_collections[0].topmost_at(UiPoint::new(20.0, 24.0)),
+            Some(&hit_collections[0].targets[2])
+        );
+        assert_eq!(report.hit_targets().len(), 3);
     }
 
     #[test]

@@ -327,6 +327,10 @@ The branch starts from Operad 2.0.0 plus:
   renderer-neutral callback registries that pass rects, clips, scale factors,
   dirty regions, and per-node host interaction state to app-owned canvas
   renderers.
+- Canvas render handlers can return neutral hit-target metadata in render
+  outputs, with per-canvas hit collections aggregated by render reports so apps
+  can map their own domain IDs to viewport/editor selections without Operad
+  naming those domains.
 - Canvas host-capture plans in `src/renderer.rs` convert canvas interaction
   policies into renderer-neutral host capture metadata and cursor
   confine/visibility platform requests for pointer-locked surfaces.
