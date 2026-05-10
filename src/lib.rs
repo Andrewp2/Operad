@@ -39,7 +39,9 @@ pub use assets::{
     AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
 };
 pub use charts::{
-    ChartDataSummary, ChartRange, ChartSample, ChartViewport, GridCell, GridCellRange,
+    ChartAxisMeta, ChartAxisOrientation, ChartAxisTick, ChartDataSummary, ChartHitCollection,
+    ChartHitKind, ChartHitMeta, ChartOverlayKind, ChartOverlayLayer, ChartOverlayStack, ChartRange,
+    ChartSample, ChartSelectionSummary, ChartSeriesId, ChartViewport, GridCell, GridCellRange,
     GridMapGeometry, GridMapSummary, SparklineGeometry,
 };
 pub use commands::{
@@ -2686,8 +2688,8 @@ pub mod widgets {
     use std::ops::Range;
 
     use crate::platform::{
-        ClipboardRequest, LogicalRect, TextImeRequest, TextImeResponse, TextImeSession,
-        TextInputId, TextRange,
+        ClipboardRequest, LogicalRect, PlatformRequest, TextImeRequest, TextImeResponse,
+        TextImeSession, TextInputId, TextRange,
     };
     use taffy::prelude::{AlignItems, JustifyContent};
 
@@ -3965,6 +3967,28 @@ pub mod widgets {
         }
     }
 
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct TextInputEventOutcome {
+        pub input: UiInputResult,
+        pub edit: Option<TextInputOutcome>,
+        pub focused: bool,
+        pub platform_requests: Vec<PlatformRequest>,
+    }
+
+    impl TextInputEventOutcome {
+        pub fn did_edit(&self) -> bool {
+            self.edit.as_ref().is_some_and(|edit| edit.changed)
+        }
+
+        pub fn committed(&self) -> bool {
+            self.edit.as_ref().is_some_and(|edit| edit.committed)
+        }
+
+        pub fn canceled(&self) -> bool {
+            self.edit.as_ref().is_some_and(|edit| edit.canceled)
+        }
+    }
+
     #[derive(Debug, Clone)]
     pub struct TextInputOptions {
         pub layout: Style,
@@ -4120,6 +4144,88 @@ pub mod widgets {
             },
         );
         root
+    }
+
+    pub fn handle_text_input_event(
+        document: &mut UiDocument,
+        node: UiNodeId,
+        state: &mut TextInputState,
+        event: UiInputEvent,
+        platform_context: Option<TextInputPlatformContext>,
+    ) -> TextInputEventOutcome {
+        let was_focused = document.focus.focused == Some(node);
+        let text_event = matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. });
+        let input = if text_event {
+            UiInputResult {
+                hovered: document.focus.hovered,
+                focused: document.focus.focused,
+                pressed: document.focus.pressed,
+                clicked: None,
+                scrolled: None,
+            }
+        } else {
+            document.handle_input(event.clone())
+        };
+        let focused = document.focus.focused == Some(node);
+        let mut platform_requests = Vec::new();
+
+        if !was_focused && focused {
+            if let Some(context) = platform_context.clone() {
+                platform_requests.push(PlatformRequest::TextIme(
+                    state.activate_ime_request(context.clone()),
+                ));
+                platform_requests.push(PlatformRequest::TextIme(
+                    TextInputState::show_keyboard_request(context.input),
+                ));
+            }
+        } else if was_focused && !focused {
+            if let Some(context) = platform_context.clone() {
+                platform_requests.push(PlatformRequest::TextIme(
+                    TextInputState::hide_keyboard_request(context.input.clone()),
+                ));
+                platform_requests.push(PlatformRequest::TextIme(
+                    TextInputState::deactivate_ime_request(context.input),
+                ));
+            }
+        }
+
+        let edit = if focused && text_event {
+            let before_text = state.text.clone();
+            let before_caret = state.caret;
+            let before_selection = state.selection_anchor;
+            let before_composing = state.composing.clone();
+            let outcome = state.handle_event(&event);
+            if let Some(request) = outcome.clipboard_request() {
+                platform_requests.push(PlatformRequest::Clipboard(request));
+            }
+            let state_changed = before_text != state.text
+                || before_caret != state.caret
+                || before_selection != state.selection_anchor
+                || before_composing != state.composing;
+            if let Some(context) = platform_context {
+                if outcome.committed || outcome.canceled {
+                    platform_requests.push(PlatformRequest::TextIme(
+                        TextInputState::hide_keyboard_request(context.input.clone()),
+                    ));
+                    platform_requests.push(PlatformRequest::TextIme(
+                        TextInputState::deactivate_ime_request(context.input),
+                    ));
+                } else if state_changed {
+                    platform_requests
+                        .push(PlatformRequest::TextIme(state.update_ime_request(context)));
+                }
+            }
+            Some(outcome)
+        } else {
+            None
+        };
+
+        TextInputEventOutcome {
+            input,
+            edit,
+            focused,
+            platform_requests,
+        }
     }
 
     fn filter_text_input(text: &str, multiline: bool) -> String {
@@ -6855,6 +6961,113 @@ mod tests {
             paste.clipboard_request(),
             Some(platform::ClipboardRequest::ReadText)
         );
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_routes_focus_edits_clipboard_and_ime_requests() {
+        let mut doc = UiDocument::new(root_style(320.0, 120.0));
+        let root = doc.root;
+        let mut state = widgets::TextInputState::new("");
+        let input = widgets::text_input(
+            &mut doc,
+            root,
+            "recipe",
+            &state,
+            widgets::TextInputOptions::default(),
+        );
+        doc.add_child(
+            root,
+            UiNode::container("apply", button_style(80.0, 32.0)).with_input(InputBehavior::BUTTON),
+        );
+        doc.compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let metrics =
+            widgets::TextInputLayoutMetrics::new(UiRect::new(0.0, 0.0, 180.0, 30.0), 8.0, 18.0);
+        let context = widgets::TextInputPlatformContext::for_node(input, state.caret_rect(metrics));
+
+        let ignored = widgets::handle_text_input_event(
+            &mut doc,
+            input,
+            &mut state,
+            UiInputEvent::TextInput("A".to_string()),
+            Some(context.clone()),
+        );
+        assert_eq!(state.text, "");
+        assert!(ignored.edit.is_none());
+        assert!(ignored.platform_requests.is_empty());
+
+        let focus = widgets::handle_text_input_event(
+            &mut doc,
+            input,
+            &mut state,
+            UiInputEvent::PointerDown(UiPoint::new(10.0, 10.0)),
+            Some(context.clone()),
+        );
+        assert!(focus.focused);
+        assert_eq!(focus.input.focused, Some(input));
+        assert!(matches!(
+            &focus.platform_requests[..],
+            [
+                platform::PlatformRequest::TextIme(platform::TextImeRequest::Activate(session)),
+                platform::PlatformRequest::TextIme(platform::TextImeRequest::ShowKeyboard { input: keyboard_input }),
+            ] if session.input == context.input && *keyboard_input == context.input
+        ));
+
+        let typed = widgets::handle_text_input_event(
+            &mut doc,
+            input,
+            &mut state,
+            UiInputEvent::TextInput("AB".to_string()),
+            Some(context.clone()),
+        );
+        assert_eq!(state.text, "AB");
+        assert!(typed.did_edit());
+        assert!(matches!(
+            typed.platform_requests.last(),
+            Some(platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(session)))
+                if session.surrounding_text == "AB"
+        ));
+
+        state.select_all();
+        let copy = widgets::handle_text_input_event(
+            &mut doc,
+            input,
+            &mut state,
+            UiInputEvent::Key {
+                key: KeyCode::Character('c'),
+                modifiers: KeyModifiers {
+                    ctrl: true,
+                    ..KeyModifiers::NONE
+                },
+            },
+            Some(context.clone()),
+        );
+        assert_eq!(
+            copy.platform_requests,
+            vec![platform::PlatformRequest::Clipboard(
+                platform::ClipboardRequest::WriteText("AB".to_string())
+            )]
+        );
+
+        let commit = widgets::handle_text_input_event(
+            &mut doc,
+            input,
+            &mut state,
+            UiInputEvent::Key {
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            },
+            Some(context.clone()),
+        );
+        assert!(commit.committed());
+        assert!(matches!(
+            &commit.platform_requests[..],
+            [
+                platform::PlatformRequest::TextIme(platform::TextImeRequest::HideKeyboard { input: keyboard_input }),
+                platform::PlatformRequest::TextIme(platform::TextImeRequest::Deactivate { input: deactivated_input }),
+            ] if *keyboard_input == context.input && *deactivated_input == context.input
+        ));
     }
 
     #[cfg(feature = "widgets")]

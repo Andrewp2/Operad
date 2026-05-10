@@ -12,10 +12,10 @@ use crate::{
     commands::CommandEffect,
     platform::{ClipboardRequest, DragOperation, DragPayload},
     AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
-    ClipBehavior, ColorRgba, CommandId, DragDropSurfaceKind, DragSourceDescriptor, DragSourceId,
-    DropPayloadFilter, DropTargetDescriptor, DropTargetId, ImageContent, InputBehavior, ScrollAxes,
-    ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle,
-    UiPoint, UiRect, UiVisual,
+    AccessibilitySortDirection, ClipBehavior, ColorRgba, CommandId, DragDropSurfaceKind,
+    DragSourceDescriptor, DragSourceId, DropPayloadFilter, DropTargetDescriptor, DropTargetId,
+    ImageContent, InputBehavior, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, TextWrap,
+    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiVisual,
 };
 
 /// Semantic hint for property value rendering and editing owned by the app.
@@ -698,6 +698,11 @@ pub struct DataTableColumn {
     pub min_width: f32,
     pub alignment: DataCellAlignment,
     pub resizable: bool,
+    pub sort: Option<DataTableSortState>,
+    pub filter: Option<DataTableFilterState>,
+    pub sort_command: Option<CommandId>,
+    pub filter_command: Option<CommandId>,
+    pub resize_command: Option<CommandId>,
     pub leading_image: Option<ImageContent>,
 }
 
@@ -710,6 +715,11 @@ impl DataTableColumn {
             min_width: 24.0,
             alignment: DataCellAlignment::Start,
             resizable: true,
+            sort: None,
+            filter: None,
+            sort_command: None,
+            filter_command: None,
+            resize_command: None,
             leading_image: None,
         }
     }
@@ -729,6 +739,31 @@ impl DataTableColumn {
         self
     }
 
+    pub fn with_sort(mut self, sort: DataTableSortState) -> Self {
+        self.sort = Some(sort);
+        self
+    }
+
+    pub fn sortable(mut self, command: impl Into<CommandId>) -> Self {
+        self.sort_command = Some(command.into());
+        self
+    }
+
+    pub fn with_filter(mut self, filter: DataTableFilterState) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    pub fn filterable(mut self, command: impl Into<CommandId>) -> Self {
+        self.filter_command = Some(command.into());
+        self
+    }
+
+    pub fn resize_command(mut self, command: impl Into<CommandId>) -> Self {
+        self.resize_command = Some(command.into());
+        self
+    }
+
     pub fn with_leading_image(mut self, image: ImageContent) -> Self {
         self.leading_image = Some(image);
         self
@@ -736,6 +771,129 @@ impl DataTableColumn {
 
     pub fn resolved_width(&self) -> f32 {
         self.width.max(self.min_width)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataTableSortDirection {
+    Ascending,
+    Descending,
+}
+
+impl DataTableSortDirection {
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
+
+    pub const fn accessibility_sort(self) -> AccessibilitySortDirection {
+        match self {
+            Self::Ascending => AccessibilitySortDirection::Ascending,
+            Self::Descending => AccessibilitySortDirection::Descending,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ascending => "ascending",
+            Self::Descending => "descending",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableSortState {
+    pub direction: DataTableSortDirection,
+    pub priority: usize,
+}
+
+impl DataTableSortState {
+    pub const fn new(direction: DataTableSortDirection) -> Self {
+        Self {
+            direction,
+            priority: 0,
+        }
+    }
+
+    pub const fn ascending() -> Self {
+        Self::new(DataTableSortDirection::Ascending)
+    }
+
+    pub const fn descending() -> Self {
+        Self::new(DataTableSortDirection::Descending)
+    }
+
+    pub const fn with_priority(mut self, priority: usize) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    pub fn accessibility_value(&self) -> String {
+        if self.priority == 0 {
+            format!("sorted {}", self.direction.label())
+        } else {
+            format!(
+                "sorted {} priority {}",
+                self.direction.label(),
+                self.priority
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableFilterState {
+    pub active: bool,
+    pub label: Option<String>,
+    pub value: Option<String>,
+}
+
+impl DataTableFilterState {
+    pub fn inactive() -> Self {
+        Self {
+            active: false,
+            label: None,
+            value: None,
+        }
+    }
+
+    pub fn active(label: impl Into<String>) -> Self {
+        Self {
+            active: true,
+            label: Some(label.into()),
+            value: None,
+        }
+    }
+
+    pub fn value(value: impl Into<String>) -> Self {
+        Self {
+            active: true,
+            label: None,
+            value: Some(value.into()),
+        }
+    }
+
+    pub fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.active = true;
+        self.value = Some(value.into());
+        self
+    }
+
+    pub fn accessibility_value(&self) -> String {
+        if !self.active {
+            return "filter available".to_owned();
+        }
+
+        let mut value = vec!["filtered".to_owned()];
+        if let Some(label) = &self.label {
+            value.push(label.clone());
+        }
+        if let Some(filter_value) = &self.value {
+            value.push(format!("value {filter_value}"));
+        }
+        value.join("; ")
     }
 }
 
@@ -3174,18 +3332,57 @@ fn data_table_header_accessibility(
     column_index: usize,
     column_count: usize,
 ) -> AccessibilityMeta {
-    AccessibilityMeta::new(AccessibilityRole::ColumnHeader)
+    let mut value = vec![
+        format!("column {} of {}", column_index + 1, column_count),
+        if column.resizable {
+            "resizable"
+        } else {
+            "fixed"
+        }
+        .to_owned(),
+    ];
+    if let Some(sort) = &column.sort {
+        value.push(sort.accessibility_value());
+    } else if column.sort_command.is_some() {
+        value.push("sortable".to_owned());
+    }
+    if let Some(filter) = &column.filter {
+        value.push(filter.accessibility_value());
+    } else if column.filter_command.is_some() {
+        value.push("filter available".to_owned());
+    }
+
+    let mut meta = AccessibilityMeta::new(AccessibilityRole::ColumnHeader)
         .label(column.label.clone())
-        .value(format!(
-            "column {} of {}; {}",
-            column_index + 1,
-            column_count,
-            if column.resizable {
-                "resizable"
-            } else {
-                "fixed"
-            }
-        ))
+        .value(value.join("; "))
+        .sort(
+            column
+                .sort
+                .as_ref()
+                .map(|sort| sort.direction.accessibility_sort())
+                .unwrap_or(AccessibilitySortDirection::None),
+        );
+    if let Some(command) = &column.sort_command {
+        meta = meta.action(AccessibilityAction::new(
+            command.as_str(),
+            format!("Sort {}", column.label),
+        ));
+    }
+    if let Some(command) = &column.filter_command {
+        meta = meta.action(AccessibilityAction::new(
+            command.as_str(),
+            format!("Filter {}", column.label),
+        ));
+    }
+    if column.resizable {
+        if let Some(command) = &column.resize_command {
+            meta = meta.action(AccessibilityAction::new(
+                command.as_str(),
+                format!("Resize {}", column.label),
+            ));
+        }
+    }
+    meta
 }
 
 fn data_table_row_accessibility(row: usize, row_count: usize, selected: bool) -> AccessibilityMeta {
@@ -3912,6 +4109,71 @@ mod tests {
                 .partition(&columns)
                 .scrollable_columns,
             3..3
+        );
+    }
+
+    #[test]
+    fn data_table_column_sort_filter_metadata_feeds_header_accessibility() {
+        let column = DataTableColumn::new("track", "Track", 160.0)
+            .with_sort(DataTableSortState::descending().with_priority(2))
+            .sortable("table.sort.track")
+            .with_filter(DataTableFilterState::active("contains").with_value("audio"))
+            .filterable("table.filter.track")
+            .resize_command("table.resize.track");
+
+        assert_eq!(
+            DataTableSortDirection::Ascending.toggled(),
+            DataTableSortDirection::Descending
+        );
+        assert_eq!(
+            column.sort.as_ref().unwrap().direction.accessibility_sort(),
+            AccessibilitySortDirection::Descending
+        );
+        assert_eq!(
+            column.filter.as_ref().unwrap().accessibility_value(),
+            "filtered; contains; value audio"
+        );
+
+        let accessibility = data_table_header_accessibility(&column, 0, 3);
+        assert_eq!(accessibility.role, AccessibilityRole::ColumnHeader);
+        assert_eq!(accessibility.sort, AccessibilitySortDirection::Descending);
+        let value = accessibility.value.as_deref().unwrap();
+        assert!(value.contains("column 1 of 3"));
+        assert!(value.contains("resizable"));
+        assert!(value.contains("sorted descending priority 2"));
+        assert!(value.contains("filtered; contains; value audio"));
+        assert_eq!(
+            accessibility
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "table.sort.track",
+                "table.filter.track",
+                "table.resize.track"
+            ]
+        );
+
+        let fixed = DataTableColumn::new("locked", "Locked", 80.0)
+            .fixed()
+            .sortable("table.sort.locked")
+            .filterable("table.filter.locked")
+            .resize_command("table.resize.locked");
+        let accessibility = data_table_header_accessibility(&fixed, 1, 3);
+        assert_eq!(accessibility.sort, AccessibilitySortDirection::None);
+        assert!(accessibility
+            .value
+            .as_deref()
+            .unwrap()
+            .contains("filter available"));
+        assert_eq!(
+            accessibility
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["table.sort.locked", "table.filter.locked"]
         );
     }
 

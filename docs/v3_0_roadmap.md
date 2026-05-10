@@ -221,10 +221,18 @@ The branch starts from Operad 2.0.0 plus:
   renderer-neutral callback registries that pass rects, clips, scale factors,
   dirty regions, and per-node host interaction state to app-owned canvas
   renderers.
+- Text input routing helpers that bridge document focus, editable text state,
+  clipboard service requests, and IME activation/update/deactivation without
+  requiring consumers to hand-assemble platform plumbing for each field.
 - Chart, sparkline, and dense grid-map geometry helpers in `src/charts.rs` for
   numeric range mapping, path generation, cell rectangles, hit testing, and
-  visible-cell queries, with screen-reader summaries and accessibility metadata
-  for chart series, sparklines, and grid-map surfaces.
+  visible-cell queries, with screen-reader summaries, axis metadata, overlay
+  layers, selection summaries, and hit metadata for chart series, sparklines,
+  and grid-map surfaces.
+- Dense table metadata in `src/widget_ext/data.rs` for sortable/filterable
+  columns, app-owned sort/filter/resize commands, accessibility sort state,
+  active-cell copy/export contracts, row/cell action metadata, sticky column
+  partitions, and row drag/drop descriptors.
 - Host adapter contracts in `src/host.rs` for hover, pressed, focused,
   drag-captured, text/IME, wheel-targeted, shortcut-routed, command dispatch,
   and repaint/platform-service state before paint.

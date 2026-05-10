@@ -6,6 +6,7 @@
 //! geometry that backends and tests can share.
 
 use crate::{
+    platform::{LayerOrder, UiLayer},
     AccessibilityMeta, AccessibilityRole, AccessibilitySummary, PaintPath, UiPoint, UiRect, UiSize,
 };
 
@@ -67,6 +68,320 @@ impl ChartRange {
 impl Default for ChartRange {
     fn default() -> Self {
         Self { min: 0.0, max: 1.0 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChartAxisOrientation {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartAxisTick {
+    pub value: f32,
+    pub label: Option<String>,
+    pub major: bool,
+}
+
+impl ChartAxisTick {
+    pub const fn new(value: f32) -> Self {
+        Self {
+            value,
+            label: None,
+            major: true,
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub const fn major(mut self, major: bool) -> Self {
+        self.major = major;
+        self
+    }
+
+    pub fn display_label(&self) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| format_chart_number(self.value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartAxisMeta {
+    pub orientation: ChartAxisOrientation,
+    pub range: ChartRange,
+    pub label: Option<String>,
+    pub unit: Option<String>,
+    pub ticks: Vec<ChartAxisTick>,
+}
+
+impl ChartAxisMeta {
+    pub const fn new(orientation: ChartAxisOrientation, range: ChartRange) -> Self {
+        Self {
+            orientation,
+            range,
+            label: None,
+            unit: None,
+            ticks: Vec::new(),
+        }
+    }
+
+    pub const fn x(range: ChartRange) -> Self {
+        Self::new(ChartAxisOrientation::Horizontal, range)
+    }
+
+    pub const fn y(range: ChartRange) -> Self {
+        Self::new(ChartAxisOrientation::Vertical, range)
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn unit(mut self, unit: impl Into<String>) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+
+    pub fn tick(mut self, tick: ChartAxisTick) -> Self {
+        if tick.value.is_finite() {
+            self.ticks.push(tick);
+        }
+        self
+    }
+
+    pub fn ticks(mut self, ticks: impl IntoIterator<Item = ChartAxisTick>) -> Self {
+        self.ticks
+            .extend(ticks.into_iter().filter(|tick| tick.value.is_finite()));
+        self
+    }
+
+    pub fn axis_name(&self) -> &'static str {
+        match self.orientation {
+            ChartAxisOrientation::Horizontal => "X axis",
+            ChartAxisOrientation::Vertical => "Y axis",
+        }
+    }
+
+    pub fn value_text(&self) -> String {
+        let mut parts = vec![format!(
+            "{} {} to {}",
+            self.axis_name(),
+            format_chart_number(self.range.min),
+            format_chart_number(self.range.max)
+        )];
+        if let Some(label) = &self.label {
+            parts.push(label.clone());
+        }
+        if let Some(unit) = &self.unit {
+            parts.push(unit.clone());
+        }
+        if !self.ticks.is_empty() {
+            parts.push(format!("{} ticks", self.ticks.len()));
+        }
+        parts.join("; ")
+    }
+
+    pub fn accessibility_summary(&self, title: impl Into<String>) -> AccessibilitySummary {
+        let mut summary = AccessibilitySummary::new(title)
+            .item("Axis", self.axis_name())
+            .item(
+                "Range",
+                format!(
+                    "{} to {}",
+                    format_chart_number(self.range.min),
+                    format_chart_number(self.range.max)
+                ),
+            );
+        if let Some(label) = &self.label {
+            summary = summary.item("Label", label.clone());
+        }
+        if let Some(unit) = &self.unit {
+            summary = summary.item("Unit", unit.clone());
+        }
+        if !self.ticks.is_empty() {
+            summary = summary.item("Ticks", self.ticks.len().to_string());
+            let major = self.ticks.iter().filter(|tick| tick.major).count();
+            summary = summary.item("Major ticks", major.to_string());
+        }
+        summary
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ChartSeriesId(String);
+
+impl ChartSeriesId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ChartSeriesId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for ChartSeriesId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ChartOverlayKind {
+    LineSeries,
+    AreaSeries,
+    ScatterSeries,
+    GridLayer,
+    Selection,
+    Threshold,
+    Annotation,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartOverlayLayer {
+    pub id: ChartSeriesId,
+    pub kind: ChartOverlayKind,
+    pub layer: LayerOrder,
+    pub bounds: Option<UiRect>,
+    pub label: Option<String>,
+    pub visible: bool,
+    pub hit_testable: bool,
+    pub sample_count: usize,
+}
+
+impl ChartOverlayLayer {
+    pub fn new(id: impl Into<ChartSeriesId>, kind: ChartOverlayKind) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            layer: LayerOrder::new(UiLayer::AppContent, 0),
+            bounds: None,
+            label: None,
+            visible: true,
+            hit_testable: false,
+            sample_count: 0,
+        }
+    }
+
+    pub const fn layer(mut self, layer: LayerOrder) -> Self {
+        self.layer = layer;
+        self
+    }
+
+    pub const fn bounds(mut self, bounds: UiRect) -> Self {
+        self.bounds = Some(bounds);
+        self
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub const fn visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
+    }
+
+    pub const fn hit_testable(mut self, hit_testable: bool) -> Self {
+        self.hit_testable = hit_testable;
+        self
+    }
+
+    pub const fn sample_count(mut self, sample_count: usize) -> Self {
+        self.sample_count = sample_count;
+        self
+    }
+
+    pub fn contains_point(&self, point: UiPoint) -> bool {
+        self.visible
+            && self.hit_testable
+            && self
+                .bounds
+                .is_some_and(|bounds| bounds.contains_point(point))
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChartOverlayStack {
+    pub layers: Vec<ChartOverlayLayer>,
+}
+
+impl ChartOverlayStack {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn layer(mut self, layer: ChartOverlayLayer) -> Self {
+        self.layers.push(layer);
+        self
+    }
+
+    pub fn push(&mut self, layer: ChartOverlayLayer) {
+        self.layers.push(layer);
+    }
+
+    pub fn ordered(&self) -> Vec<&ChartOverlayLayer> {
+        let mut layers = self
+            .layers
+            .iter()
+            .filter(|layer| layer.visible)
+            .collect::<Vec<_>>();
+        layers.sort_by(|left, right| {
+            left.layer
+                .cmp(&right.layer)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        layers
+    }
+
+    pub fn hit_layers(&self, point: UiPoint) -> Vec<&ChartOverlayLayer> {
+        let mut layers = self
+            .layers
+            .iter()
+            .filter(|layer| layer.contains_point(point))
+            .collect::<Vec<_>>();
+        layers.sort_by(|left, right| {
+            right
+                .layer
+                .cmp(&left.layer)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        layers
+    }
+
+    pub fn accessibility_summary(&self, title: impl Into<String>) -> AccessibilitySummary {
+        let visible = self.layers.iter().filter(|layer| layer.visible).count();
+        let hit_testable = self
+            .layers
+            .iter()
+            .filter(|layer| layer.visible && layer.hit_testable)
+            .count();
+        let samples = self
+            .layers
+            .iter()
+            .filter(|layer| layer.visible)
+            .map(|layer| layer.sample_count)
+            .sum::<usize>();
+
+        AccessibilitySummary::new(title)
+            .item("Layers", self.layers.len().to_string())
+            .item("Visible layers", visible.to_string())
+            .item("Hit-testable layers", hit_testable.to_string())
+            .item("Layer samples", samples.to_string())
     }
 }
 
@@ -255,6 +570,30 @@ impl ChartViewport {
             && self.y_range.normalized(sample.y) <= 1.0
     }
 
+    pub fn hit_meta_for_sample(
+        self,
+        id: impl Into<String>,
+        sample: ChartSample,
+        radius: f32,
+    ) -> Option<ChartHitMeta> {
+        if !self.contains_sample(sample) {
+            return None;
+        }
+
+        let radius = if radius.is_finite() {
+            radius.max(0.0)
+        } else {
+            0.0
+        };
+        let point = self.map_sample(sample);
+        Some(
+            ChartHitMeta::new(ChartHitKind::Sample, hit_rect_from_point(point, radius))
+                .id(id)
+                .sample(sample)
+                .value(format_sample(sample)),
+        )
+    }
+
     pub fn line_path(self, samples: impl IntoIterator<Item = ChartSample>) -> PaintPath {
         let mut path = PaintPath::new();
         let mut has_point = false;
@@ -300,6 +639,172 @@ impl ChartViewport {
             path = path.line_to(point);
         }
         path.line_to(UiPoint::new(last.x, baseline_y)).close()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ChartHitKind {
+    Sample,
+    GridCell,
+    Overlay,
+    Axis,
+    Label,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartHitMeta {
+    pub id: Option<String>,
+    pub kind: ChartHitKind,
+    pub bounds: UiRect,
+    pub sample: Option<ChartSample>,
+    pub cell: Option<GridCell>,
+    pub value: Option<String>,
+    pub label: Option<String>,
+    pub selectable: bool,
+}
+
+impl ChartHitMeta {
+    pub const fn new(kind: ChartHitKind, bounds: UiRect) -> Self {
+        Self {
+            id: None,
+            kind,
+            bounds,
+            sample: None,
+            cell: None,
+            value: None,
+            label: None,
+            selectable: true,
+        }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub const fn sample(mut self, sample: ChartSample) -> Self {
+        self.sample = Some(sample);
+        self
+    }
+
+    pub const fn cell(mut self, cell: GridCell) -> Self {
+        self.cell = Some(cell);
+        self
+    }
+
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub const fn selectable(mut self, selectable: bool) -> Self {
+        self.selectable = selectable;
+        self
+    }
+
+    pub fn contains_point(&self, point: UiPoint) -> bool {
+        self.bounds.contains_point(point)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChartHitCollection {
+    pub hits: Vec<ChartHitMeta>,
+}
+
+impl ChartHitCollection {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn hit(mut self, hit: ChartHitMeta) -> Self {
+        self.hits.push(hit);
+        self
+    }
+
+    pub fn push(&mut self, hit: ChartHitMeta) {
+        self.hits.push(hit);
+    }
+
+    pub fn hit_test(&self, point: UiPoint) -> Option<&ChartHitMeta> {
+        self.hits.iter().rev().find(|hit| hit.contains_point(point))
+    }
+
+    pub fn selectable_in_rect(&self, rect: UiRect) -> Vec<&ChartHitMeta> {
+        self.hits
+            .iter()
+            .filter(|hit| hit.selectable && hit.bounds.intersects(rect))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChartSelectionSummary {
+    pub selected_samples: usize,
+    pub selected_cells: usize,
+    pub active_hit_id: Option<String>,
+    pub hovered_hit_id: Option<String>,
+}
+
+impl ChartSelectionSummary {
+    pub fn new(selected_samples: usize, selected_cells: usize) -> Self {
+        Self {
+            selected_samples,
+            selected_cells,
+            active_hit_id: None,
+            hovered_hit_id: None,
+        }
+    }
+
+    pub fn active_hit(mut self, id: impl Into<String>) -> Self {
+        self.active_hit_id = Some(id.into());
+        self
+    }
+
+    pub fn hovered_hit(mut self, id: impl Into<String>) -> Self {
+        self.hovered_hit_id = Some(id.into());
+        self
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.selected_samples + self.selected_cells
+    }
+
+    pub fn value_text(&self) -> String {
+        let mut parts = vec![format!("{} selected", self.selected_count())];
+        if self.selected_samples > 0 {
+            parts.push(format!("{} samples", self.selected_samples));
+        }
+        if self.selected_cells > 0 {
+            parts.push(format!("{} cells", self.selected_cells));
+        }
+        if let Some(id) = &self.active_hit_id {
+            parts.push(format!("active {id}"));
+        }
+        if let Some(id) = &self.hovered_hit_id {
+            parts.push(format!("hovered {id}"));
+        }
+        parts.join("; ")
+    }
+
+    pub fn accessibility_summary(&self, title: impl Into<String>) -> AccessibilitySummary {
+        let mut summary = AccessibilitySummary::new(title)
+            .item("Selected", self.selected_count().to_string())
+            .item("Selected samples", self.selected_samples.to_string())
+            .item("Selected cells", self.selected_cells.to_string());
+        if let Some(id) = &self.active_hit_id {
+            summary = summary.item("Active hit", id.clone());
+        }
+        if let Some(id) = &self.hovered_hit_id {
+            summary = summary.item("Hovered hit", id.clone());
+        }
+        summary
     }
 }
 
@@ -549,6 +1054,15 @@ impl GridMapGeometry {
         ))
     }
 
+    pub fn hit_meta_for_cell(self, cell: GridCell) -> Option<ChartHitMeta> {
+        self.cell_rect(cell).map(|rect| {
+            ChartHitMeta::new(ChartHitKind::GridCell, rect)
+                .id(format!("cell.{}.{}", cell.column, cell.row))
+                .cell(cell)
+                .value(format_grid_cell(cell))
+        })
+    }
+
     pub fn hit_cell(self, point: UiPoint) -> Option<GridCell> {
         if self.columns == 0
             || self.rows == 0
@@ -702,6 +1216,15 @@ fn format_index_range(start: usize, end: usize) -> String {
     }
 }
 
+fn hit_rect_from_point(point: UiPoint, radius: f32) -> UiRect {
+    UiRect::new(
+        point.x - radius,
+        point.y - radius,
+        radius * 2.0,
+        radius * 2.0,
+    )
+}
+
 fn visible_axis_indices(
     origin: f32,
     cell_extent: f32,
@@ -805,6 +1328,123 @@ mod tests {
             sparkline_accessibility.value.as_deref(),
             Some("3 of 3 samples; y 1 to 3")
         );
+    }
+
+    #[test]
+    fn chart_axis_metadata_describes_labels_units_and_ticks() {
+        let axis = ChartAxisMeta::x(ChartRange::new(0.0, 100.0))
+            .label("Time")
+            .unit("ms")
+            .tick(ChartAxisTick::new(0.0).label("start"))
+            .tick(ChartAxisTick::new(50.0).major(false))
+            .tick(ChartAxisTick::new(f32::NAN));
+
+        assert_eq!(axis.orientation, ChartAxisOrientation::Horizontal);
+        assert_eq!(axis.ticks.len(), 2);
+        assert_eq!(axis.ticks[0].display_label(), "start");
+        assert_eq!(axis.ticks[1].display_label(), "50");
+        assert_eq!(axis.value_text(), "X axis 0 to 100; Time; ms; 2 ticks");
+
+        let text = axis
+            .accessibility_summary("Latency x axis")
+            .screen_reader_text();
+        assert!(text.contains("Axis: X axis"));
+        assert!(text.contains("Range: 0 to 100"));
+        assert!(text.contains("Major ticks: 1"));
+    }
+
+    #[test]
+    fn chart_overlay_stack_orders_layers_and_reports_hits() {
+        let stack = ChartOverlayStack::new()
+            .layer(
+                ChartOverlayLayer::new("selection", ChartOverlayKind::Selection)
+                    .layer(LayerOrder::new(UiLayer::AppOverlay, 2))
+                    .bounds(UiRect::new(0.0, 0.0, 50.0, 50.0))
+                    .hit_testable(true)
+                    .sample_count(3),
+            )
+            .layer(
+                ChartOverlayLayer::new("trend", ChartOverlayKind::LineSeries)
+                    .bounds(UiRect::new(0.0, 0.0, 100.0, 50.0))
+                    .label("Yield")
+                    .hit_testable(true)
+                    .sample_count(10),
+            )
+            .layer(
+                ChartOverlayLayer::new("hidden", ChartOverlayKind::Annotation)
+                    .bounds(UiRect::new(0.0, 0.0, 100.0, 50.0))
+                    .visible(false),
+            );
+
+        let ordered = stack.ordered();
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|layer| layer.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["trend", "selection"]
+        );
+
+        let hits = stack.hit_layers(UiPoint::new(10.0, 10.0));
+        assert_eq!(
+            hits.iter()
+                .map(|layer| layer.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["selection", "trend"]
+        );
+
+        let text = stack
+            .accessibility_summary("Chart overlays")
+            .screen_reader_text();
+        assert!(text.contains("Layers: 3"));
+        assert!(text.contains("Visible layers: 2"));
+        assert!(text.contains("Layer samples: 13"));
+    }
+
+    #[test]
+    fn chart_hit_metadata_collects_sample_and_grid_targets() {
+        let viewport = ChartViewport::new(
+            UiRect::new(0.0, 0.0, 100.0, 50.0),
+            ChartRange::new(0.0, 10.0),
+            ChartRange::new(0.0, 10.0),
+        );
+        let sample_hit = viewport
+            .hit_meta_for_sample("sample.5", ChartSample::new(5.0, 5.0), 4.0)
+            .unwrap();
+        assert_eq!(sample_hit.bounds, UiRect::new(46.0, 21.0, 8.0, 8.0));
+        assert_eq!(sample_hit.value.as_deref(), Some("x 5, y 5"));
+
+        let geometry = GridMapGeometry::new(UiRect::new(0.0, 0.0, 20.0, 20.0), 2, 2);
+        let cell_hit = geometry.hit_meta_for_cell(GridCell::new(1, 0)).unwrap();
+        assert_eq!(cell_hit.id.as_deref(), Some("cell.1.0"));
+        assert_eq!(cell_hit.value.as_deref(), Some("column 1, row 0"));
+
+        let hits = ChartHitCollection::new()
+            .hit(sample_hit)
+            .hit(cell_hit.clone().selectable(false));
+        assert_eq!(
+            hits.hit_test(UiPoint::new(15.0, 5.0))
+                .and_then(|hit| hit.id.as_deref()),
+            Some("cell.1.0")
+        );
+        assert_eq!(
+            hits.selectable_in_rect(UiRect::new(0.0, 0.0, 100.0, 50.0))
+                .len(),
+            1
+        );
+
+        let selection = ChartSelectionSummary::new(2, 1)
+            .active_hit("sample.5")
+            .hovered_hit("cell.1.0");
+        assert_eq!(
+            selection.value_text(),
+            "3 selected; 2 samples; 1 cells; active sample.5; hovered cell.1.0"
+        );
+        let text = selection
+            .accessibility_summary("Chart selection")
+            .screen_reader_text();
+        assert!(text.contains("Selected samples: 2"));
+        assert!(text.contains("Hovered hit: cell.1.0"));
     }
 
     #[test]
