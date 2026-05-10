@@ -992,6 +992,25 @@ impl<'a> AccessibilityAssertions<'a> {
             )))
         }
     }
+
+    pub fn require_effective_focus_order(&self, names: &[&str]) -> TestResult {
+        let expected = names
+            .iter()
+            .map(|name| {
+                LayoutAssertions::new(self.document)
+                    .node(name)
+                    .map(|(id, _)| id)
+            })
+            .collect::<TestResult<Vec<_>>>()?;
+        let actual = self.tree.effective_focus_order();
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected effective accessibility focus order {expected:?}, got {actual:?}"
+            )))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4019,6 +4038,9 @@ mod tests {
         accessibility
             .require_focus_order(&["choices", "choices.alpha", "choices.beta"])
             .expect("focus order");
+        accessibility
+            .require_effective_focus_order(&["choices", "choices.alpha", "choices.beta"])
+            .expect("effective focus order");
         accessibility
             .require_live_region("status", AccessibilityLiveRegion::Polite)
             .expect("status live region");

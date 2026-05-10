@@ -2000,17 +2000,7 @@ impl UiDocument {
     }
 
     fn next_focus(&self, current: Option<UiNodeId>, direction: FocusDirection) -> Option<UiNodeId> {
-        let focusable = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| {
-                (node.input.focusable
-                    && node.layout.visible
-                    && node.layout.rect.intersects(node.layout.clip_rect))
-                .then_some(UiNodeId(index))
-            })
-            .collect::<Vec<_>>();
+        let focusable = self.focus_navigation_order();
         if focusable.is_empty() {
             return None;
         }
@@ -2023,6 +2013,65 @@ impl UiDocument {
             (_, None) => 0,
         };
         Some(focusable[next_index])
+    }
+
+    fn focus_navigation_order(&self) -> Vec<UiNodeId> {
+        let accessibility = self.accessibility_snapshot();
+        let mut focusable = Vec::new();
+        for id in accessibility.effective_focus_order() {
+            if self.is_focus_navigation_candidate(id, accessibility.modal_scope)
+                && !focusable.contains(&id)
+            {
+                focusable.push(id);
+            }
+        }
+        for index in 0..self.nodes.len() {
+            let id = UiNodeId(index);
+            if self.is_focus_navigation_candidate(id, accessibility.modal_scope)
+                && !focusable.contains(&id)
+            {
+                focusable.push(id);
+            }
+        }
+        focusable
+    }
+
+    fn is_focus_navigation_candidate(&self, id: UiNodeId, modal_scope: Option<UiNodeId>) -> bool {
+        let Some(node) = self.nodes.get(id.0) else {
+            return false;
+        };
+        if !node.layout.visible || !node.layout.rect.intersects(node.layout.clip_rect) {
+            return false;
+        }
+        if let Some(accessibility) = &node.accessibility {
+            if accessibility.hidden || !accessibility.enabled {
+                return false;
+            }
+        }
+        if let Some(scope) = modal_scope {
+            if !self.node_is_descendant_or_self(scope, id) {
+                return false;
+            }
+        }
+        node.input.focusable
+            || node
+                .accessibility
+                .as_ref()
+                .is_some_and(|accessibility| accessibility.focusable)
+    }
+
+    fn node_is_descendant_or_self(&self, ancestor: UiNodeId, node: UiNodeId) -> bool {
+        if ancestor == node {
+            return self.nodes.get(node.0).is_some();
+        }
+        let mut current = self.nodes.get(node.0).and_then(|node| node.parent);
+        while let Some(parent) = current {
+            if parent == ancestor {
+                return true;
+            }
+            current = self.nodes.get(parent.0).and_then(|node| node.parent);
+        }
+        false
     }
 
     pub fn trigger_animation(&mut self, id: UiNodeId, trigger: AnimationTrigger) -> bool {
@@ -7879,6 +7928,84 @@ mod tests {
 
         let tab = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
         assert_eq!(tab.focused, Some(second));
+    }
+
+    #[test]
+    fn keyboard_focus_uses_accessibility_order_and_modal_scope() {
+        let mut doc = UiDocument::new(root_style(360.0, 180.0));
+        let outside = doc.add_child(
+            doc.root,
+            UiNode::container("outside", button_style(80.0, 36.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Outside")
+                        .focusable()
+                        .focus_order(-10),
+                ),
+        );
+        let modal = doc.add_child(
+            doc.root,
+            UiNode::container("modal", button_style(220.0, 120.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Dialog)
+                        .label("Command palette")
+                        .modal()
+                        .focusable()
+                        .focus_order(10),
+                ),
+        );
+        doc.add_child(
+            modal,
+            UiNode::container("modal.disabled", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Disabled")
+                        .disabled()
+                        .focusable()
+                        .focus_order(-5),
+                ),
+        );
+        let a11y_only = doc.add_child(
+            modal,
+            UiNode::container("modal.a11y", button_style(80.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label("A11y only")
+                    .focusable()
+                    .focus_order(0),
+            ),
+        );
+        let input = doc.add_child(
+            modal,
+            UiNode::container("modal.input", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Input")
+                        .focusable()
+                        .focus_order(1),
+                ),
+        );
+        doc.compute_layout(UiSize::new(360.0, 180.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let snapshot = doc.accessibility_snapshot();
+        assert_eq!(snapshot.focus_order, vec![outside, a11y_only, input, modal]);
+        assert_eq!(
+            snapshot.effective_focus_order(),
+            vec![a11y_only, input, modal]
+        );
+
+        let first = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
+        assert_eq!(first.focused, Some(a11y_only));
+        let second = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
+        assert_eq!(second.focused, Some(input));
+        let third = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
+        assert_eq!(third.focused, Some(modal));
+        let wrapped = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
+        assert_eq!(wrapped.focused, Some(a11y_only));
     }
 
     #[test]

@@ -222,7 +222,7 @@ impl FocusTrap {
         tree.focus_order
             .iter()
             .copied()
-            .filter(|node| self.contains(tree, *node))
+            .filter(|node| tree.is_focus_candidate(*node) && self.contains(tree, *node))
             .collect()
     }
 
@@ -232,25 +232,7 @@ impl FocusTrap {
         current: Option<UiNodeId>,
         direction: FocusNavigationDirection,
     ) -> Option<UiNodeId> {
-        let order = self.focus_order(tree);
-        if order.is_empty() {
-            return None;
-        }
-
-        let position = current.and_then(|current| order.iter().position(|node| *node == current));
-        match (direction, position) {
-            (FocusNavigationDirection::Forward, None) => order.first().copied(),
-            (FocusNavigationDirection::Forward, Some(index)) if index + 1 < order.len() => {
-                order.get(index + 1).copied()
-            }
-            (FocusNavigationDirection::Forward, Some(_)) if self.wrap => order.first().copied(),
-            (FocusNavigationDirection::Backward, None) => order.last().copied(),
-            (FocusNavigationDirection::Backward, Some(index)) if index > 0 => {
-                order.get(index - 1).copied()
-            }
-            (FocusNavigationDirection::Backward, Some(_)) if self.wrap => order.last().copied(),
-            _ => None,
-        }
+        next_focus_in_order(&self.focus_order(tree), current, direction, self.wrap)
     }
 }
 
@@ -527,6 +509,35 @@ impl AccessibilityTree {
             .filter(|node| node.enabled && node.focusable)
     }
 
+    pub fn effective_focus_order(&self) -> Vec<UiNodeId> {
+        match self.modal_scope {
+            Some(scope) => self.focus_order_for_scope(scope),
+            None => self
+                .focus_order
+                .iter()
+                .copied()
+                .filter(|node| self.is_focus_candidate(*node))
+                .collect(),
+        }
+    }
+
+    pub fn focus_order_for_scope(&self, scope: UiNodeId) -> Vec<UiNodeId> {
+        self.focus_order
+            .iter()
+            .copied()
+            .filter(|node| self.is_focus_candidate(*node) && self.contains_node(scope, *node))
+            .collect()
+    }
+
+    pub fn next_focus(
+        &self,
+        current: Option<UiNodeId>,
+        direction: FocusNavigationDirection,
+        wrap: bool,
+    ) -> Option<UiNodeId> {
+        next_focus_in_order(&self.effective_focus_order(), current, direction, wrap)
+    }
+
     pub fn live_region_nodes(&self) -> impl Iterator<Item = &AccessibilityNode> {
         self.nodes
             .iter()
@@ -563,6 +574,11 @@ impl AccessibilityTree {
         false
     }
 
+    fn is_focus_candidate(&self, id: UiNodeId) -> bool {
+        self.node(id)
+            .is_some_and(|node| node.enabled && node.focusable)
+    }
+
     fn relation_names(&self, ids: &[UiNodeId]) -> Vec<String> {
         ids.iter()
             .filter_map(|id| self.node(*id))
@@ -578,6 +594,32 @@ impl AccessibilityTree {
                     .or_else(|| node.direct_accessible_description())
             })
             .collect()
+    }
+}
+
+fn next_focus_in_order(
+    order: &[UiNodeId],
+    current: Option<UiNodeId>,
+    direction: FocusNavigationDirection,
+    wrap: bool,
+) -> Option<UiNodeId> {
+    if order.is_empty() {
+        return None;
+    }
+
+    let position = current.and_then(|current| order.iter().position(|node| *node == current));
+    match (direction, position) {
+        (FocusNavigationDirection::Forward, None) => order.first().copied(),
+        (FocusNavigationDirection::Forward, Some(index)) if index + 1 < order.len() => {
+            order.get(index + 1).copied()
+        }
+        (FocusNavigationDirection::Forward, Some(_)) if wrap => order.first().copied(),
+        (FocusNavigationDirection::Backward, None) => order.last().copied(),
+        (FocusNavigationDirection::Backward, Some(index)) if index > 0 => {
+            order.get(index - 1).copied()
+        }
+        (FocusNavigationDirection::Backward, Some(_)) if wrap => order.last().copied(),
+        _ => None,
     }
 }
 
@@ -915,6 +957,44 @@ mod tests {
         assert_eq!(
             trap.next_focus(&tree, None, FocusNavigationDirection::Backward),
             Some(second)
+        );
+    }
+
+    #[test]
+    fn accessibility_tree_effective_focus_order_respects_modal_scope() {
+        let root = UiNodeId(1);
+        let first = UiNodeId(2);
+        let second = UiNodeId(3);
+        let disabled = UiNodeId(4);
+        let outside = UiNodeId(5);
+        let tree = AccessibilityTree {
+            nodes: vec![
+                accessible_node(root, None, false),
+                accessible_node(first, Some(root), true),
+                accessible_node(second, Some(root), true),
+                AccessibilityNode {
+                    enabled: false,
+                    ..accessible_node(disabled, Some(root), true)
+                },
+                accessible_node(outside, None, true),
+            ],
+            focus_order: vec![outside, disabled, first, second],
+            modal_scope: Some(root),
+        };
+
+        assert_eq!(tree.focus_order_for_scope(root), vec![first, second]);
+        assert_eq!(tree.effective_focus_order(), vec![first, second]);
+        assert_eq!(
+            tree.next_focus(Some(first), FocusNavigationDirection::Forward, true),
+            Some(second)
+        );
+        assert_eq!(
+            tree.next_focus(Some(second), FocusNavigationDirection::Forward, true),
+            Some(first)
+        );
+        assert_eq!(
+            tree.next_focus(Some(second), FocusNavigationDirection::Forward, false),
+            None
         );
     }
 

@@ -208,7 +208,7 @@ The branch starts from Operad 2.0.0 plus:
 - `UiDocument::accessibility_snapshot()` with nodes, focus order, and modal
   scope.
 - Accessibility tree helpers for nearest accessible parents, focusable nodes,
-  live regions, and modal/focus-trap traversal.
+  effective modal focus order, live regions, and modal/focus-trap traversal.
 - Accessibility name, description, and screen-reader text resolvers that fold
   direct labels, summaries, labelled-by/described-by relations, values, states,
   and shortcuts into backend-facing text.
@@ -223,6 +223,8 @@ The branch starts from Operad 2.0.0 plus:
 - Host document-frame state snapshots let consumers carry reusable interaction
   and previous accessibility inputs across host/document frames without
   rebuilding previous-frame plumbing by hand.
+- Document keyboard focus traversal now follows accessibility focus ordering and
+  modal-scope containment before falling back to input-only document order.
 - Accessibility preference resolution in `src/theme.rs`, `src/renderer.rs`,
   and `src/host.rs` for text scaling, reduced motion, high contrast/forced
   colors, reduced transparency, and render-option propagation from host frame
