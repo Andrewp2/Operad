@@ -8,6 +8,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use crate::commands::{CommandId, CommandRegistry};
+use crate::host::{HostCommandDispatch, HostFrameOutput, HostInteractionState, HostShortcutRoute};
 use crate::platform::{
     AppLifecycleResponse, ClipboardResponse, CursorResponse, DragDropResponse, FileDialogResponse,
     NotificationResponse, OpenUrlResponse, PlatformResponse, PlatformServiceError,
@@ -15,9 +17,9 @@ use crate::platform::{
     ScreenshotResponse, TextImeResponse,
 };
 use crate::{
-    AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree,
-    HostFrameOutput, PaintItem, PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent,
-    UiInputResult, UiNode, UiNodeId, UiRect, UiSize,
+    AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree, PaintItem,
+    PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId,
+    UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +138,61 @@ impl EventReplay {
         }
         EventReplayReport { steps }
     }
+
+    pub fn run_with_commands(
+        &self,
+        document: &mut UiDocument,
+        state: HostInteractionState,
+        registry: &CommandRegistry,
+    ) -> CommandReplayReport {
+        let mut state = state;
+        let mut steps = Vec::with_capacity(self.steps.len());
+        for step in &self.steps {
+            let converted = match &step.input {
+                ReplayInput::Ui(event) => Some(event.clone()),
+                ReplayInput::Raw {
+                    event,
+                    line_size,
+                    page_size,
+                } => event.to_ui_input_event_with_wheel_scale(*line_size, *page_size),
+            };
+            let result = converted.clone().map(|event| document.handle_input(event));
+            let updates_host_state = converted
+                .as_ref()
+                .is_some_and(replay_input_updates_host_state);
+            if let Some(result) = result.clone().filter(|_| updates_host_state) {
+                state.apply_input_result(result);
+            }
+
+            let shortcut_route = converted.as_ref().and_then(|event| match event {
+                UiInputEvent::Key { key, modifiers } => {
+                    Some(state.route_key(*key, *modifiers, registry))
+                }
+                _ => None,
+            });
+            let dispatch = shortcut_route.as_ref().and_then(|route| {
+                route.command.clone().map(|command| HostCommandDispatch {
+                    command,
+                    shortcut: route.shortcut,
+                    target: route.target,
+                })
+            });
+
+            steps.push(CommandReplayStepResult {
+                label: step.label.clone(),
+                input: step.input.clone(),
+                converted,
+                result,
+                shortcut_route,
+                dispatch,
+            });
+        }
+        CommandReplayReport { steps, state }
+    }
+}
+
+fn replay_input_updates_host_state(event: &UiInputEvent) -> bool {
+    !matches!(event, UiInputEvent::Key { .. } | UiInputEvent::TextInput(_))
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -170,6 +227,66 @@ impl EventReplayReport {
             Err(TestFailure::new(format!(
                 "event replay step `{}` did not convert to UiInputEvent",
                 step.label
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandReplayStepResult {
+    pub label: String,
+    pub input: ReplayInput,
+    pub converted: Option<UiInputEvent>,
+    pub result: Option<UiInputResult>,
+    pub shortcut_route: Option<HostShortcutRoute>,
+    pub dispatch: Option<HostCommandDispatch>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CommandReplayReport {
+    pub steps: Vec<CommandReplayStepResult>,
+    pub state: HostInteractionState,
+}
+
+impl CommandReplayReport {
+    pub fn routes(&self) -> impl Iterator<Item = &HostShortcutRoute> {
+        self.steps
+            .iter()
+            .filter_map(|step| step.shortcut_route.as_ref())
+    }
+
+    pub fn dispatches(&self) -> impl Iterator<Item = &HostCommandDispatch> {
+        self.steps.iter().filter_map(|step| step.dispatch.as_ref())
+    }
+
+    pub fn dispatched_commands(&self) -> Vec<CommandId> {
+        self.dispatches()
+            .map(|dispatch| dispatch.command.clone())
+            .collect()
+    }
+
+    pub fn require_command_dispatched(&self, command: impl Into<CommandId>) -> TestResult {
+        let command = command.into();
+        if self
+            .dispatches()
+            .any(|dispatch| dispatch.command == command)
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected command `{command}` to dispatch, got {:?}",
+                self.dispatched_commands()
+            )))
+        }
+    }
+
+    pub fn require_no_commands(&self) -> TestResult {
+        if let Some(dispatch) = self.dispatches().next() {
+            Err(TestFailure::new(format!(
+                "expected no command dispatches, got `{}`",
+                dispatch.command
             )))
         } else {
             Ok(())
@@ -762,6 +879,9 @@ impl FrameTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::{
+        Command, CommandId, CommandMeta, CommandRegistry, CommandScope, Shortcut,
+    };
     use crate::platform::{
         ClipboardRequest, ClipboardResponse, PlatformErrorCode, PlatformRequest, PlatformRequestId,
         PlatformResponse, PlatformServiceError, PlatformServiceKind, RepaintRequest,
@@ -825,6 +945,166 @@ mod tests {
         assert_eq!(report.clicked_nodes(), vec![button]);
         assert_eq!(report.focused_nodes().last().copied(), Some(button));
         assert!(report.require_all_converted().is_ok());
+    }
+
+    #[test]
+    fn event_replay_routes_raw_keyboard_shortcuts_to_commands() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        let button = document.add_child(
+            document.root,
+            UiNode::container("play", fixed_style(80.0, 32.0)).with_input(InputBehavior::BUTTON),
+        );
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(Command::new(CommandMeta::new("global.save", "Save")))
+            .unwrap();
+        registry
+            .register(Command::new(CommandMeta::new(
+                "editor.save",
+                "Save Selection",
+            )))
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('s'), "global.save")
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Editor, Shortcut::ctrl('s'), "editor.save")
+            .unwrap();
+
+        let report = EventReplay::new()
+            .raw(
+                "save",
+                RawInputEvent::Keyboard(RawKeyboardEvent::press(
+                    crate::KeyCode::Character('S'),
+                    crate::KeyModifiers {
+                        ctrl: true,
+                        ..crate::KeyModifiers::NONE
+                    },
+                    1,
+                )),
+            )
+            .run_with_commands(
+                &mut document,
+                HostInteractionState {
+                    focused: Some(button),
+                    active_shortcut_scopes: vec![CommandScope::Workspace, CommandScope::Editor],
+                    ..HostInteractionState::default()
+                },
+                &registry,
+            );
+
+        assert_eq!(
+            report.dispatched_commands(),
+            vec![CommandId::new("editor.save")]
+        );
+        assert_eq!(
+            report.steps[0].dispatch.as_ref().unwrap().target,
+            Some(button)
+        );
+        assert_eq!(
+            report.steps[0]
+                .shortcut_route
+                .as_ref()
+                .unwrap()
+                .active_scopes,
+            vec![CommandScope::Workspace, CommandScope::Editor]
+        );
+        report
+            .require_command_dispatched("editor.save")
+            .expect("editor command dispatch");
+    }
+
+    #[test]
+    fn command_replay_updates_state_from_document_input_before_routing() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        let button = document.add_child(
+            document.root,
+            UiNode::container("play", fixed_style(80.0, 32.0)).with_input(InputBehavior::BUTTON),
+        );
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(Command::new(CommandMeta::new("transport.play", "Play")))
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('p'), "transport.play")
+            .unwrap();
+
+        let report = EventReplay::new()
+            .ui("focus", UiInputEvent::PointerDown(UiPoint::new(12.0, 12.0)))
+            .raw(
+                "play",
+                RawInputEvent::Keyboard(RawKeyboardEvent::press(
+                    crate::KeyCode::Character('P'),
+                    crate::KeyModifiers {
+                        ctrl: true,
+                        ..crate::KeyModifiers::NONE
+                    },
+                    2,
+                )),
+            )
+            .run_with_commands(
+                &mut document,
+                HostInteractionState::default().with_active_shortcut_scope(CommandScope::Global),
+                &registry,
+            );
+
+        assert_eq!(report.state.focused, Some(button));
+        assert_eq!(
+            report.steps[1].dispatch.as_ref().unwrap().target,
+            Some(button)
+        );
+        assert_eq!(
+            report.dispatched_commands(),
+            vec![CommandId::new("transport.play")]
+        );
+    }
+
+    #[test]
+    fn command_replay_asserts_missing_and_unrouted_commands() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(Command::new(CommandMeta::new("edit.cut", "Cut")).disabled("read only"))
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('x'), "edit.cut")
+            .unwrap();
+
+        let report = EventReplay::new()
+            .raw(
+                "cut",
+                RawInputEvent::Keyboard(RawKeyboardEvent::press(
+                    crate::KeyCode::Character('X'),
+                    crate::KeyModifiers {
+                        ctrl: true,
+                        ..crate::KeyModifiers::NONE
+                    },
+                    1,
+                )),
+            )
+            .run_with_commands(
+                &mut document,
+                HostInteractionState::default().with_active_shortcut_scope(CommandScope::Global),
+                &registry,
+            );
+
+        assert!(report.steps[0].shortcut_route.is_some());
+        assert!(report.steps[0].dispatch.is_none());
+        assert_eq!(report.dispatched_commands(), Vec::<CommandId>::new());
+        report.require_no_commands().expect("no commands");
+        assert!(report.require_command_dispatched("edit.cut").is_err());
     }
 
     #[test]
