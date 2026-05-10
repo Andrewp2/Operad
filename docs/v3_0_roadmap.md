@@ -261,9 +261,15 @@ The branch starts from Operad 2.0.0 plus:
 - Text-input editing helpers in `src/lib.rs` for selected text, Unicode-safe
   caret line/column metadata, multiline line-start/line-end movement, and
   vertical caret movement with shift selection.
+- Text-input rendering contracts in `src/lib.rs` for deterministic caret rects,
+  multiline selection rects, scene paint plans, and accessibility summaries that
+  expose caret and selection position to backend adapters.
 - Data-table export helpers in `src/widget_ext/data.rs` for selected rows,
   visible rows, active cells, and ranges, with TSV/CSV formatting and clipboard
   command-effect integration.
+- Data-table row and cell metadata in `src/widget_ext/data.rs` for row/cell
+  actions, context-menu command IDs, draggable row sources, per-row drop
+  policies, and drop-placement target descriptors.
 - Property-inspector status contracts in `src/widget_ext/data.rs` for invalid,
   error, warning, help, changed, and pending row metadata, accessibility
   hints/live regions, and optional status visual/shader hooks.

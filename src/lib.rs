@@ -3400,6 +3400,26 @@ pub mod widgets {
             }
         }
 
+        pub fn caret_rect(&self, metrics: TextInputLayoutMetrics) -> TextInputCaretRect {
+            text_input_caret_rect(&self.text, self.caret, metrics)
+        }
+
+        pub fn selection_rects(
+            &self,
+            metrics: TextInputLayoutMetrics,
+        ) -> Vec<TextInputSelectionRect> {
+            text_input_selection_rects(&self.text, self.selected_range(), metrics)
+        }
+
+        pub fn render_plan(
+            &self,
+            metrics: TextInputLayoutMetrics,
+            text_style: TextStyle,
+            paint: TextInputPaintOptions,
+        ) -> TextInputRenderPlan {
+            TextInputRenderPlan::new(self, metrics, text_style, paint)
+        }
+
         pub fn select_all(&mut self) {
             self.selection_anchor = Some(0);
             self.caret = self.text.len();
@@ -3609,6 +3629,158 @@ pub mod widgets {
         pub selected_range: Option<Range<usize>>,
     }
 
+    impl TextInputCaretInfo {
+        pub fn accessibility_summary(&self, title: impl Into<String>) -> AccessibilitySummary {
+            let mut summary = AccessibilitySummary::new(title)
+                .item("Line", (self.position.line + 1).to_string())
+                .item("Column", (self.position.column + 1).to_string())
+                .item("Byte", self.position.byte_index.to_string());
+            if let Some(range) = &self.selected_range {
+                summary = summary.item(
+                    "Selection",
+                    format!("bytes {} to {}", range.start, range.end),
+                );
+            }
+            summary
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct TextInputLayoutMetrics {
+        pub text_rect: UiRect,
+        pub char_width: f32,
+        pub line_height: f32,
+        pub caret_width: f32,
+        pub scroll_offset: UiPoint,
+    }
+
+    impl TextInputLayoutMetrics {
+        pub fn new(text_rect: UiRect, char_width: f32, line_height: f32) -> Self {
+            Self {
+                text_rect,
+                char_width: sanitize_positive_dimension(char_width, 1.0),
+                line_height: sanitize_positive_dimension(line_height, 1.0),
+                caret_width: 1.0,
+                scroll_offset: UiPoint::new(0.0, 0.0),
+            }
+        }
+
+        pub fn from_style(text_rect: UiRect, style: &TextStyle) -> Self {
+            Self::new(
+                text_rect,
+                style.font_size * 0.55,
+                style.line_height.max(1.0),
+            )
+        }
+
+        pub fn caret_width(mut self, caret_width: f32) -> Self {
+            self.caret_width = sanitize_positive_dimension(caret_width, self.caret_width);
+            self
+        }
+
+        pub const fn scroll_offset(mut self, scroll_offset: UiPoint) -> Self {
+            self.scroll_offset = scroll_offset;
+            self
+        }
+
+        pub fn point_for_position(self, position: TextInputPosition) -> UiPoint {
+            UiPoint::new(
+                self.text_rect.x - self.scroll_offset.x + position.column as f32 * self.char_width,
+                self.text_rect.y - self.scroll_offset.y + position.line as f32 * self.line_height,
+            )
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct TextInputCaretRect {
+        pub position: TextInputPosition,
+        pub rect: UiRect,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct TextInputSelectionRect {
+        pub byte_range: Range<usize>,
+        pub line: usize,
+        pub rect: UiRect,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TextInputPaintOptions {
+        pub selection_fill: ColorRgba,
+        pub caret_fill: ColorRgba,
+        pub selection_corner_radius: u8,
+        pub show_caret: bool,
+    }
+
+    impl Default for TextInputPaintOptions {
+        fn default() -> Self {
+            Self {
+                selection_fill: ColorRgba::new(64, 128, 255, 96),
+                caret_fill: ColorRgba::WHITE,
+                selection_corner_radius: 2,
+                show_caret: true,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct TextInputRenderPlan {
+        pub text: PaintText,
+        pub caret: Option<TextInputCaretRect>,
+        pub selection_rects: Vec<TextInputSelectionRect>,
+        pub caret_paint: Option<PaintRect>,
+        pub selection_paint: Vec<PaintRect>,
+    }
+
+    impl TextInputRenderPlan {
+        pub fn new(
+            state: &TextInputState,
+            metrics: TextInputLayoutMetrics,
+            text_style: TextStyle,
+            paint: TextInputPaintOptions,
+        ) -> Self {
+            let text = PaintText::new(state.text.clone(), metrics.text_rect, text_style)
+                .multiline(state.multiline)
+                .overflow(TextOverflow::Clip);
+            let caret = paint.show_caret.then(|| state.caret_rect(metrics));
+            let selection_rects = state.selection_rects(metrics);
+            let selection_paint = selection_rects
+                .iter()
+                .map(|selection| {
+                    PaintRect::solid(selection.rect, paint.selection_fill)
+                        .corner_radii(CornerRadii::uniform(paint.selection_corner_radius as f32))
+                })
+                .collect::<Vec<_>>();
+            let caret_paint = caret.map(|caret| PaintRect::solid(caret.rect, paint.caret_fill));
+            Self {
+                text,
+                caret,
+                selection_rects,
+                caret_paint,
+                selection_paint,
+            }
+        }
+
+        pub fn overlay_primitives(&self) -> Vec<ScenePrimitive> {
+            self.selection_paint
+                .iter()
+                .cloned()
+                .map(ScenePrimitive::Rect)
+                .chain(self.caret_paint.iter().cloned().map(ScenePrimitive::Rect))
+                .collect()
+        }
+
+        pub fn scene_primitives(&self) -> Vec<ScenePrimitive> {
+            self.selection_paint
+                .iter()
+                .cloned()
+                .map(ScenePrimitive::Rect)
+                .chain(std::iter::once(ScenePrimitive::Text(self.text.clone())))
+                .chain(self.caret_paint.iter().cloned().map(ScenePrimitive::Rect))
+                .collect()
+        }
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum TextInputClipboardAction {
         Copy(String),
@@ -3724,7 +3896,12 @@ pub mod widgets {
             .action(AccessibilityAction::new("select_all", "Select all").shortcut("Ctrl+A"))
             .action(AccessibilityAction::new("copy", "Copy").shortcut("Ctrl+C"))
             .action(AccessibilityAction::new("cut", "Cut").shortcut("Ctrl+X"))
-            .action(AccessibilityAction::new("paste", "Paste").shortcut("Ctrl+V"));
+            .action(AccessibilityAction::new("paste", "Paste").shortcut("Ctrl+V"))
+            .summary(
+                state
+                    .caret_info()
+                    .accessibility_summary(format!("{name} caret")),
+            );
         let hint = options
             .accessibility_hint
             .clone()
@@ -3911,6 +4088,86 @@ pub mod widgets {
             .filter(|line| *line <= last_line)
             .map(|line| byte_index_for_line_column(text, line, position.column))
             .unwrap_or(index)
+    }
+
+    fn text_input_caret_rect(
+        text: &str,
+        caret: usize,
+        metrics: TextInputLayoutMetrics,
+    ) -> TextInputCaretRect {
+        let position = text_position_at(text, caret);
+        let origin = metrics.point_for_position(position);
+        TextInputCaretRect {
+            position,
+            rect: UiRect::new(origin.x, origin.y, metrics.caret_width, metrics.line_height),
+        }
+    }
+
+    fn text_input_selection_rects(
+        text: &str,
+        selected_range: Option<Range<usize>>,
+        metrics: TextInputLayoutMetrics,
+    ) -> Vec<TextInputSelectionRect> {
+        let Some(selected_range) = selected_range else {
+            return Vec::new();
+        };
+        text_line_ranges(text)
+            .into_iter()
+            .filter_map(|(line, line_range)| {
+                let start = selected_range.start.max(line_range.start);
+                let end = selected_range.end.min(line_range.end);
+                let newline_selected = selected_range.start <= line_range.end
+                    && selected_range.end > line_range.end
+                    && line_range.end <= text.len();
+                if start >= end && !newline_selected {
+                    return None;
+                }
+                let start = start.min(line_range.end);
+                let end = end.max(start).min(line_range.end);
+                let start_column = text[line_range.start..start].chars().count();
+                let end_column = text[line_range.start..end].chars().count();
+                let position = TextInputPosition {
+                    byte_index: start,
+                    line,
+                    column: start_column,
+                };
+                let origin = metrics.point_for_position(position);
+                let selected_columns = end_column.saturating_sub(start_column);
+                let width = if selected_columns == 0 {
+                    metrics.caret_width
+                } else {
+                    selected_columns as f32 * metrics.char_width
+                };
+                Some(TextInputSelectionRect {
+                    byte_range: start..end,
+                    line,
+                    rect: UiRect::new(origin.x, origin.y, width, metrics.line_height),
+                })
+            })
+            .collect()
+    }
+
+    fn text_line_ranges(text: &str) -> Vec<(usize, Range<usize>)> {
+        let mut ranges = Vec::new();
+        let mut line = 0;
+        let mut start = 0;
+        for (byte_index, character) in text.char_indices() {
+            if character == '\n' {
+                ranges.push((line, start..byte_index));
+                line += 1;
+                start = byte_index + character.len_utf8();
+            }
+        }
+        ranges.push((line, start..text.len()));
+        ranges
+    }
+
+    fn sanitize_positive_dimension(value: f32, fallback: f32) -> f32 {
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            fallback.max(1.0)
+        }
     }
 
     fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
@@ -6261,6 +6518,79 @@ mod tests {
         );
         assert_eq!(info.line_range, "alpha\n".len().."alpha\nbéta".len());
         assert_eq!(info.selected_range, state.selected_range());
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_builds_caret_selection_and_scene_paint_plan() {
+        let mut state = widgets::TextInputState::new("one\ntwo").multiline(true);
+        state.selection_anchor = Some(1);
+        state.caret = "one\nt".len();
+        let style = TextStyle {
+            font_size: 10.0,
+            line_height: 14.0,
+            ..Default::default()
+        };
+        let metrics =
+            widgets::TextInputLayoutMetrics::from_style(UiRect::new(4.0, 6.0, 120.0, 40.0), &style)
+                .caret_width(2.0);
+
+        let caret = state.caret_rect(metrics);
+        assert_eq!(caret.rect, UiRect::new(4.0 + 5.5, 6.0 + 14.0, 2.0, 14.0));
+        assert_eq!(
+            caret.position,
+            widgets::TextInputPosition {
+                byte_index: "one\nt".len(),
+                line: 1,
+                column: 1,
+            }
+        );
+
+        let selection = state.selection_rects(metrics);
+        assert_eq!(selection.len(), 2);
+        assert_eq!(selection[0].byte_range, 1.."one".len());
+        assert_eq!(selection[0].rect, UiRect::new(9.5, 6.0, 11.0, 14.0));
+        assert_eq!(selection[1].byte_range, "one\n".len().."one\nt".len());
+        assert_eq!(selection[1].rect, UiRect::new(4.0, 20.0, 5.5, 14.0));
+
+        let plan = state.render_plan(metrics, style, widgets::TextInputPaintOptions::default());
+        assert_eq!(plan.selection_rects, selection);
+        assert_eq!(plan.caret, Some(caret));
+        assert_eq!(plan.overlay_primitives().len(), 3);
+        assert_eq!(plan.scene_primitives().len(), 4);
+        assert!(matches!(
+            &plan.scene_primitives()[2],
+            ScenePrimitive::Text(text) if text.text == "one\ntwo"
+        ));
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_accessibility_summarizes_caret_and_selection() {
+        let mut doc = UiDocument::new(root_style(240.0, 80.0));
+        let root = doc.root;
+        let mut state = widgets::TextInputState::new("alpha").multiline(false);
+        state.caret = 3;
+        state.selection_anchor = Some(1);
+
+        let input = widgets::text_input(
+            &mut doc,
+            root,
+            "name",
+            &state,
+            widgets::TextInputOptions::default(),
+        );
+        let summary = doc
+            .node(input)
+            .accessibility
+            .as_ref()
+            .and_then(|meta| meta.summary.as_ref())
+            .expect("summary");
+        let text = summary.screen_reader_text();
+        assert!(text.contains("name caret"));
+        assert!(text.contains("Line: 1"));
+        assert!(text.contains("Column: 4"));
+        assert!(text.contains("Selection: bytes 1 to 3"));
     }
 
     #[cfg(feature = "widgets")]

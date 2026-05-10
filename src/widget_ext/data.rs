@@ -863,6 +863,360 @@ impl DataTableCellIndex {
     }
 }
 
+/// Renderer-neutral action metadata for table rows and cells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableAction {
+    pub id: CommandId,
+    pub label: String,
+    pub disabled: bool,
+    pub destructive: bool,
+    pub leading_image: Option<ImageContent>,
+}
+
+impl DataTableAction {
+    pub fn new(id: impl Into<CommandId>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            disabled: false,
+            destructive: false,
+            leading_image: None,
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
+
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
+
+    pub fn with_leading_image(mut self, image: ImageContent) -> Self {
+        self.leading_image = Some(image);
+        self
+    }
+
+    pub fn accessibility_action(&self) -> AccessibilityAction {
+        AccessibilityAction::new(self.id.as_str(), self.label.clone())
+    }
+}
+
+/// Row-level action and context-menu metadata for a data table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableRowMeta {
+    pub row: usize,
+    pub row_id: Option<String>,
+    pub disabled: bool,
+    pub actions: Vec<DataTableAction>,
+    pub context_menu_commands: Vec<CommandId>,
+    pub draggable: bool,
+    pub drop_policy: Option<DataTableRowDropPolicy>,
+}
+
+impl DataTableRowMeta {
+    pub fn new(row: usize) -> Self {
+        Self {
+            row,
+            row_id: None,
+            disabled: false,
+            actions: Vec::new(),
+            context_menu_commands: Vec::new(),
+            draggable: false,
+            drop_policy: None,
+        }
+    }
+
+    pub fn with_row_id(mut self, row_id: impl Into<String>) -> Self {
+        self.row_id = Some(row_id.into());
+        self
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
+
+    pub fn with_action(mut self, action: DataTableAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub fn with_actions(mut self, actions: impl IntoIterator<Item = DataTableAction>) -> Self {
+        self.actions.extend(actions);
+        self
+    }
+
+    pub fn with_context_menu_command(mut self, command: impl Into<CommandId>) -> Self {
+        self.context_menu_commands.push(command.into());
+        self
+    }
+
+    pub fn with_context_menu_commands(
+        mut self,
+        commands: impl IntoIterator<Item = impl Into<CommandId>>,
+    ) -> Self {
+        self.context_menu_commands
+            .extend(commands.into_iter().map(Into::into));
+        self
+    }
+
+    pub const fn draggable(mut self, draggable: bool) -> Self {
+        self.draggable = draggable;
+        self
+    }
+
+    pub fn with_drop_policy(mut self, policy: DataTableRowDropPolicy) -> Self {
+        self.drop_policy = Some(policy);
+        self
+    }
+
+    pub fn enabled_actions(&self) -> Vec<&DataTableAction> {
+        self.actions
+            .iter()
+            .filter(|action| !action.disabled)
+            .collect()
+    }
+
+    pub fn has_context_menu(&self) -> bool {
+        !self.context_menu_commands.is_empty()
+    }
+
+    pub fn drag_source(
+        &self,
+        bounds: UiRect,
+        payload: DragPayload,
+        allowed_operations: impl IntoIterator<Item = DragOperation>,
+    ) -> Option<DragSourceDescriptor> {
+        (!self.disabled && self.draggable).then(|| {
+            DragSourceDescriptor::new(
+                DragSourceId::new(format!("data_table.row.{}", self.descriptor_id())),
+                DragDropSurfaceKind::TableRow,
+                bounds,
+                payload,
+            )
+            .allowed_operations(allowed_operations)
+            .label(self.accessibility_label())
+        })
+    }
+
+    pub fn drop_target(
+        &self,
+        bounds: UiRect,
+        placement: DataTableRowDropPlacement,
+    ) -> Option<DropTargetDescriptor> {
+        let policy = self.drop_policy.as_ref()?;
+        policy.allows_placement(placement).then(|| {
+            DropTargetDescriptor::new(
+                DropTargetId::new(format!(
+                    "data_table.row.{}.{}",
+                    self.descriptor_id(),
+                    placement.suffix()
+                )),
+                DragDropSurfaceKind::TableRow,
+                placement.bounds(bounds),
+            )
+            .accepted_payload(policy.accepted_payload.clone())
+            .accepted_operations(policy.accepted_operations.clone())
+            .label(format!(
+                "{} {}",
+                self.accessibility_label(),
+                placement.label()
+            ))
+        })
+    }
+
+    pub fn drop_targets(&self, bounds: UiRect) -> Vec<DropTargetDescriptor> {
+        self.drop_policy
+            .as_ref()
+            .map(|policy| {
+                policy
+                    .placements
+                    .iter()
+                    .filter_map(|placement| self.drop_target(bounds, *placement))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn descriptor_id(&self) -> String {
+        self.row_id.clone().unwrap_or_else(|| self.row.to_string())
+    }
+
+    fn accessibility_label(&self) -> String {
+        self.row_id
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| format!("Row {}", self.row + 1))
+    }
+}
+
+/// Cell-level action and context-menu metadata for a data table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableCellMeta {
+    pub cell: DataTableCellIndex,
+    pub disabled: bool,
+    pub actions: Vec<DataTableAction>,
+    pub context_menu_commands: Vec<CommandId>,
+}
+
+impl DataTableCellMeta {
+    pub fn new(cell: DataTableCellIndex) -> Self {
+        Self {
+            cell,
+            disabled: false,
+            actions: Vec::new(),
+            context_menu_commands: Vec::new(),
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
+
+    pub fn with_action(mut self, action: DataTableAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub fn with_actions(mut self, actions: impl IntoIterator<Item = DataTableAction>) -> Self {
+        self.actions.extend(actions);
+        self
+    }
+
+    pub fn with_context_menu_command(mut self, command: impl Into<CommandId>) -> Self {
+        self.context_menu_commands.push(command.into());
+        self
+    }
+
+    pub fn with_context_menu_commands(
+        mut self,
+        commands: impl IntoIterator<Item = impl Into<CommandId>>,
+    ) -> Self {
+        self.context_menu_commands
+            .extend(commands.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn enabled_actions(&self) -> Vec<&DataTableAction> {
+        self.actions
+            .iter()
+            .filter(|action| !action.disabled)
+            .collect()
+    }
+
+    pub fn has_context_menu(&self) -> bool {
+        !self.context_menu_commands.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DataTableRowDropPlacement {
+    Before,
+    On,
+    After,
+}
+
+impl DataTableRowDropPlacement {
+    pub const ALL: [Self; 3] = [Self::Before, Self::On, Self::After];
+
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Self::Before => "before",
+            Self::On => "on",
+            Self::After => "after",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Before => "before",
+            Self::On => "on",
+            Self::After => "after",
+        }
+    }
+
+    pub fn bounds(self, row_bounds: UiRect) -> UiRect {
+        let edge_height = (row_bounds.height * 0.25).max(1.0).min(row_bounds.height);
+        match self {
+            Self::Before => UiRect::new(row_bounds.x, row_bounds.y, row_bounds.width, edge_height),
+            Self::After => UiRect::new(
+                row_bounds.x,
+                row_bounds.bottom() - edge_height,
+                row_bounds.width,
+                edge_height,
+            ),
+            Self::On => row_bounds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableRowDropPolicy {
+    pub accepted_payload: DropPayloadFilter,
+    pub accepted_operations: Vec<DragOperation>,
+    pub placements: Vec<DataTableRowDropPlacement>,
+    pub disabled: bool,
+}
+
+impl DataTableRowDropPolicy {
+    pub fn new(accepted_payload: DropPayloadFilter) -> Self {
+        Self {
+            accepted_payload,
+            accepted_operations: vec![
+                DragOperation::Copy,
+                DragOperation::Move,
+                DragOperation::Link,
+            ],
+            placements: vec![DataTableRowDropPlacement::On],
+            disabled: false,
+        }
+    }
+
+    pub fn any_payload() -> Self {
+        Self::new(DropPayloadFilter::any())
+    }
+
+    pub fn accepted_operations(
+        mut self,
+        operations: impl IntoIterator<Item = DragOperation>,
+    ) -> Self {
+        self.accepted_operations = operations.into_iter().collect();
+        self
+    }
+
+    pub fn placements(
+        mut self,
+        placements: impl IntoIterator<Item = DataTableRowDropPlacement>,
+    ) -> Self {
+        self.placements = placements.into_iter().collect();
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn allows_placement(&self, placement: DataTableRowDropPlacement) -> bool {
+        !self.disabled
+            && self.placements.contains(&placement)
+            && !self.accepted_operations.is_empty()
+            && !self.accepted_payload.is_empty()
+    }
+
+    pub fn enabled(&self) -> bool {
+        !self.disabled
+            && self
+                .placements
+                .iter()
+                .any(|placement| self.allows_placement(*placement))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DataTableSelection {
     pub selected_rows: Vec<usize>,
@@ -3559,6 +3913,90 @@ mod tests {
                 .scrollable_columns,
             3..3
         );
+    }
+
+    #[test]
+    fn data_table_row_and_cell_meta_expose_actions_and_context_commands() {
+        let row = DataTableRowMeta::new(4)
+            .with_row_id("clip.4")
+            .with_actions([
+                DataTableAction::new("rename", "Rename"),
+                DataTableAction::new("delete", "Delete")
+                    .destructive()
+                    .disabled(),
+            ])
+            .with_context_menu_commands(["duplicate", "reveal"]);
+        let enabled = row.enabled_actions();
+
+        assert_eq!(row.row, 4);
+        assert_eq!(row.row_id.as_deref(), Some("clip.4"));
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].id.as_str(), "rename");
+        assert!(row.has_context_menu());
+        assert_eq!(
+            enabled[0].accessibility_action(),
+            AccessibilityAction::new("rename", "Rename")
+        );
+
+        let cell = DataTableCellMeta::new(DataTableCellIndex::new(4, 2))
+            .with_action(DataTableAction::new("copy", "Copy value"))
+            .with_action(DataTableAction::new("clear", "Clear value").disabled())
+            .with_context_menu_command("cell.context");
+
+        assert_eq!(cell.cell, DataTableCellIndex::new(4, 2));
+        assert_eq!(cell.enabled_actions().len(), 1);
+        assert!(cell.has_context_menu());
+        assert_eq!(cell.context_menu_commands[0].as_str(), "cell.context");
+    }
+
+    #[test]
+    fn data_table_row_meta_builds_drag_and_drop_descriptors() {
+        let policy = DataTableRowDropPolicy::new(DropPayloadFilter::empty().text())
+            .accepted_operations([DragOperation::Move])
+            .placements([
+                DataTableRowDropPlacement::Before,
+                DataTableRowDropPlacement::On,
+                DataTableRowDropPlacement::After,
+            ]);
+        let row = DataTableRowMeta::new(7)
+            .with_row_id("clip.7")
+            .draggable(true)
+            .with_drop_policy(policy);
+        let bounds = UiRect::new(20.0, 40.0, 200.0, 32.0);
+
+        let source = row
+            .drag_source(bounds, DragPayload::text("clip.7"), [DragOperation::Move])
+            .expect("drag source");
+        assert_eq!(source.id, DragSourceId::new("data_table.row.clip.7"));
+        assert_eq!(source.kind, DragDropSurfaceKind::TableRow);
+        assert_eq!(source.label.as_deref(), Some("clip.7"));
+        assert!(source.can_start());
+
+        let targets = row.drop_targets(bounds);
+        assert_eq!(targets.len(), 3);
+        assert_eq!(
+            targets[0].id,
+            DropTargetId::new("data_table.row.clip.7.before")
+        );
+        assert_eq!(targets[0].bounds, UiRect::new(20.0, 40.0, 200.0, 8.0));
+        assert_eq!(targets[1].id, DropTargetId::new("data_table.row.clip.7.on"));
+        assert_eq!(targets[1].bounds, bounds);
+        assert_eq!(
+            targets[2].id,
+            DropTargetId::new("data_table.row.clip.7.after")
+        );
+        assert_eq!(targets[2].bounds, UiRect::new(20.0, 64.0, 200.0, 8.0));
+        assert_eq!(
+            targets[1].resolve_operation(&DragPayload::text("clip.7"), &[DragOperation::Move]),
+            Some(DragOperation::Move)
+        );
+
+        assert!(DataTableRowMeta::new(8)
+            .draggable(true)
+            .disabled()
+            .drag_source(bounds, DragPayload::text("clip.8"), [DragOperation::Move])
+            .is_none());
+        assert!(!DataTableRowDropPolicy::new(DropPayloadFilter::empty()).enabled());
     }
 
     #[test]
