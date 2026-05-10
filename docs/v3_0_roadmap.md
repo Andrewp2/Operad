@@ -263,8 +263,9 @@ The branch starts from Operad 2.0.0 plus:
   diffs with tolerances, dirty flags, deterministic snapshot hash/content
   assertions, frame timing section/budget assertions, performance sample budget
   assertions, command-aware shortcut replay assertions, and stable-name
-  accessibility assertions for roles, labels, values, summaries, live regions,
-  focus order, active descendants, document-frame generated
+  accessibility assertions for roles, labels, resolved names/descriptions,
+  screen-reader text, values, summaries, live regions, focus order, active
+  descendants, document-frame generated
   platform-service requests, request/response coverage, correlated unsupported
   platform-service responses, render-frame conformance assertions for
   canvas/image handler coverage, dirty regions, host input capture, and

@@ -698,6 +698,45 @@ impl<'a> AccessibilityAssertions<'a> {
         }
     }
 
+    pub fn require_accessible_name(&self, name: &str, expected: &str) -> TestResult {
+        let node = self.node(name)?;
+        let actual = self.tree.accessible_name(node.id);
+        if actual.as_deref() == Some(expected) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected resolved accessible name `{expected}`, got {actual:?}"
+            )))
+        }
+    }
+
+    pub fn require_accessible_description(&self, name: &str, expected: &str) -> TestResult {
+        let node = self.node(name)?;
+        let actual = self.tree.accessible_description(node.id);
+        if actual.as_deref() == Some(expected) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected resolved accessible description `{expected}`, got {actual:?}"
+            )))
+        }
+    }
+
+    pub fn require_screen_reader_text_contains(&self, name: &str, text: &str) -> TestResult {
+        let node = self.node(name)?;
+        let actual = self.tree.screen_reader_text(node.id);
+        if actual
+            .as_deref()
+            .is_some_and(|actual| actual.contains(text))
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected resolved screen-reader text containing `{text}`, got {actual:?}"
+            )))
+        }
+    }
+
     pub fn require_value_contains(&self, name: &str, text: &str) -> TestResult {
         let node = self.node(name)?;
         if node
@@ -2571,11 +2610,46 @@ mod tests {
     fn accessibility_assertions_use_stable_node_names() {
         let mut document = UiDocument::new(root_style(260.0, 120.0));
         let root = document.root;
+        let title = document.add_child(
+            root,
+            UiNode::text(
+                "choices.title",
+                "Choices",
+                TextStyle::default(),
+                Style {
+                    size: TaffySize {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+            )
+            .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label("Choices")),
+        );
+        let hint = document.add_child(
+            root,
+            UiNode::text(
+                "choices.hint",
+                "Pick one option",
+                TextStyle::default(),
+                Style {
+                    size: TaffySize {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Tooltip).label("Pick one option"),
+            ),
+        );
         let list = document.add_child(
             root,
             UiNode::container("choices", fixed_style(160.0, 80.0)).with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::List)
-                    .label("Choices")
+                    .labelled_by(title)
+                    .described_by(hint)
                     .value("2 options")
                     .focusable()
                     .focus_order(0),
@@ -2602,7 +2676,8 @@ mod tests {
         );
         document.node_mut(list).accessibility = Some(
             AccessibilityMeta::new(AccessibilityRole::List)
-                .label("Choices")
+                .labelled_by(title)
+                .described_by(hint)
                 .value("2 options")
                 .active_descendant(first)
                 .focusable()
@@ -2629,6 +2704,15 @@ mod tests {
         accessibility
             .require_label("choices.alpha", "Alpha")
             .expect("option label");
+        accessibility
+            .require_accessible_name("choices", "Choices")
+            .expect("resolved list name");
+        accessibility
+            .require_accessible_description("choices", "Pick one option")
+            .expect("resolved list description");
+        accessibility
+            .require_screen_reader_text_contains("choices", "Choices. 2 options. Pick one option")
+            .expect("resolved list screen-reader text");
         accessibility
             .require_value_contains("choices", "2 options")
             .expect("list value");
