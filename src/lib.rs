@@ -43,7 +43,8 @@ pub use commands::{
 pub use debug::{
     layout_snapshot_dump, DebugGestureKind, DebugGestureState, DebugHitCandidate, DebugHitTrace,
     DebugOverlayContext, DebugOverlayNode, DebugOverlayOptions, DebugOverlaySnapshot,
-    DebugPaintDump, DebugPaintItem, DebugPaintKindCount, DebugPaintStats,
+    DebugPaintDump, DebugPaintItem, DebugPaintKindCount, DebugPaintStats, DebugThemeComponentState,
+    DebugThemeScopeInfo, DebugThemeSnapshot, DebugThemeToken, DebugThemeTokenKind,
 };
 pub use display::{
     DisplayListId, DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKey,

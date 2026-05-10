@@ -7,9 +7,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::{
-    CommandId, CommandScope, DirtyFlags, FrameTiming, GestureEvent, GesturePhase,
-    HostInteractionState, HostNodeInteraction, LayoutSnapshot, PaintKind, PaintList, UiDocument,
-    UiNodeId, UiPoint, UiRect,
+    ColorRgba, CommandId, CommandScope, ComponentRole, ComponentState, ComponentStateSlot,
+    DirtyFlags, FrameTiming, GestureEvent, GesturePhase, HostInteractionState, HostNodeInteraction,
+    IconStyle, LayerEffect, LayoutSnapshot, MotionCurve, PaintKind, PaintList, ScopedThemeRegistry,
+    StrokeStyle, TextStyle, Theme, ThemeScope, ThemeScopeError, ThemeScopeId, ThemeScopeKind,
+    UiDocument, UiNodeId, UiPoint, UiRect, UiVisual,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -262,6 +264,125 @@ impl DebugPaintDump {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DebugThemeTokenKind {
+    Theme,
+    Color,
+    Spacing,
+    Typography,
+    Radius,
+    Stroke,
+    Effect,
+    Opacity,
+    Motion,
+    ComponentLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugThemeToken {
+    pub path: String,
+    pub kind: DebugThemeTokenKind,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugThemeScopeInfo {
+    pub id: ThemeScopeId,
+    pub kind: ThemeScopeKind,
+    pub parent: Option<ThemeScopeId>,
+}
+
+impl DebugThemeScopeInfo {
+    pub fn from_scope(scope: &ThemeScope) -> Self {
+        Self {
+            id: scope.id.clone(),
+            kind: scope.kind.clone(),
+            parent: scope.parent.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugThemeComponentState {
+    pub role: ComponentRole,
+    pub role_label: String,
+    pub state: ComponentState,
+    pub state_label: String,
+    pub visual_slot: ComponentStateSlot,
+    pub text_slot: ComponentStateSlot,
+    pub icon_slot: ComponentStateSlot,
+    pub fill: ColorRgba,
+    pub stroke: Option<StrokeStyle>,
+    pub corner_radius: f32,
+    pub text_color: ColorRgba,
+    pub icon_tint: ColorRgba,
+    pub icon_opacity: f32,
+    pub min_width: f32,
+    pub min_height: f32,
+    pub padding_x: f32,
+    pub padding_y: f32,
+    pub gap: f32,
+    pub icon_size: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugThemeSnapshot {
+    pub name: String,
+    pub scope: Option<DebugThemeScopeInfo>,
+    pub tokens: Vec<DebugThemeToken>,
+    pub component_states: Vec<DebugThemeComponentState>,
+}
+
+impl DebugThemeSnapshot {
+    pub fn from_theme(theme: &Theme) -> Self {
+        let mut tokens = Vec::new();
+        let mut component_states = Vec::new();
+        collect_theme_tokens(theme, &mut tokens);
+        collect_theme_component_states(theme, &mut tokens, &mut component_states);
+        Self {
+            name: theme.name.to_owned(),
+            scope: None,
+            tokens,
+            component_states,
+        }
+    }
+
+    pub fn from_registry_scope(
+        registry: &ScopedThemeRegistry,
+        scope_id: &ThemeScopeId,
+    ) -> Result<Self, ThemeScopeError> {
+        let scope = registry
+            .scope(scope_id)
+            .ok_or_else(|| ThemeScopeError::MissingScope(scope_id.clone()))?;
+        let mut snapshot = Self::from_theme(&registry.resolve(scope_id)?);
+        snapshot.scope = Some(DebugThemeScopeInfo::from_scope(scope));
+        Ok(snapshot)
+    }
+
+    pub fn token(&self, path: &str) -> Option<&DebugThemeToken> {
+        self.tokens.iter().find(|token| token.path == path)
+    }
+
+    pub fn tokens_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a DebugThemeToken> + 'a {
+        self.tokens
+            .iter()
+            .filter(move |token| token.path.starts_with(prefix))
+    }
+
+    pub fn component_state(
+        &self,
+        role: ComponentRole,
+        state: ComponentState,
+    ) -> Option<&DebugThemeComponentState> {
+        self.component_states
+            .iter()
+            .find(|component| component.role == role && component.state == state)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DebugHitCandidate {
     pub id: UiNodeId,
@@ -436,12 +557,627 @@ fn paint_kind_label(kind: &PaintKind) -> &'static str {
     }
 }
 
+fn collect_theme_tokens(theme: &Theme, tokens: &mut Vec<DebugThemeToken>) {
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Theme,
+        "theme.name",
+        theme.name.to_owned(),
+    );
+
+    push_color(tokens, "colors.canvas", theme.colors.canvas);
+    push_color(tokens, "colors.canvas_subtle", theme.colors.canvas_subtle);
+    push_color(tokens, "colors.surface", theme.colors.surface);
+    push_color(tokens, "colors.surface_muted", theme.colors.surface_muted);
+    push_color(
+        tokens,
+        "colors.surface_elevated",
+        theme.colors.surface_elevated,
+    );
+    push_color(
+        tokens,
+        "colors.surface_overlay",
+        theme.colors.surface_overlay,
+    );
+    push_color(tokens, "colors.surface_sunken", theme.colors.surface_sunken);
+    push_color(tokens, "colors.border", theme.colors.border);
+    push_color(tokens, "colors.border_muted", theme.colors.border_muted);
+    push_color(tokens, "colors.border_strong", theme.colors.border_strong);
+    push_color(tokens, "colors.divider", theme.colors.divider);
+    push_color(tokens, "colors.text", theme.colors.text);
+    push_color(tokens, "colors.text_muted", theme.colors.text_muted);
+    push_color(tokens, "colors.text_subtle", theme.colors.text_subtle);
+    push_color(tokens, "colors.text_disabled", theme.colors.text_disabled);
+    push_color(tokens, "colors.text_inverse", theme.colors.text_inverse);
+    push_color(tokens, "colors.accent", theme.colors.accent);
+    push_color(tokens, "colors.accent_hover", theme.colors.accent_hover);
+    push_color(tokens, "colors.accent_pressed", theme.colors.accent_pressed);
+    push_color(tokens, "colors.accent_muted", theme.colors.accent_muted);
+    push_color(tokens, "colors.accent_strong", theme.colors.accent_strong);
+    push_color(tokens, "colors.accent_text", theme.colors.accent_text);
+    push_color(tokens, "colors.success", theme.colors.success);
+    push_color(tokens, "colors.warning", theme.colors.warning);
+    push_color(tokens, "colors.danger", theme.colors.danger);
+    push_color(tokens, "colors.info", theme.colors.info);
+    push_color(tokens, "colors.selected", theme.colors.selected);
+    push_color(tokens, "colors.selected_hover", theme.colors.selected_hover);
+    push_color(tokens, "colors.selected_text", theme.colors.selected_text);
+    push_color(tokens, "colors.focus_ring", theme.colors.focus_ring);
+    push_color(tokens, "colors.overlay_scrim", theme.colors.overlay_scrim);
+    push_color(
+        tokens,
+        "colors.editor_background",
+        theme.colors.editor_background,
+    );
+    push_color(
+        tokens,
+        "colors.editor_grid_major",
+        theme.colors.editor_grid_major,
+    );
+    push_color(
+        tokens,
+        "colors.editor_grid_minor",
+        theme.colors.editor_grid_minor,
+    );
+    push_color(tokens, "colors.track_header", theme.colors.track_header);
+    push_color(
+        tokens,
+        "colors.track_header_selected",
+        theme.colors.track_header_selected,
+    );
+    push_color(tokens, "colors.clip_audio", theme.colors.clip_audio);
+    push_color(tokens, "colors.clip_midi", theme.colors.clip_midi);
+    push_color(
+        tokens,
+        "colors.clip_automation",
+        theme.colors.clip_automation,
+    );
+    push_color(
+        tokens,
+        "colors.piano_roll_lane",
+        theme.colors.piano_roll_lane,
+    );
+    push_color(
+        tokens,
+        "colors.piano_roll_lane_alt",
+        theme.colors.piano_roll_lane_alt,
+    );
+    push_color(
+        tokens,
+        "colors.transport_active",
+        theme.colors.transport_active,
+    );
+
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.none",
+        theme.spacing.none,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.xxxs",
+        theme.spacing.xxxs,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.xxs",
+        theme.spacing.xxs,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.xs",
+        theme.spacing.xs,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.sm",
+        theme.spacing.sm,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.md",
+        theme.spacing.md,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.lg",
+        theme.spacing.lg,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.xl",
+        theme.spacing.xl,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.xxl",
+        theme.spacing.xxl,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.control_x",
+        theme.spacing.control_x,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.control_y",
+        theme.spacing.control_y,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.panel",
+        theme.spacing.panel,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.toolbar_gap",
+        theme.spacing.toolbar_gap,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.row_gap",
+        theme.spacing.row_gap,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Spacing,
+        "spacing.grid",
+        theme.spacing.grid,
+    );
+
+    push_text_style(tokens, "typography.caption", &theme.typography.caption);
+    push_text_style(
+        tokens,
+        "typography.caption_strong",
+        &theme.typography.caption_strong,
+    );
+    push_text_style(tokens, "typography.body", &theme.typography.body);
+    push_text_style(
+        tokens,
+        "typography.body_strong",
+        &theme.typography.body_strong,
+    );
+    push_text_style(tokens, "typography.label", &theme.typography.label);
+    push_text_style(
+        tokens,
+        "typography.label_strong",
+        &theme.typography.label_strong,
+    );
+    push_text_style(tokens, "typography.heading", &theme.typography.heading);
+    push_text_style(tokens, "typography.title", &theme.typography.title);
+    push_text_style(tokens, "typography.mono", &theme.typography.mono);
+    push_text_style(tokens, "typography.numeric", &theme.typography.numeric);
+    push_text_style(tokens, "typography.disabled", &theme.typography.disabled);
+
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Radius,
+        "radius.none",
+        theme.radius.none,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Radius,
+        "radius.xs",
+        theme.radius.xs,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Radius,
+        "radius.sm",
+        theme.radius.sm,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Radius,
+        "radius.md",
+        theme.radius.md,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Radius,
+        "radius.lg",
+        theme.radius.lg,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Radius,
+        "radius.xl",
+        theme.radius.xl,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Radius,
+        "radius.pill",
+        theme.radius.pill,
+    );
+
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Stroke,
+        "stroke.hairline_width",
+        theme.stroke.hairline_width,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Stroke,
+        "stroke.thin_width",
+        theme.stroke.thin_width,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Stroke,
+        "stroke.medium_width",
+        theme.stroke.medium_width,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Stroke,
+        "stroke.strong_width",
+        theme.stroke.strong_width,
+    );
+    push_stroke(tokens, "stroke.divider", theme.stroke.divider);
+    push_stroke(tokens, "stroke.surface", theme.stroke.surface);
+    push_stroke(tokens, "stroke.surface_strong", theme.stroke.surface_strong);
+    push_stroke(tokens, "stroke.control", theme.stroke.control);
+    push_stroke(tokens, "stroke.control_hover", theme.stroke.control_hover);
+    push_stroke(tokens, "stroke.focus", theme.stroke.focus);
+    push_stroke(tokens, "stroke.selected", theme.stroke.selected);
+    push_stroke(tokens, "stroke.invalid", theme.stroke.invalid);
+    push_stroke(tokens, "stroke.warning", theme.stroke.warning);
+
+    push_effect(tokens, "effects.panel_shadow", theme.effects.panel_shadow);
+    push_effect(
+        tokens,
+        "effects.floating_shadow",
+        theme.effects.floating_shadow,
+    );
+    push_effect(
+        tokens,
+        "effects.popover_shadow",
+        theme.effects.popover_shadow,
+    );
+    push_effect(tokens, "effects.focus_glow", theme.effects.focus_glow);
+    push_effect(tokens, "effects.accent_glow", theme.effects.accent_glow);
+    push_effect(tokens, "effects.danger_glow", theme.effects.danger_glow);
+    push_effect(
+        tokens,
+        "effects.inset_hairline",
+        theme.effects.inset_hairline,
+    );
+
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.opaque",
+        theme.opacity.opaque,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.hover_overlay",
+        theme.opacity.hover_overlay,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.pressed_overlay",
+        theme.opacity.pressed_overlay,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.selected_overlay",
+        theme.opacity.selected_overlay,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.disabled",
+        theme.opacity.disabled,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.muted",
+        theme.opacity.muted,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.scrim",
+        theme.opacity.scrim,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.drag_preview",
+        theme.opacity.drag_preview,
+    );
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Opacity,
+        "opacity.focus_glow",
+        theme.opacity.focus_glow,
+    );
+
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Motion,
+        "motion.instant_ms",
+        theme.motion.instant_ms.to_string(),
+    );
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Motion,
+        "motion.micro_ms",
+        theme.motion.micro_ms.to_string(),
+    );
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Motion,
+        "motion.fast_ms",
+        theme.motion.fast_ms.to_string(),
+    );
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Motion,
+        "motion.normal_ms",
+        theme.motion.normal_ms.to_string(),
+    );
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Motion,
+        "motion.slow_ms",
+        theme.motion.slow_ms.to_string(),
+    );
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Motion,
+        "motion.tooltip_delay_ms",
+        theme.motion.tooltip_delay_ms.to_string(),
+    );
+    push_motion_curve(tokens, "motion.standard", theme.motion.standard);
+    push_motion_curve(tokens, "motion.emphasized", theme.motion.emphasized);
+    push_motion_curve(tokens, "motion.exit", theme.motion.exit);
+    push_f32(
+        tokens,
+        DebugThemeTokenKind::Motion,
+        "motion.reduced_motion_scale",
+        theme.motion.reduced_motion_scale,
+    );
+}
+
+fn collect_theme_component_states(
+    theme: &Theme,
+    tokens: &mut Vec<DebugThemeToken>,
+    out: &mut Vec<DebugThemeComponentState>,
+) {
+    for (role, role_label) in component_roles() {
+        let component = theme.component(role);
+        let layout = component.layout;
+        push_token(
+            tokens,
+            DebugThemeTokenKind::ComponentLayout,
+            &format!("components.{role_label}.layout"),
+            format!(
+                "min={:.1}x{:.1} padding={:.1}x{:.1} gap={:.1} icon={:.1}",
+                layout.min_width,
+                layout.min_height,
+                layout.padding_x,
+                layout.padding_y,
+                layout.gap,
+                layout.icon_size
+            ),
+        );
+
+        for (state, state_label) in component_states() {
+            let (visual_slot, visual) = component.visual.resolve_slot(state);
+            let (text_slot, text) = component.text.resolve_slot(state);
+            let (icon_slot, icon) = component.icon.resolve_slot(state);
+            out.push(component_state_snapshot(
+                role,
+                role_label,
+                state,
+                state_label,
+                visual_slot,
+                visual,
+                text_slot,
+                &text,
+                icon_slot,
+                icon,
+                layout,
+            ));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn component_state_snapshot(
+    role: ComponentRole,
+    role_label: &str,
+    state: ComponentState,
+    state_label: &str,
+    visual_slot: ComponentStateSlot,
+    visual: UiVisual,
+    text_slot: ComponentStateSlot,
+    text: &TextStyle,
+    icon_slot: ComponentStateSlot,
+    icon: IconStyle,
+    layout: crate::ComponentLayoutTokens,
+) -> DebugThemeComponentState {
+    DebugThemeComponentState {
+        role,
+        role_label: role_label.to_owned(),
+        state,
+        state_label: state_label.to_owned(),
+        visual_slot,
+        text_slot,
+        icon_slot,
+        fill: visual.fill,
+        stroke: visual.stroke,
+        corner_radius: visual.corner_radius,
+        text_color: text.color,
+        icon_tint: icon.tint,
+        icon_opacity: icon.opacity,
+        min_width: layout.min_width,
+        min_height: layout.min_height,
+        padding_x: layout.padding_x,
+        padding_y: layout.padding_y,
+        gap: layout.gap,
+        icon_size: layout.icon_size,
+    }
+}
+
+fn component_roles() -> [(ComponentRole, &'static str); 9] {
+    [
+        (ComponentRole::Button, "button"),
+        (ComponentRole::Tab, "tab"),
+        (ComponentRole::SearchField, "search_field"),
+        (ComponentRole::TrackHeader, "track_header"),
+        (ComponentRole::ClipBlock, "clip_block"),
+        (ComponentRole::PianoRollLane, "piano_roll_lane"),
+        (ComponentRole::PropertyRow, "property_row"),
+        (ComponentRole::MenuRow, "menu_row"),
+        (ComponentRole::TransportControl, "transport_control"),
+    ]
+}
+
+fn component_states() -> [(ComponentState, &'static str); 13] {
+    [
+        (ComponentState::NORMAL, "normal"),
+        (ComponentState::HOVERED, "hovered"),
+        (ComponentState::PRESSED, "pressed"),
+        (ComponentState::FOCUSED, "focused"),
+        (ComponentState::SELECTED, "selected"),
+        (ComponentState::ACTIVE, "active"),
+        (ComponentState::INVALID, "invalid"),
+        (ComponentState::WARNING, "warning"),
+        (ComponentState::CHANGED, "changed"),
+        (ComponentState::PENDING, "pending"),
+        (ComponentState::OPEN, "open"),
+        (ComponentState::CHECKED, "checked"),
+        (ComponentState::DISABLED, "disabled"),
+    ]
+}
+
+fn push_color(tokens: &mut Vec<DebugThemeToken>, path: &str, color: ColorRgba) {
+    push_token(tokens, DebugThemeTokenKind::Color, path, color_value(color));
+}
+
+fn push_f32(tokens: &mut Vec<DebugThemeToken>, kind: DebugThemeTokenKind, path: &str, value: f32) {
+    push_token(tokens, kind, path, format!("{value:.3}"));
+}
+
+fn push_text_style(tokens: &mut Vec<DebugThemeToken>, path: &str, style: &TextStyle) {
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Typography,
+        path,
+        format!(
+            "size={:.1} line={:.1} family={:?} weight={} style={:?} stretch={:?} wrap={:?} color={}",
+            style.font_size,
+            style.line_height,
+            style.family,
+            style.weight.0,
+            style.style,
+            style.stretch,
+            style.wrap,
+            color_value(style.color)
+        ),
+    );
+}
+
+fn push_stroke(tokens: &mut Vec<DebugThemeToken>, path: &str, stroke: StrokeStyle) {
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Stroke,
+        path,
+        stroke_value(stroke),
+    );
+}
+
+fn push_effect(tokens: &mut Vec<DebugThemeToken>, path: &str, effect: LayerEffect) {
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Effect,
+        path,
+        format!(
+            "kind={:?} color={} offset={:.1},{:.1} blur={:.1} spread={:.1} opacity={:.3} fallback={}",
+            effect.kind,
+            color_value(effect.color),
+            effect.offset_x,
+            effect.offset_y,
+            effect.blur_radius,
+            effect.spread,
+            effect.opacity,
+            effect
+                .fallback_stroke
+                .map(stroke_value)
+                .unwrap_or_else(|| "none".to_owned())
+        ),
+    );
+}
+
+fn push_motion_curve(tokens: &mut Vec<DebugThemeToken>, path: &str, curve: MotionCurve) {
+    push_token(
+        tokens,
+        DebugThemeTokenKind::Motion,
+        path,
+        format!("{curve:?}"),
+    );
+}
+
+fn push_token(
+    tokens: &mut Vec<DebugThemeToken>,
+    kind: DebugThemeTokenKind,
+    path: &str,
+    value: String,
+) {
+    tokens.push(DebugThemeToken {
+        path: path.to_owned(),
+        kind,
+        value,
+    });
+}
+
+fn color_value(color: ColorRgba) -> String {
+    format!(
+        "#{:02X}{:02X}{:02X}{:02X}",
+        color.r, color.g, color.b, color.a
+    )
+}
+
+fn stroke_value(stroke: StrokeStyle) -> String {
+    format!(
+        "width={:.3} color={}",
+        stroke.width,
+        color_value(stroke.color)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        length, ApproxTextMeasurer, ColorRgba, InputBehavior, RawWheelEvent, StrokeStyle,
-        TextStyle, UiNode, UiNodeStyle, UiSize, UiVisual, WheelDeltaUnit, WheelPhase,
+        length, ApproxTextMeasurer, ColorRgba, ComponentRole, ComponentState, ComponentStateSlot,
+        InputBehavior, RawWheelEvent, ScopedThemeRegistry, StrokeStyle, TextStyle, Theme,
+        ThemePatch, ThemeScope, ThemeScopeId, ThemeScopeKind, UiNode, UiNodeStyle, UiSize,
+        UiVisual, WheelDeltaUnit, WheelPhase,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -571,6 +1307,56 @@ mod tests {
         );
         assert_eq!(dump.items[0].node, label);
         assert_eq!(dump.items[0].node_name.as_deref(), Some("status"));
+    }
+
+    #[test]
+    fn debug_theme_snapshot_exposes_tokens_and_component_states() {
+        let snapshot = DebugThemeSnapshot::from_theme(&Theme::dark());
+
+        assert_eq!(
+            snapshot.token("colors.transport_active").unwrap().value,
+            "#5CD4A5FF"
+        );
+        assert_eq!(
+            snapshot.token("spacing.grid").unwrap().kind,
+            DebugThemeTokenKind::Spacing
+        );
+        assert!(snapshot.tokens_with_prefix("typography.").count() >= 8);
+
+        let button = snapshot
+            .component_state(ComponentRole::Button, ComponentState::NORMAL)
+            .unwrap();
+        assert_eq!(button.role_label, "button");
+        assert_eq!(button.state_label, "normal");
+        assert_eq!(button.visual_slot, ComponentStateSlot::Base);
+        assert!(snapshot.component_states.len() >= 100);
+    }
+
+    #[test]
+    fn debug_theme_snapshot_resolves_scoped_theme_tokens() {
+        let base = Theme::dark();
+        let mut editor_colors = base.colors;
+        editor_colors.editor_background = ColorRgba::new(1, 2, 3, 255);
+        let registry = ScopedThemeRegistry::new(base).with_scope(
+            ThemeScope::editor_surface("piano").with_patch(ThemePatch::new().colors(editor_colors)),
+        );
+
+        let snapshot =
+            DebugThemeSnapshot::from_registry_scope(&registry, &ThemeScopeId::new("piano"))
+                .unwrap();
+
+        assert_eq!(
+            snapshot.scope.as_ref().unwrap().kind,
+            ThemeScopeKind::EditorSurface
+        );
+        assert_eq!(
+            snapshot.token("colors.editor_background").unwrap().value,
+            "#010203FF"
+        );
+        assert!(
+            DebugThemeSnapshot::from_registry_scope(&registry, &ThemeScopeId::new("missing"))
+                .is_err()
+        );
     }
 
     #[test]
