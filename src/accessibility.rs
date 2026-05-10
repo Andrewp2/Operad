@@ -4,7 +4,7 @@
 //! the bridge a backend uses to publish those semantics to a screen reader,
 //! coordinate focus traps, and reflect host accessibility preferences.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{AccessibilityLiveRegion, AccessibilityNode, AccessibilityTree, UiNodeId};
 
@@ -275,6 +275,126 @@ impl AccessibilityAnnouncement {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibilityLiveRegionEntry {
+    pub node: UiNodeId,
+    pub message: String,
+    pub live_region: AccessibilityLiveRegion,
+}
+
+impl AccessibilityLiveRegionEntry {
+    pub fn from_node(node: &AccessibilityNode) -> Option<Self> {
+        if node.live_region == AccessibilityLiveRegion::Off {
+            return None;
+        }
+        let message = live_region_message(node);
+        (!message.is_empty()).then_some(Self {
+            node: node.id,
+            message,
+            live_region: node.live_region,
+        })
+    }
+
+    pub fn announcement(&self) -> AccessibilityAnnouncement {
+        AccessibilityAnnouncement::new(self.message.clone(), self.live_region).source(self.node)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccessibilityLiveRegionSnapshot {
+    pub entries: Vec<AccessibilityLiveRegionEntry>,
+}
+
+impl AccessibilityLiveRegionSnapshot {
+    pub fn from_tree(tree: &AccessibilityTree) -> Self {
+        let mut entries = tree
+            .live_region_nodes()
+            .filter_map(AccessibilityLiveRegionEntry::from_node)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.node.0);
+        Self { entries }
+    }
+
+    pub fn announcements_since(
+        &self,
+        previous: &AccessibilityLiveRegionSnapshot,
+    ) -> Vec<AccessibilityAnnouncement> {
+        let previous_by_node = previous
+            .entries
+            .iter()
+            .map(|entry| (entry.node, entry))
+            .collect::<HashMap<_, _>>();
+
+        self.entries
+            .iter()
+            .filter(|entry| {
+                previous_by_node.get(&entry.node).is_none_or(|previous| {
+                    previous.message != entry.message || previous.live_region != entry.live_region
+                })
+            })
+            .map(AccessibilityLiveRegionEntry::announcement)
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccessibilityAnnouncementQueue {
+    pub pending: Vec<AccessibilityAnnouncement>,
+}
+
+impl AccessibilityAnnouncementQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_live_region_diff(
+        previous: &AccessibilityLiveRegionSnapshot,
+        current: &AccessibilityLiveRegionSnapshot,
+    ) -> Self {
+        Self {
+            pending: current.announcements_since(previous),
+        }
+    }
+
+    pub fn push(&mut self, announcement: AccessibilityAnnouncement) {
+        if !announcement.message.is_empty() {
+            self.pending.push(announcement);
+        }
+    }
+
+    pub fn extend(&mut self, announcements: impl IntoIterator<Item = AccessibilityAnnouncement>) {
+        for announcement in announcements {
+            self.push(announcement);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    pub fn supported_requests(
+        &self,
+        capabilities: AccessibilityCapabilities,
+    ) -> Vec<AccessibilityAdapterRequest> {
+        if !capabilities.supports(AccessibilityRequestKind::Announce) {
+            return Vec::new();
+        }
+        self.pending
+            .iter()
+            .cloned()
+            .map(AccessibilityAdapterRequest::Announce)
+            .collect()
+    }
+
+    pub fn drain(&mut self) -> Vec<AccessibilityAnnouncement> {
+        self.pending.drain(..).collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccessibilityAdapterRequest {
     PublishTree {
@@ -376,6 +496,33 @@ impl AccessibilityTree {
 
         false
     }
+}
+
+fn live_region_message(node: &AccessibilityNode) -> String {
+    if let Some(summary) = &node.summary {
+        let text = summary.screen_reader_text();
+        if !text.is_empty() {
+            return text;
+        }
+    }
+
+    let mut parts = Vec::new();
+    if let Some(label) = &node.label {
+        if !label.is_empty() {
+            parts.push(label.clone());
+        }
+    }
+    if let Some(value) = &node.value {
+        if !value.is_empty() {
+            parts.push(value.clone());
+        }
+    }
+    if let Some(hint) = &node.hint {
+        if !hint.is_empty() {
+            parts.push(hint.clone());
+        }
+    }
+    parts.join(": ")
 }
 
 #[cfg(test)]
@@ -620,6 +767,92 @@ mod tests {
             AccessibilityAdapterResponse::Unsupported(AccessibilityRequestKind::PublishTree)
         );
         assert_eq!(adapter.handled, vec![AccessibilityRequestKind::Announce]);
+    }
+
+    #[test]
+    fn live_region_snapshots_diff_into_supported_announcements() {
+        let status = UiNodeId(1);
+        let alert = UiNodeId(2);
+        let ignored = UiNodeId(3);
+        let previous = AccessibilityTree {
+            nodes: vec![
+                AccessibilityNode {
+                    label: Some("Status".to_string()),
+                    value: Some("Ready".to_string()),
+                    live_region: AccessibilityLiveRegion::Polite,
+                    ..accessible_node(status, None, false)
+                },
+                AccessibilityNode {
+                    label: Some("Alert".to_string()),
+                    summary: Some(
+                        AccessibilitySummary::new("Warning").description("Pressure high"),
+                    ),
+                    live_region: AccessibilityLiveRegion::Assertive,
+                    ..accessible_node(alert, None, false)
+                },
+                AccessibilityNode {
+                    label: Some("Debug".to_string()),
+                    value: Some("unchanged".to_string()),
+                    live_region: AccessibilityLiveRegion::Off,
+                    ..accessible_node(ignored, None, false)
+                },
+            ],
+            focus_order: Vec::new(),
+            modal_scope: None,
+        };
+        let current = AccessibilityTree {
+            nodes: vec![
+                AccessibilityNode {
+                    label: Some("Status".to_string()),
+                    value: Some("Running".to_string()),
+                    live_region: AccessibilityLiveRegion::Polite,
+                    ..accessible_node(status, None, false)
+                },
+                AccessibilityNode {
+                    label: Some("Alert".to_string()),
+                    summary: Some(
+                        AccessibilitySummary::new("Warning").description("Pressure critical"),
+                    ),
+                    live_region: AccessibilityLiveRegion::Assertive,
+                    ..accessible_node(alert, None, false)
+                },
+                AccessibilityNode {
+                    label: Some("Debug".to_string()),
+                    value: Some("changed".to_string()),
+                    live_region: AccessibilityLiveRegion::Off,
+                    ..accessible_node(ignored, None, false)
+                },
+            ],
+            focus_order: Vec::new(),
+            modal_scope: None,
+        };
+
+        let previous = AccessibilityLiveRegionSnapshot::from_tree(&previous);
+        let current = AccessibilityLiveRegionSnapshot::from_tree(&current);
+        let mut queue = AccessibilityAnnouncementQueue::from_live_region_diff(&previous, &current);
+
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.pending[0].source, Some(status));
+        assert_eq!(queue.pending[0].message, "Status: Running");
+        assert_eq!(
+            queue.pending[0].live_region,
+            AccessibilityLiveRegion::Polite
+        );
+        assert!(!queue.pending[0].interrupt);
+        assert_eq!(queue.pending[1].source, Some(alert));
+        assert_eq!(queue.pending[1].message, "Warning. Pressure critical");
+        assert_eq!(
+            queue.supported_requests(AccessibilityCapabilities::NONE),
+            Vec::<AccessibilityAdapterRequest>::new()
+        );
+        assert_eq!(
+            queue
+                .supported_requests(AccessibilityCapabilities::SCREEN_READER)
+                .len(),
+            2
+        );
+        assert_eq!(queue.drain().len(), 2);
+        assert!(queue.is_empty());
     }
 
     #[test]

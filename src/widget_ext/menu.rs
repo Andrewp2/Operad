@@ -1316,6 +1316,412 @@ impl SelectOptionFilterOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchableSelectCloseReason {
+    Escape,
+    Outside,
+    Selection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchableSelectState {
+    pub open: bool,
+    pub selected: Option<usize>,
+    pub filter: SelectOptionFilterState,
+}
+
+impl SearchableSelectState {
+    pub fn new() -> Self {
+        Self {
+            open: false,
+            selected: None,
+            filter: SelectOptionFilterState::new(),
+        }
+    }
+
+    pub fn with_selected(selected: usize) -> Self {
+        Self {
+            open: false,
+            selected: Some(selected),
+            filter: SelectOptionFilterState::new(),
+        }
+    }
+
+    pub fn with_query(mut self, query: impl Into<String>) -> Self {
+        self.filter = self.filter.with_query(query);
+        self
+    }
+
+    pub fn search_field(&self) -> SearchFieldState {
+        self.filter.search_field()
+    }
+
+    pub fn selected_id<'a>(&self, options: &'a [SelectOption]) -> Option<&'a str> {
+        self.selected
+            .and_then(|index| options.get(index))
+            .map(|option| option.id.as_str())
+    }
+
+    pub fn selected_label<'a>(&self, options: &'a [SelectOption]) -> Option<&'a str> {
+        self.selected
+            .and_then(|index| options.get(index))
+            .map(|option| option.label.as_str())
+    }
+
+    pub fn open(&mut self, options: &[SelectOption]) {
+        self.open = true;
+        if self.filter.active_match.is_none() {
+            let matches = self.filter.matches(options);
+            self.filter.active_match = self
+                .selected
+                .and_then(|selected| {
+                    matches
+                        .iter()
+                        .position(|option_match| option_match.option_index == selected)
+                })
+                .filter(|match_index| options[matches[*match_index].option_index].enabled)
+                .or_else(|| first_enabled_select_option_match(options, &matches));
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
+    pub fn dismiss(&mut self, reason: SearchableSelectCloseReason) -> SearchableSelectOutcome {
+        if !self.open {
+            return SearchableSelectOutcome::default();
+        }
+        self.close();
+        SearchableSelectOutcome {
+            closed: true,
+            close_reason: Some(reason),
+            ..Default::default()
+        }
+    }
+
+    pub fn apply_search_field(
+        &mut self,
+        field: &SearchFieldState,
+        options: &[SelectOption],
+    ) -> SearchableSelectOutcome {
+        let filter_outcome = self.filter.apply_search_field(field, options);
+        SearchableSelectOutcome {
+            query_changed: filter_outcome.query_changed,
+            active_match: filter_outcome.active_match,
+            ..Default::default()
+        }
+    }
+
+    pub fn move_active(
+        &mut self,
+        options: &[SelectOption],
+        direction: NavigationDirection,
+    ) -> Option<usize> {
+        self.filter.move_active(options, direction)
+    }
+
+    pub fn select_active(&mut self, options: &[SelectOption]) -> Option<SelectSelection> {
+        let selection = self.filter.select_active(options)?;
+        self.selected = Some(selection.index);
+        self.open = false;
+        Some(selection)
+    }
+
+    pub fn handle_outside_dismiss(&mut self) -> SearchableSelectOutcome {
+        self.dismiss(SearchableSelectCloseReason::Outside)
+    }
+
+    pub fn handle_event(
+        &mut self,
+        options: &[SelectOption],
+        event: &UiInputEvent,
+    ) -> SearchableSelectOutcome {
+        let mut outcome = SearchableSelectOutcome::default();
+        match event {
+            UiInputEvent::TextInput(text) => {
+                if !self.open {
+                    self.open(options);
+                    outcome.opened = true;
+                }
+                let filter_outcome = self
+                    .filter
+                    .handle_event(options, &UiInputEvent::TextInput(text.clone()));
+                outcome.query_changed = filter_outcome.query_changed;
+                outcome.active_match = filter_outcome.active_match;
+            }
+            UiInputEvent::Key { key, .. } => match key {
+                KeyCode::ArrowDown => {
+                    if !self.open {
+                        self.open(options);
+                        outcome.opened = true;
+                        outcome.active_match = self.filter.active_match;
+                    } else {
+                        outcome.active_match = self.move_active(options, NavigationDirection::Next);
+                    }
+                }
+                KeyCode::ArrowUp => {
+                    if !self.open {
+                        self.open(options);
+                        outcome.opened = true;
+                        let matches = self.filter.matches(options);
+                        self.filter.active_match =
+                            last_enabled_select_option_match(options, &matches);
+                        outcome.active_match = self.filter.active_match;
+                    } else {
+                        outcome.active_match =
+                            self.move_active(options, NavigationDirection::Previous);
+                    }
+                }
+                KeyCode::Home if self.open => {
+                    let matches = self.filter.matches(options);
+                    self.filter.active_match = first_enabled_select_option_match(options, &matches);
+                    outcome.active_match = self.filter.active_match;
+                }
+                KeyCode::End if self.open => {
+                    let matches = self.filter.matches(options);
+                    self.filter.active_match = last_enabled_select_option_match(options, &matches);
+                    outcome.active_match = self.filter.active_match;
+                }
+                KeyCode::Backspace => {
+                    let filter_outcome = self.filter.handle_event(options, event);
+                    outcome.query_changed = filter_outcome.query_changed;
+                    outcome.active_match = filter_outcome.active_match;
+                }
+                KeyCode::Enter if self.open => {
+                    outcome.selected = self.select_active(options);
+                    if outcome.selected.is_some() {
+                        outcome.closed = true;
+                        outcome.close_reason = Some(SearchableSelectCloseReason::Selection);
+                    }
+                }
+                KeyCode::Enter | KeyCode::Character(' ') => {
+                    self.open(options);
+                    outcome.opened = true;
+                    outcome.active_match = self.filter.active_match;
+                }
+                KeyCode::Escape if self.open && self.filter.query.is_empty() => {
+                    self.close();
+                    outcome.closed = true;
+                    outcome.close_reason = Some(SearchableSelectCloseReason::Escape);
+                }
+                KeyCode::Escape if self.open => {
+                    let filter_outcome = self.filter.clear_query(options);
+                    outcome.query_changed = filter_outcome.query_changed;
+                    outcome.active_match = filter_outcome.active_match;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        outcome
+    }
+}
+
+impl Default for SearchableSelectState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchableSelectOutcome {
+    pub opened: bool,
+    pub closed: bool,
+    pub close_reason: Option<SearchableSelectCloseReason>,
+    pub query_changed: bool,
+    pub active_match: Option<usize>,
+    pub selected: Option<SelectSelection>,
+}
+
+impl SearchableSelectOutcome {
+    pub fn is_empty(&self) -> bool {
+        !self.opened
+            && !self.closed
+            && self.close_reason.is_none()
+            && !self.query_changed
+            && self.active_match.is_none()
+            && self.selected.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchableSelectSpec {
+    pub max_visible_rows: usize,
+    pub placeholder: String,
+    pub accessibility_label: Option<String>,
+    pub search_label: String,
+    pub list_label: String,
+}
+
+impl SearchableSelectSpec {
+    pub fn new() -> Self {
+        Self {
+            max_visible_rows: 8,
+            placeholder: String::new(),
+            accessibility_label: None,
+            search_label: "Search options".to_string(),
+            list_label: "Options".to_string(),
+        }
+    }
+
+    pub fn max_visible_rows(mut self, rows: usize) -> Self {
+        self.max_visible_rows = rows;
+        self
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn search_label(mut self, label: impl Into<String>) -> Self {
+        self.search_label = label.into();
+        self
+    }
+
+    pub fn list_label(mut self, label: impl Into<String>) -> Self {
+        self.list_label = label.into();
+        self
+    }
+}
+
+impl Default for SearchableSelectSpec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchableSelectRow {
+    pub id: String,
+    pub match_index: usize,
+    pub option_index: usize,
+    pub option_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub selected: bool,
+    pub active: bool,
+    pub accessibility: AccessibilityMeta,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchableSelectContract {
+    pub id: String,
+    pub open: bool,
+    pub selected_id: Option<String>,
+    pub query: String,
+    pub total_count: usize,
+    pub match_count: usize,
+    pub visible_range: std::ops::Range<usize>,
+    pub active_descendant_id: Option<String>,
+    pub trigger_accessibility: AccessibilityMeta,
+    pub search_accessibility: AccessibilityMeta,
+    pub listbox_accessibility: AccessibilityMeta,
+    pub status: SearchStatusText,
+    pub empty_state: Option<SelectOptionFilterEmptyState>,
+    pub rows: Vec<SearchableSelectRow>,
+}
+
+pub fn searchable_select_contract(
+    id: impl Into<String>,
+    options: &[SelectOption],
+    state: &SearchableSelectState,
+    spec: SearchableSelectSpec,
+) -> SearchableSelectContract {
+    let id = id.into();
+    let matches = state.filter.matches(options);
+    let visible_range = visible_match_range(
+        matches.len(),
+        state.filter.active_match,
+        spec.max_visible_rows,
+    );
+    let status = state.filter.search_status(options);
+    let active_descendant_id = state.filter.active_match.and_then(|active| {
+        visible_range
+            .contains(&active)
+            .then(|| matches.get(active))
+            .flatten()
+            .map(|option_match| format!("{id}.option.{}", option_match.option_index))
+    });
+    let selected_label = state
+        .selected_label(options)
+        .unwrap_or(spec.placeholder.as_str());
+    let selected_id = state.selected_id(options).map(ToString::to_string);
+    let mut trigger_accessibility = AccessibilityMeta::new(AccessibilityRole::ComboBox)
+        .label(
+            spec.accessibility_label
+                .clone()
+                .unwrap_or_else(|| id.clone()),
+        )
+        .value(selected_label.to_string())
+        .expanded(state.open)
+        .focusable();
+    if state.open {
+        trigger_accessibility = trigger_accessibility.hint("Searchable listbox open");
+    }
+
+    let search_accessibility = state
+        .search_field()
+        .input_accessibility(spec.search_label.clone());
+    let listbox_accessibility = AccessibilityMeta::new(AccessibilityRole::List)
+        .label(spec.list_label.clone())
+        .value(status.text.clone());
+    let rows = matches[visible_range.clone()]
+        .iter()
+        .map(|option_match| {
+            let option = &options[option_match.option_index];
+            let active = state.filter.active_match == Some(option_match.visible_index);
+            let selected = state.selected == Some(option_match.option_index);
+            let mut accessibility = AccessibilityMeta::new(AccessibilityRole::ListItem)
+                .label(option_accessibility_label(option))
+                .value(if selected { "selected" } else { "not selected" })
+                .selected(selected);
+            if active {
+                accessibility = accessibility.hint("Active option");
+            }
+            if option.enabled {
+                accessibility = accessibility.focusable();
+            } else {
+                accessibility = accessibility.disabled();
+            }
+            SearchableSelectRow {
+                id: format!("{id}.option.{}", option_match.option_index),
+                match_index: option_match.visible_index,
+                option_index: option_match.option_index,
+                option_id: option.id.clone(),
+                label: option.label.clone(),
+                enabled: option.enabled,
+                selected,
+                active,
+                accessibility,
+            }
+        })
+        .collect();
+
+    SearchableSelectContract {
+        id,
+        open: state.open,
+        selected_id,
+        query: state.filter.query.clone(),
+        total_count: options.len(),
+        match_count: matches.len(),
+        visible_range,
+        active_descendant_id,
+        trigger_accessibility,
+        search_accessibility,
+        listbox_accessibility,
+        status,
+        empty_state: state.filter.empty_state(options),
+        rows,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SelectMenuOptions {
     pub width: f32,
@@ -3519,6 +3925,23 @@ fn visible_row_count(count: usize, max_visible_rows: usize) -> usize {
     }
 }
 
+fn visible_match_range(
+    count: usize,
+    active: Option<usize>,
+    max_visible_rows: usize,
+) -> std::ops::Range<usize> {
+    let visible_rows = visible_row_count(count, max_visible_rows);
+    if visible_rows == 0 {
+        return 0..0;
+    }
+
+    let active = active.filter(|index| *index < count).unwrap_or(0);
+    let half_window = visible_rows / 2;
+    let max_start = count.saturating_sub(visible_rows);
+    let start = active.saturating_sub(half_window).min(max_start);
+    start..(start + visible_rows)
+}
+
 fn row_style(height: f32) -> UiNodeStyle {
     UiNodeStyle {
         layout: Style {
@@ -4299,6 +4722,162 @@ mod tests {
             },
         );
         assert!(outcome.closed);
+    }
+
+    #[test]
+    fn searchable_select_state_composes_open_filter_select_and_dismiss_outcomes() {
+        let options = vec![
+            SelectOption::new("alpha", "Alpha"),
+            SelectOption::new("alpine", "Alpine").disabled(),
+            SelectOption::new("atlas", "Atlas"),
+            SelectOption::new("beta", "Beta"),
+        ];
+        let mut state = SearchableSelectState::new();
+
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowDown,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.opened);
+        assert_eq!(state.filter.active_match, Some(0));
+
+        let outcome = state.handle_event(&options, &UiInputEvent::TextInput("a".to_string()));
+        assert!(outcome.query_changed);
+        assert_eq!(state.filter.query, "a");
+        assert_eq!(state.filter.active_match, Some(0));
+
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowDown,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(outcome.active_match, Some(2));
+
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(
+            outcome.selected,
+            Some(SelectSelection {
+                index: 2,
+                id: "atlas".to_string(),
+            })
+        );
+        assert_eq!(
+            outcome.close_reason,
+            Some(SearchableSelectCloseReason::Selection)
+        );
+        assert_eq!(state.selected, Some(2));
+        assert!(!state.open);
+
+        state.open(&options);
+        state.filter.set_query("alp", &options);
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Escape,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.query_changed);
+        assert!(state.open);
+        assert_eq!(state.filter.query, "");
+
+        let outcome = state.handle_event(
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Escape,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.closed);
+        assert_eq!(
+            outcome.close_reason,
+            Some(SearchableSelectCloseReason::Escape)
+        );
+        assert!(!state.open);
+
+        state.open(&options);
+        let outcome = state.handle_outside_dismiss();
+        assert!(outcome.closed);
+        assert_eq!(
+            outcome.close_reason,
+            Some(SearchableSelectCloseReason::Outside)
+        );
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn searchable_select_contract_exports_bounded_rows_and_accessibility_metadata() {
+        let options = (0..6)
+            .map(|index| SelectOption::new(format!("id-{index}"), format!("Item {index}")))
+            .collect::<Vec<_>>();
+        let mut state = SearchableSelectState::with_selected(4);
+        state.open(&options);
+
+        let contract = searchable_select_contract(
+            "fabricad.filter",
+            &options,
+            &state,
+            SearchableSelectSpec::new()
+                .max_visible_rows(3)
+                .placeholder("Choose")
+                .accessibility_label("Fabricad filter")
+                .search_label("Filter options")
+                .list_label("Filter results"),
+        );
+
+        assert!(contract.open);
+        assert_eq!(contract.selected_id.as_deref(), Some("id-4"));
+        assert_eq!(contract.match_count, 6);
+        assert_eq!(contract.visible_range, 3..6);
+        assert_eq!(contract.rows.len(), 3);
+        assert_eq!(
+            contract.active_descendant_id.as_deref(),
+            Some("fabricad.filter.option.4")
+        );
+        assert_eq!(
+            contract.trigger_accessibility.role,
+            AccessibilityRole::ComboBox
+        );
+        assert_eq!(
+            contract.trigger_accessibility.label.as_deref(),
+            Some("Fabricad filter")
+        );
+        assert_eq!(
+            contract.trigger_accessibility.value.as_deref(),
+            Some("Item 4")
+        );
+        assert_eq!(contract.trigger_accessibility.expanded, Some(true));
+        assert_eq!(
+            contract.search_accessibility.role,
+            AccessibilityRole::SearchBox
+        );
+        assert_eq!(
+            contract.search_accessibility.label.as_deref(),
+            Some("Filter options")
+        );
+        assert_eq!(contract.listbox_accessibility.role, AccessibilityRole::List);
+        assert_eq!(
+            contract.listbox_accessibility.value.as_deref(),
+            Some("6 options available")
+        );
+        assert_eq!(contract.rows[1].option_index, 4);
+        assert!(contract.rows[1].active);
+        assert!(contract.rows[1].selected);
+        assert_eq!(
+            contract.rows[1].accessibility.hint.as_deref(),
+            Some("Active option")
+        );
     }
 
     #[test]

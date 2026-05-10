@@ -208,6 +208,9 @@ The branch starts from Operad 2.0.0 plus:
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   nodes outside the root, empty paint clips, and focusable controls missing from
   the accessibility traversal.
+- Accessibility adapter contracts in `src/accessibility.rs` now include
+  deterministic live-region snapshots, live-region diffing, and announcement
+  queues that can be converted into supported screen-reader adapter requests.
 - Renderer-neutral debug snapshots in `src/debug.rs` for layout bounds, clip
   rects, paint primitive counts, z ranges, host interaction flags, command
   scopes, active gestures, repaint reasons, frame timings, theme token
@@ -224,6 +227,10 @@ The branch starts from Operad 2.0.0 plus:
 - Text input routing helpers that bridge document focus, editable text state,
   clipboard service requests, and IME activation/update/deactivation without
   requiring consumers to hand-assemble platform plumbing for each field.
+- Searchable select/listbox contracts in `src/widget_ext/menu.rs` compose
+  filtering, active descendant metadata, bounded visible rows, selected/active
+  row accessibility, escape close, and outside-dismiss outcomes for combo and
+  filter picker workflows.
 - Chart, sparkline, and dense grid-map geometry helpers in `src/charts.rs` for
   numeric range mapping, path generation, cell rectangles, hit testing, and
   visible-cell queries, with screen-reader summaries, axis metadata, overlay
