@@ -243,6 +243,188 @@ pub struct SplitPaneNodes {
     pub second: UiNodeId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProgressIndicatorKind {
+    Progress,
+    Meter,
+}
+
+impl ProgressIndicatorKind {
+    pub const fn accessibility_role(self) -> AccessibilityRole {
+        match self {
+            Self::Progress => AccessibilityRole::ProgressBar,
+            Self::Meter => AccessibilityRole::Meter,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProgressIndicatorValue {
+    pub value: Option<f32>,
+    pub min: f32,
+    pub max: f32,
+}
+
+impl ProgressIndicatorValue {
+    pub fn new(value: f32, min: f32, max: f32) -> Self {
+        let (min, max) = ordered_progress_range(min, max);
+        Self {
+            value: value.is_finite().then_some(value.clamp(min, max)),
+            min,
+            max,
+        }
+    }
+
+    pub fn percent(percent: f32) -> Self {
+        Self::new(percent, 0.0, 100.0)
+    }
+
+    pub fn indeterminate(min: f32, max: f32) -> Self {
+        let (min, max) = ordered_progress_range(min, max);
+        Self {
+            value: None,
+            min,
+            max,
+        }
+    }
+
+    pub fn normalized(self) -> Option<f32> {
+        let value = self.value?;
+        let span = (self.max - self.min).max(f32::EPSILON);
+        Some(((value - self.min) / span).clamp(0.0, 1.0))
+    }
+
+    pub fn value_text(self, unit: Option<&str>) -> String {
+        let Some(value) = self.value else {
+            return "Indeterminate".to_string();
+        };
+        if let Some(unit) = unit.filter(|unit| !unit.is_empty()) {
+            format!("{} {}", format_progress_number(value), unit)
+        } else if self.min == 0.0 && self.max == 100.0 {
+            format!("{}%", format_progress_number(value))
+        } else {
+            format_progress_number(value)
+        }
+    }
+
+    pub fn fill_rect(self, track: UiRect) -> UiRect {
+        let normalized = self.normalized().unwrap_or(0.0);
+        UiRect::new(track.x, track.y, track.width * normalized, track.height)
+    }
+
+    pub fn accessibility_meta(
+        self,
+        label: impl Into<String>,
+        kind: ProgressIndicatorKind,
+        unit: Option<&str>,
+    ) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(kind.accessibility_role())
+            .label(label)
+            .value(self.value_text(unit));
+        if self.value.is_some() {
+            meta = meta.value_range(AccessibilityValueRange::new(
+                self.min as f64,
+                self.max as f64,
+            ));
+        } else {
+            meta = meta.hint("Value is not currently available");
+        }
+        meta
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressIndicatorOptions {
+    pub layout: Style,
+    pub kind: ProgressIndicatorKind,
+    pub track_visual: UiVisual,
+    pub fill_visual: UiVisual,
+    pub shader: Option<ShaderEffect>,
+    pub fill_shader: Option<ShaderEffect>,
+    pub accessibility_label: Option<String>,
+    pub accessibility_unit: Option<String>,
+}
+
+impl Default for ProgressIndicatorOptions {
+    fn default() -> Self {
+        Self {
+            layout: Style {
+                size: TaffySize {
+                    width: Dimension::percent(1.0),
+                    height: length(8.0),
+                },
+                ..Default::default()
+            },
+            kind: ProgressIndicatorKind::Progress,
+            track_visual: UiVisual::panel(DEFAULT_SURFACE_BG, None, 3.0),
+            fill_visual: UiVisual::panel(DEFAULT_ACCENT, None, 3.0),
+            shader: None,
+            fill_shader: None,
+            accessibility_label: None,
+            accessibility_unit: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressIndicatorNodes {
+    pub root: UiNodeId,
+    pub fill: UiNodeId,
+}
+
+pub fn progress_indicator(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    value: ProgressIndicatorValue,
+    options: ProgressIndicatorOptions,
+) -> ProgressIndicatorNodes {
+    let name = name.into();
+    let label = options
+        .accessibility_label
+        .clone()
+        .unwrap_or_else(|| name.clone());
+    let mut root = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout: options.layout,
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
+    )
+    .with_visual(options.track_visual)
+    .with_accessibility(value.accessibility_meta(
+        label,
+        options.kind,
+        options.accessibility_unit.as_deref(),
+    ));
+    if let Some(shader) = options.shader {
+        root = root.with_shader(shader);
+    }
+    let root = document.add_child(parent, root);
+
+    let mut fill = UiNode::container(
+        format!("{name}.fill"),
+        UiNodeStyle {
+            layout: Style {
+                size: TaffySize {
+                    width: Dimension::percent(value.normalized().unwrap_or(0.0)),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .with_visual(options.fill_visual);
+    if let Some(shader) = options.fill_shader {
+        fill = fill.with_shader(shader);
+    }
+    let fill = document.add_child(root, fill);
+
+    ProgressIndicatorNodes { root, fill }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn split_pane(
     document: &mut UiDocument,
@@ -344,6 +526,26 @@ fn split_pane_child_style(axis: SplitAxis, grow: f32, min_extent: f32) -> UiNode
         layout,
         clip: ClipBehavior::Clip,
         ..Default::default()
+    }
+}
+
+fn ordered_progress_range(min: f32, max: f32) -> (f32, f32) {
+    let min = if min.is_finite() { min } else { 0.0 };
+    let max = if max.is_finite() { max } else { 1.0 };
+    if (max - min).abs() <= f32::EPSILON {
+        (min, min + 1.0)
+    } else if min <= max {
+        (min, max)
+    } else {
+        (max, min)
+    }
+}
+
+fn format_progress_number(value: f32) -> String {
+    if value.fract().abs() <= 0.0001 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
     }
 }
 
@@ -2134,6 +2336,79 @@ mod tests {
     use crate::{root_style, ApproxTextMeasurer, TextContent, UiContent};
 
     use super::*;
+
+    #[test]
+    fn progress_indicator_values_accessibility_and_fill_geometry() {
+        let value = ProgressIndicatorValue::percent(42.0);
+        assert_eq!(value.normalized(), Some(0.42));
+        assert_eq!(
+            value.fill_rect(UiRect::new(10.0, 20.0, 200.0, 12.0)),
+            UiRect::new(10.0, 20.0, 84.0, 12.0)
+        );
+        let accessibility =
+            value.accessibility_meta("Recipe load", ProgressIndicatorKind::Progress, None);
+        assert_eq!(accessibility.role, AccessibilityRole::ProgressBar);
+        assert_eq!(accessibility.label.as_deref(), Some("Recipe load"));
+        assert_eq!(accessibility.value.as_deref(), Some("42%"));
+        assert_eq!(
+            accessibility.value_range,
+            Some(AccessibilityValueRange::new(0.0, 100.0))
+        );
+
+        let meter = ProgressIndicatorValue::new(18.5, 0.0, 100.0).accessibility_meta(
+            "CPU",
+            ProgressIndicatorKind::Meter,
+            Some("%"),
+        );
+        assert_eq!(meter.role, AccessibilityRole::Meter);
+        assert_eq!(meter.value.as_deref(), Some("18.5 %"));
+
+        let indeterminate = ProgressIndicatorValue::indeterminate(0.0, 1.0).accessibility_meta(
+            "Sync",
+            ProgressIndicatorKind::Progress,
+            None,
+        );
+        assert_eq!(indeterminate.value.as_deref(), Some("Indeterminate"));
+        assert_eq!(
+            indeterminate.hint.as_deref(),
+            Some("Value is not currently available")
+        );
+    }
+
+    #[test]
+    fn progress_indicator_builds_accessible_fill_node() {
+        let mut doc = UiDocument::new(root_style(240.0, 40.0));
+        let root = doc.root;
+        let nodes = progress_indicator(
+            &mut doc,
+            root,
+            "cpu",
+            ProgressIndicatorValue::new(18.5, 0.0, 100.0),
+            ProgressIndicatorOptions {
+                kind: ProgressIndicatorKind::Meter,
+                accessibility_label: Some("CPU load".to_string()),
+                accessibility_unit: Some("%".to_string()),
+                fill_shader: Some(ShaderEffect::new("meter.fill")),
+                ..Default::default()
+            },
+        );
+        doc.compute_layout(UiSize::new(240.0, 40.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let root_accessibility = doc.node(nodes.root).accessibility.as_ref().unwrap();
+        assert_eq!(root_accessibility.role, AccessibilityRole::Meter);
+        assert_eq!(root_accessibility.label.as_deref(), Some("CPU load"));
+        assert_eq!(root_accessibility.value.as_deref(), Some("18.5 %"));
+        assert_eq!(
+            doc.node(nodes.fill)
+                .shader
+                .as_ref()
+                .map(|shader| shader.key.as_str()),
+            Some("meter.fill")
+        );
+        assert!(doc.node(nodes.fill).layout.rect.width > 40.0);
+        assert!(doc.node(nodes.fill).layout.rect.width < 50.0);
+    }
 
     #[test]
     fn split_pane_state_clamps_resizes_and_builds_nodes() {

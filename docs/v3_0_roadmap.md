@@ -248,6 +248,9 @@ The branch starts from Operad 2.0.0 plus:
   option indices, active enabled option navigation, empty-state metadata,
   accessibility values, and selection results using existing `SelectSelection`
   shapes.
+- Progress and meter indicator helpers in `src/widget_ext/surfaces.rs` for
+  bounded or indeterminate values, normalized fill geometry, accessible
+  progress/meter metadata, and renderer-neutral fill nodes.
 - Numeric parameter contracts in `src/widget_ext/pickers.rs` for unit
   prefixes/suffixes, normalized linear/logarithmic value mapping, formatted
   parameter accessibility metadata, and parameter-aware commit/cancel text
