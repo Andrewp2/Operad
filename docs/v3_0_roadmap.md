@@ -259,9 +259,10 @@ The branch starts from Operad 2.0.0 plus:
   flags, frame timing sections, command-aware shortcut replay assertions, and
   stable-name accessibility assertions for roles, labels, values, summaries,
   live regions, focus order, active descendants, document-frame generated
-  platform-service requests, correlated unsupported platform-service responses,
-  and render-frame conformance assertions for canvas/image handler coverage,
-  dirty regions, host input capture, and per-node interaction state.
+  platform-service requests, request/response coverage, correlated unsupported
+  platform-service responses, and render-frame conformance assertions for
+  canvas/image handler coverage, dirty regions, host input capture, and
+  per-node interaction state.
 - E2E snapshot coverage in `tests/e2e_render.rs` now includes a reusable editor
   surface scene built from timeline range-item, lane, ruler, playhead, curve
   point, interpolation path, and resize-handle primitives.

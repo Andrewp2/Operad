@@ -954,6 +954,23 @@ impl<'a> PlatformAssertions<'a> {
         Ok(())
     }
 
+    pub fn require_all_requests_have_responses(&self) -> TestResult {
+        for request in self.requests.iter() {
+            if !self
+                .responses
+                .iter()
+                .any(|response| response.is_for(request) && response.kind() == request.kind())
+            {
+                return Err(TestFailure::new(format!(
+                    "platform request id {} kind {:?} has no matching response",
+                    request.id.0,
+                    request.kind()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn require_no_unsupported_responses(&self) -> TestResult {
         if let Some(response) = self
             .responses
@@ -1746,6 +1763,9 @@ mod tests {
         platform
             .require_all_responses_match_requests()
             .expect("matched responses");
+        platform
+            .require_all_requests_have_responses()
+            .expect("answered requests");
         platform.require_no_error_responses().expect("no errors");
 
         let unmatched = HostFrameOutput::new(HostInteractionState::default()).response(
@@ -1754,6 +1774,14 @@ mod tests {
         );
         assert!(PlatformAssertions::from_host_frame(&unmatched)
             .require_all_responses_match_requests()
+            .is_err());
+
+        let missing_response = HostFrameOutput::new(HostInteractionState::default()).request(
+            PlatformRequestId::new(100),
+            PlatformRequest::Clipboard(ClipboardRequest::ReadText),
+        );
+        assert!(PlatformAssertions::from_host_frame(&missing_response)
+            .require_all_requests_have_responses()
             .is_err());
 
         let error_output = HostFrameOutput::new(HostInteractionState::default())
