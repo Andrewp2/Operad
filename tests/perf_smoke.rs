@@ -271,6 +271,79 @@ fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
         .expect("average budget");
 }
 
+#[test]
+fn scenario_harness_multi_frame_render_smoke_stays_under_budget() {
+    let mut harness = ScenarioHarness::new(PERF_VIEWPORT);
+    let mut timings = FrameTimingSeries::new("scenario harness render smoke");
+    let mut combined_hash = 0_u64;
+
+    for frame in 0..8 {
+        let mut document = scenario_perf_document(frame);
+        let report = harness
+            .run_frame(
+                format!("scenario-frame-{frame}"),
+                &mut document,
+                EventReplay::new()
+                    .pointer_click("activate", UiPoint::new(32.0, 20.0))
+                    .wheel(
+                        "scroll",
+                        UiPoint::new(420.0, 132.0),
+                        UiPoint::new(0.0, 18.0 + frame as f32),
+                    ),
+            )
+            .expect("scenario frame");
+
+        report
+            .timing_assertions()
+            .require_sections([
+                "pre-input-layout",
+                "input",
+                "document-frame",
+                "render-frame",
+                "platform-requests",
+            ])
+            .expect("scenario timing sections");
+        report
+            .render_assertions()
+            .require_min_painted_items(70)
+            .expect("painted items");
+        combined_hash ^= {
+            let snapshot = report
+                .snapshot_assertions(format!("scenario-frame-{frame}"))
+                .expect("snapshot");
+            snapshot
+                .require_min_changed_pixels_from(DEFAULT_CPU_SNAPSHOT_BACKGROUND, 1_000)
+                .expect("visible scenario content");
+            snapshot.hash()
+        };
+        timings.push(report.timings.clone());
+    }
+
+    assert_ne!(combined_hash, 0);
+    let assertions = FrameTimingSeriesAssertions::new(&timings);
+    assertions.require_frame_count(8).expect("frame count");
+    for section in [
+        "pre-input-layout",
+        "input",
+        "document-frame",
+        "render-frame",
+        "platform-requests",
+    ] {
+        assertions
+            .require_section_sample_count(section, 8)
+            .expect("section sample count");
+    }
+    assertions
+        .require_total_average_within(Duration::from_millis(500))
+        .expect("total average budget");
+    assertions
+        .require_total_max_within(Duration::from_secs(2))
+        .expect("total max budget");
+    assertions
+        .require_section_average_within("render-frame", Duration::from_millis(250))
+        .expect("render average budget");
+}
+
 fn perf_screen() -> UiDocument {
     let mut document = UiDocument::new(root_style(PERF_VIEWPORT.width, PERF_VIEWPORT.height));
     let root = document.root;
@@ -281,6 +354,126 @@ fn perf_screen() -> UiDocument {
         Some(StrokeStyle::new(ColorRgba::new(34, 44, 56, 255), 1.0)),
         0.0,
     );
+    document
+}
+
+fn scenario_perf_document(frame: usize) -> UiDocument {
+    let mut document = perf_screen();
+    let root = document.root;
+    let toolbar = document.add_child(
+        root,
+        UiNode::container(
+            "perf.scenario.toolbar",
+            UiNodeStyle {
+                layout: Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    size: TaffySize {
+                        width: length(920.0),
+                        height: length(42.0),
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .with_visual(UiVisual::panel(
+            ColorRgba::new(15, 20, 28, 255),
+            Some(StrokeStyle::new(ColorRgba::new(46, 58, 72, 255), 1.0)),
+            0.0,
+        )),
+    );
+
+    for index in 0..6 {
+        button(
+            &mut document,
+            toolbar,
+            format!("perf.scenario.button.{index}"),
+            format!("Tool {index}"),
+            ButtonOptions {
+                layout: fixed_style(96.0, 32.0),
+                text_style: TextStyle {
+                    font_size: 11.0,
+                    line_height: 15.0,
+                    color: ColorRgba::new(232, 238, 246, 255),
+                    ..Default::default()
+                },
+                pressed: index == frame % 6,
+                ..Default::default()
+            },
+        );
+    }
+
+    let scroll = scroll_area(
+        &mut document,
+        root,
+        "perf.scenario.scroll",
+        ScrollAxes::VERTICAL,
+        Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            size: TaffySize {
+                width: length(920.0),
+                height: length(460.0),
+            },
+            ..Default::default()
+        },
+    );
+
+    for row in 0..64 {
+        let selected = row == frame * 3 % 64;
+        let row_node = document.add_child(
+            scroll,
+            UiNode::container(
+                format!("perf.scenario.row.{row}"),
+                UiNodeStyle {
+                    layout: Style {
+                        display: Display::Flex,
+                        flex_direction: FlexDirection::Row,
+                        size: TaffySize {
+                            width: length(900.0),
+                            height: length(24.0),
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_visual(UiVisual::panel(
+                if selected {
+                    ColorRgba::new(45, 75, 98, 255)
+                } else if row % 2 == 0 {
+                    ColorRgba::new(17, 23, 31, 255)
+                } else {
+                    ColorRgba::new(12, 18, 25, 255)
+                },
+                Some(StrokeStyle::new(ColorRgba::new(31, 41, 53, 255), 1.0)),
+                0.0,
+            )),
+        );
+        document.add_child(
+            row_node,
+            UiNode::text(
+                format!("perf.scenario.row.{row}.label"),
+                format!("Scenario row {row:02}    frame {frame}    reusable toolkit surface"),
+                TextStyle {
+                    font_size: 11.0,
+                    line_height: 15.0,
+                    color: ColorRgba::new(222, 229, 238, 255),
+                    ..Default::default()
+                },
+                Style {
+                    size: TaffySize {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+            ),
+        );
+    }
+
     document
 }
 
