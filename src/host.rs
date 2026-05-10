@@ -367,6 +367,54 @@ pub trait HostAdapter {
     ) -> Result<HostFrameOutput, HostAdapterError>;
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HostAccessibilityState {
+    pub tree: Option<AccessibilityTree>,
+    pub focused: Option<Option<UiNodeId>>,
+    pub live_regions: Option<AccessibilityLiveRegionSnapshot>,
+    pub preferences: Option<AccessibilityPreferences>,
+}
+
+impl HostAccessibilityState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn current(
+        tree: AccessibilityTree,
+        focused: Option<UiNodeId>,
+        live_regions: AccessibilityLiveRegionSnapshot,
+        preferences: AccessibilityPreferences,
+    ) -> Self {
+        Self {
+            tree: Some(tree),
+            focused: Some(focused),
+            live_regions: Some(live_regions),
+            preferences: Some(preferences),
+        }
+    }
+
+    pub fn tree(mut self, tree: AccessibilityTree) -> Self {
+        self.tree = Some(tree);
+        self
+    }
+
+    pub const fn focused(mut self, focused: Option<UiNodeId>) -> Self {
+        self.focused = Some(focused);
+        self
+    }
+
+    pub fn live_regions(mut self, live_regions: AccessibilityLiveRegionSnapshot) -> Self {
+        self.live_regions = Some(live_regions);
+        self
+    }
+
+    pub const fn preferences(mut self, preferences: AccessibilityPreferences) -> Self {
+        self.preferences = Some(preferences);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostDocumentFrameRequest {
     pub viewport: UiSize,
@@ -422,6 +470,14 @@ impl HostDocumentFrameRequest {
         self
     }
 
+    pub fn previous_accessibility_state(mut self, previous: HostAccessibilityState) -> Self {
+        self.previous_accessibility_tree = previous.tree;
+        self.previous_focused = previous.focused;
+        self.previous_live_regions = previous.live_regions;
+        self.previous_accessibility_preferences = previous.preferences;
+        self
+    }
+
     pub const fn accessibility_capabilities(
         mut self,
         capabilities: AccessibilityCapabilities,
@@ -458,6 +514,7 @@ pub struct HostDocumentFrameOutput {
     pub live_regions: AccessibilityLiveRegionSnapshot,
     pub announcements: AccessibilityAnnouncementQueue,
     pub accessibility_requests: Vec<AccessibilityAdapterRequest>,
+    pub accessibility_state: HostAccessibilityState,
     pub canvas_host_capture_transition: CanvasHostCaptureTransition,
 }
 
@@ -682,6 +739,12 @@ pub fn process_document_frame(
             AccessibilityAdapterRequest::Announce(announcement.clone()),
         );
     }
+    let accessibility_state = HostAccessibilityState::current(
+        accessibility_tree.clone(),
+        state.focused,
+        live_regions.clone(),
+        accessibility_preferences,
+    );
 
     let paint = document.paint_list();
     let mut node_interactions = paint
@@ -715,6 +778,7 @@ pub fn process_document_frame(
         live_regions,
         announcements,
         accessibility_requests,
+        accessibility_state,
         canvas_host_capture_transition,
     })
 }
@@ -1036,6 +1100,49 @@ mod tests {
         assert_eq!(*focused, Some(button));
         assert_eq!(*preferences, AccessibilityPreferences::DEFAULT);
         assert_eq!(tree.node(button).unwrap().label.as_deref(), Some("Play"));
+        assert_eq!(frame.accessibility_state.focused, Some(Some(button)));
+        assert_eq!(
+            frame.accessibility_state.preferences,
+            Some(AccessibilityPreferences::DEFAULT)
+        );
+        assert_eq!(
+            frame.accessibility_state.live_regions.as_ref(),
+            Some(&frame.live_regions)
+        );
+    }
+
+    #[test]
+    fn host_accessibility_state_groups_previous_frame_inputs() {
+        let focused = UiNodeId(3);
+        let preferences = AccessibilityPreferences::DEFAULT
+            .screen_reader_active(true)
+            .text_scale(1.4);
+        let tree = AccessibilityTree {
+            nodes: Vec::new(),
+            focus_order: vec![focused],
+            modal_scope: None,
+        };
+        let live_regions = AccessibilityLiveRegionSnapshot::default();
+        let state = HostAccessibilityState::new()
+            .tree(tree.clone())
+            .focused(Some(focused))
+            .live_regions(live_regions.clone())
+            .preferences(preferences);
+
+        let request = HostDocumentFrameRequest::new(
+            UiSize::new(100.0, 50.0),
+            RenderTarget::window("main", UiSize::new(100.0, 50.0)),
+            HostFrameOutput::new(HostInteractionState::default()),
+        )
+        .previous_accessibility_state(state);
+
+        assert_eq!(request.previous_accessibility_tree, Some(tree));
+        assert_eq!(request.previous_focused, Some(Some(focused)));
+        assert_eq!(request.previous_live_regions, Some(live_regions));
+        assert_eq!(
+            request.previous_accessibility_preferences,
+            Some(preferences)
+        );
     }
 
     #[test]
@@ -1074,10 +1181,7 @@ mod tests {
                 RenderTarget::window("main", viewport),
                 HostFrameOutput::new(first.host_output.state),
             )
-            .previous_accessibility_tree(first.accessibility_tree)
-            .previous_focused(None)
-            .previous_accessibility_preferences(AccessibilityPreferences::DEFAULT)
-            .previous_live_regions(first.live_regions)
+            .previous_accessibility_state(first.accessibility_state)
             .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER)
             .accessibility_preferences(updated_preferences),
         )
@@ -1168,10 +1272,7 @@ mod tests {
                 RenderTarget::window("main", viewport),
                 HostFrameOutput::new(first.host_output.state.clone()),
             )
-            .previous_accessibility_tree(first.accessibility_tree)
-            .previous_focused(first.host_output.state.focused)
-            .previous_accessibility_preferences(AccessibilityPreferences::DEFAULT)
-            .previous_live_regions(first.live_regions)
+            .previous_accessibility_state(first.accessibility_state)
             .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
         )
         .expect("second frame");
@@ -1218,10 +1319,7 @@ mod tests {
                 RenderTarget::window("main", viewport),
                 HostFrameOutput::new(focused_state),
             )
-            .previous_accessibility_tree(first.accessibility_tree)
-            .previous_focused(None)
-            .previous_accessibility_preferences(AccessibilityPreferences::DEFAULT)
-            .previous_live_regions(first.live_regions)
+            .previous_accessibility_state(first.accessibility_state)
             .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
         )
         .expect("second frame");

@@ -217,6 +217,8 @@ The branch starts from Operad 2.0.0 plus:
 - Host document frames diff accessibility trees, focused node state, live
   regions, and accessibility preferences so backend adapters receive
   capability-gated publish-tree, preference-apply, and announcement requests.
+- Host accessibility state snapshots let consumers carry those previous-frame
+  accessibility inputs across frames as one reusable runtime object.
 - Accessibility preference resolution in `src/theme.rs`, `src/renderer.rs`,
   and `src/host.rs` for text scaling, reduced motion, high contrast/forced
   colors, reduced transparency, and render-option propagation from host frame
