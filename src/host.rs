@@ -9,7 +9,7 @@ use std::fmt;
 
 use crate::accessibility::{
     AccessibilityAdapterRequest, AccessibilityAnnouncementQueue, AccessibilityCapabilities,
-    AccessibilityLiveRegionSnapshot,
+    AccessibilityLiveRegionSnapshot, FocusRestoreTarget,
 };
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{GestureEvent, GesturePhase, PointerCapture, RawInputEvent};
@@ -19,9 +19,10 @@ use crate::platform::{
     TextImeResponse, TextImeSession, TextInputId,
 };
 use crate::renderer::{RenderFrameRequest, RenderOptions, RenderTarget};
+use crate::shell::{ShellLayoutPlan, ShellWorkspaceState};
 use crate::{
     AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers, TextMeasurer, UiDocument, UiInputEvent,
-    UiInputResult, UiNodeId, UiSize,
+    UiInputResult, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,6 +421,160 @@ pub struct HostDocumentFrameOutput {
     pub accessibility_requests: Vec<AccessibilityAdapterRequest>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostShellEvent {
+    ResizePanel {
+        panel_id: String,
+        delta: f32,
+    },
+    SetPanelExtent {
+        panel_id: String,
+        extent: f32,
+    },
+    CollapsePanel {
+        panel_id: String,
+    },
+    RestorePanel {
+        panel_id: String,
+    },
+    FocusPanel {
+        panel_id: String,
+        restore: FocusRestoreTarget,
+    },
+    ScrollPanel {
+        panel_id: String,
+        offset: UiPoint,
+    },
+}
+
+impl HostShellEvent {
+    pub fn resize_panel(panel_id: impl Into<String>, delta: f32) -> Self {
+        Self::ResizePanel {
+            panel_id: panel_id.into(),
+            delta,
+        }
+    }
+
+    pub fn set_panel_extent(panel_id: impl Into<String>, extent: f32) -> Self {
+        Self::SetPanelExtent {
+            panel_id: panel_id.into(),
+            extent,
+        }
+    }
+
+    pub fn collapse_panel(panel_id: impl Into<String>) -> Self {
+        Self::CollapsePanel {
+            panel_id: panel_id.into(),
+        }
+    }
+
+    pub fn restore_panel(panel_id: impl Into<String>) -> Self {
+        Self::RestorePanel {
+            panel_id: panel_id.into(),
+        }
+    }
+
+    pub fn focus_panel(panel_id: impl Into<String>, restore: FocusRestoreTarget) -> Self {
+        Self::FocusPanel {
+            panel_id: panel_id.into(),
+            restore,
+        }
+    }
+
+    pub fn scroll_panel(panel_id: impl Into<String>, offset: UiPoint) -> Self {
+        Self::ScrollPanel {
+            panel_id: panel_id.into(),
+            offset,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostShellFrameRequest {
+    pub viewport: UiRect,
+    pub workspace: ShellWorkspaceState,
+    pub events: Vec<HostShellEvent>,
+}
+
+impl HostShellFrameRequest {
+    pub fn new(viewport: UiRect, workspace: ShellWorkspaceState) -> Self {
+        Self {
+            viewport,
+            workspace,
+            events: Vec::new(),
+        }
+    }
+
+    pub fn event(mut self, event: HostShellEvent) -> Self {
+        self.events.push(event);
+        self
+    }
+
+    pub fn events(mut self, events: impl IntoIterator<Item = HostShellEvent>) -> Self {
+        self.events.extend(events);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostShellFrameOutput {
+    pub workspace: ShellWorkspaceState,
+    pub layout: ShellLayoutPlan,
+    pub changed: bool,
+}
+
+pub fn process_shell_frame(request: HostShellFrameRequest) -> HostShellFrameOutput {
+    let HostShellFrameRequest {
+        viewport,
+        mut workspace,
+        events,
+    } = request;
+
+    let mut changed = false;
+    for event in events {
+        changed |= apply_shell_event(&mut workspace, event);
+    }
+    let layout = workspace.layout(viewport);
+
+    HostShellFrameOutput {
+        workspace,
+        layout,
+        changed,
+    }
+}
+
+fn apply_shell_event(workspace: &mut ShellWorkspaceState, event: HostShellEvent) -> bool {
+    match event {
+        HostShellEvent::ResizePanel { panel_id, delta } => workspace
+            .panel_mut(&panel_id)
+            .is_some_and(|panel| panel.resize_by(delta)),
+        HostShellEvent::SetPanelExtent { panel_id, extent } => workspace
+            .panel_mut(&panel_id)
+            .is_some_and(|panel| panel.set_extent(extent)),
+        HostShellEvent::CollapsePanel { panel_id } => workspace
+            .panel_mut(&panel_id)
+            .is_some_and(|panel| panel.collapse()),
+        HostShellEvent::RestorePanel { panel_id } => workspace
+            .panel_mut(&panel_id)
+            .is_some_and(|panel| panel.restore()),
+        HostShellEvent::FocusPanel { panel_id, restore } => {
+            let Some(panel) = workspace.panel(&panel_id) else {
+                return false;
+            };
+            if !panel.visible {
+                return false;
+            }
+            let changed = workspace.focused_panel.as_deref() != Some(panel_id.as_str())
+                || workspace.restored_focus != Some(restore);
+            workspace.set_focused_panel(panel_id, restore);
+            changed
+        }
+        HostShellEvent::ScrollPanel { panel_id, offset } => workspace
+            .panel_mut(&panel_id)
+            .is_some_and(|panel| panel.set_scroll_offset(offset)),
+    }
+}
+
 pub fn process_document_frame(
     document: &mut UiDocument,
     measurer: &mut impl TextMeasurer,
@@ -496,7 +651,7 @@ mod tests {
     };
     use crate::{
         length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
-        InputBehavior, UiDocument, UiNode, UiNodeStyle, UiPoint,
+        InputBehavior, ShellPanelState, ShellRegion, UiDocument, UiNode, UiNodeStyle, UiPoint,
     };
     use taffy::prelude::{Size as TaffySize, Style};
 
@@ -727,6 +882,90 @@ mod tests {
             frame.accessibility_requests[0],
             AccessibilityAdapterRequest::Announce(_)
         ));
+    }
+
+    #[test]
+    fn host_shell_frame_resizes_panel_and_returns_updated_layout() {
+        let mut workspace = ShellWorkspaceState::new();
+        workspace.upsert_panel(
+            ShellPanelState::new("inspector", "Inspector", ShellRegion::RightPanel, 200.0)
+                .with_limits(120.0, Some(400.0))
+                .resizable(true),
+        );
+
+        let output = process_shell_frame(
+            HostShellFrameRequest::new(UiRect::new(0.0, 0.0, 800.0, 600.0), workspace)
+                .event(HostShellEvent::resize_panel("inspector", 75.0)),
+        );
+
+        assert!(output.changed);
+        assert_eq!(
+            output.workspace.panel("inspector").unwrap().extent.current,
+            275.0
+        );
+        assert_eq!(
+            output.layout.panel_rect("inspector"),
+            Some(UiRect::new(525.0, 0.0, 275.0, 600.0))
+        );
+    }
+
+    #[test]
+    fn host_shell_frame_ignores_non_resizable_and_missing_panel_resize() {
+        let mut workspace = ShellWorkspaceState::new();
+        workspace.upsert_panel(ShellPanelState::new(
+            "inspector",
+            "Inspector",
+            ShellRegion::RightPanel,
+            200.0,
+        ));
+
+        let output = process_shell_frame(
+            HostShellFrameRequest::new(UiRect::new(0.0, 0.0, 800.0, 600.0), workspace).events([
+                HostShellEvent::resize_panel("missing", 50.0),
+                HostShellEvent::resize_panel("inspector", 50.0),
+            ]),
+        );
+
+        assert!(!output.changed);
+        assert_eq!(
+            output.workspace.panel("inspector").unwrap().extent.current,
+            200.0
+        );
+        assert_eq!(
+            output.layout.panel_rect("inspector"),
+            Some(UiRect::new(600.0, 0.0, 200.0, 600.0))
+        );
+    }
+
+    #[test]
+    fn host_shell_frame_focus_scroll_and_collapse_update_workspace_state() {
+        let mut drawer = ShellPanelState::new("drawer", "Drawer", ShellRegion::RightPanel, 220.0);
+        drawer.collapsed_extent = 36.0;
+        let mut workspace = ShellWorkspaceState::new();
+        workspace.upsert_panel(drawer);
+
+        let output = process_shell_frame(
+            HostShellFrameRequest::new(UiRect::new(10.0, 20.0, 640.0, 360.0), workspace).events([
+                HostShellEvent::focus_panel("drawer", FocusRestoreTarget::Node(UiNodeId(9))),
+                HostShellEvent::scroll_panel("drawer", UiPoint::new(0.0, 128.0)),
+                HostShellEvent::collapse_panel("drawer"),
+            ]),
+        );
+
+        let drawer = output.workspace.panel("drawer").unwrap();
+        assert!(output.changed);
+        assert_eq!(output.workspace.focused_panel.as_deref(), Some("drawer"));
+        assert_eq!(
+            output.workspace.restored_focus,
+            Some(FocusRestoreTarget::Node(UiNodeId(9)))
+        );
+        assert_eq!(drawer.scroll_offset, UiPoint::new(0.0, 128.0));
+        assert!(drawer.collapsed);
+        assert_eq!(drawer.extent.current, 36.0);
+        assert_eq!(
+            output.layout.panel_rect("drawer"),
+            Some(UiRect::new(614.0, 20.0, 36.0, 360.0))
+        );
     }
 
     #[derive(Debug)]

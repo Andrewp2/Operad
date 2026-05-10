@@ -70,9 +70,10 @@ pub use editor::{
     VisibleLaneRange,
 };
 pub use host::{
-    process_document_frame, text_input_id_for_node, HostAdapter, HostAdapterError,
-    HostCommandDispatch, HostDocumentFrameOutput, HostDocumentFrameRequest, HostFrameOutput,
-    HostFrameRequest, HostInteractionState, HostNodeInteraction, HostShortcutRoute,
+    process_document_frame, process_shell_frame, text_input_id_for_node, HostAdapter,
+    HostAdapterError, HostCommandDispatch, HostDocumentFrameOutput, HostDocumentFrameRequest,
+    HostFrameOutput, HostFrameRequest, HostInteractionState, HostNodeInteraction, HostShellEvent,
+    HostShellFrameOutput, HostShellFrameRequest, HostShortcutRoute,
 };
 pub use input::{
     DragGesture, GestureEvent, GesturePhase, GestureSettings, PointerButton, PointerButtons,

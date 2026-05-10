@@ -247,6 +247,10 @@ The branch starts from Operad 2.0.0 plus:
   coordinator that applies host UI events, recomputes layout, builds render
   requests with node interaction state, snapshots accessibility, and emits
   live-region announcement requests.
+- Host shell frame contracts in `src/host.rs` for applying renderer-neutral
+  shell events to `ShellWorkspaceState`, including panel resize/extent,
+  collapse/restore, focus restore targets, panel scroll offsets, and updated
+  shell layout plans.
 - Command effect hooks in `src/commands.rs` for mapping enabled app commands to
   platform service requests or opaque app-owned effects, including clipboard,
   file dialog, screenshot, repaint, close-window, and quit requests.
