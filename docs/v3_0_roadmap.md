@@ -209,6 +209,8 @@ The branch starts from Operad 2.0.0 plus:
   scope.
 - Accessibility tree helpers for nearest accessible parents, focusable nodes,
   effective modal focus order, live regions, and modal/focus-trap traversal.
+- Accessibility focus helpers now turn effective tree or focus-trap navigation
+  into backend-facing move-focus/restore-focus adapter requests.
 - Accessibility name, description, and screen-reader text resolvers that fold
   direct labels, summaries, labelled-by/described-by relations, values, states,
   and shortcuts into backend-facing text.

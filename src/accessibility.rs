@@ -234,6 +234,24 @@ impl FocusTrap {
     ) -> Option<UiNodeId> {
         next_focus_in_order(&self.focus_order(tree), current, direction, self.wrap)
     }
+
+    pub fn move_focus_request(
+        self,
+        tree: &AccessibilityTree,
+        current: Option<UiNodeId>,
+        direction: FocusNavigationDirection,
+    ) -> Option<AccessibilityAdapterRequest> {
+        self.next_focus(tree, current, direction).map(|target| {
+            AccessibilityAdapterRequest::MoveFocus {
+                target,
+                restore: self.restore_focus,
+            }
+        })
+    }
+
+    pub const fn restore_focus_request(self) -> AccessibilityAdapterRequest {
+        AccessibilityAdapterRequest::RestoreFocus(self.restore_focus)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -542,6 +560,17 @@ impl AccessibilityTree {
         wrap: bool,
     ) -> Option<UiNodeId> {
         next_focus_in_order(&self.effective_focus_order(), current, direction, wrap)
+    }
+
+    pub fn move_focus_request(
+        &self,
+        current: Option<UiNodeId>,
+        direction: FocusNavigationDirection,
+        wrap: bool,
+        restore: FocusRestoreTarget,
+    ) -> Option<AccessibilityAdapterRequest> {
+        self.next_focus(current, direction, wrap)
+            .map(|target| AccessibilityAdapterRequest::MoveFocus { target, restore })
     }
 
     pub fn live_region_nodes(&self) -> impl Iterator<Item = &AccessibilityNode> {
@@ -972,6 +1001,17 @@ mod tests {
             trap.next_focus(&tree, None, FocusNavigationDirection::Backward),
             Some(second)
         );
+        assert_eq!(
+            trap.move_focus_request(&tree, Some(first), FocusNavigationDirection::Forward),
+            Some(AccessibilityAdapterRequest::MoveFocus {
+                target: second,
+                restore: FocusRestoreTarget::Node(outside),
+            })
+        );
+        assert_eq!(
+            trap.restore_focus_request(),
+            AccessibilityAdapterRequest::RestoreFocus(FocusRestoreTarget::Node(outside))
+        );
     }
 
     #[test]
@@ -1009,6 +1049,18 @@ mod tests {
         assert_eq!(
             tree.next_focus(Some(second), FocusNavigationDirection::Forward, false),
             None
+        );
+        assert_eq!(
+            tree.move_focus_request(
+                Some(first),
+                FocusNavigationDirection::Forward,
+                true,
+                FocusRestoreTarget::Previous,
+            ),
+            Some(AccessibilityAdapterRequest::MoveFocus {
+                target: second,
+                restore: FocusRestoreTarget::Previous,
+            })
         );
     }
 

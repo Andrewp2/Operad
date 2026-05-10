@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::accessibility::{
     AccessibilityAdapterRequest, AccessibilityAnnouncement, AccessibilityPreferences,
-    AccessibilityRequestKind,
+    AccessibilityRequestKind, FocusRestoreTarget,
 };
 use crate::commands::{CommandId, CommandRegistry};
 use crate::host::{
@@ -1098,6 +1098,30 @@ impl<'a> AccessibilityRequestAssertions<'a> {
             .ok_or_else(|| {
                 TestFailure::new(format!(
                     "missing accessibility ApplyPreferences request for {preferences:?}; available requests: {:?}",
+                    self.request_kinds()
+                ))
+            })
+    }
+
+    pub fn require_move_focus(
+        &self,
+        target: UiNodeId,
+        restore: FocusRestoreTarget,
+    ) -> TestResult<&'a AccessibilityAdapterRequest> {
+        self.requests
+            .iter()
+            .find(|request| {
+                matches!(
+                    request,
+                    AccessibilityAdapterRequest::MoveFocus {
+                        target: actual_target,
+                        restore: actual_restore,
+                    } if *actual_target == target && *actual_restore == restore
+                )
+            })
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing accessibility MoveFocus request for {target:?} with restore {restore:?}; available requests: {:?}",
                     self.request_kinds()
                 ))
             })
@@ -4060,6 +4084,7 @@ mod tests {
             focus_order: vec![focused],
             modal_scope: None,
         };
+        let next = UiNodeId(8);
         let requests = vec![
             AccessibilityAdapterRequest::PublishTree {
                 tree: tree.clone(),
@@ -4067,6 +4092,10 @@ mod tests {
                 preferences,
             },
             AccessibilityAdapterRequest::ApplyPreferences(preferences),
+            AccessibilityAdapterRequest::MoveFocus {
+                target: next,
+                restore: FocusRestoreTarget::Previous,
+            },
             AccessibilityAdapterRequest::Announce(
                 AccessibilityAnnouncement::polite("Save complete").source(focused),
             ),
@@ -4094,6 +4123,9 @@ mod tests {
         assertions
             .require_apply_preferences(preferences)
             .expect("preferences request");
+        assertions
+            .require_move_focus(next, FocusRestoreTarget::Previous)
+            .expect("move focus request");
         let announcement = assertions
             .require_announcement_contains("complete")
             .expect("announcement text");
