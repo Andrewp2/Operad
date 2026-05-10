@@ -10,8 +10,8 @@ use crate::input::{
     RawPointerEvent, RawTextInputEvent, RawWheelEvent,
 };
 use crate::platform::{
-    ClipboardRequest, CursorRequest, CursorShape, PlatformRequest, RepaintRequest, ResourceDomain,
-    ResourceHandle, ResourceKind,
+    ClipboardRequest, CursorRequest, CursorShape, PlatformRequest, PlatformServiceRequest,
+    RepaintRequest, ResourceDomain, ResourceHandle, ResourceKind,
 };
 use crate::renderer::{PixelRect, ResourceFormat, ResourceUpdate};
 use crate::{FocusDirection, KeyCode, KeyModifiers, UiPoint};
@@ -176,6 +176,7 @@ pub struct EguiPlatformOutputPlan {
     pub viewport_commands: Vec<egui::ViewportCommand>,
     pub repaint_requests: Vec<RepaintRequest>,
     pub unsupported_requests: Vec<PlatformRequest>,
+    pub unsupported_service_requests: Vec<PlatformServiceRequest>,
 }
 
 impl EguiPlatformOutputPlan {
@@ -189,6 +190,24 @@ impl EguiPlatformOutputPlan {
             plan.push_request(request);
         }
         plan
+    }
+
+    pub fn from_service_requests<'a>(
+        requests: impl IntoIterator<Item = &'a PlatformServiceRequest>,
+    ) -> Self {
+        let mut plan = Self::new();
+        for request in requests {
+            plan.push_service_request(request);
+        }
+        plan
+    }
+
+    pub fn push_service_request(&mut self, request: &PlatformServiceRequest) -> bool {
+        let supported = self.push_request(&request.request);
+        if !supported {
+            self.unsupported_service_requests.push(request.clone());
+        }
+        supported
     }
 
     pub fn push_request(&mut self, request: &PlatformRequest) -> bool {
@@ -265,6 +284,10 @@ impl fmt::Debug for EguiPlatformOutputPlan {
             .field("viewport_commands", &self.viewport_commands)
             .field("repaint_requests", &self.repaint_requests)
             .field("unsupported_requests", &self.unsupported_requests)
+            .field(
+                "unsupported_service_requests",
+                &self.unsupported_service_requests,
+            )
             .finish()
     }
 }
@@ -542,8 +565,8 @@ mod tests {
     use crate::input::{WheelDeltaUnit, WheelPhase};
     use crate::platform::{
         ClipboardRequest, CursorRequest, CursorShape, FileDialogMode, FileDialogRequest,
-        ImageHandle, LogicalPoint, OpenUrlRequest, PixelSize, PlatformRequest, RepaintRequest,
-        ResourceHandle, TextureHandle,
+        ImageHandle, LogicalPoint, OpenUrlRequest, PixelSize, PlatformRequest, PlatformRequestId,
+        PlatformServiceRequest, RepaintRequest, ResourceHandle, TextureHandle,
     };
     use crate::renderer::{PixelRect, ResourceDescriptor, ResourceFormat, ResourceUpdate};
     use crate::{
@@ -901,6 +924,42 @@ mod tests {
         assert!(plan.platform_output.commands.is_empty());
         assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::Default);
         assert_eq!(plan.unsupported_requests, requests.to_vec());
+    }
+
+    #[test]
+    fn egui_platform_output_plan_maps_service_requests_and_keeps_unsupported_ids() {
+        let requests = [
+            PlatformServiceRequest::new(
+                PlatformRequestId::new(3),
+                PlatformRequest::Clipboard(ClipboardRequest::WriteText("copied".to_string())),
+            ),
+            PlatformServiceRequest::new(
+                PlatformRequestId::new(4),
+                PlatformRequest::FileDialog(FileDialogRequest::new(FileDialogMode::OpenFile)),
+            ),
+            PlatformServiceRequest::new(
+                PlatformRequestId::new(5),
+                PlatformRequest::Cursor(CursorRequest::Confine(crate::platform::LogicalRect::new(
+                    0.0, 0.0, 100.0, 80.0,
+                ))),
+            ),
+        ];
+
+        let plan = EguiPlatformOutputPlan::from_service_requests(requests.iter());
+
+        assert!(!plan.is_fully_supported());
+        assert_eq!(
+            plan.platform_output.commands,
+            vec![egui::OutputCommand::CopyText("copied".to_string())]
+        );
+        assert_eq!(
+            plan.viewport_commands,
+            vec![egui::ViewportCommand::CursorGrab(
+                egui::CursorGrab::Confined
+            )]
+        );
+        assert_eq!(plan.unsupported_requests, vec![requests[1].request.clone()]);
+        assert_eq!(plan.unsupported_service_requests, vec![requests[1].clone()]);
     }
 
     #[test]
