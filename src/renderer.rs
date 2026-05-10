@@ -844,12 +844,15 @@ impl CanvasHitCollection {
     pub fn topmost_at(&self, point: UiPoint) -> Option<&CanvasHitTarget> {
         self.targets
             .iter()
-            .filter(|target| target.contains(point))
+            .enumerate()
+            .filter(|(_, target)| target.contains(point))
             .max_by(|left, right| {
-                left.z_index
-                    .cmp(&right.z_index)
-                    .then_with(|| left.id.cmp(&right.id))
+                left.1
+                    .z_index
+                    .cmp(&right.1.z_index)
+                    .then_with(|| left.0.cmp(&right.0))
             })
+            .map(|(_, target)| target)
     }
 
     pub fn accessibility_summary(&self, title: impl Into<String>) -> AccessibilitySummary {
@@ -2305,6 +2308,26 @@ mod tests {
         let collection_text = collection_meta.summary.unwrap().screen_reader_text();
         assert!(collection_text.contains("Canvas key: editor.viewport"));
         assert!(collection_text.contains("Labelled targets: 1"));
+    }
+
+    #[test]
+    fn canvas_hit_topmost_prefers_later_targets_for_equal_z() {
+        let first = CanvasHitTarget::new("first", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(2);
+        let second = CanvasHitTarget::new("second", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(2);
+        let lower = CanvasHitTarget::new("lower", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(1);
+        let disabled_top = CanvasHitTarget::new("disabled-top", UiRect::new(0.0, 0.0, 40.0, 40.0))
+            .z_index(100)
+            .disabled(true);
+        let collection = CanvasHitCollection::new(UiNodeId(2), "editor.viewport")
+            .target(first)
+            .target(lower)
+            .target(second.clone())
+            .target(disabled_top);
+
+        assert_eq!(
+            collection.topmost_at(UiPoint::new(12.0, 12.0)),
+            Some(&second)
+        );
     }
 
     #[test]

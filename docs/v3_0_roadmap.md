@@ -343,7 +343,8 @@ The branch starts from Operad 2.0.0 plus:
 - Canvas render handlers can return neutral hit-target metadata in render
   outputs, with per-canvas hit collections aggregated by render reports so apps
   can map their own domain IDs to viewport/editor selections without Operad
-  naming those domains.
+  naming those domains, and equal-z hit ties preserve reported target order so
+  app-owned canvas renderers can use their draw/hit ordering deterministically.
 - Canvas hit targets and collections expose accessibility metadata and
   screen-reader summaries for app-owned canvas/editor/viewport surfaces.
 - Canvas host-capture plans in `src/renderer.rs` convert canvas interaction
