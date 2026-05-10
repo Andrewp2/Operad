@@ -332,6 +332,10 @@ The branch starts from Operad 2.0.0 plus:
 - Arrangement and lane geometry helpers in `src/editor.rs` for unit-to-x
   timelines, lane y/index mapping, visible ranges, clip/selection/playhead
   rectangles, ruler ticks, and grid snapping.
+- Timeline range-item geometry helpers in `src/editor.rs` for app-owned spans
+  on lane/timeline surfaces, including body and resize hit targets, snapped drag
+  previews, constrained resizing, and selected/disabled/dragging interaction
+  state without naming product-specific clips, wafers, or game timeline items.
 - Piano-roll geometry helpers in `src/editor.rs` for pitch-to-lane mapping,
   note rectangles, loop-wrapped note segments, body versus resize-handle hit
   targets, and velocity-bar geometry.

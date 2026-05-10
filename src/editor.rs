@@ -637,6 +637,250 @@ impl ArrangementGeometry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineRangeItemEdge {
+    Start,
+    End,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimelineRangeItem {
+    pub id: EditorHitId,
+    pub lane_index: usize,
+    pub range: EditorAxisRange,
+    pub selected: bool,
+    pub disabled: bool,
+    pub dragging: bool,
+}
+
+impl TimelineRangeItem {
+    pub fn new(
+        id: impl Into<EditorHitId>,
+        lane_index: usize,
+        start_unit: f32,
+        duration: f32,
+    ) -> Self {
+        let start_unit = if start_unit.is_finite() {
+            start_unit
+        } else {
+            0.0
+        };
+        let duration = if duration.is_finite() {
+            duration.max(0.0)
+        } else {
+            0.0
+        };
+        Self {
+            id: id.into(),
+            lane_index,
+            range: EditorAxisRange::new(start_unit, start_unit + duration),
+            selected: false,
+            disabled: false,
+            dragging: false,
+        }
+    }
+
+    pub const fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub const fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub const fn dragging(mut self, dragging: bool) -> Self {
+        self.dragging = dragging;
+        self
+    }
+
+    pub const fn with_range(mut self, range: EditorAxisRange) -> Self {
+        self.range = range;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimelineRangeItemGeometry {
+    pub arrangement: ArrangementGeometry,
+    pub resize_handle_width_px: f32,
+}
+
+impl TimelineRangeItemGeometry {
+    pub const fn new(arrangement: ArrangementGeometry) -> Self {
+        Self {
+            arrangement,
+            resize_handle_width_px: 6.0,
+        }
+    }
+
+    pub fn with_resize_handle_width_px(mut self, width: f32) -> Self {
+        if width.is_finite() && width > 0.0 {
+            self.resize_handle_width_px = width;
+        }
+        self
+    }
+
+    pub fn item_world_rect(self, item: &TimelineRangeItem) -> Option<UiRect> {
+        if item.range.is_empty() {
+            return None;
+        }
+        self.arrangement
+            .world_clip_rect(item.lane_index, item.range)
+    }
+
+    pub fn item_view_rect(self, item: &TimelineRangeItem) -> Option<UiRect> {
+        self.item_world_rect(item)
+            .map(|rect| self.arrangement.timeline.transform.world_to_view_rect(rect))
+    }
+
+    pub fn edge_world_rect(
+        self,
+        item: &TimelineRangeItem,
+        edge: TimelineRangeItemEdge,
+    ) -> Option<UiRect> {
+        let rect = self.item_world_rect(item)?;
+        let width = self
+            .arrangement
+            .timeline
+            .view_width_to_span(self.resize_handle_width_px)
+            .max(MIN_SCALE);
+        Some(edge_handle_rect(rect, width, edge))
+    }
+
+    pub fn hit_targets(self, item: &TimelineRangeItem) -> Vec<EditorHitTarget> {
+        let Some(rect) = self.item_world_rect(item) else {
+            return Vec::new();
+        };
+        let body_z = if item.disabled {
+            0
+        } else if item.dragging {
+            30
+        } else if item.selected {
+            20
+        } else {
+            10
+        };
+        let mut body = EditorHitTarget::new(item.id.clone(), EditorHitKind::Item, rect)
+            .z_index(body_z)
+            .selectable(!item.disabled)
+            .draggable(!item.disabled);
+        if !item.disabled {
+            body = body.cursor(if item.dragging {
+                EditorCursor::Grabbing
+            } else {
+                EditorCursor::Grab
+            });
+        }
+        let mut targets = vec![body];
+        if item.disabled {
+            return targets;
+        }
+        for edge in [TimelineRangeItemEdge::Start, TimelineRangeItemEdge::End] {
+            if let Some(edge_rect) = self.edge_world_rect(item, edge) {
+                targets.push(
+                    EditorHitTarget::new(
+                        format!("{}.{}", item.id.as_str(), edge.hit_suffix()),
+                        EditorHitKind::ResizeHandle,
+                        edge_rect,
+                    )
+                    .z_index(body_z + 1)
+                    .cursor(EditorCursor::ResizeHorizontal)
+                    .selectable(false),
+                );
+            }
+        }
+        targets
+    }
+
+    pub fn translated_item(
+        self,
+        item: &TimelineRangeItem,
+        unit_delta: f32,
+        lane_delta: isize,
+        grid: SnapGrid,
+    ) -> Option<TimelineRangeItem> {
+        if item.disabled {
+            return None;
+        }
+        let lane_index = if lane_delta < 0 {
+            item.lane_index.checked_sub(lane_delta.unsigned_abs())?
+        } else {
+            item.lane_index.checked_add(lane_delta as usize)?
+        };
+        if lane_index >= self.arrangement.lanes.lane_count || !unit_delta.is_finite() {
+            return None;
+        }
+        let duration = item.range.length();
+        let start = item.range.start + unit_delta;
+        let start = if grid.enabled {
+            self.arrangement.timeline.snap_unit(start, grid)
+        } else {
+            start
+        };
+        Some(TimelineRangeItem {
+            lane_index,
+            range: EditorAxisRange::new(start, start + duration),
+            dragging: true,
+            ..item.clone()
+        })
+    }
+
+    pub fn drag_preview_world_rect(
+        self,
+        item: &TimelineRangeItem,
+        unit_delta: f32,
+        lane_delta: isize,
+        grid: SnapGrid,
+    ) -> Option<UiRect> {
+        self.translated_item(item, unit_delta, lane_delta, grid)
+            .and_then(|preview| self.item_world_rect(&preview))
+    }
+
+    pub fn resized_range(
+        self,
+        item: &TimelineRangeItem,
+        edge: TimelineRangeItemEdge,
+        unit: f32,
+        min_duration: f32,
+        grid: SnapGrid,
+    ) -> EditorAxisRange {
+        if item.disabled || !unit.is_finite() {
+            return item.range;
+        }
+        let unit = if grid.enabled {
+            self.arrangement.timeline.snap_unit(unit, grid)
+        } else {
+            unit
+        };
+        let min_duration = if min_duration.is_finite() {
+            min_duration.max(MIN_SCALE)
+        } else {
+            MIN_SCALE
+        };
+        match edge {
+            TimelineRangeItemEdge::Start => {
+                let start = unit.min(item.range.end - min_duration);
+                EditorAxisRange::new(start, item.range.end)
+            }
+            TimelineRangeItemEdge::End => {
+                let end = unit.max(item.range.start + min_duration);
+                EditorAxisRange::new(item.range.start, end)
+            }
+        }
+    }
+}
+
+impl TimelineRangeItemEdge {
+    fn hit_suffix(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::End => "end",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PianoRollPitchRange {
     pub min_pitch: i16,
     pub max_pitch: i16,
@@ -848,7 +1092,7 @@ impl PianoRollGeometry {
             );
         }
 
-        let start_rect = edge_handle_rect(rects[0], handle_width, PianoRollNoteEdge::Start);
+        let start_rect = edge_handle_rect(rects[0], handle_width, TimelineRangeItemEdge::Start);
         targets.push(
             EditorHitTarget::new(
                 format!("{}.start", note.id.as_str()),
@@ -862,7 +1106,7 @@ impl PianoRollGeometry {
         let end_rect = edge_handle_rect(
             *rects.last().expect("rects is not empty"),
             handle_width,
-            PianoRollNoteEdge::End,
+            TimelineRangeItemEdge::End,
         );
         targets.push(
             EditorHitTarget::new(
@@ -898,17 +1142,11 @@ impl PianoRollGeometry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PianoRollNoteEdge {
-    Start,
-    End,
-}
-
-fn edge_handle_rect(rect: UiRect, width: f32, edge: PianoRollNoteEdge) -> UiRect {
+fn edge_handle_rect(rect: UiRect, width: f32, edge: TimelineRangeItemEdge) -> UiRect {
     let width = width.min(rect.width.max(0.0) * 0.5).max(MIN_SCALE);
     let x = match edge {
-        PianoRollNoteEdge::Start => rect.x,
-        PianoRollNoteEdge::End => rect.right() - width,
+        TimelineRangeItemEdge::Start => rect.x,
+        TimelineRangeItemEdge::End => rect.right() - width,
     };
     UiRect::new(x, rect.y, width, rect.height)
 }
@@ -1554,6 +1792,102 @@ mod tests {
                 EditorAxisRange::new(110.0, 120.0)
             ),
             UiRect::new(30.0, 44.0, 20.0, 68.0)
+        );
+    }
+
+    #[test]
+    fn timeline_range_items_build_rects_and_hit_targets() {
+        let geometry = TimelineRangeItemGeometry::new(ArrangementGeometry::new(
+            transform(),
+            LaneGeometry::new(5.0, 6)
+                .with_origin_y(50.0)
+                .with_lane_gap(1.0),
+        ))
+        .with_resize_handle_width_px(6.0);
+        let item = TimelineRangeItem::new("range.1", 2, 120.0, 12.0).selected(true);
+
+        assert_eq!(
+            geometry.item_world_rect(&item),
+            Some(UiRect::new(120.0, 62.0, 12.0, 5.0))
+        );
+        assert_eq!(
+            geometry.item_view_rect(&item),
+            Some(UiRect::new(50.0, 68.0, 24.0, 20.0))
+        );
+        assert_eq!(
+            geometry.edge_world_rect(&item, TimelineRangeItemEdge::Start),
+            Some(UiRect::new(120.0, 62.0, 3.0, 5.0))
+        );
+        assert_eq!(
+            geometry.edge_world_rect(&item, TimelineRangeItemEdge::End),
+            Some(UiRect::new(129.0, 62.0, 3.0, 5.0))
+        );
+
+        let targets = geometry.hit_targets(&item);
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[0].id.as_str(), "range.1");
+        assert_eq!(targets[0].kind, EditorHitKind::Item);
+        assert_eq!(targets[0].z_index, 20);
+        assert!(targets[0].selectable);
+        assert!(targets[0].draggable);
+        assert_eq!(targets[1].id.as_str(), "range.1.start");
+        assert_eq!(targets[1].kind, EditorHitKind::ResizeHandle);
+        assert_eq!(targets[1].z_index, 21);
+        assert!(!targets[1].selectable);
+        assert_eq!(targets[2].id.as_str(), "range.1.end");
+
+        let disabled = TimelineRangeItem::new("disabled", 2, 120.0, 12.0).disabled(true);
+        let disabled_targets = geometry.hit_targets(&disabled);
+        assert_eq!(disabled_targets.len(), 1);
+        assert!(!disabled_targets[0].selectable);
+        assert!(!disabled_targets[0].draggable);
+        assert!(disabled_targets[0].cursor.is_none());
+    }
+
+    #[test]
+    fn timeline_range_items_translate_preview_and_resize_neutrally() {
+        let geometry = TimelineRangeItemGeometry::new(ArrangementGeometry::new(
+            transform(),
+            LaneGeometry::new(5.0, 6)
+                .with_origin_y(50.0)
+                .with_lane_gap(1.0),
+        ));
+        let item = TimelineRangeItem::new("range.2", 2, 120.0, 12.0);
+        let grid = SnapGrid::new(UiPoint::new(0.25, 1.0));
+
+        let preview = geometry
+            .translated_item(&item, 1.13, 1, grid)
+            .expect("translated item");
+        assert_eq!(preview.lane_index, 3);
+        assert_eq!(preview.range, EditorAxisRange::new(121.25, 133.25));
+        assert!(preview.dragging);
+        assert_eq!(
+            geometry.drag_preview_world_rect(&item, 1.13, 1, grid),
+            Some(UiRect::new(121.25, 68.0, 12.0, 5.0))
+        );
+        assert!(geometry
+            .translated_item(&item.clone().disabled(true), 1.0, 0, grid)
+            .is_none());
+        assert!(geometry.translated_item(&item, 1.0, -3, grid).is_none());
+        assert!(geometry.translated_item(&item, 1.0, 99, grid).is_none());
+
+        assert_eq!(
+            geometry.resized_range(&item, TimelineRangeItemEdge::Start, 123.12, 2.0, grid),
+            EditorAxisRange::new(123.0, 132.0)
+        );
+        assert_eq!(
+            geometry.resized_range(&item, TimelineRangeItemEdge::End, 120.2, 2.0, grid),
+            EditorAxisRange::new(120.0, 122.0)
+        );
+        assert_eq!(
+            geometry.resized_range(
+                &item.clone().disabled(true),
+                TimelineRangeItemEdge::End,
+                140.0,
+                2.0,
+                grid
+            ),
+            item.range
         );
     }
 
