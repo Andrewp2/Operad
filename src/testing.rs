@@ -784,6 +784,53 @@ impl<'a> PaintAssertions<'a> {
             .count()
     }
 
+    pub fn require_kind_count(
+        &self,
+        selector: PaintKindSelector,
+        expected_count: usize,
+    ) -> TestResult {
+        let actual = self.count_kind(selector);
+        if actual == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected {expected_count} paint items of kind {selector:?}, got {actual}"
+            )))
+        }
+    }
+
+    pub fn require_min_kind_count(
+        &self,
+        selector: PaintKindSelector,
+        minimum_count: usize,
+    ) -> TestResult {
+        let actual = self.count_kind(selector);
+        if actual >= minimum_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected at least {minimum_count} paint items of kind {selector:?}, got {actual}"
+            )))
+        }
+    }
+
+    pub fn node_items(&self, node_name: &str) -> TestResult<Vec<&PaintItem>> {
+        let (id, _) = LayoutAssertions::new(self.document).node(node_name)?;
+        let items = self
+            .paint
+            .items
+            .iter()
+            .filter(|item| item.node == id)
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            Err(TestFailure::new(format!(
+                "node `{node_name}` has no paint items"
+            )))
+        } else {
+            Ok(items)
+        }
+    }
+
     pub fn require_node_kind(
         &self,
         node_name: &str,
@@ -797,6 +844,21 @@ impl<'a> PaintAssertions<'a> {
             .ok_or_else(|| {
                 TestFailure::new(format!(
                     "node `{node_name}` has no paint item of kind {selector:?}"
+                ))
+            })
+    }
+
+    pub fn require_node_shader(&self, node_name: &str, shader_key: &str) -> TestResult<&PaintItem> {
+        self.node_items(node_name)?
+            .into_iter()
+            .find(|item| {
+                item.shader
+                    .as_ref()
+                    .is_some_and(|shader| shader.key == shader_key)
+            })
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "node `{node_name}` has no paint item using shader `{shader_key}`"
                 ))
             })
     }
@@ -1499,8 +1561,8 @@ mod tests {
         ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest, HostFrameOutput,
         HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
         ImageRenderRegistry, InputBehavior, RawKeyboardEvent, RawWheelEvent, RenderFrameRequest,
-        RenderTarget, ScrollAxes, StrokeStyle, TextStyle, UiContent, UiDocument, UiNode,
-        UiNodeStyle, UiPoint, UiVisual,
+        RenderTarget, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent, UiDocument,
+        UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -1781,7 +1843,8 @@ mod tests {
                 ColorRgba::new(20, 24, 32, 255),
                 Some(StrokeStyle::new(ColorRgba::new(80, 100, 120, 255), 1.0)),
                 4.0,
-            )),
+            ))
+            .with_shader(ShaderEffect::new("panel.surface")),
         );
         document.add_child(
             panel,
@@ -1821,6 +1884,16 @@ mod tests {
 
         let paint = PaintAssertions::new(&document);
         assert!(paint.count_kind(PaintKindSelector::Rect) >= 1);
+        paint
+            .require_min_kind_count(PaintKindSelector::Rect, 1)
+            .expect("rect paint count");
+        assert!(paint
+            .require_kind_count(PaintKindSelector::Text, 2)
+            .is_err());
+        assert!(!paint.node_items("panel").expect("panel paint").is_empty());
+        paint
+            .require_node_shader("panel", "panel.surface")
+            .expect("panel shader");
         paint
             .require_node_kind("panel.icon", PaintKindSelector::Image)
             .expect("icon paint");
