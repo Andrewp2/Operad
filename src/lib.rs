@@ -3031,18 +3031,27 @@ impl UiDocument {
                     });
                 }
                 if let Some(background_color) = self.effective_background_color(id) {
-                    let text_color = effective_foreground_color(text.style.color, background_color);
-                    let contrast_ratio = text_color.contrast_ratio(background_color);
-                    let required_ratio = required_text_contrast_ratio(&text.style);
-                    if contrast_ratio + f32::EPSILON < required_ratio {
-                        warnings.push(AuditWarning::TextContrastTooLow {
-                            node: id,
-                            name: node.name.clone(),
-                            text_color: text.style.color,
-                            background_color,
-                            contrast_ratio,
-                            required_ratio,
-                        });
+                    push_text_contrast_warning(
+                        &mut warnings,
+                        id,
+                        &node.name,
+                        &text.style,
+                        background_color,
+                    );
+                }
+            }
+            if let UiContent::Scene(primitives) = &node.content {
+                if let Some(background_color) = self.effective_background_color(id) {
+                    for primitive in primitives {
+                        if let ScenePrimitive::Text(text) = primitive {
+                            push_text_contrast_warning(
+                                &mut warnings,
+                                id,
+                                &node.name,
+                                &text.style,
+                                background_color,
+                            );
+                        }
                     }
                 }
             }
@@ -3113,6 +3122,28 @@ fn required_text_contrast_ratio(style: &TextStyle) -> f32 {
         3.0
     } else {
         4.5
+    }
+}
+
+fn push_text_contrast_warning(
+    warnings: &mut Vec<AuditWarning>,
+    node: UiNodeId,
+    name: &str,
+    style: &TextStyle,
+    background_color: ColorRgba,
+) {
+    let text_color = effective_foreground_color(style.color, background_color);
+    let contrast_ratio = text_color.contrast_ratio(background_color);
+    let required_ratio = required_text_contrast_ratio(style);
+    if contrast_ratio + f32::EPSILON < required_ratio {
+        warnings.push(AuditWarning::TextContrastTooLow {
+            node,
+            name: name.to_string(),
+            text_color: style.color,
+            background_color,
+            contrast_ratio,
+            required_ratio,
+        });
     }
 }
 
@@ -3219,7 +3250,7 @@ fn accessibility_needs_value(role: AccessibilityRole) -> bool {
 fn accessibility_needs_value_range(role: AccessibilityRole) -> bool {
     matches!(
         role,
-        AccessibilityRole::Slider | AccessibilityRole::SpinButton
+        AccessibilityRole::Meter | AccessibilityRole::Slider | AccessibilityRole::SpinButton
     )
 }
 
@@ -7405,6 +7436,47 @@ mod tests {
     }
 
     #[test]
+    fn audit_layout_reports_low_scene_text_contrast() {
+        let mut doc = UiDocument::new(root_style(240.0, 80.0));
+        doc.node_mut(doc.root).visual = UiVisual::panel(ColorRgba::new(18, 22, 28, 255), None, 0.0);
+        let scene = doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "scene_labels",
+                vec![ScenePrimitive::Text(PaintText::new(
+                    "Scene label",
+                    UiRect::new(8.0, 8.0, 120.0, 20.0),
+                    TextStyle {
+                        font_size: 12.0,
+                        line_height: 16.0,
+                        color: ColorRgba::new(34, 40, 48, 255),
+                        ..Default::default()
+                    },
+                ))],
+                layout::fixed(160.0, 40.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(240.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let warnings = doc.audit_layout();
+        assert!(warnings.iter().any(|warning| {
+            matches!(
+                warning,
+                AuditWarning::TextContrastTooLow {
+                    node,
+                    name,
+                    contrast_ratio,
+                    required_ratio,
+                    ..
+                } if *node == scene
+                    && name == "scene_labels"
+                    && *contrast_ratio < *required_ratio
+            )
+        }));
+    }
+
+    #[test]
     fn audit_layout_reports_accessibility_name_action_and_relation_gaps() {
         let mut doc = UiDocument::new(root_style(260.0, 120.0));
         let unlabeled = doc.add_child(
@@ -7585,6 +7657,14 @@ mod tests {
                         .focusable(),
                 ),
         );
+        let meter_range_gap = doc.add_child(
+            doc.root,
+            UiNode::container("meter_range_gap", button_style(80.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Meter)
+                    .label("Missing meter range")
+                    .value("72%"),
+            ),
+        );
         let complete = doc.add_child(
             doc.root,
             UiNode::container("complete", button_style(80.0, 24.0))
@@ -7621,6 +7701,15 @@ mod tests {
                         .action(AccessibilityAction::new("decrease", "Decrease"))
                         .focusable(),
                 ),
+        );
+        let complete_meter = doc.add_child(
+            doc.root,
+            UiNode::container("complete_meter", button_style(80.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Meter)
+                    .label("Complete meter")
+                    .value("20%")
+                    .value_range(AccessibilityValueRange::new(0.0, 100.0)),
+            ),
         );
         doc.compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
             .expect("layout");
@@ -7723,6 +7812,13 @@ mod tests {
                 range: AccessibilityValueRange::new(100.0, 0.0),
             })
         );
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityValueRangeMissing {
+                node: meter_range_gap,
+                name: "meter_range_gap".to_string(),
+                role: AccessibilityRole::Meter,
+            })
+        );
         assert!(!warnings.contains(&AuditWarning::AccessibleNameMissing {
             node: named_by_relation,
             name: "named_by_relation".to_string(),
@@ -7780,6 +7876,13 @@ mod tests {
                 node: complete_slider,
                 name: "complete_slider".to_string(),
                 role: AccessibilityRole::Slider,
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityValueRangeMissing {
+                node: complete_meter,
+                name: "complete_meter".to_string(),
+                role: AccessibilityRole::Meter,
             })
         );
         assert!(

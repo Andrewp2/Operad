@@ -316,11 +316,12 @@ The branch starts from Operad 2.0.0 plus:
   snapshots under a fixed budget.
 - Layout audit checks in `src/lib.rs` now cover duplicate node names,
   non-finite rects, invisible or too-small interactive nodes, text clipping,
-  low-contrast text against effective background fills, nodes outside the root,
-  empty paint clips, interactive controls missing visible accessibility
-  metadata, focusable controls missing from the accessibility traversal, and
-  accessible-name/action/action-id/action-label/duplicate-action/state/value/
-  missing-or-invalid-value-range/relation-target gaps.
+  low-contrast text and scene text against effective background fills, nodes
+  outside the root, empty paint clips, interactive controls missing visible
+  accessibility metadata, focusable controls missing from the accessibility
+  traversal, and accessible-name/action/action-id/action-label/duplicate-action/
+  state/value/missing-or-invalid-value-range/relation-target gaps, including
+  meter ranges.
 - Public `ColorRgba` contrast helpers compute alpha compositing, relative
   luminance, contrast ratios, contrast pass/fail checks, and highest-contrast
   foreground selection for theme, widget, audit, and snapshot code.
