@@ -197,7 +197,7 @@ The branch starts from Operad 2.0.0 plus:
   scroll offsets.
 - Shell bar and transport planning in `src/shell.rs` for command/toggle/readout
   item metadata, enabled/active/pressed state, width priorities, cluster spacing,
-  and deterministic overflow plans.
+  deterministic overflow plans, and renderer-neutral accessibility metadata.
 - Renderer-neutral testing helpers in `src/testing.rs` for event replay, raw
   input conversion checks, platform-output assertions, stable-name layout
   assertions, paint-list assertions, RGBA pixel diffs with tolerances, dirty

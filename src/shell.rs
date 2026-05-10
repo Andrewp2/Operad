@@ -6,7 +6,10 @@
 
 use std::collections::HashMap;
 
-use crate::{accessibility::FocusRestoreTarget, UiPoint, UiRect, UiSize};
+use crate::{
+    accessibility::FocusRestoreTarget, AccessibilityAction, AccessibilityMeta, AccessibilityRole,
+    AccessibilityValueRange, UiPoint, UiRect, UiSize,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ShellRegion {
@@ -147,6 +150,35 @@ impl ShellNumericReadout {
         self.max_value = Some(max_value);
         self
     }
+
+    pub fn accessibility_value(&self) -> String {
+        if let Some(unit) = &self.unit {
+            if self.value.is_empty() {
+                unit.clone()
+            } else {
+                format!("{} {}", self.value, unit)
+            }
+        } else {
+            self.value.clone()
+        }
+    }
+
+    pub fn accessibility_range(&self) -> Option<AccessibilityValueRange> {
+        let (Some(min), Some(max)) = (self.min_value, self.max_value) else {
+            return None;
+        };
+        if !min.is_finite() || !max.is_finite() {
+            return None;
+        }
+
+        let (min, max) = if min <= max { (min, max) } else { (max, min) };
+        let range = AccessibilityValueRange::new(min, max);
+        Some(if let Some(precision) = self.precision {
+            range.with_step(10_f64.powi(-(precision.min(12) as i32)))
+        } else {
+            range
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,6 +282,18 @@ impl ShellBarItem {
         self.readout = Some(readout);
         self
     }
+
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        shell_bar_accessibility_meta(ShellBarAccessibility {
+            label: &self.label,
+            command_id: self.command_id.as_deref(),
+            role: self.role,
+            enabled: self.enabled,
+            active: self.active,
+            pressed: self.pressed,
+            readout: self.readout.as_ref(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -312,6 +356,20 @@ pub struct ShellBarItemLayout {
     pub readout: Option<ShellNumericReadout>,
 }
 
+impl ShellBarItemLayout {
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        shell_bar_accessibility_meta(ShellBarAccessibility {
+            label: &self.label,
+            command_id: self.command_id.as_deref(),
+            role: self.role,
+            enabled: self.enabled,
+            active: self.active,
+            pressed: self.pressed,
+            readout: self.readout.as_ref(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellBarOverflowItem {
     pub id: String,
@@ -324,6 +382,20 @@ pub struct ShellBarOverflowItem {
     pub pressed: bool,
     pub priority: i32,
     pub readout: Option<ShellNumericReadout>,
+}
+
+impl ShellBarOverflowItem {
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        shell_bar_accessibility_meta(ShellBarAccessibility {
+            label: &self.label,
+            command_id: self.command_id.as_deref(),
+            role: self.role,
+            enabled: self.enabled,
+            active: self.active,
+            pressed: self.pressed,
+            readout: self.readout.as_ref(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -564,6 +636,76 @@ fn item_min_width(item: &ShellBarItem) -> f32 {
 
 fn item_preferred_width(item: &ShellBarItem) -> f32 {
     finite_nonnegative(item.preferred_width).max(item_min_width(item))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ShellBarAccessibility<'a> {
+    label: &'a str,
+    command_id: Option<&'a str>,
+    role: ShellBarItemRole,
+    enabled: bool,
+    active: bool,
+    pressed: bool,
+    readout: Option<&'a ShellNumericReadout>,
+}
+
+fn shell_bar_accessibility_meta(item: ShellBarAccessibility<'_>) -> AccessibilityMeta {
+    let mut meta = AccessibilityMeta::new(shell_bar_accessibility_role(item.role, item.readout))
+        .label(item.label.to_owned());
+
+    match item.role {
+        ShellBarItemRole::Command => {
+            meta = meta.focusable().pressed(item.pressed);
+        }
+        ShellBarItemRole::Toggle => {
+            meta = meta.focusable().checked(item.active).pressed(item.pressed);
+        }
+        ShellBarItemRole::Readout => {
+            meta = meta.read_only();
+            if let Some(readout) = item.readout {
+                meta = meta.value(readout.accessibility_value());
+                if let Some(range) = readout.accessibility_range() {
+                    meta = meta.value_range(range);
+                }
+            }
+        }
+        ShellBarItemRole::Separator => {}
+        ShellBarItemRole::Spacer => {
+            meta = meta.hidden();
+        }
+    }
+
+    if let Some(command_id) = item.command_id {
+        meta = meta.action(AccessibilityAction::new(
+            command_id.to_owned(),
+            item.label.to_owned(),
+        ));
+    }
+    if item.enabled {
+        meta
+    } else {
+        meta.disabled()
+    }
+}
+
+fn shell_bar_accessibility_role(
+    role: ShellBarItemRole,
+    readout: Option<&ShellNumericReadout>,
+) -> AccessibilityRole {
+    match role {
+        ShellBarItemRole::Command => AccessibilityRole::Button,
+        ShellBarItemRole::Toggle => AccessibilityRole::ToggleButton,
+        ShellBarItemRole::Readout
+            if readout
+                .and_then(ShellNumericReadout::accessibility_range)
+                .is_some() =>
+        {
+            AccessibilityRole::Meter
+        }
+        ShellBarItemRole::Readout => AccessibilityRole::Status,
+        ShellBarItemRole::Separator => AccessibilityRole::Separator,
+        ShellBarItemRole::Spacer => AccessibilityRole::Group,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1361,6 +1503,73 @@ mod tests {
         assert_eq!(plan.visible_items[1].x, 52.0);
         assert_eq!(plan.visible_items[1].width, 48.0);
         assert_eq!(plan.used_width, 100.0);
+    }
+
+    #[test]
+    fn shell_bar_items_export_accessibility_metadata() {
+        let toggle = ShellBarItem::toggle("loop", "Loop", "transport.loop")
+            .active(true)
+            .pressed(true);
+        let toggle_meta = toggle.accessibility_meta();
+        assert_eq!(toggle_meta.role, AccessibilityRole::ToggleButton);
+        assert_eq!(toggle_meta.label.as_deref(), Some("Loop"));
+        assert_eq!(toggle_meta.checked, Some(crate::AccessibilityChecked::True));
+        assert_eq!(toggle_meta.pressed, Some(true));
+        assert!(toggle_meta.focusable);
+        assert_eq!(toggle_meta.actions[0].id, "transport.loop");
+
+        let disabled = ShellBarItem::command("record", "Record", "transport.record")
+            .enabled(false)
+            .pressed(true);
+        let disabled_meta = disabled.accessibility_meta();
+        assert_eq!(disabled_meta.role, AccessibilityRole::Button);
+        assert!(!disabled_meta.enabled);
+        assert_eq!(disabled_meta.pressed, Some(true));
+
+        let readout = ShellBarItem::readout(
+            "cpu",
+            "CPU",
+            ShellNumericReadout::new("18")
+                .unit("%")
+                .precision(0)
+                .range(0.0, 100.0),
+        );
+        let readout_meta = readout.accessibility_meta();
+        assert_eq!(readout_meta.role, AccessibilityRole::Meter);
+        assert_eq!(readout_meta.value.as_deref(), Some("18 %"));
+        assert_eq!(
+            readout_meta.value_range,
+            Some(AccessibilityValueRange::new(0.0, 100.0).with_step(1.0))
+        );
+        assert!(readout_meta.read_only);
+
+        let spacer = ShellBarItem::new("fill", "", ShellBarItemRole::Spacer);
+        assert!(spacer.accessibility_meta().hidden);
+    }
+
+    #[test]
+    fn shell_bar_layout_items_preserve_accessibility_state() {
+        let items = vec![
+            ShellBarItem::toggle("snap", "Snap", "edit.snap")
+                .active(true)
+                .widths(40.0, 56.0),
+            ShellBarItem::command("grid", "Grid", "view.grid")
+                .overflow_policy(ShellBarOverflowPolicy::Always),
+        ];
+        let plan = ShellBarLayoutPlan::from_items(&items, 80.0);
+
+        let visible_meta = plan.visible_items[0].accessibility_meta();
+        assert_eq!(visible_meta.role, AccessibilityRole::ToggleButton);
+        assert_eq!(
+            visible_meta.checked,
+            Some(crate::AccessibilityChecked::True)
+        );
+        assert_eq!(visible_meta.actions[0].id, "edit.snap");
+
+        let overflow_meta = plan.overflow_items[0].accessibility_meta();
+        assert_eq!(overflow_meta.role, AccessibilityRole::Button);
+        assert_eq!(overflow_meta.label.as_deref(), Some("Grid"));
+        assert_eq!(overflow_meta.actions[0].id, "view.grid");
     }
 
     #[test]
