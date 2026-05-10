@@ -30,8 +30,8 @@ use crate::renderer::{
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree, ColorRgba,
-    PaintItem, PaintKind, PaintList, RawInputEvent, UiDocument, UiInputEvent, UiInputResult,
-    UiNode, UiNodeId, UiRect, UiSize,
+    FocusDirection, KeyCode, KeyModifiers, PaintItem, PaintKind, PaintList, RawInputEvent,
+    UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +97,56 @@ impl EventReplay {
             input: ReplayInput::Ui(event),
         });
         self
+    }
+
+    pub fn pointer_move(self, label: impl Into<String>, point: UiPoint) -> Self {
+        self.ui(label, UiInputEvent::PointerMove(point))
+    }
+
+    pub fn pointer_down(self, label: impl Into<String>, point: UiPoint) -> Self {
+        self.ui(label, UiInputEvent::PointerDown(point))
+    }
+
+    pub fn pointer_up(self, label: impl Into<String>, point: UiPoint) -> Self {
+        self.ui(label, UiInputEvent::PointerUp(point))
+    }
+
+    pub fn pointer_click(self, label: impl Into<String>, point: UiPoint) -> Self {
+        let label = label.into();
+        self.pointer_move(format!("{label}.move"), point)
+            .pointer_down(format!("{label}.down"), point)
+            .pointer_up(format!("{label}.up"), point)
+    }
+
+    pub fn pointer_drag(
+        self,
+        label: impl Into<String>,
+        start: UiPoint,
+        end: UiPoint,
+        intermediate_points: impl IntoIterator<Item = UiPoint>,
+    ) -> Self {
+        let label = label.into();
+        let mut replay = self
+            .pointer_move(format!("{label}.move.start"), start)
+            .pointer_down(format!("{label}.down"), start);
+        for (index, point) in intermediate_points.into_iter().enumerate() {
+            replay = replay.pointer_move(format!("{label}.move.{index}"), point);
+        }
+        replay
+            .pointer_move(format!("{label}.move.end"), end)
+            .pointer_up(format!("{label}.up"), end)
+    }
+
+    pub fn wheel(self, label: impl Into<String>, position: UiPoint, delta: UiPoint) -> Self {
+        self.ui(label, UiInputEvent::Wheel { position, delta })
+    }
+
+    pub fn key(self, label: impl Into<String>, key: KeyCode, modifiers: KeyModifiers) -> Self {
+        self.ui(label, UiInputEvent::Key { key, modifiers })
+    }
+
+    pub fn focus(self, label: impl Into<String>, direction: FocusDirection) -> Self {
+        self.ui(label, UiInputEvent::Focus(direction))
     }
 
     pub fn raw(mut self, label: impl Into<String>, event: RawInputEvent) -> Self {
@@ -213,6 +263,18 @@ pub struct EventReplayReport {
 }
 
 impl EventReplayReport {
+    pub fn step(&self, label: &str) -> TestResult<&EventReplayStepResult> {
+        self.steps
+            .iter()
+            .find(|step| step.label == label)
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing event replay step `{label}`; available steps: {:?}",
+                    self.step_labels()
+                ))
+            })
+    }
+
     pub fn clicked_nodes(&self) -> Vec<UiNodeId> {
         self.steps
             .iter()
@@ -234,6 +296,40 @@ impl EventReplayReport {
             .collect()
     }
 
+    pub fn require_clicked(&self, node: UiNodeId) -> TestResult {
+        require_replay_node("clicked", node, self.clicked_nodes())
+    }
+
+    pub fn require_focused(&self, node: UiNodeId) -> TestResult {
+        require_replay_node("focused", node, self.focused_nodes())
+    }
+
+    pub fn require_scrolled(&self, node: UiNodeId) -> TestResult {
+        require_replay_node("scrolled", node, self.scrolled_nodes())
+    }
+
+    pub fn require_no_clicks(&self) -> TestResult {
+        let clicked = self.clicked_nodes();
+        if clicked.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no clicked nodes, got {clicked:?}"
+            )))
+        }
+    }
+
+    pub fn require_no_scrolls(&self) -> TestResult {
+        let scrolled = self.scrolled_nodes();
+        if scrolled.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no scrolled nodes, got {scrolled:?}"
+            )))
+        }
+    }
+
     pub fn require_all_converted(&self) -> TestResult {
         if let Some(step) = self.steps.iter().find(|step| step.converted.is_none()) {
             Err(TestFailure::new(format!(
@@ -243,6 +339,20 @@ impl EventReplayReport {
         } else {
             Ok(())
         }
+    }
+
+    fn step_labels(&self) -> Vec<&str> {
+        self.steps.iter().map(|step| step.label.as_str()).collect()
+    }
+}
+
+fn require_replay_node(kind: &str, node: UiNodeId, actual: Vec<UiNodeId>) -> TestResult {
+    if actual.contains(&node) {
+        Ok(())
+    } else {
+        Err(TestFailure::new(format!(
+            "expected event replay {kind} node {node:?}, got {actual:?}"
+        )))
     }
 }
 
@@ -1388,8 +1498,8 @@ mod tests {
         CanvasInteractionPolicy, CanvasRenderContext, CanvasRenderOutput, CanvasRenderRegistry,
         ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest, HostFrameOutput,
         HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
-        ImageRenderRegistry, InputBehavior, RawKeyboardEvent, RawPointerEvent, RawWheelEvent,
-        RenderFrameRequest, RenderTarget, StrokeStyle, TextStyle, UiContent, UiDocument, UiNode,
+        ImageRenderRegistry, InputBehavior, RawKeyboardEvent, RawWheelEvent, RenderFrameRequest,
+        RenderTarget, ScrollAxes, StrokeStyle, TextStyle, UiContent, UiDocument, UiNode,
         UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
@@ -1420,16 +1530,7 @@ mod tests {
             .expect("layout");
 
         let report = EventReplay::new()
-            .raw(
-                "move",
-                RawInputEvent::Pointer(RawPointerEvent::new(
-                    crate::PointerEventKind::Move,
-                    UiPoint::new(12.0, 12.0),
-                    1,
-                )),
-            )
-            .ui("down", UiInputEvent::PointerDown(UiPoint::new(12.0, 12.0)))
-            .ui("up", UiInputEvent::PointerUp(UiPoint::new(12.0, 12.0)))
+            .pointer_click("play", UiPoint::new(12.0, 12.0))
             .raw(
                 "key",
                 RawInputEvent::Keyboard(RawKeyboardEvent::press(
@@ -1443,7 +1544,64 @@ mod tests {
         assert_eq!(report.steps.len(), 4);
         assert_eq!(report.clicked_nodes(), vec![button]);
         assert_eq!(report.focused_nodes().last().copied(), Some(button));
+        assert_eq!(
+            report.step("play.up").expect("up step").converted,
+            Some(UiInputEvent::PointerUp(UiPoint::new(12.0, 12.0)))
+        );
+        report.require_clicked(button).expect("clicked button");
+        report.require_focused(button).expect("focused button");
+        report.require_no_scrolls().expect("no scrolls");
         assert!(report.require_all_converted().is_ok());
+    }
+
+    #[test]
+    fn event_replay_builders_and_assertions_cover_scroll_and_miss_paths() {
+        let mut document = UiDocument::new(root_style(160.0, 120.0));
+        let scroll_area = document.add_child(
+            document.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: Style {
+                        size: TaffySize {
+                            width: length(120.0),
+                            height: length(48.0),
+                        },
+                        ..Default::default()
+                    },
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        document.add_child(
+            scroll_area,
+            UiNode::container("content", fixed_style(120.0, 140.0)),
+        );
+        document
+            .compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let report = EventReplay::new()
+            .wheel(
+                "scroll.down",
+                UiPoint::new(24.0, 24.0),
+                UiPoint::new(0.0, 32.0),
+            )
+            .pointer_drag(
+                "empty.drag",
+                UiPoint::new(140.0, 80.0),
+                UiPoint::new(150.0, 88.0),
+                [UiPoint::new(145.0, 84.0)],
+            )
+            .run(&mut document);
+
+        report.require_scrolled(scroll_area).expect("scrolled area");
+        report.require_no_clicks().expect("drag outside misses");
+        assert!(report.require_clicked(scroll_area).is_err());
+        assert!(report.step("empty.drag.move.0").is_ok());
+        assert!(report.step("missing").is_err());
     }
 
     #[test]
