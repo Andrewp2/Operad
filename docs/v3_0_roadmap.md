@@ -1,200 +1,34 @@
-# Operad 3.0 Roadmap
+# Operad 3.0 Release Scope
 
-This roadmap translates the Orbifold and game-agent 3.0 wishlists into reusable
-Operad work. Consumers should continue to own product semantics; Operad should
-own the themeable, testable, accessible UI machinery that projects app snapshots
-into documents, editor surfaces, backend paint, and command intents.
+Operad `3.0.0` is the workstation-grade UI infrastructure release for the game,
+Orbifold, and Fabricad/layout consumers. It is intentionally breaking relative
+to `2.0.0`; the main goal is to give downstream apps reusable, renderer-neutral
+contracts for accessibility, host frames, command routing, custom editor
+geometry, dense widgets, snapshots, performance checks, and Operad-owned layout
+style storage.
 
-## Release Direction
+Future work that did not fit in `3.0.0` has been moved to
+[`docs/v4_0_roadmap.md`](v4_0_roadmap.md). Consumer migration guidance is in
+[`docs/v3_0_migration_guide.md`](v3_0_migration_guide.md).
 
-Operad 3.0 should focus on workstation-grade UI infrastructure:
+## Release Gate
 
-1. Accessibility foundation and platform adapter contracts.
-2. Theme tokens and component visual states.
-3. Rich paint primitives and icon/image handles.
-4. Command routing, shortcut scopes, and tooltip integration.
-5. Gesture phases, pointer capture, and editor-surface hit testing.
-6. App shell helpers for persisted split, dock, tab, and scroll-sync state.
-7. Property, numeric, text, tree, table, and browser polish.
-8. Backend-neutral input, platform output, image handles, and layer policy.
-9. Screenshot, layout, interaction, and performance tooling.
+The release branch is expected to pass:
 
-## Cross-App Reuse Gate
+- `cargo test --all-features`
+- `cargo test --no-default-features`
+- `cargo check --examples --all-features`
+- `cargo clippy --all-features --all-targets -- -D warnings`
+- `cargo fmt -- --check`
+- `git diff --check`
 
-Every v3 slice should be reviewed as shared toolkit infrastructure before it is
-implemented. A feature belongs in Operad when it can be described without game,
-music, semiconductor, or application-specific nouns and when consumers can bind
-their own state, commands, and drawing to the same primitive.
+## Cross-App Reuse Rule
 
-Use neutral API names for reusable mechanics:
-
-- Prefer `TimelineGeometry`, `LaneGeometry`, `RangeItem`, `CurvePoint`,
-  `Overlay`, `CommandId`, `CanvasContent`, `DataTable`, `EditableForm`, and
-  `ShellRegion`.
-- Avoid public APIs named after product concepts such as inventory slots, MIDI
-  notes, wafer dies, fabrication recipes, synth parameters, or game debug tools
-  unless the type is explicitly only test/sample data.
-- Keep examples free to mention Orbifold clips, Fabricad wafers, or game HUDs,
-  but keep core structs and widget contracts app-neutral.
-
-Before landing a nontrivial v3 primitive, it should have a short reuse check:
-
-- **Game:** does this remove egui coupling, improve renderer-neutral input,
-  layering, assets, debugging, or reusable menus/HUD/editor tools?
-- **Orbifold:** does this support dense workstation shell, timeline/lane/range
-  editing, commands, text/list inputs, or custom editor surfaces without owning
-  musical state?
-- **Fabricad/layout:** does this support inspectable panels, forms, data grids,
-  canvas/viewports, charts, auditability, accessibility, or custom domain hit
-  targets without owning semiconductor state?
-
-If a slice only benefits one application, keep it in that application unless it
-can be reduced to a neutral primitive with typed app-owned payloads.
-
-## Accessibility Track
-
-The first v3 commit expands the core accessibility contract beyond v2 metadata:
-
-- More roles for toolbars, toggle buttons, search boxes, spin buttons, splitters,
-  status/alert/live regions, editor surfaces, table headers, rows, rulers, and
-  meters.
-- State flags for selected, checked, expanded, pressed, read-only, required,
-  invalid, modal, and hidden.
-- Value ranges for sliders, scrollbars, numeric controls, rulers, and color
-  channels.
-- Relationships for labelled-by, described-by, controls, owns, and active
-  descendant.
-- Actions, keyboard shortcuts, focus ordering, modal-scope detection, and live
-  region priority.
-
-Next accessibility work should define backend/platform adapter traits for
-screen-reader trees, focus restore, focus traps, reduced motion, high contrast,
-clipboard, text/IME, drag/drop, and screenshots.
-
-The branch now includes `src/accessibility.rs` as the backend-facing
-accessibility contract: screen-reader tree publishing requests, focus movement,
-focus traps, focus restore targets, live announcements, host preference flags,
-and accessibility capabilities integrated into backend capability descriptors.
-
-## Theme Track
-
-Add a first-class theme model with semantic tokens:
-
-- Color, typography, spacing, radius, stroke, shadow, opacity, and motion tokens.
-- Component tokens for buttons, tabs, search fields, lane headers, range items,
-  editor lanes, property rows, menu rows, and transport controls.
-- Scoped theme inheritance so editor surfaces can use musical colors while shell
-  widgets remain visually consistent.
-- One excellent dark theme before broad light-theme work.
-- High-density visual variants for toolbars, lists, data grids, and DAW/editor
-  controls.
-- Stable active, hover, pressed, disabled, invalid, warning, changed, pending,
-  selected, and focused state tokens.
-
-## Paint And Asset Track
-
-Add renderer-neutral primitives and resource handles that make dense app
-surfaces possible without leaking backend types into consumer state:
-
-- Rounded rectangles with stroke alignment.
-- Linear gradients and simple multi-stop gradients.
-- Shadows, glows, inset borders, and clear fallback semantics.
-- Text alignment, baseline positioning, clipping, and elision.
-- Text primitives inside custom scene/display-list surfaces, including anchored
-  text at a point or rect, multiline labels, contrast-aware color selection, and
-  snapshot coverage.
-- Icon/image registry handles with sizing, tint, and alignment.
-- App-owned image, icon, texture, and thumbnail handles that can be resolved by
-  egui, wgpu, a game renderer, or an offscreen snapshot renderer.
-- Canvas/native-viewport embedding and render callbacks for custom GPU/tiled
-  surfaces, wafer maps, charts, sparklines, and domain hit targets.
-- Paths for automation curves, waveforms, and custom editor display lists.
-- Pixel snapping policy for hairlines and grids.
-
-## Backend And Platform Track
-
-Make egui one optional adapter rather than a type that leaks into consumer UI
-models, tests, input conversion, texture handles, and styling:
-
-- Renderer-neutral raw input events, platform-output responses, cursor changes,
-  repaint requests, file dialogs, clipboard, open-URL, screenshots, text/IME,
-  and drag/drop service requests.
-- Backend adapter traits for egui, future wgpu, CPU snapshot rendering, and
-  app-owned renderers.
-- Host adapter contracts for hover, pressed, focused, drag-captured, text/IME,
-  wheel-targeted, and shortcut-routed state before paint.
-- Texture/image delta abstraction for application-owned resources such as game
-  menu thumbnails.
-- Explicit layer and z-order policy for mixed host/debug/app UI, so debug UI can
-  stay above app UI without relying on backend-specific ordering.
-- A richer paint-list/backend contract that supports batching, resource
-  resolution, partial updates, and deterministic tests.
-
-## Commands And Gestures Track
-
-Add app-owned command routing without importing app semantics:
-
-- Command registry with opaque IDs.
-- Platform-aware shortcuts and scope hierarchy.
-- Conflict detection, debug dumps, menu integration, command palette integration,
-  and tooltip shortcut display.
-- Menu and popup APIs should emit command IDs or typed outcomes instead of
-  requiring consumers to inspect node names.
-- Platform service command hooks for file dialogs, quit, screenshot, clipboard,
-  and other app-owned effects.
-- Pointer capture, drag thresholds, double-click timing, cancellation, modifiers,
-  high-resolution wheel deltas, and edit phase coalescing.
-- Drag capture for sliders, splitters, range-item handles, curve handles, and
-  host-embedded editor surfaces.
-
-## Shell And Editor Track
-
-Make dense workstation layouts easier to assemble without baking in one
-application's domain model:
-
-- Persistent top, left, lane list, timeline/editor, right, bottom, and status
-  regions.
-- Higher-level shell host for menu/transport/status bars, left/right/bottom
-  resizable panels, central workspace, scroll containers, visibility, docking,
-  saved layout state, and persisted offsets.
-- Split pane collapse/restore, min/max sizes, and keyboard accessible resizing.
-- Dock panel visibility and persisted size state.
-- Tab strips for inspector/editor panels.
-- Lane-list and timeline/editor scroll synchronization.
-- Editor surfaces with world/view transforms, hover, hit testing, drag capture,
-  marquee selection, snapping, cursor override, tool mode, and overlay layers.
-- Timeline range-item geometry, resize handles, lane headers, curve points, and
-  segment helpers should be named as generic editor primitives; Orbifold clips
-  and automation, Fabricad timeline/review ranges, and game editor ranges should
-  all adapt their own domain payloads on top.
-- Scene/editor text should not require an egui painter escape hatch.
-
-## Data And Editing Track
-
-Move beyond renderable controls toward production editing workflows:
-
-- Numeric fields, drag values, and parameter widgets with units, prefixes,
-  suffixes, clamping, fine adjustment, logarithmic scaling, keyboard precision,
-  and commit versus preview phases.
-- Dense data views for logs and capture tables with virtualized rows, selectable
-  rows/cells, fixed/resizable columns, copy/export commands, compact monospace
-  text, empty states, and sticky headers.
-- Property controls should surface invalid, changed, pending, read-only, and
-  disabled state consistently through theme and accessibility metadata.
-
-## Testing And Performance Track
-
-Build on the v2 snapshot/perf smoke harness:
-
-- Pixel-diff tooling with tolerances.
-- Event replay for menus, row selection, drag gestures, scrolling, shortcuts,
-  raw input conversion, and platform-output assertions.
-- Snapshot and event-test utilities that do not require egui harness types.
-- Layout assertions by stable node name.
-- Paint-list assertions for editor primitives.
-- Dirty flags for layout, paint, input, theme, and text measurement.
-- Retained display lists for static editor backgrounds.
-- Frame timing sections for snapshot, layout, paint build, render, and input.
+The v3 API surface keeps product semantics in the applications. Operad owns
+generic UI machinery: layout, input routing, accessibility, paint contracts,
+commands, shell state, editor geometry, data widgets, testing, and host/backend
+adapters. Game, Orbifold, and Fabricad should pass app-owned IDs, labels,
+commands, resources, and domain hit targets into those neutral primitives.
 
 ## Current V3 Baseline
 
