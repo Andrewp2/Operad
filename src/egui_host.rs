@@ -5,16 +5,168 @@
 
 use std::fmt;
 
+use crate::commands::CommandRegistry;
+use crate::host::{
+    HostAdapter, HostAdapterError, HostCommandDispatch, HostFrameOutput, HostFrameRequest,
+    HostInteractionState,
+};
 use crate::input::{
     PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
     RawPointerEvent, RawTextInputEvent, RawWheelEvent,
 };
 use crate::platform::{
-    ClipboardRequest, CursorRequest, CursorShape, PlatformRequest, PlatformServiceRequest,
-    PlatformServiceResponse, RepaintRequest, ResourceDomain, ResourceHandle, ResourceKind,
+    BackendAdapterKind, BackendCapabilities, ClipboardRequest, CursorRequest, CursorShape,
+    LayerCapabilities, PlatformRequest, PlatformResponse, PlatformServiceCapabilities,
+    PlatformServiceRequest, PlatformServiceResponse, RenderingCapabilities, RepaintRequest,
+    ResourceCapabilities, ResourceDomain, ResourceHandle, ResourceKind,
 };
 use crate::renderer::{PixelRect, ResourceFormat, ResourceUpdate};
-use crate::{FocusDirection, KeyCode, KeyModifiers, UiPoint};
+use crate::{FocusDirection, KeyCode, KeyModifiers, UiPoint, UiSize};
+
+#[derive(Debug, Clone)]
+pub struct EguiHostAdapter {
+    input: EguiInputAdapter,
+    commands: CommandRegistry,
+    wheel_line_size: f32,
+    capabilities: BackendCapabilities,
+}
+
+impl EguiHostAdapter {
+    pub fn new() -> Self {
+        Self {
+            input: EguiInputAdapter::new(),
+            commands: CommandRegistry::new(),
+            wheel_line_size: 16.0,
+            capabilities: egui_host_capabilities(),
+        }
+    }
+
+    pub fn with_command_registry(mut self, commands: CommandRegistry) -> Self {
+        self.commands = commands;
+        self
+    }
+
+    pub fn with_wheel_line_size(mut self, wheel_line_size: f32) -> Self {
+        if wheel_line_size.is_finite() && wheel_line_size > 0.0 {
+            self.wheel_line_size = wheel_line_size;
+        }
+        self
+    }
+
+    pub fn input_adapter(&self) -> &EguiInputAdapter {
+        &self.input
+    }
+
+    pub fn input_adapter_mut(&mut self) -> &mut EguiInputAdapter {
+        &mut self.input
+    }
+
+    pub fn command_registry(&self) -> &CommandRegistry {
+        &self.commands
+    }
+
+    pub fn command_registry_mut(&mut self) -> &mut CommandRegistry {
+        &mut self.commands
+    }
+
+    pub fn translate_host_frame_request<'a>(
+        &mut self,
+        viewport: UiSize,
+        state: HostInteractionState,
+        events: impl IntoIterator<Item = &'a egui::Event>,
+        timestamp_millis: u64,
+    ) -> HostFrameRequest {
+        let raw_input = self.input.translate_events(events, timestamp_millis);
+        let mut request = HostFrameRequest::new(viewport, state);
+        request.raw_input = raw_input;
+        request
+    }
+
+    pub fn process_egui_events<'a>(
+        &mut self,
+        viewport: UiSize,
+        state: HostInteractionState,
+        events: impl IntoIterator<Item = &'a egui::Event>,
+        timestamp_millis: u64,
+    ) -> Result<HostFrameOutput, HostAdapterError> {
+        let request = self.translate_host_frame_request(viewport, state, events, timestamp_millis);
+        self.process_frame(request)
+    }
+}
+
+impl Default for EguiHostAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostAdapter for EguiHostAdapter {
+    fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities.clone()
+    }
+
+    fn process_frame(
+        &mut self,
+        request: HostFrameRequest,
+    ) -> Result<HostFrameOutput, HostAdapterError> {
+        let mut state = request.state;
+        let mut output = HostFrameOutput::new(state.clone());
+
+        for response in request.platform_responses {
+            if let PlatformResponse::TextIme(response) = &response.response {
+                state.apply_text_ime_response(response);
+            }
+            output.platform_responses.push(response);
+        }
+
+        for event in request.raw_input {
+            if let Some(ui_event) =
+                event.to_ui_input_event_with_wheel_scale(self.wheel_line_size, request.viewport)
+            {
+                output.ui_events.push(ui_event);
+            }
+
+            if let RawInputEvent::Keyboard(keyboard) = event {
+                if keyboard.pressed {
+                    let route = state.route_key(keyboard.key, keyboard.modifiers, &self.commands);
+                    if let Some(command) = route.command.clone() {
+                        output.commands.push(HostCommandDispatch {
+                            command,
+                            shortcut: route.shortcut,
+                            target: route.target,
+                        });
+                    }
+                }
+            }
+        }
+
+        output.state = state;
+        Ok(output)
+    }
+}
+
+pub fn egui_host_capabilities() -> BackendCapabilities {
+    BackendCapabilities::new("egui-host")
+        .adapter(BackendAdapterKind::Egui)
+        .resources(ResourceCapabilities {
+            images: true,
+            icons: true,
+            textures: true,
+            thumbnails: true,
+            tinted_icons: true,
+            partial_texture_updates: true,
+        })
+        .layers(LayerCapabilities::STANDARD)
+        .services(PlatformServiceCapabilities {
+            clipboard_write: true,
+            open_url: true,
+            cursor_shape: true,
+            cursor_confine: true,
+            repaint: true,
+            ..PlatformServiceCapabilities::NONE
+        })
+        .rendering(RenderingCapabilities::STANDARD)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EguiInputAdapter {
@@ -569,15 +721,19 @@ fn ui_point(pos: egui::Pos2) -> UiPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::{Command, CommandMeta, CommandScope, Shortcut};
     use crate::input::{WheelDeltaUnit, WheelPhase};
     use crate::platform::{
         ClipboardRequest, CursorRequest, CursorShape, FileDialogMode, FileDialogRequest,
-        ImageHandle, LogicalPoint, OpenUrlRequest, PixelSize, PlatformRequest, PlatformRequestId,
-        PlatformServiceRequest, RepaintRequest, ResourceHandle, TextureHandle,
+        ImageHandle, LogicalPoint, LogicalRect, OpenUrlRequest, PixelSize, PlatformRequest,
+        PlatformRequestId, PlatformResponse, PlatformServiceRequest, PlatformServiceResponse,
+        RepaintRequest, ResourceHandle, TextImeResponse, TextImeSession, TextInputId,
+        TextureHandle,
     };
     use crate::renderer::{PixelRect, ResourceDescriptor, ResourceFormat, ResourceUpdate};
     use crate::{
-        ApproxTextMeasurer, InputBehavior, UiDocument, UiInputEvent, UiNode, UiNodeStyle, UiSize,
+        ApproxTextMeasurer, InputBehavior, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle,
+        UiSize,
     };
     use std::time::Duration;
     use taffy::prelude::{Dimension, Display, FlexDirection, Size as TaffySize, Style};
@@ -595,6 +751,69 @@ mod tests {
             repeat,
             modifiers,
         }
+    }
+
+    #[test]
+    fn egui_host_adapter_processes_events_commands_and_ime_responses() {
+        let mut commands = CommandRegistry::new();
+        commands
+            .register(Command::new(CommandMeta::new("save", "Save")))
+            .unwrap();
+        commands
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('s'), "save")
+            .unwrap();
+
+        let mut adapter = EguiHostAdapter::new()
+            .with_command_registry(commands)
+            .with_wheel_line_size(24.0);
+        let mut state = HostInteractionState {
+            focused: Some(UiNodeId(9)),
+            ..HostInteractionState::default()
+        };
+        let ime_input = TextInputId::new("node:9");
+        state.text_ime = Some(TextImeSession::new(
+            ime_input.clone(),
+            LogicalRect::new(10.0, 12.0, 2.0, 18.0),
+        ));
+        state.text_target = Some(UiNodeId(9));
+
+        let response = PlatformServiceResponse::new(
+            PlatformRequestId::new(11),
+            PlatformResponse::TextIme(TextImeResponse::Deactivated {
+                input: ime_input.clone(),
+            }),
+        );
+        let mut request = adapter.translate_host_frame_request(
+            UiSize::new(320.0, 200.0),
+            state,
+            [
+                egui::Event::PointerMoved(egui::pos2(18.0, 22.0)),
+                key_event(
+                    egui::Key::S,
+                    true,
+                    false,
+                    egui::Modifiers {
+                        ctrl: true,
+                        ..egui::Modifiers::default()
+                    },
+                ),
+            ]
+            .iter(),
+            50,
+        );
+        request.platform_responses.push(response.clone());
+
+        let output = adapter.process_frame(request).expect("egui host frame");
+
+        assert_eq!(adapter.capabilities().adapter, BackendAdapterKind::Egui);
+        assert!(adapter.capabilities().services.clipboard_write);
+        assert_eq!(output.platform_responses, vec![response]);
+        assert_eq!(output.ui_events.len(), 2);
+        assert_eq!(output.commands.len(), 1);
+        assert_eq!(output.commands[0].command.as_str(), "save");
+        assert_eq!(output.commands[0].target, Some(UiNodeId(9)));
+        assert_eq!(output.state.text_ime, None);
+        assert_eq!(output.state.text_target, None);
     }
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {

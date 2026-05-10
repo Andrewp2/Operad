@@ -75,8 +75,9 @@ pub use editor::{
 };
 #[cfg(feature = "egui")]
 pub use egui_host::{
-    egui_cursor_icon, egui_key, egui_modifiers, egui_pointer_button, egui_texture_id_for_resource,
-    EguiInputAdapter, EguiPlatformOutputPlan, EguiTextureDeltaPlan,
+    egui_cursor_icon, egui_host_capabilities, egui_key, egui_modifiers, egui_pointer_button,
+    egui_texture_id_for_resource, EguiHostAdapter, EguiInputAdapter, EguiPlatformOutputPlan,
+    EguiTextureDeltaPlan,
 };
 pub use host::{
     process_document_frame, process_shell_frame, text_input_id_for_node, HostAccessibilityState,
