@@ -660,6 +660,170 @@ impl<'a> DisplayListInvalidationAssertions<'a> {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DisplayListReuseSeries {
+    name: String,
+    reports: Vec<DisplayListReuseReport>,
+}
+
+impl DisplayListReuseSeries {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            reports: Vec::new(),
+        }
+    }
+
+    pub fn report(mut self, report: DisplayListReuseReport) -> Self {
+        self.push(report);
+        self
+    }
+
+    pub fn push(&mut self, report: DisplayListReuseReport) {
+        self.reports.push(report);
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn reports(&self) -> &[DisplayListReuseReport] {
+        &self.reports
+    }
+
+    pub fn len(&self) -> usize {
+        self.reports.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.reports.is_empty()
+    }
+
+    pub fn outcome_count(&self, outcome: DisplayListReuseOutcome) -> usize {
+        self.reports
+            .iter()
+            .filter(|report| report.outcome == outcome)
+            .count()
+    }
+
+    pub fn reused_count(&self) -> usize {
+        self.outcome_count(DisplayListReuseOutcome::Reused)
+    }
+
+    pub fn missed_count(&self) -> usize {
+        self.reports.iter().filter(|report| report.missed()).count()
+    }
+
+    pub fn reuse_rate(&self) -> Option<f64> {
+        (!self.reports.is_empty()).then(|| self.reused_count() as f64 / self.reports.len() as f64)
+    }
+
+    pub fn reports_for_key<'a>(
+        &'a self,
+        key: &'a DisplayListKey,
+    ) -> impl Iterator<Item = &'a DisplayListReuseReport> + 'a {
+        self.reports.iter().filter(move |report| &report.key == key)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayListReuseSeriesAssertions<'a> {
+    series: &'a DisplayListReuseSeries,
+}
+
+impl<'a> DisplayListReuseSeriesAssertions<'a> {
+    pub const fn new(series: &'a DisplayListReuseSeries) -> Self {
+        Self { series }
+    }
+
+    pub const fn series(&self) -> &'a DisplayListReuseSeries {
+        self.series
+    }
+
+    pub fn require_report_count(&self, expected_count: usize) -> TestResult {
+        let actual = self.series.len();
+        if actual == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected {expected_count} display-list reuse report(s), got {actual}",
+                self.series.name()
+            )))
+        }
+    }
+
+    pub fn require_outcome_count(
+        &self,
+        outcome: DisplayListReuseOutcome,
+        expected_count: usize,
+    ) -> TestResult {
+        let actual = self.series.outcome_count(outcome);
+        if actual == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected {expected_count} {outcome:?} display-list reuse outcome(s), got {actual}",
+                self.series.name()
+            )))
+        }
+    }
+
+    pub fn require_min_reused(&self, minimum_count: usize) -> TestResult {
+        let actual = self.series.reused_count();
+        if actual >= minimum_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected at least {minimum_count} reused display-list report(s), got {actual}",
+                self.series.name()
+            )))
+        }
+    }
+
+    pub fn require_no_evictions(&self) -> TestResult {
+        self.require_outcome_count(DisplayListReuseOutcome::MissEvicted, 0)
+    }
+
+    pub fn require_reuse_rate_at_least(&self, minimum_rate: f64) -> TestResult<f64> {
+        let actual = self.series.reuse_rate().ok_or_else(|| {
+            TestFailure::new(format!(
+                "{} has no display-list reuse reports",
+                self.series.name()
+            ))
+        })?;
+        if actual >= minimum_rate {
+            Ok(actual)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected display-list reuse rate at least {minimum_rate:.2}, got {actual:.2}",
+                self.series.name()
+            )))
+        }
+    }
+
+    pub fn require_key_outcome_count(
+        &self,
+        key: &DisplayListKey,
+        outcome: DisplayListReuseOutcome,
+        expected_count: usize,
+    ) -> TestResult {
+        let actual = self
+            .series
+            .reports_for_key(key)
+            .filter(|report| report.outcome == outcome)
+            .count();
+        if actual == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected key `{}` to have {expected_count} {outcome:?} outcome(s), got {actual}",
+                self.series.name(),
+                key.id.as_str()
+            )))
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandReplayStepResult {
     pub label: String,
@@ -5378,6 +5542,91 @@ mod tests {
         DisplayListReuseAssertions::new(&evicted)
             .require_miss_evicted()
             .expect("evicted miss");
+    }
+
+    #[test]
+    fn display_list_reuse_series_assertions_track_multi_frame_outcomes() {
+        let key = DisplayListKey::editor_background("grid", 1);
+        let other = DisplayListKey::editor_background("overlay", 1);
+        let reports = DisplayListReuseSeries::new("display-list reuse")
+            .report(DisplayListReuseReport {
+                key: key.clone(),
+                outcome: DisplayListReuseOutcome::MissAbsent,
+                dirty_flags: DirtyFlags::NONE,
+                frame: 0,
+                kind: None,
+                invalidation: None,
+                item_count: None,
+                created_frame: None,
+                last_used_frame: None,
+            })
+            .report(DisplayListReuseReport {
+                key: key.clone(),
+                outcome: DisplayListReuseOutcome::Reused,
+                dirty_flags: DirtyFlags {
+                    input: true,
+                    ..DirtyFlags::NONE
+                },
+                frame: 1,
+                kind: None,
+                invalidation: None,
+                item_count: Some(4),
+                created_frame: Some(0),
+                last_used_frame: Some(1),
+            })
+            .report(DisplayListReuseReport {
+                key: key.clone(),
+                outcome: DisplayListReuseOutcome::Reused,
+                dirty_flags: DirtyFlags {
+                    input: true,
+                    ..DirtyFlags::NONE
+                },
+                frame: 2,
+                kind: None,
+                invalidation: None,
+                item_count: Some(4),
+                created_frame: Some(0),
+                last_used_frame: Some(2),
+            })
+            .report(DisplayListReuseReport {
+                key: other,
+                outcome: DisplayListReuseOutcome::MissDirty,
+                dirty_flags: DirtyFlags {
+                    paint: true,
+                    ..DirtyFlags::NONE
+                },
+                frame: 2,
+                kind: None,
+                invalidation: None,
+                item_count: Some(1),
+                created_frame: Some(0),
+                last_used_frame: Some(0),
+            });
+
+        assert_eq!(reports.len(), 4);
+        assert_eq!(reports.reused_count(), 2);
+        assert_eq!(reports.missed_count(), 2);
+        assert_eq!(reports.reuse_rate(), Some(0.5));
+
+        let assertions = DisplayListReuseSeriesAssertions::new(&reports);
+        assertions.require_report_count(4).expect("report count");
+        assertions
+            .require_outcome_count(DisplayListReuseOutcome::Reused, 2)
+            .expect("reused count");
+        assertions.require_min_reused(2).expect("min reused");
+        assertions
+            .require_reuse_rate_at_least(0.5)
+            .expect("reuse rate");
+        assertions
+            .require_key_outcome_count(&key, DisplayListReuseOutcome::Reused, 2)
+            .expect("key reused count");
+        assertions.require_no_evictions().expect("no evictions");
+        assert!(assertions.require_report_count(5).is_err());
+        assert!(assertions.require_min_reused(3).is_err());
+        assert!(assertions.require_reuse_rate_at_least(0.75).is_err());
+        assert!(assertions
+            .require_key_outcome_count(&key, DisplayListReuseOutcome::MissDirty, 1)
+            .is_err());
     }
 
     #[test]

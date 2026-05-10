@@ -238,6 +238,9 @@ The branch starts from Operad 2.0.0 plus:
 - Perf smoke coverage now runs multi-frame scenario harness rendering with
   timing-series section assertions, percentile budget checks, and CPU snapshot
   content checks.
+- Display-list reuse series helpers aggregate retained display-list hit/miss
+  outcomes across frames and assert reuse rates, eviction absence, and per-key
+  outcome counts.
 - Document keyboard focus traversal now follows accessibility focus ordering and
   modal-scope containment before falling back to input-only document order.
 - Accessibility preference resolution in `src/theme.rs`, `src/renderer.rs`,
@@ -298,8 +301,9 @@ The branch starts from Operad 2.0.0 plus:
   canvas/image handler coverage, dirty regions, host input capture, and
   per-node interaction state, canvas hit-report assertions for target ids,
   topmost hits, accessibility labels, disabled targets, and metadata,
-  display-list reuse/invalidation assertions, percentile performance budgets,
-  plus render-output snapshot, batch, painted-item, and timing assertions.
+  display-list reuse/invalidation assertions and multi-frame reuse-series
+  budgets, percentile performance budgets, plus render-output snapshot, batch,
+  painted-item, and timing assertions.
 - Public CPU snapshot rendering in `src/testing.rs` gives consumers a
   deterministic renderer adapter and document raster path for E2E screenshots
   without depending on egui or Operad's private integration-test harness.
@@ -308,7 +312,8 @@ The branch starts from Operad 2.0.0 plus:
   point, interpolation path, and resize-handle primitives.
 - Performance smoke coverage in `tests/perf_smoke.rs` now exercises reusable
   editor geometry, hit-target construction, curve segments, scene paint-list
-  generation, and deterministic raster snapshots under a fixed budget.
+  generation, retained display-list reuse rates, and deterministic raster
+  snapshots under a fixed budget.
 - Layout audit checks in `src/lib.rs` now cover duplicate node names,
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   nodes outside the root, empty paint clips, focusable controls missing from

@@ -148,6 +148,65 @@ fn command_palette_filter_build_and_paint_stays_under_budget() {
 }
 
 #[test]
+fn retained_display_list_reuse_smoke_reports_expected_hit_rate() {
+    let mut cache = RetainedDisplayListCache::new();
+    let key = DisplayListKey::editor_background("perf.static-grid", 1);
+    let mut series = DisplayListReuseSeries::new("retained display-list reuse smoke");
+    let mut invalidated = 0_usize;
+
+    for frame in 0..12 {
+        cache.advance_frame();
+        let dirty = if frame == 6 {
+            DirtyFlags {
+                paint: true,
+                ..DirtyFlags::NONE
+            }
+        } else if frame == 0 {
+            DirtyFlags::NONE
+        } else {
+            DirtyFlags {
+                input: true,
+                ..DirtyFlags::NONE
+            }
+        };
+        let report = cache.reuse_report(&key, dirty);
+        let missed = report.missed();
+        series.push(report);
+        if dirty.paint {
+            invalidated += cache
+                .invalidate_with_report(DisplayListInvalidationRequest::Dirty(dirty))
+                .removed_count();
+        }
+        if missed {
+            cache.insert(
+                key.clone(),
+                DisplayListKind::StaticBackground,
+                DisplayListInvalidation::STATIC_EDITOR_BACKGROUND,
+                retained_panel_paint(32),
+            );
+        }
+        black_box(cache.len());
+    }
+
+    assert_eq!(invalidated, 1);
+    let assertions = DisplayListReuseSeriesAssertions::new(&series);
+    assertions.require_report_count(12).expect("report count");
+    assertions
+        .require_key_outcome_count(&key, DisplayListReuseOutcome::MissAbsent, 1)
+        .expect("initial miss");
+    assertions
+        .require_key_outcome_count(&key, DisplayListReuseOutcome::MissDirty, 1)
+        .expect("dirty miss");
+    assertions
+        .require_key_outcome_count(&key, DisplayListReuseOutcome::Reused, 10)
+        .expect("reuse count");
+    assertions.require_no_evictions().expect("no evictions");
+    assertions
+        .require_reuse_rate_at_least(0.8)
+        .expect("reuse rate");
+}
+
+#[test]
 fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
     let mut perf = PerformanceSamples::new("editor geometry render smoke");
     let mut combined_hash = 0_u64;
@@ -481,6 +540,28 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
     }
 
     document
+}
+
+fn retained_panel_paint(item_count: usize) -> PaintList {
+    PaintList {
+        items: (0..item_count)
+            .map(|index| PaintItem {
+                node: UiNodeId(index),
+                rect: UiRect::new(index as f32, 0.0, 1.0, 1.0),
+                clip_rect: UiRect::new(0.0, 0.0, 960.0, 540.0),
+                z_index: 0,
+                layer_order: operad::platform::LayerOrder::DEFAULT,
+                opacity: 1.0,
+                transform: PaintTransform::default(),
+                shader: None,
+                kind: PaintKind::Rect {
+                    fill: ColorRgba::new(20, 28, 36, 255),
+                    stroke: None,
+                    corner_radius: 0.0,
+                },
+            })
+            .collect(),
+    }
 }
 
 fn fixed_style(width: f32, height: f32) -> Style {
