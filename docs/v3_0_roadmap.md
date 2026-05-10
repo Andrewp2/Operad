@@ -271,6 +271,9 @@ The branch starts from Operad 2.0.0 plus:
   canvas/image handler coverage, dirty regions, host input capture, and
   per-node interaction state, plus render-output snapshot, batch, painted-item,
   and timing assertions.
+- Public CPU snapshot rendering in `src/testing.rs` gives consumers a
+  deterministic renderer adapter and document raster path for E2E screenshots
+  without depending on egui or Operad's private integration-test harness.
 - E2E snapshot coverage in `tests/e2e_render.rs` now includes a reusable editor
   surface scene built from timeline range-item, lane, ruler, playhead, curve
   point, interpolation path, and resize-handle primitives.
