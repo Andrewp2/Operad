@@ -340,8 +340,14 @@ fn scenario_harness_multi_frame_render_smoke_stays_under_budget() {
         .require_total_max_within(Duration::from_secs(2))
         .expect("total max budget");
     assertions
+        .require_total_percentile_within(95.0, Duration::from_secs(2))
+        .expect("total percentile budget");
+    assertions
         .require_section_average_within("render-frame", Duration::from_millis(250))
         .expect("render average budget");
+    assertions
+        .require_section_percentile_within("render-frame", 95.0, Duration::from_millis(500))
+        .expect("render percentile budget");
 }
 
 fn perf_screen() -> UiDocument {

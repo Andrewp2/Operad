@@ -3498,6 +3498,15 @@ impl<'a> FrameTimingSeriesAssertions<'a> {
         PerformanceAssertions::new(&self.series.total_samples()).require_max_sample_within(budget)
     }
 
+    pub fn require_total_percentile_within(
+        &self,
+        percentile: f64,
+        budget: Duration,
+    ) -> TestResult<Duration> {
+        PerformanceAssertions::new(&self.series.total_samples())
+            .require_percentile_within(percentile, budget)
+    }
+
     pub fn require_section_average_within(
         &self,
         section_name: &str,
@@ -3514,6 +3523,16 @@ impl<'a> FrameTimingSeriesAssertions<'a> {
     ) -> TestResult<Duration> {
         PerformanceAssertions::new(&self.series.section_samples(section_name))
             .require_max_sample_within(budget)
+    }
+
+    pub fn require_section_percentile_within(
+        &self,
+        section_name: &str,
+        percentile: f64,
+        budget: Duration,
+    ) -> TestResult<Duration> {
+        PerformanceAssertions::new(&self.series.section_samples(section_name))
+            .require_percentile_within(percentile, budget)
     }
 }
 
@@ -3572,6 +3591,23 @@ impl PerformanceSamples {
         (!self.samples.is_empty()).then(|| {
             Duration::from_secs_f64(self.total().as_secs_f64() / self.samples.len() as f64)
         })
+    }
+
+    pub fn percentile(&self, percentile: f64) -> Option<Duration> {
+        if self.samples.is_empty() || !percentile.is_finite() {
+            return None;
+        }
+        let mut samples = self.samples.clone();
+        samples.sort_unstable();
+        let clamped = percentile.clamp(0.0, 100.0);
+        let index = if clamped <= 0.0 {
+            0
+        } else {
+            ((clamped / 100.0 * samples.len() as f64).ceil() as usize)
+                .saturating_sub(1)
+                .min(samples.len() - 1)
+        };
+        samples.get(index).copied()
     }
 }
 
@@ -3656,6 +3692,34 @@ impl<'a> PerformanceAssertions<'a> {
         } else {
             Err(TestFailure::new(format!(
                 "{} max sample duration {max_sample:?} exceeded budget {budget:?}",
+                self.samples.name()
+            )))
+        }
+    }
+
+    pub fn require_percentile_within(
+        &self,
+        percentile: f64,
+        budget: Duration,
+    ) -> TestResult<Duration> {
+        let sample = self.samples.percentile(percentile).ok_or_else(|| {
+            if percentile.is_finite() {
+                TestFailure::new(format!(
+                    "{} has no performance samples",
+                    self.samples.name()
+                ))
+            } else {
+                TestFailure::new(format!(
+                    "{} percentile must be finite, got {percentile}",
+                    self.samples.name()
+                ))
+            }
+        })?;
+        if sample <= budget {
+            Ok(sample)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} p{percentile} duration {sample:?} exceeded budget {budget:?}",
                 self.samples.name()
             )))
         }
@@ -5136,11 +5200,17 @@ mod tests {
             .require_total_max_within(Duration::from_millis(15))
             .expect("total max budget");
         series_assertions
+            .require_total_percentile_within(95.0, Duration::from_millis(15))
+            .expect("total percentile budget");
+        series_assertions
             .require_section_average_within("paint", Duration::from_millis(5))
             .expect("paint average budget");
         series_assertions
             .require_section_max_within("paint", Duration::from_millis(6))
             .expect("paint max budget");
+        series_assertions
+            .require_section_percentile_within("paint", 90.0, Duration::from_millis(6))
+            .expect("paint percentile budget");
         assert!(series_assertions.require_frame_count(3).is_err());
         assert!(series_assertions
             .require_section_sample_count("input", 1)
@@ -5151,6 +5221,9 @@ mod tests {
         assert!(series_assertions
             .require_section_max_within("paint", Duration::from_millis(5))
             .is_err());
+        assert!(series_assertions
+            .require_section_percentile_within("paint", 90.0, Duration::from_millis(5))
+            .is_err());
 
         let mut samples = PerformanceSamples::new("render smoke");
         samples.push(Duration::from_millis(4));
@@ -5160,6 +5233,10 @@ mod tests {
         assert_eq!(samples.total(), Duration::from_millis(15));
         assert_eq!(samples.max_sample(), Some(Duration::from_millis(6)));
         assert_eq!(samples.average(), Some(Duration::from_millis(5)));
+        assert_eq!(samples.percentile(0.0), Some(Duration::from_millis(4)));
+        assert_eq!(samples.percentile(50.0), Some(Duration::from_millis(5)));
+        assert_eq!(samples.percentile(95.0), Some(Duration::from_millis(6)));
+        assert_eq!(samples.percentile(f64::NAN), None);
 
         let performance = PerformanceAssertions::new(&samples);
         performance.require_sample_count(3).expect("sample count");
@@ -5175,6 +5252,9 @@ mod tests {
         performance
             .require_max_sample_within(Duration::from_millis(6))
             .expect("max sample budget");
+        performance
+            .require_percentile_within(95.0, Duration::from_millis(6))
+            .expect("percentile budget");
         assert!(performance.require_sample_count(4).is_err());
         assert!(performance
             .require_total_within(Duration::from_millis(14))
@@ -5184,6 +5264,12 @@ mod tests {
             .is_err());
         assert!(performance
             .require_max_sample_within(Duration::from_millis(5))
+            .is_err());
+        assert!(performance
+            .require_percentile_within(95.0, Duration::from_millis(5))
+            .is_err());
+        assert!(performance
+            .require_percentile_within(f64::INFINITY, Duration::from_millis(5))
             .is_err());
         assert!(
             PerformanceAssertions::new(&PerformanceSamples::new("empty"))

@@ -236,7 +236,8 @@ The branch starts from Operad 2.0.0 plus:
   input replay, document-frame processing, rendering, and platform request
   collection.
 - Perf smoke coverage now runs multi-frame scenario harness rendering with
-  timing-series section assertions and CPU snapshot content checks.
+  timing-series section assertions, percentile budget checks, and CPU snapshot
+  content checks.
 - Document keyboard focus traversal now follows accessibility focus ordering and
   modal-scope containment before falling back to input-only document order.
 - Accessibility preference resolution in `src/theme.rs`, `src/renderer.rs`,
@@ -297,8 +298,8 @@ The branch starts from Operad 2.0.0 plus:
   canvas/image handler coverage, dirty regions, host input capture, and
   per-node interaction state, canvas hit-report assertions for target ids,
   topmost hits, accessibility labels, disabled targets, and metadata,
-  display-list reuse/invalidation assertions, plus render-output snapshot,
-  batch, painted-item, and timing assertions.
+  display-list reuse/invalidation assertions, percentile performance budgets,
+  plus render-output snapshot, batch, painted-item, and timing assertions.
 - Public CPU snapshot rendering in `src/testing.rs` gives consumers a
   deterministic renderer adapter and document raster path for E2E screenshots
   without depending on egui or Operad's private integration-test harness.
