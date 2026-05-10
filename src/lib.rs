@@ -25,6 +25,8 @@ pub mod debug;
 pub mod display;
 pub mod drag_drop;
 pub mod editor;
+#[cfg(feature = "egui")]
+pub mod egui_host;
 pub mod host;
 pub mod input;
 pub mod paint;
@@ -72,6 +74,8 @@ pub use editor::{
     TimelineGeometry, TimelineRangeItem, TimelineRangeItemEdge, TimelineRangeItemGeometry,
     VisibleLaneRange,
 };
+#[cfg(feature = "egui")]
+pub use egui_host::{egui_key, egui_modifiers, egui_pointer_button, EguiInputAdapter};
 pub use host::{
     process_document_frame, process_shell_frame, text_input_id_for_node, HostAdapter,
     HostAdapterError, HostCommandDispatch, HostDocumentFrameOutput, HostDocumentFrameRequest,

@@ -287,6 +287,9 @@ The branch starts from Operad 2.0.0 plus:
 - Egui paint callback hooks in `src/lib.rs` for forwarding renderer-neutral
   image, image-placement, and canvas paint items to app-owned egui bridge code
   instead of silently dropping asset-backed primitives.
+- Feature-gated egui host input adapter in `src/egui_host.rs` for translating
+  egui pointer, wheel, keyboard, focus navigation, text, paste, and IME commit
+  events into Operad raw input without leaking egui types into app UI models.
 - Embedded canvas/native viewport contracts for callback, texture, and
   native-viewport render modes, host input capture policies, pointer-lock
   requests, domain hit-testing flags, renderer-facing canvas extraction, and
