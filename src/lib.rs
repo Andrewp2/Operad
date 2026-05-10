@@ -75,7 +75,10 @@ pub use editor::{
     VisibleLaneRange,
 };
 #[cfg(feature = "egui")]
-pub use egui_host::{egui_key, egui_modifiers, egui_pointer_button, EguiInputAdapter};
+pub use egui_host::{
+    egui_cursor_icon, egui_key, egui_modifiers, egui_pointer_button, EguiInputAdapter,
+    EguiPlatformOutputPlan,
+};
 pub use host::{
     process_document_frame, process_shell_frame, text_input_id_for_node, HostAdapter,
     HostAdapterError, HostCommandDispatch, HostDocumentFrameOutput, HostDocumentFrameRequest,

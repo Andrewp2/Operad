@@ -3,9 +3,14 @@
 //! This module keeps egui integration at the boundary of the crate by
 //! translating egui input into Operad's renderer-neutral raw input contracts.
 
+use std::fmt;
+
 use crate::input::{
     PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
     RawPointerEvent, RawTextInputEvent, RawWheelEvent,
+};
+use crate::platform::{
+    ClipboardRequest, CursorRequest, CursorShape, PlatformRequest, RepaintRequest,
 };
 use crate::{FocusDirection, KeyCode, KeyModifiers, UiPoint};
 
@@ -163,6 +168,110 @@ impl Default for EguiInputAdapter {
     }
 }
 
+#[derive(Clone, Default, PartialEq)]
+pub struct EguiPlatformOutputPlan {
+    pub platform_output: egui::PlatformOutput,
+    pub repaint_requests: Vec<RepaintRequest>,
+    pub unsupported_requests: Vec<PlatformRequest>,
+}
+
+impl EguiPlatformOutputPlan {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_requests<'a>(requests: impl IntoIterator<Item = &'a PlatformRequest>) -> Self {
+        let mut plan = Self::new();
+        for request in requests {
+            plan.push_request(request);
+        }
+        plan
+    }
+
+    pub fn push_request(&mut self, request: &PlatformRequest) -> bool {
+        match request {
+            PlatformRequest::Clipboard(ClipboardRequest::WriteText(text)) => {
+                self.platform_output
+                    .commands
+                    .push(egui::OutputCommand::CopyText(text.clone()));
+                true
+            }
+            PlatformRequest::Clipboard(ClipboardRequest::Clear) => {
+                self.platform_output
+                    .commands
+                    .push(egui::OutputCommand::CopyText(String::new()));
+                true
+            }
+            PlatformRequest::OpenUrl(request) => {
+                self.platform_output
+                    .commands
+                    .push(egui::OutputCommand::OpenUrl(egui::OpenUrl {
+                        url: request.url.clone(),
+                        new_tab: request.new_window,
+                    }));
+                true
+            }
+            PlatformRequest::Cursor(CursorRequest::SetShape(shape)) => {
+                self.platform_output.cursor_icon = egui_cursor_icon(*shape);
+                true
+            }
+            PlatformRequest::Cursor(CursorRequest::SetVisible(visible)) => {
+                self.platform_output.cursor_icon = if *visible {
+                    egui::CursorIcon::Default
+                } else {
+                    egui::CursorIcon::None
+                };
+                true
+            }
+            PlatformRequest::Repaint(request) => {
+                self.repaint_requests.push(request.clone());
+                true
+            }
+            _ => {
+                self.unsupported_requests.push(request.clone());
+                false
+            }
+        }
+    }
+
+    pub fn is_fully_supported(&self) -> bool {
+        self.unsupported_requests.is_empty()
+    }
+}
+
+impl fmt::Debug for EguiPlatformOutputPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EguiPlatformOutputPlan")
+            .field("commands", &self.platform_output.commands)
+            .field("cursor_icon", &self.platform_output.cursor_icon)
+            .field("repaint_requests", &self.repaint_requests)
+            .field("unsupported_requests", &self.unsupported_requests)
+            .finish()
+    }
+}
+
+pub fn egui_cursor_icon(shape: CursorShape) -> egui::CursorIcon {
+    match shape {
+        CursorShape::Default => egui::CursorIcon::Default,
+        CursorShape::Pointer => egui::CursorIcon::PointingHand,
+        CursorShape::Text => egui::CursorIcon::Text,
+        CursorShape::Crosshair => egui::CursorIcon::Crosshair,
+        CursorShape::Grab => egui::CursorIcon::Grab,
+        CursorShape::Grabbing => egui::CursorIcon::Grabbing,
+        CursorShape::Move => egui::CursorIcon::Move,
+        CursorShape::NotAllowed => egui::CursorIcon::NotAllowed,
+        CursorShape::Wait => egui::CursorIcon::Wait,
+        CursorShape::Progress => egui::CursorIcon::Progress,
+        CursorShape::ResizeHorizontal => egui::CursorIcon::ResizeHorizontal,
+        CursorShape::ResizeVertical => egui::CursorIcon::ResizeVertical,
+        CursorShape::ResizeNorthEastSouthWest => egui::CursorIcon::ResizeNeSw,
+        CursorShape::ResizeNorthWestSouthEast => egui::CursorIcon::ResizeNwSe,
+        CursorShape::ZoomIn => egui::CursorIcon::ZoomIn,
+        CursorShape::ZoomOut => egui::CursorIcon::ZoomOut,
+    }
+}
+
 pub fn egui_modifiers(modifiers: egui::Modifiers) -> KeyModifiers {
     KeyModifiers {
         shift: modifiers.shift,
@@ -276,9 +385,14 @@ fn ui_point(pos: egui::Pos2) -> UiPoint {
 mod tests {
     use super::*;
     use crate::input::{WheelDeltaUnit, WheelPhase};
+    use crate::platform::{
+        ClipboardRequest, CursorRequest, CursorShape, FileDialogMode, FileDialogRequest,
+        LogicalPoint, OpenUrlRequest, PlatformRequest, RepaintRequest,
+    };
     use crate::{
         ApproxTextMeasurer, InputBehavior, UiDocument, UiInputEvent, UiNode, UiNodeStyle, UiSize,
     };
+    use std::time::Duration;
     use taffy::prelude::{Dimension, Display, FlexDirection, Size as TaffySize, Style};
 
     fn key_event(
@@ -577,5 +691,86 @@ mod tests {
 
         assert_eq!(document.node(first).name, "first");
         assert_eq!(focused, Some(second));
+    }
+
+    #[test]
+    fn egui_platform_output_plan_maps_supported_platform_requests() {
+        let requests = [
+            PlatformRequest::Clipboard(ClipboardRequest::WriteText("copied".to_string())),
+            PlatformRequest::Clipboard(ClipboardRequest::Clear),
+            PlatformRequest::OpenUrl(OpenUrlRequest::new("https://example.test").new_window(true)),
+            PlatformRequest::Cursor(CursorRequest::SetShape(CursorShape::Text)),
+            PlatformRequest::Repaint(RepaintRequest::After(Duration::from_millis(16))),
+        ];
+
+        let plan = EguiPlatformOutputPlan::from_requests(requests.iter());
+
+        assert!(plan.is_fully_supported());
+        assert_eq!(plan.platform_output.commands.len(), 3);
+        assert_eq!(
+            plan.platform_output.commands[0],
+            egui::OutputCommand::CopyText("copied".to_string())
+        );
+        assert_eq!(
+            plan.platform_output.commands[1],
+            egui::OutputCommand::CopyText(String::new())
+        );
+        assert_eq!(
+            plan.platform_output.commands[2],
+            egui::OutputCommand::OpenUrl(egui::OpenUrl {
+                url: "https://example.test".to_string(),
+                new_tab: true,
+            })
+        );
+        assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::Text);
+        assert_eq!(
+            plan.repaint_requests,
+            vec![RepaintRequest::After(Duration::from_millis(16))]
+        );
+        assert!(plan.unsupported_requests.is_empty());
+    }
+
+    #[test]
+    fn egui_platform_output_plan_reports_unsupported_host_requests() {
+        let requests = [
+            PlatformRequest::Clipboard(ClipboardRequest::ReadText),
+            PlatformRequest::Cursor(CursorRequest::SetPosition(LogicalPoint::new(1.0, 2.0))),
+            PlatformRequest::FileDialog(FileDialogRequest::new(FileDialogMode::OpenFile)),
+        ];
+
+        let plan = EguiPlatformOutputPlan::from_requests(requests.iter());
+
+        assert!(!plan.is_fully_supported());
+        assert!(plan.platform_output.commands.is_empty());
+        assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::Default);
+        assert_eq!(plan.unsupported_requests, requests.to_vec());
+    }
+
+    #[test]
+    fn egui_platform_output_plan_maps_cursor_visibility_and_shapes() {
+        assert_eq!(
+            egui_cursor_icon(CursorShape::Pointer),
+            egui::CursorIcon::PointingHand
+        );
+        assert_eq!(
+            egui_cursor_icon(CursorShape::ResizeNorthEastSouthWest),
+            egui::CursorIcon::ResizeNeSw
+        );
+        assert_eq!(
+            egui_cursor_icon(CursorShape::ResizeNorthWestSouthEast),
+            egui::CursorIcon::ResizeNwSe
+        );
+
+        let mut plan = EguiPlatformOutputPlan::new();
+        assert!(
+            plan.push_request(&PlatformRequest::Cursor(CursorRequest::SetShape(
+                CursorShape::Grab,
+            )))
+        );
+        assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::Grab);
+        assert!(plan.push_request(&PlatformRequest::Cursor(CursorRequest::SetVisible(false,))));
+        assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::None);
+        assert!(plan.push_request(&PlatformRequest::Cursor(CursorRequest::SetVisible(true,))));
+        assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::Default);
     }
 }
