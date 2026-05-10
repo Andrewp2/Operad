@@ -652,6 +652,30 @@ pub enum ChartHitKind {
     Custom(String),
 }
 
+impl ChartHitKind {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Sample => "sample",
+            Self::GridCell => "grid cell",
+            Self::Overlay => "overlay",
+            Self::Axis => "axis",
+            Self::Label => "label",
+            Self::Custom(label) => label.as_str(),
+        }
+    }
+
+    pub fn accessibility_role(&self) -> AccessibilityRole {
+        match self {
+            Self::Sample => AccessibilityRole::ListItem,
+            Self::GridCell => AccessibilityRole::GridCell,
+            Self::Overlay => AccessibilityRole::Group,
+            Self::Axis => AccessibilityRole::Ruler,
+            Self::Label => AccessibilityRole::Label,
+            Self::Custom(_) => AccessibilityRole::Group,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChartHitMeta {
     pub id: Option<String>,
@@ -711,6 +735,49 @@ impl ChartHitMeta {
     pub fn contains_point(&self, point: UiPoint) -> bool {
         self.bounds.contains_point(point)
     }
+
+    pub fn accessibility_label(&self) -> String {
+        self.label
+            .clone()
+            .or_else(|| self.id.clone())
+            .unwrap_or_else(|| self.kind.label().to_owned())
+    }
+
+    pub fn accessibility_value(&self, index: usize, total: usize) -> String {
+        let mut parts = vec![
+            format!("target {} of {}", index + 1, total),
+            self.kind.label().to_owned(),
+        ];
+        if let Some(value) = &self.value {
+            parts.push(value.clone());
+        } else if let Some(sample) = self.sample {
+            parts.push(format_sample(sample));
+        } else if let Some(cell) = self.cell {
+            parts.push(format_grid_cell(cell));
+        }
+        if !self.selectable {
+            parts.push("not selectable".to_owned());
+        }
+        parts.join("; ")
+    }
+
+    pub fn accessibility_meta(
+        &self,
+        index: usize,
+        total: usize,
+        active: bool,
+    ) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(self.kind.accessibility_role())
+            .label(self.accessibility_label())
+            .value(self.accessibility_value(index, total))
+            .selected(active);
+        if self.selectable {
+            meta = meta.focusable();
+        } else {
+            meta = meta.read_only();
+        }
+        meta
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -741,6 +808,38 @@ impl ChartHitCollection {
             .iter()
             .filter(|hit| hit.selectable && hit.bounds.intersects(rect))
             .collect()
+    }
+
+    pub fn accessibility_summary(&self, title: impl Into<String>) -> AccessibilitySummary {
+        let selectable = self.hits.iter().filter(|hit| hit.selectable).count();
+        let cells = self
+            .hits
+            .iter()
+            .filter(|hit| matches!(hit.kind, ChartHitKind::GridCell))
+            .count();
+        let samples = self
+            .hits
+            .iter()
+            .filter(|hit| matches!(hit.kind, ChartHitKind::Sample))
+            .count();
+        AccessibilitySummary::new(title)
+            .item("Targets", self.hits.len().to_string())
+            .item("Selectable targets", selectable.to_string())
+            .item("Grid cells", cells.to_string())
+            .item("Samples", samples.to_string())
+    }
+
+    pub fn accessibility_meta(&self, label: impl Into<String>) -> AccessibilityMeta {
+        let label = label.into();
+        let selectable = self.hits.iter().filter(|hit| hit.selectable).count();
+        AccessibilityMeta::new(AccessibilityRole::List)
+            .label(label.clone())
+            .value(format!(
+                "{} targets; {} selectable",
+                self.hits.len(),
+                selectable
+            ))
+            .summary(self.accessibility_summary(label))
     }
 }
 
@@ -1554,6 +1653,72 @@ mod tests {
             .screen_reader_text();
         assert!(text.contains("Selected samples: 2"));
         assert!(text.contains("Hovered hit: cell.1.0"));
+    }
+
+    #[test]
+    fn chart_hit_metadata_exports_accessibility_for_samples_and_cells() {
+        let sample = ChartHitMeta::new(ChartHitKind::Sample, UiRect::new(10.0, 10.0, 8.0, 8.0))
+            .id("sample.5")
+            .sample(ChartSample::new(5.0, 7.0));
+        let sample_accessibility = sample.accessibility_meta(0, 2, true);
+
+        assert_eq!(sample_accessibility.role, AccessibilityRole::ListItem);
+        assert_eq!(sample_accessibility.label.as_deref(), Some("sample.5"));
+        assert_eq!(sample_accessibility.selected, Some(true));
+        assert!(sample_accessibility.focusable);
+        assert!(sample_accessibility
+            .value
+            .as_deref()
+            .unwrap()
+            .contains("x 5, y 7"));
+
+        let cell = ChartHitMeta::new(ChartHitKind::GridCell, UiRect::new(20.0, 20.0, 10.0, 10.0))
+            .id("die.A1")
+            .label("Die A1")
+            .cell(GridCell::new(0, 0))
+            .selectable(false);
+        let cell_accessibility = cell.accessibility_meta(1, 2, false);
+
+        assert_eq!(cell_accessibility.role, AccessibilityRole::GridCell);
+        assert_eq!(cell_accessibility.label.as_deref(), Some("Die A1"));
+        assert!(!cell_accessibility.focusable);
+        assert!(cell_accessibility.read_only);
+        assert!(cell_accessibility
+            .value
+            .as_deref()
+            .unwrap()
+            .contains("not selectable"));
+    }
+
+    #[test]
+    fn chart_hit_collection_accessibility_summarizes_targets() {
+        let hits = ChartHitCollection::new()
+            .hit(
+                ChartHitMeta::new(ChartHitKind::Sample, UiRect::new(0.0, 0.0, 8.0, 8.0))
+                    .id("sample.1"),
+            )
+            .hit(
+                ChartHitMeta::new(ChartHitKind::GridCell, UiRect::new(8.0, 0.0, 8.0, 8.0))
+                    .id("die.disabled")
+                    .selectable(false),
+            )
+            .hit(
+                ChartHitMeta::new(ChartHitKind::Overlay, UiRect::new(0.0, 0.0, 16.0, 16.0))
+                    .id("threshold"),
+            );
+
+        let accessibility = hits.accessibility_meta("Analytic hits");
+
+        assert_eq!(accessibility.role, AccessibilityRole::List);
+        assert_eq!(accessibility.label.as_deref(), Some("Analytic hits"));
+        assert_eq!(
+            accessibility.value.as_deref(),
+            Some("3 targets; 2 selectable")
+        );
+        let text = accessibility.summary.unwrap().screen_reader_text();
+        assert!(text.contains("Targets: 3"));
+        assert!(text.contains("Grid cells: 1"));
+        assert!(text.contains("Samples: 1"));
     }
 
     #[test]

@@ -240,6 +240,9 @@ The branch starts from Operad 2.0.0 plus:
 - Grid-map cell metadata in `src/charts.rs` for masked dense analytic surfaces,
   domain cell IDs, labels, values, disabled/non-selectable cells, and hit
   collections that skip out-of-bounds cells.
+- Chart hit accessibility helpers in `src/charts.rs` for exposing samples,
+  grid cells, overlays, axes, labels, and custom hit targets as speakable
+  accessibility metadata and summaries.
 - Dense table metadata in `src/widget_ext/data.rs` for sortable/filterable
   columns, app-owned sort/filter/resize commands, accessibility sort state,
   active-cell copy/export contracts, row/cell action metadata, sticky column
