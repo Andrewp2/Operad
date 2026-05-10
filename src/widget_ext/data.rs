@@ -9,10 +9,13 @@ use taffy::prelude::{
 };
 
 use crate::{
-    commands::CommandEffect, platform::ClipboardRequest, AccessibilityLiveRegion,
-    AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, ImageContent, InputBehavior,
-    ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiPoint, UiVisual,
+    commands::CommandEffect,
+    platform::{ClipboardRequest, DragOperation, DragPayload},
+    AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
+    ClipBehavior, ColorRgba, CommandId, DragDropSurfaceKind, DragSourceDescriptor, DragSourceId,
+    DropPayloadFilter, DropTargetDescriptor, DropTargetId, ImageContent, InputBehavior, ScrollAxes,
+    ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle,
+    UiPoint, UiRect, UiVisual,
 };
 
 /// Semantic hint for property value rendering and editing owned by the app.
@@ -1573,6 +1576,10 @@ pub struct TreeItem {
     pub children: Vec<TreeItem>,
     pub disabled: bool,
     pub leading_image: Option<ImageContent>,
+    pub row_actions: Vec<TreeRowAction>,
+    pub context_menu_commands: Vec<CommandId>,
+    pub draggable: bool,
+    pub drop_policy: Option<TreeItemDropPolicy>,
 }
 
 impl TreeItem {
@@ -1583,6 +1590,10 @@ impl TreeItem {
             children: Vec::new(),
             disabled: false,
             leading_image: None,
+            row_actions: Vec::new(),
+            context_menu_commands: Vec::new(),
+            draggable: false,
+            drop_policy: None,
         }
     }
 
@@ -1600,6 +1611,184 @@ impl TreeItem {
         self.leading_image = Some(image);
         self
     }
+
+    pub fn with_row_action(mut self, action: TreeRowAction) -> Self {
+        self.row_actions.push(action);
+        self
+    }
+
+    pub fn with_row_actions(mut self, actions: impl IntoIterator<Item = TreeRowAction>) -> Self {
+        self.row_actions.extend(actions);
+        self
+    }
+
+    pub fn with_context_menu_command(mut self, command: impl Into<CommandId>) -> Self {
+        self.context_menu_commands.push(command.into());
+        self
+    }
+
+    pub fn with_context_menu_commands(
+        mut self,
+        commands: impl IntoIterator<Item = impl Into<CommandId>>,
+    ) -> Self {
+        self.context_menu_commands
+            .extend(commands.into_iter().map(Into::into));
+        self
+    }
+
+    pub const fn draggable(mut self, draggable: bool) -> Self {
+        self.draggable = draggable;
+        self
+    }
+
+    pub fn with_drop_policy(mut self, policy: TreeItemDropPolicy) -> Self {
+        self.drop_policy = Some(policy);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeRowAction {
+    pub id: CommandId,
+    pub label: String,
+    pub disabled: bool,
+    pub destructive: bool,
+    pub leading_image: Option<ImageContent>,
+}
+
+impl TreeRowAction {
+    pub fn new(id: impl Into<CommandId>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            disabled: false,
+            destructive: false,
+            leading_image: None,
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
+
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
+
+    pub fn with_leading_image(mut self, image: ImageContent) -> Self {
+        self.leading_image = Some(image);
+        self
+    }
+
+    pub fn accessibility_action(&self) -> AccessibilityAction {
+        AccessibilityAction::new(self.id.as_str(), self.label.clone())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TreeDropPlacement {
+    Before,
+    On,
+    Inside,
+    After,
+}
+
+impl TreeDropPlacement {
+    pub const ALL: [Self; 4] = [Self::Before, Self::On, Self::Inside, Self::After];
+
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Self::Before => "before",
+            Self::On => "on",
+            Self::Inside => "inside",
+            Self::After => "after",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Before => "before",
+            Self::On => "on",
+            Self::Inside => "inside",
+            Self::After => "after",
+        }
+    }
+
+    pub fn bounds(self, row_bounds: UiRect) -> UiRect {
+        let edge_height = (row_bounds.height * 0.25).max(1.0).min(row_bounds.height);
+        match self {
+            Self::Before => UiRect::new(row_bounds.x, row_bounds.y, row_bounds.width, edge_height),
+            Self::After => UiRect::new(
+                row_bounds.x,
+                row_bounds.bottom() - edge_height,
+                row_bounds.width,
+                edge_height,
+            ),
+            Self::On | Self::Inside => row_bounds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeItemDropPolicy {
+    pub accepted_payload: DropPayloadFilter,
+    pub accepted_operations: Vec<DragOperation>,
+    pub placements: Vec<TreeDropPlacement>,
+    pub disabled: bool,
+}
+
+impl TreeItemDropPolicy {
+    pub fn new(accepted_payload: DropPayloadFilter) -> Self {
+        Self {
+            accepted_payload,
+            accepted_operations: vec![
+                DragOperation::Copy,
+                DragOperation::Move,
+                DragOperation::Link,
+            ],
+            placements: vec![TreeDropPlacement::On],
+            disabled: false,
+        }
+    }
+
+    pub fn any_payload() -> Self {
+        Self::new(DropPayloadFilter::any())
+    }
+
+    pub fn accepted_operations(
+        mut self,
+        operations: impl IntoIterator<Item = DragOperation>,
+    ) -> Self {
+        self.accepted_operations = operations.into_iter().collect();
+        self
+    }
+
+    pub fn placements(mut self, placements: impl IntoIterator<Item = TreeDropPlacement>) -> Self {
+        self.placements = placements.into_iter().collect();
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn allows_placement(&self, placement: TreeDropPlacement) -> bool {
+        !self.disabled
+            && self.placements.contains(&placement)
+            && !self.accepted_operations.is_empty()
+            && !self.accepted_payload.is_empty()
+    }
+
+    pub fn enabled(&self) -> bool {
+        !self.disabled
+            && self
+                .placements
+                .iter()
+                .any(|placement| self.allows_placement(*placement))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1613,11 +1802,75 @@ pub struct TreeVisibleItem {
     pub child_count: usize,
     pub expanded: bool,
     pub disabled: bool,
+    pub row_actions: Vec<TreeRowAction>,
+    pub context_menu_commands: Vec<CommandId>,
+    pub draggable: bool,
+    pub drop_policy: Option<TreeItemDropPolicy>,
 }
 
 impl TreeVisibleItem {
     pub fn has_children(&self) -> bool {
         self.child_count > 0
+    }
+
+    pub fn enabled_row_actions(&self) -> Vec<&TreeRowAction> {
+        self.row_actions
+            .iter()
+            .filter(|action| !action.disabled)
+            .collect()
+    }
+
+    pub fn has_context_menu(&self) -> bool {
+        !self.context_menu_commands.is_empty()
+    }
+
+    pub fn drag_source(
+        &self,
+        bounds: UiRect,
+        payload: DragPayload,
+        allowed_operations: impl IntoIterator<Item = DragOperation>,
+    ) -> Option<DragSourceDescriptor> {
+        (!self.disabled && self.draggable).then(|| {
+            DragSourceDescriptor::new(
+                DragSourceId::new(format!("tree.item.{}", self.id)),
+                DragDropSurfaceKind::TreeItem,
+                bounds,
+                payload,
+            )
+            .allowed_operations(allowed_operations)
+            .label(self.label.clone())
+        })
+    }
+
+    pub fn drop_target(
+        &self,
+        bounds: UiRect,
+        placement: TreeDropPlacement,
+    ) -> Option<DropTargetDescriptor> {
+        let policy = self.drop_policy.as_ref()?;
+        policy.allows_placement(placement).then(|| {
+            DropTargetDescriptor::new(
+                DropTargetId::new(format!("tree.item.{}.{}", self.id, placement.suffix())),
+                DragDropSurfaceKind::TreeItem,
+                placement.bounds(bounds),
+            )
+            .accepted_payload(policy.accepted_payload.clone())
+            .accepted_operations(policy.accepted_operations.clone())
+            .label(format!("{} {}", self.label, placement.label()))
+        })
+    }
+
+    pub fn drop_targets(&self, bounds: UiRect) -> Vec<DropTargetDescriptor> {
+        self.drop_policy
+            .as_ref()
+            .map(|policy| {
+                policy
+                    .placements
+                    .iter()
+                    .filter_map(|placement| self.drop_target(bounds, *placement))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -2431,6 +2684,10 @@ fn flatten_tree_items(
             child_count: item.children.len(),
             expanded: is_expanded,
             disabled: item.disabled,
+            row_actions: item.row_actions.clone(),
+            context_menu_commands: item.context_menu_commands.clone(),
+            draggable: item.draggable,
+            drop_policy: item.drop_policy.clone(),
         });
         if is_expanded {
             flatten_tree_items(&item.children, expanded, depth + 1, Some(&item.id), visible);
@@ -2636,16 +2893,45 @@ fn tree_item_accessibility(
     push_state(&mut value, "selected", selected);
     push_state(&mut value, "focused", focused);
     push_state(&mut value, "disabled", item.disabled);
+    push_state(&mut value, "draggable", item.draggable);
+    push_state(
+        &mut value,
+        "drop target",
+        item.drop_policy
+            .as_ref()
+            .is_some_and(TreeItemDropPolicy::enabled),
+    );
+    if !item.row_actions.is_empty() {
+        value.push(format!("{} actions", item.enabled_row_actions().len()));
+    }
+    push_state(&mut value, "context menu", item.has_context_menu());
 
-    apply_enabled(
-        AccessibilityMeta::new(AccessibilityRole::TreeItem)
-            .label(item.label.clone())
-            .value(value.join("; "))
-            .selected(selected)
-            .expanded(item.expanded)
-            .focusable(),
-        !item.disabled,
-    )
+    let mut meta = AccessibilityMeta::new(AccessibilityRole::TreeItem)
+        .label(item.label.clone())
+        .value(value.join("; "))
+        .selected(selected)
+        .expanded(item.expanded)
+        .focusable();
+    for action in item.enabled_row_actions() {
+        meta = meta.action(action.accessibility_action());
+    }
+    if item.has_context_menu() {
+        meta = meta.action(AccessibilityAction::new(
+            "context_menu.open",
+            "Open context menu",
+        ));
+    }
+    if item.draggable && !item.disabled {
+        meta = meta.action(AccessibilityAction::new("drag.start", "Start drag"));
+    }
+    if item
+        .drop_policy
+        .as_ref()
+        .is_some_and(TreeItemDropPolicy::enabled)
+    {
+        meta = meta.action(AccessibilityAction::new("drop.accept", "Accept drop"));
+    }
+    apply_enabled(meta, !item.disabled)
 }
 
 fn tab_accessibility(
@@ -3657,6 +3943,92 @@ mod tests {
         ));
         let disclosure = doc.node(doc.node(first_row).children[0]);
         assert!(matches!(&disclosure.content, UiContent::Text(text) if text.text == "v"));
+    }
+
+    #[test]
+    fn tree_visible_items_expose_actions_context_and_drag_drop_descriptors() {
+        let policy = TreeItemDropPolicy::new(DropPayloadFilter::empty().files())
+            .accepted_operations([DragOperation::Move])
+            .placements([TreeDropPlacement::Before, TreeDropPlacement::Inside]);
+        let roots = vec![TreeItem::new("track", "Track")
+            .with_row_actions([
+                TreeRowAction::new("rename", "Rename"),
+                TreeRowAction::new("remove", "Remove").disabled(),
+            ])
+            .with_context_menu_commands(["duplicate", "delete"])
+            .draggable(true)
+            .with_drop_policy(policy.clone())];
+        let visible = TreeViewState::default().visible_items(&roots);
+        let item = &visible[0];
+
+        assert_eq!(item.enabled_row_actions().len(), 1);
+        assert!(item.has_context_menu());
+        assert!(item.draggable);
+        assert_eq!(item.drop_policy.as_ref(), Some(&policy));
+
+        let bounds = UiRect::new(10.0, 20.0, 100.0, 24.0);
+        let source = item
+            .drag_source(bounds, DragPayload::text("track"), [DragOperation::Move])
+            .expect("drag source");
+        assert_eq!(source.id, DragSourceId::new("tree.item.track"));
+        assert_eq!(source.kind, DragDropSurfaceKind::TreeItem);
+        assert!(source.can_start());
+
+        let targets = item.drop_targets(bounds);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].id, DropTargetId::new("tree.item.track.before"));
+        assert_eq!(targets[0].bounds, UiRect::new(10.0, 20.0, 100.0, 6.0));
+        assert_eq!(targets[1].id, DropTargetId::new("tree.item.track.inside"));
+        assert_eq!(targets[1].bounds, bounds);
+        assert_eq!(
+            targets[1]
+                .resolve_operation(&DragPayload::files(["track.wav"]), &[DragOperation::Move]),
+            Some(DragOperation::Move)
+        );
+    }
+
+    #[test]
+    fn tree_view_accessibility_includes_row_actions_context_and_drag_drop() {
+        let mut doc = test_root();
+        let root = doc.root;
+        let roots = vec![TreeItem::new("clip", "Clip")
+            .with_row_action(TreeRowAction::new("rename", "Rename"))
+            .with_context_menu_command("clip.context")
+            .draggable(true)
+            .with_drop_policy(TreeItemDropPolicy::any_payload())];
+
+        tree_view(
+            &mut doc,
+            root,
+            "tree",
+            &roots,
+            &TreeViewState::default(),
+            TreeViewOptions::default(),
+        );
+
+        let row = node_named(&doc, "tree.row.clip");
+        let accessibility = doc.node(row).accessibility.as_ref().unwrap();
+        let value = accessibility.value.as_deref().unwrap();
+        assert!(value.contains("draggable"));
+        assert!(value.contains("drop target"));
+        assert!(value.contains("1 actions"));
+        assert!(value.contains("context menu"));
+        assert!(accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "rename"));
+        assert!(accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "context_menu.open"));
+        assert!(accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "drag.start"));
+        assert!(accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "drop.accept"));
     }
 
     #[test]

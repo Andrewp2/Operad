@@ -274,3 +274,7 @@ The branch starts from Operad 2.0.0 plus:
   ids, drop target ids, payload acceptance policies, operation resolution,
   topmost target hit testing, platform drag-start request construction, and
   accessibility summaries for editor, data, tree, asset, and canvas surfaces.
+- Tree-view row action and context-menu metadata in `src/widget_ext/data.rs`,
+  with draggable row source descriptors, per-item drop policies, drop-placement
+  target descriptors, and accessibility actions for keyboard/screen-reader
+  access to row commands and drag/drop affordances.
