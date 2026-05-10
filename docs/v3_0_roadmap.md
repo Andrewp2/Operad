@@ -313,6 +313,9 @@ The branch starts from Operad 2.0.0 plus:
 - Canvas host-capture lifecycle state in `src/renderer.rs` and `src/host.rs`
   diffs app-owned canvas plans across frames so hosts can acquire, update, and
   release pointer-lock/cursor-capture requests deterministically.
+- Platform request ID allocation turns renderer-neutral platform requests into
+  deterministic service requests that host adapters can correlate with
+  responses, including canvas host-capture transitions.
 - Text input routing helpers that bridge document focus, editable text state,
   clipboard service requests, and IME activation/update/deactivation without
   requiring consumers to hand-assemble platform plumbing for each field.

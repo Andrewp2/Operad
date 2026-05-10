@@ -360,6 +360,47 @@ impl PlatformRequestId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformRequestIdAllocator {
+    next: u64,
+}
+
+impl PlatformRequestIdAllocator {
+    pub const fn new(first: u64) -> Self {
+        Self { next: first }
+    }
+
+    pub const fn next_value(self) -> u64 {
+        self.next
+    }
+
+    pub fn next_id(&mut self) -> PlatformRequestId {
+        let id = PlatformRequestId::new(self.next);
+        self.next = self.next.wrapping_add(1);
+        id
+    }
+
+    pub fn allocate(&mut self, request: PlatformRequest) -> PlatformServiceRequest {
+        PlatformServiceRequest::new(self.next_id(), request)
+    }
+
+    pub fn allocate_all(
+        &mut self,
+        requests: impl IntoIterator<Item = PlatformRequest>,
+    ) -> Vec<PlatformServiceRequest> {
+        requests
+            .into_iter()
+            .map(|request| self.allocate(request))
+            .collect()
+    }
+}
+
+impl Default for PlatformRequestIdAllocator {
+    fn default() -> Self {
+        Self::new(1)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlatformServiceKind {
     Clipboard,
@@ -1401,6 +1442,38 @@ mod tests {
         assert_eq!(request.kind(), PlatformServiceKind::Clipboard);
         assert_eq!(response.kind(), PlatformServiceKind::Clipboard);
         assert!(response.is_for(&request));
+    }
+
+    #[test]
+    fn platform_request_id_allocator_batches_service_requests_deterministically() {
+        let mut allocator = PlatformRequestIdAllocator::new(10);
+        let requests = allocator.allocate_all([
+            PlatformRequest::Clipboard(ClipboardRequest::ReadText),
+            PlatformRequest::OpenUrl(OpenUrlRequest::new("https://example.test")),
+        ]);
+
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.id)
+                .collect::<Vec<_>>(),
+            vec![PlatformRequestId::new(10), PlatformRequestId::new(11)]
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(PlatformServiceRequest::kind)
+                .collect::<Vec<_>>(),
+            vec![PlatformServiceKind::Clipboard, PlatformServiceKind::OpenUrl]
+        );
+        assert_eq!(allocator.next_value(), 12);
+
+        let mut wrapping_allocator = PlatformRequestIdAllocator::new(u64::MAX);
+        assert_eq!(
+            wrapping_allocator.next_id(),
+            PlatformRequestId::new(u64::MAX)
+        );
+        assert_eq!(wrapping_allocator.next_id(), PlatformRequestId::new(0));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
 use crate::platform::{
     BackendCapabilities, CursorRequest, LayerOrder, LogicalRect, PixelSize, PlatformRequest,
-    ResourceHandle, ResourceId, ResourceKind,
+    PlatformRequestIdAllocator, PlatformServiceRequest, ResourceHandle, ResourceId, ResourceKind,
 };
 use crate::{
     CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintImage, PaintItem, PaintKind, PaintList,
@@ -630,6 +630,13 @@ impl CanvasHostCaptureTransition {
             }
         }
         requests
+    }
+
+    pub fn platform_service_requests(
+        &self,
+        allocator: &mut PlatformRequestIdAllocator,
+    ) -> Vec<PlatformServiceRequest> {
+        allocator.allocate_all(self.platform_requests())
     }
 
     fn sort(&mut self) {
@@ -1499,8 +1506,8 @@ mod tests {
 
     use super::*;
     use crate::platform::{
-        BackendAdapterKind, ImageHandle, RenderingCapabilities, ResourceCapabilities,
-        ResourceDomain,
+        BackendAdapterKind, ImageHandle, PlatformRequestId, RenderingCapabilities,
+        ResourceCapabilities, ResourceDomain,
     };
     use crate::{
         CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ImageAlignment, ImageFit,
@@ -1804,6 +1811,23 @@ mod tests {
                 PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
             ]
         );
+        let mut allocator = PlatformRequestIdAllocator::new(90);
+        let service_requests = transition.platform_service_requests(&mut allocator);
+        assert_eq!(
+            service_requests
+                .iter()
+                .map(|request| request.id)
+                .collect::<Vec<_>>(),
+            vec![PlatformRequestId::new(90), PlatformRequestId::new(91)]
+        );
+        assert_eq!(
+            service_requests
+                .iter()
+                .map(|request| request.request.clone())
+                .collect::<Vec<_>>(),
+            transition.platform_requests()
+        );
+        assert_eq!(allocator.next_value(), 92);
     }
 
     #[test]
