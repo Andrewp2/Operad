@@ -23,6 +23,7 @@ pub mod charts;
 pub mod commands;
 pub mod debug;
 pub mod display;
+pub mod drag_drop;
 pub mod editor;
 pub mod host;
 pub mod input;
@@ -54,6 +55,10 @@ pub use debug::{
 pub use display::{
     DisplayListId, DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKey,
     DisplayListKind, DisplayListScope, RetainedDisplayList, RetainedDisplayListCache,
+};
+pub use drag_drop::{
+    payload_has_content, DragDropSurfaceKind, DragSourceDescriptor, DragSourceId,
+    DropPayloadFilter, DropTargetDescriptor, DropTargetHit, DropTargetId,
 };
 pub use editor::{
     generate_ruler_ticks, ArrangementGeometry, EditorAxisRange, EditorCursor, EditorHitId,

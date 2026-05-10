@@ -8,10 +8,11 @@ use taffy::prelude::{
 };
 
 use crate::{
-    length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba,
-    CommandId, CommandRegistry, CommandScope, CommandTooltipResolver, ImageContent, InputBehavior,
-    KeyCode, ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument,
-    UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
+    AnimationMachine, ClipBehavior, ColorRgba, CommandId, CommandRegistry, CommandScope,
+    CommandTooltipResolver, ImageContent, InputBehavior, KeyCode, KeyModifiers, ScrollAxes,
+    ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode,
+    UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -716,6 +717,352 @@ impl SelectMenuOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchFilterTiming {
+    Immediate,
+    Debounced { delay_ms: u64 },
+}
+
+impl SearchFilterTiming {
+    pub const IMMEDIATE: Self = Self::Immediate;
+
+    pub const fn debounced(delay_ms: u64) -> Self {
+        Self::Debounced { delay_ms }
+    }
+}
+
+impl Default for SearchFilterTiming {
+    fn default() -> Self {
+        Self::Immediate
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchFilterRequest {
+    pub query: String,
+    pub revision: u64,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchFieldOutcome {
+    pub query_changed: bool,
+    pub cleared: bool,
+    pub filter_pending: bool,
+    pub close_requested: bool,
+}
+
+impl SearchFieldOutcome {
+    pub fn is_empty(&self) -> bool {
+        !self.query_changed && !self.cleared && !self.filter_pending && !self.close_requested
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchClearButtonMeta {
+    pub id: String,
+    pub label: String,
+    pub accessibility_label: String,
+    pub shortcut: Option<String>,
+    pub enabled: bool,
+}
+
+impl SearchClearButtonMeta {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        accessibility_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            accessibility_label: accessibility_label.into(),
+            shortcut: Some("Escape".to_string()),
+            enabled: true,
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    pub fn without_shortcut(mut self) -> Self {
+        self.shortcut = None;
+        self
+    }
+
+    pub fn accessibility(&self) -> AccessibilityMeta {
+        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Button)
+            .label(self.accessibility_label.clone());
+        if let Some(shortcut) = &self.shortcut {
+            accessibility = accessibility.shortcut(shortcut.clone());
+        }
+        if self.enabled {
+            accessibility.focusable()
+        } else {
+            accessibility.disabled()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchStatusText {
+    pub query: String,
+    pub visible_count: usize,
+    pub total_count: usize,
+    pub text: String,
+}
+
+impl SearchStatusText {
+    pub fn new(
+        query: impl AsRef<str>,
+        visible_count: usize,
+        total_count: usize,
+        singular: impl AsRef<str>,
+        plural: impl AsRef<str>,
+    ) -> Self {
+        let query = query.as_ref().trim().to_string();
+        let singular = singular.as_ref();
+        let plural = plural.as_ref();
+        let text = if query.is_empty() {
+            format!(
+                "{} available",
+                search_count_label(total_count, singular, plural)
+            )
+        } else if visible_count == 0 {
+            format!("No {plural} match \"{query}\"")
+        } else {
+            let verb = if visible_count == 1 {
+                "matches"
+            } else {
+                "match"
+            };
+            format!(
+                "{} {verb} \"{query}\"",
+                search_count_label(visible_count, singular, plural)
+            )
+        };
+
+        Self {
+            query,
+            visible_count,
+            total_count,
+            text,
+        }
+    }
+
+    pub fn accessibility(&self, label: impl Into<String>) -> AccessibilityMeta {
+        AccessibilityMeta::new(AccessibilityRole::Status)
+            .label(label)
+            .value(self.text.clone())
+            .live_region(AccessibilityLiveRegion::Polite)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchFieldState {
+    pub query: String,
+    pub revision: u64,
+    pub filtered_revision: u64,
+    pub last_changed_at_ms: Option<u64>,
+}
+
+impl SearchFieldState {
+    pub fn new() -> Self {
+        Self {
+            query: String::new(),
+            revision: 0,
+            filtered_revision: 0,
+            last_changed_at_ms: None,
+        }
+    }
+
+    pub fn with_query(mut self, query: impl Into<String>) -> Self {
+        self.query = query.into();
+        self
+    }
+
+    pub fn from_query(query: impl Into<String>) -> Self {
+        Self::new().with_query(query)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.query.is_empty()
+    }
+
+    pub fn is_filter_pending(&self) -> bool {
+        self.filtered_revision != self.revision
+    }
+
+    pub fn clear_button(&self) -> Option<SearchClearButtonMeta> {
+        (!self.query.is_empty())
+            .then(|| SearchClearButtonMeta::new("clear-search", "Clear", "Clear search"))
+    }
+
+    pub fn input_accessibility(&self, label: impl Into<String>) -> AccessibilityMeta {
+        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::SearchBox)
+            .label(label)
+            .value(self.query.clone())
+            .focusable();
+        if let Some(clear_button) = self.clear_button() {
+            let mut action =
+                AccessibilityAction::new(clear_button.id, clear_button.accessibility_label);
+            if let Some(shortcut) = clear_button.shortcut {
+                action = action.shortcut(shortcut);
+            }
+            accessibility = accessibility.action(action);
+        }
+        accessibility
+    }
+
+    pub fn status(
+        &self,
+        visible_count: usize,
+        total_count: usize,
+        singular: impl AsRef<str>,
+        plural: impl AsRef<str>,
+    ) -> SearchStatusText {
+        SearchStatusText::new(&self.query, visible_count, total_count, singular, plural)
+    }
+
+    pub fn status_accessibility(
+        &self,
+        label: impl Into<String>,
+        visible_count: usize,
+        total_count: usize,
+        singular: impl AsRef<str>,
+        plural: impl AsRef<str>,
+    ) -> AccessibilityMeta {
+        self.status(visible_count, total_count, singular, plural)
+            .accessibility(label)
+    }
+
+    pub fn set_query(&mut self, query: impl Into<String>, now_ms: u64) -> SearchFieldOutcome {
+        let query = query.into();
+        if self.query == query {
+            return SearchFieldOutcome::default();
+        }
+
+        let cleared = !self.query.is_empty() && query.is_empty();
+        self.query = query;
+        self.revision = self.revision.saturating_add(1);
+        self.last_changed_at_ms = Some(now_ms);
+        SearchFieldOutcome {
+            query_changed: true,
+            cleared,
+            filter_pending: true,
+            close_requested: false,
+        }
+    }
+
+    pub fn push_text(&mut self, text: impl AsRef<str>, now_ms: u64) -> SearchFieldOutcome {
+        let text = text.as_ref();
+        if text.is_empty() {
+            return SearchFieldOutcome::default();
+        }
+        let mut query = self.query.clone();
+        query.push_str(text);
+        self.set_query(query, now_ms)
+    }
+
+    pub fn backspace(&mut self, now_ms: u64) -> SearchFieldOutcome {
+        let mut query = self.query.clone();
+        if pop_last_char(&mut query) {
+            self.set_query(query, now_ms)
+        } else {
+            SearchFieldOutcome::default()
+        }
+    }
+
+    pub fn clear(&mut self, now_ms: u64) -> SearchFieldOutcome {
+        self.set_query(String::new(), now_ms)
+    }
+
+    pub fn handle_event(&mut self, event: &UiInputEvent, now_ms: u64) -> SearchFieldOutcome {
+        match event {
+            UiInputEvent::TextInput(text) => self.push_text(text, now_ms),
+            UiInputEvent::Key {
+                key: KeyCode::Backspace,
+                modifiers,
+            } if search_field_clear_modifier(*modifiers) => self.clear(now_ms),
+            UiInputEvent::Key {
+                key: KeyCode::Backspace,
+                ..
+            } => self.backspace(now_ms),
+            UiInputEvent::Key {
+                key: KeyCode::Delete,
+                modifiers,
+            } if search_field_clear_modifier(*modifiers) => self.clear(now_ms),
+            UiInputEvent::Key {
+                key: KeyCode::Escape,
+                ..
+            } if self.query.is_empty() => SearchFieldOutcome {
+                close_requested: true,
+                ..Default::default()
+            },
+            UiInputEvent::Key {
+                key: KeyCode::Escape,
+                ..
+            } => self.clear(now_ms),
+            _ => SearchFieldOutcome::default(),
+        }
+    }
+
+    pub fn filter_request(
+        &self,
+        now_ms: u64,
+        timing: SearchFilterTiming,
+    ) -> Option<SearchFilterRequest> {
+        if !self.is_filter_pending() {
+            return None;
+        }
+
+        let elapsed_ms = self
+            .last_changed_at_ms
+            .map(|changed_at| now_ms.saturating_sub(changed_at))
+            .unwrap_or(0);
+        match timing {
+            SearchFilterTiming::Immediate => {}
+            SearchFilterTiming::Debounced { delay_ms } if elapsed_ms >= delay_ms => {}
+            SearchFilterTiming::Debounced { .. } => return None,
+        }
+
+        Some(SearchFilterRequest {
+            query: self.query.clone(),
+            revision: self.revision,
+            elapsed_ms,
+        })
+    }
+
+    pub fn take_filter_request(
+        &mut self,
+        now_ms: u64,
+        timing: SearchFilterTiming,
+    ) -> Option<SearchFilterRequest> {
+        let request = self.filter_request(now_ms, timing)?;
+        self.mark_filter_applied(request.revision);
+        Some(request)
+    }
+
+    pub fn mark_filter_applied(&mut self, revision: u64) {
+        if revision > self.filtered_revision && revision <= self.revision {
+            self.filtered_revision = revision;
+        }
+    }
+}
+
+impl Default for SearchFieldState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectOptionFilterMatch {
     pub visible_index: usize,
@@ -757,6 +1104,38 @@ impl SelectOptionFilterState {
         self
     }
 
+    pub fn search_field(&self) -> SearchFieldState {
+        SearchFieldState::from_query(self.query.clone())
+    }
+
+    pub fn apply_search_field(
+        &mut self,
+        field: &SearchFieldState,
+        options: &[SelectOption],
+    ) -> SelectOptionFilterOutcome {
+        let query_changed = self.query != field.query;
+        self.query = field.query.clone();
+        let matches = self.matches(options);
+        self.active_match = first_enabled_select_option_match(options, &matches);
+        SelectOptionFilterOutcome {
+            query_changed,
+            active_match: self.active_match,
+            ..Default::default()
+        }
+    }
+
+    pub fn clear_query(&mut self, options: &[SelectOption]) -> SelectOptionFilterOutcome {
+        if self.query.is_empty() {
+            return SelectOptionFilterOutcome::default();
+        }
+        self.set_query("", options);
+        SelectOptionFilterOutcome {
+            query_changed: true,
+            active_match: self.active_match,
+            ..Default::default()
+        }
+    }
+
     pub fn filtered_indices(&self, options: &[SelectOption]) -> Vec<usize> {
         filter_select_option_indices(options, &self.query)
     }
@@ -779,6 +1158,20 @@ impl SelectOptionFilterState {
                 query: self.query.clone(),
                 label: self.empty_label.clone(),
             })
+    }
+
+    pub fn search_status(&self, options: &[SelectOption]) -> SearchStatusText {
+        self.search_field().status(
+            self.visible_count(options),
+            options.len(),
+            "option",
+            "options",
+        )
+    }
+
+    pub fn search_status_accessibility(&self, options: &[SelectOption]) -> AccessibilityMeta {
+        self.search_status(options)
+            .accessibility("Option search results")
     }
 
     pub fn set_query(&mut self, query: impl Into<String>, options: &[SelectOption]) {
@@ -1794,8 +2187,62 @@ impl CommandPaletteState {
         self
     }
 
+    pub fn search_field(&self) -> SearchFieldState {
+        SearchFieldState::from_query(self.query.clone())
+    }
+
+    pub fn apply_search_field(
+        &mut self,
+        field: &SearchFieldState,
+        items: &[CommandPaletteItem],
+    ) -> CommandPaletteOutcome {
+        let query_changed = self.query != field.query;
+        self.query = field.query.clone();
+        let matches = self.matches(items);
+        self.active_match = first_enabled_palette_match(items, &matches);
+        CommandPaletteOutcome {
+            query_changed,
+            active_match: self.active_match,
+            ..Default::default()
+        }
+    }
+
+    pub fn clear_query(&mut self, items: &[CommandPaletteItem]) -> CommandPaletteOutcome {
+        if self.query.is_empty() {
+            return CommandPaletteOutcome::default();
+        }
+        self.set_query("", items);
+        CommandPaletteOutcome {
+            query_changed: true,
+            active_match: self.active_match,
+            ..Default::default()
+        }
+    }
+
     pub fn matches(&self, items: &[CommandPaletteItem]) -> Vec<CommandPaletteMatch> {
         filter_command_palette(items, &self.query, self.max_results)
+    }
+
+    pub fn visible_count(&self, items: &[CommandPaletteItem]) -> usize {
+        self.matches(items).len()
+    }
+
+    pub fn is_empty(&self, items: &[CommandPaletteItem]) -> bool {
+        self.matches(items).is_empty()
+    }
+
+    pub fn search_status(&self, items: &[CommandPaletteItem]) -> SearchStatusText {
+        self.search_field().status(
+            self.visible_count(items),
+            items.len(),
+            "command",
+            "commands",
+        )
+    }
+
+    pub fn search_status_accessibility(&self, items: &[CommandPaletteItem]) -> AccessibilityMeta {
+        self.search_status(items)
+            .accessibility("Command search results")
     }
 
     pub fn set_query(&mut self, query: impl Into<String>, items: &[CommandPaletteItem]) {
@@ -2057,6 +2504,8 @@ pub fn command_palette(
 ) -> CommandPaletteNodes {
     let name = name.into();
     let matches = state.matches(items);
+    let search_field = state.search_field();
+    let search_status = search_field.status(matches.len(), items.len(), "command", "commands");
     let visible_rows = visible_row_count(matches.len(), options.max_visible_rows);
     let height = 42.0 + visible_rows as f32 * options.row_height;
     let root = if let Some(popup) = popup {
@@ -2138,11 +2587,9 @@ pub fn command_palette(
         .with_input(InputBehavior::BUTTON)
         .with_visual(options.input_visual)
         .with_accessibility(
-            AccessibilityMeta::new(AccessibilityRole::TextBox)
-                .label("Command search")
-                .value(state.query.clone())
-                .shortcut("Ctrl+K")
-                .focusable(),
+            search_field
+                .input_accessibility("Command search")
+                .shortcut("Ctrl+K"),
         ),
     );
     label(
@@ -2184,7 +2631,9 @@ pub fn command_palette(
         list_node = list_node.with_scroll(ScrollAxes::VERTICAL);
     }
     list_node = list_node.with_accessibility(
-        AccessibilityMeta::new(AccessibilityRole::List).label(format!("{name} results")),
+        AccessibilityMeta::new(AccessibilityRole::List)
+            .label(format!("{name} results"))
+            .value(search_status.text),
     );
     let list = document.add_child(root, list_node);
 
@@ -3445,6 +3894,18 @@ fn next_enabled_palette_match(
     None
 }
 
+fn search_count_label(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+fn search_field_clear_modifier(modifiers: KeyModifiers) -> bool {
+    modifiers.ctrl || modifiers.meta
+}
+
 fn pop_last_char(text: &mut String) -> bool {
     let Some((index, _)) = text.char_indices().next_back() else {
         return false;
@@ -3624,6 +4085,110 @@ mod tests {
         let outcome = state.handle_event(&options, &UiInputEvent::TextInput("a".to_string()));
         assert_eq!(outcome.active, Some(0));
         assert_eq!(state.active, Some(0));
+    }
+
+    #[test]
+    fn search_field_tracks_clear_button_debounce_status_and_keyboard_clear() {
+        let mut field = SearchFieldState::new();
+        assert!(field.clear_button().is_none());
+
+        let outcome = field.handle_event(&UiInputEvent::TextInput("alp".to_string()), 100);
+        assert!(outcome.query_changed);
+        assert!(outcome.filter_pending);
+        assert_eq!(field.query, "alp");
+        assert!(field.is_filter_pending());
+
+        let clear_button = field.clear_button().expect("clear button");
+        assert_eq!(clear_button.id, "clear-search");
+        assert_eq!(clear_button.label, "Clear");
+        assert_eq!(clear_button.shortcut.as_deref(), Some("Escape"));
+        let clear_accessibility = clear_button.accessibility();
+        assert_eq!(clear_accessibility.role, AccessibilityRole::Button);
+        assert!(clear_accessibility.focusable);
+
+        let input_accessibility = field.input_accessibility("Search commands");
+        assert_eq!(input_accessibility.role, AccessibilityRole::SearchBox);
+        assert_eq!(input_accessibility.value.as_deref(), Some("alp"));
+        assert_eq!(input_accessibility.actions.len(), 1);
+        assert_eq!(input_accessibility.actions[0].id, "clear-search");
+
+        assert!(field
+            .filter_request(149, SearchFilterTiming::debounced(50))
+            .is_none());
+        let request = field
+            .filter_request(150, SearchFilterTiming::debounced(50))
+            .expect("debounced filter");
+        assert_eq!(request.query, "alp");
+        assert_eq!(request.revision, field.revision);
+        assert_eq!(request.elapsed_ms, 50);
+
+        let request = field
+            .take_filter_request(150, SearchFilterTiming::debounced(50))
+            .expect("taken filter");
+        assert_eq!(request.query, "alp");
+        assert!(!field.is_filter_pending());
+
+        let status = field.status(2, 4, "option", "options");
+        assert_eq!(status.text, "2 options match \"alp\"");
+        let status_accessibility = status.accessibility("Search results");
+        assert_eq!(status_accessibility.role, AccessibilityRole::Status);
+        assert_eq!(
+            status_accessibility.live_region,
+            AccessibilityLiveRegion::Polite
+        );
+
+        let outcome = field.handle_event(
+            &UiInputEvent::Key {
+                key: KeyCode::Escape,
+                modifiers: KeyModifiers::NONE,
+            },
+            200,
+        );
+        assert!(outcome.cleared);
+        assert_eq!(field.query, "");
+        assert!(field.is_filter_pending());
+
+        let outcome = field.handle_event(
+            &UiInputEvent::Key {
+                key: KeyCode::Escape,
+                modifiers: KeyModifiers::NONE,
+            },
+            250,
+        );
+        assert!(outcome.close_requested);
+    }
+
+    #[test]
+    fn select_option_filter_accepts_search_field_and_reports_accessible_status() {
+        let options = vec![
+            SelectOption::new("alpha", "Alpha"),
+            SelectOption::new("alpine", "Alpine"),
+            SelectOption::new("beta", "Beta"),
+        ];
+        let mut field = SearchFieldState::new();
+        field.set_query("alp", 10);
+        let mut state = SelectOptionFilterState::new();
+
+        let outcome = state.apply_search_field(&field, &options);
+        assert!(outcome.query_changed);
+        assert_eq!(state.query, "alp");
+        assert_eq!(state.filtered_indices(&options), vec![0, 1]);
+        assert_eq!(state.active_match, Some(0));
+        assert_eq!(
+            state.search_status(&options).text,
+            "2 options match \"alp\""
+        );
+        assert_eq!(
+            state.search_status_accessibility(&options).live_region,
+            AccessibilityLiveRegion::Polite
+        );
+        assert_eq!(state.search_field().query, "alp");
+
+        let outcome = state.clear_query(&options);
+        assert!(outcome.query_changed);
+        assert_eq!(state.query, "");
+        assert_eq!(state.active_match, Some(0));
+        assert_eq!(state.search_status(&options).text, "3 options available");
     }
 
     #[test]
@@ -4196,6 +4761,39 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_state_accepts_search_field_clear_and_status() {
+        let items = vec![
+            CommandPaletteItem::new("open", "Open File"),
+            CommandPaletteItem::new("save", "Save Project"),
+            CommandPaletteItem::new("close", "Close Project"),
+        ];
+        let mut field = SearchFieldState::new();
+        field.set_query("save", 25);
+        let mut state = CommandPaletteState::new();
+
+        let outcome = state.apply_search_field(&field, &items);
+        assert!(outcome.query_changed);
+        assert_eq!(state.query, "save");
+        assert_eq!(state.matches(&items).len(), 1);
+        assert_eq!(state.active_match, Some(0));
+        assert_eq!(
+            state.search_status(&items).text,
+            "1 command matches \"save\""
+        );
+        assert_eq!(
+            state.search_status_accessibility(&items).live_region,
+            AccessibilityLiveRegion::Polite
+        );
+
+        let outcome = state.clear_query(&items);
+        assert!(outcome.query_changed);
+        assert_eq!(state.query, "");
+        assert_eq!(state.active_match, Some(0));
+        assert_eq!(state.visible_count(&items), 3);
+        assert_eq!(state.search_status(&items).text, "3 commands available");
+    }
+
+    #[test]
     fn command_palette_builder_creates_input_and_result_rows() {
         let mut document = UiDocument::new(root_style(600.0, 400.0));
         let root = document.root;
@@ -4251,7 +4849,17 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .role,
-            AccessibilityRole::TextBox
+            AccessibilityRole::SearchBox
+        );
+        assert_eq!(
+            document
+                .node(nodes.input)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .actions[0]
+                .id,
+            "clear-search"
         );
         assert_eq!(
             document
@@ -4264,6 +4872,16 @@ mod tests {
             Some(nodes.rows[0])
         );
         let result_list = document.node(nodes.root).children[1];
+        assert_eq!(
+            document
+                .node(result_list)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("2 commands match \"o\"")
+        );
         assert_eq!(
             document
                 .node(result_list)

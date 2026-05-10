@@ -380,6 +380,312 @@ impl Default for DataCellAlignment {
     }
 }
 
+/// Why a dense data view has no rows to present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataViewEmptyReason {
+    NoRows,
+    NoMatches,
+    NoVisibleRows,
+}
+
+impl Default for DataViewEmptyReason {
+    fn default() -> Self {
+        Self::NoRows
+    }
+}
+
+/// Renderer-neutral empty-state copy and metadata for dense lists and tables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataViewEmptyState {
+    pub reason: DataViewEmptyReason,
+    pub title: String,
+    pub message: Option<String>,
+    pub action_label: Option<String>,
+    pub query: Option<String>,
+}
+
+impl DataViewEmptyState {
+    pub fn new(reason: DataViewEmptyReason, title: impl Into<String>) -> Self {
+        Self {
+            reason,
+            title: title.into(),
+            message: None,
+            action_label: None,
+            query: None,
+        }
+    }
+
+    pub fn no_rows(title: impl Into<String>) -> Self {
+        Self::new(DataViewEmptyReason::NoRows, title)
+    }
+
+    pub fn no_matches(query: impl Into<String>, title: impl Into<String>) -> Self {
+        Self::new(DataViewEmptyReason::NoMatches, title).query(query)
+    }
+
+    pub fn no_visible_rows(title: impl Into<String>) -> Self {
+        Self::new(DataViewEmptyReason::NoVisibleRows, title)
+    }
+
+    pub fn for_counts(
+        total_row_count: usize,
+        visible_row_count: usize,
+        query: impl AsRef<str>,
+    ) -> Option<Self> {
+        if visible_row_count > 0 {
+            return None;
+        }
+
+        let query = query.as_ref().trim();
+        if total_row_count == 0 {
+            Some(Self::no_rows("No rows"))
+        } else if query.is_empty() {
+            Some(Self::no_visible_rows("No visible rows"))
+        } else {
+            Some(Self::no_matches(query, "No matching rows"))
+        }
+    }
+
+    pub fn message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    pub fn action_label(mut self, action_label: impl Into<String>) -> Self {
+        self.action_label = Some(action_label.into());
+        self
+    }
+
+    pub fn query(mut self, query: impl Into<String>) -> Self {
+        let query = query.into();
+        self.query = (!query.is_empty()).then_some(query);
+        self
+    }
+
+    pub fn is_filter_empty(&self) -> bool {
+        self.reason == DataViewEmptyReason::NoMatches
+    }
+
+    pub fn accessibility_value(&self) -> String {
+        let mut value = vec![data_view_empty_reason_label(self.reason).to_owned()];
+        if let Some(query) = &self.query {
+            value.push(format!("query {query}"));
+        }
+        if let Some(message) = &self.message {
+            value.push(message.clone());
+        }
+        if let Some(action) = &self.action_label {
+            value.push(format!("action {action}"));
+        }
+        value.join("; ")
+    }
+
+    pub fn accessibility(&self) -> AccessibilityMeta {
+        let meta = AccessibilityMeta::new(AccessibilityRole::Status)
+            .label(self.title.clone())
+            .value(self.accessibility_value());
+        if self.is_filter_empty() {
+            meta.live_region(AccessibilityLiveRegion::Polite)
+        } else {
+            meta
+        }
+    }
+}
+
+/// Section metadata that can be inserted into a dense list/table row stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataViewSectionHeader {
+    pub id: String,
+    pub label: String,
+    pub row_count: usize,
+    pub collapsed: bool,
+}
+
+impl DataViewSectionHeader {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            row_count: 0,
+            collapsed: false,
+        }
+    }
+
+    pub fn with_row_count(mut self, row_count: usize) -> Self {
+        self.row_count = row_count;
+        self
+    }
+
+    pub fn collapsed(mut self) -> Self {
+        self.collapsed = true;
+        self
+    }
+
+    pub fn accessibility(&self, section_index: usize, section_count: usize) -> AccessibilityMeta {
+        let mut value = vec![
+            format!("section {} of {}", section_index + 1, section_count),
+            format!("{} rows", self.row_count),
+        ];
+        push_state(&mut value, "collapsed", self.collapsed);
+
+        AccessibilityMeta::new(AccessibilityRole::RowHeader)
+            .label(self.label.clone())
+            .value(value.join("; "))
+            .expanded(!self.collapsed)
+    }
+}
+
+/// Stable identity for a row after filtering, sorting, or section flattening.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataViewRow {
+    pub id: String,
+    pub source_index: usize,
+    pub section_id: Option<String>,
+}
+
+impl DataViewRow {
+    pub fn new(id: impl Into<String>, source_index: usize) -> Self {
+        Self {
+            id: id.into(),
+            source_index,
+            section_id: None,
+        }
+    }
+
+    pub fn in_section(mut self, section_id: impl Into<String>) -> Self {
+        self.section_id = Some(section_id.into());
+        self
+    }
+}
+
+/// One entry in a flattened dense data view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataViewEntry {
+    SectionHeader(DataViewSectionHeader),
+    Row(DataViewRow),
+}
+
+impl DataViewEntry {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::SectionHeader(section) => section.id.as_str(),
+            Self::Row(row) => row.id.as_str(),
+        }
+    }
+
+    pub fn is_section_header(&self) -> bool {
+        matches!(self, Self::SectionHeader(_))
+    }
+
+    pub fn is_row(&self) -> bool {
+        matches!(self, Self::Row(_))
+    }
+
+    pub fn row(&self) -> Option<&DataViewRow> {
+        match self {
+            Self::Row(row) => Some(row),
+            Self::SectionHeader(_) => None,
+        }
+    }
+
+    pub fn section_header(&self) -> Option<&DataViewSectionHeader> {
+        match self {
+            Self::SectionHeader(section) => Some(section),
+            Self::Row(_) => None,
+        }
+    }
+}
+
+/// A flattened table/list projection with stable row IDs and optional headers.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DataViewProjection {
+    pub entries: Vec<DataViewEntry>,
+    pub total_row_count: usize,
+}
+
+impl DataViewProjection {
+    pub fn new(entries: Vec<DataViewEntry>, total_row_count: usize) -> Self {
+        Self {
+            entries,
+            total_row_count,
+        }
+    }
+
+    pub fn from_rows(rows: impl IntoIterator<Item = DataViewRow>) -> Self {
+        let rows = rows.into_iter().collect::<Vec<_>>();
+        Self {
+            total_row_count: rows.len(),
+            entries: rows.into_iter().map(DataViewEntry::Row).collect(),
+        }
+    }
+
+    pub fn from_sections(
+        sections: impl IntoIterator<Item = (DataViewSectionHeader, Vec<DataViewRow>)>,
+    ) -> Self {
+        let mut entries = Vec::new();
+        let mut total_row_count = 0;
+        for (mut section, rows) in sections {
+            if section.row_count == 0 {
+                section.row_count = rows.len();
+            }
+            total_row_count += section.row_count;
+            let collapsed = section.collapsed;
+            entries.push(DataViewEntry::SectionHeader(section));
+            if !collapsed {
+                entries.extend(rows.into_iter().map(DataViewEntry::Row));
+            }
+        }
+        Self {
+            entries,
+            total_row_count,
+        }
+    }
+
+    pub fn visible_row_count(&self) -> usize {
+        self.entries.iter().filter(|entry| entry.is_row()).count()
+    }
+
+    pub fn section_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_section_header())
+            .count()
+    }
+
+    pub fn empty_state(&self, query: impl AsRef<str>) -> Option<DataViewEmptyState> {
+        DataViewEmptyState::for_counts(self.total_row_count, self.visible_row_count(), query)
+    }
+
+    pub fn row_identity(&self) -> DataViewRowIdentity {
+        DataViewRowIdentity::new(self.entries.iter().filter_map(|entry| match entry {
+            DataViewEntry::Row(row) => Some(row.id.clone()),
+            DataViewEntry::SectionHeader(_) => None,
+        }))
+    }
+
+    pub fn row_at_visible_index(&self, visible_row_index: usize) -> Option<&DataViewRow> {
+        self.entries
+            .iter()
+            .filter_map(DataViewEntry::row)
+            .nth(visible_row_index)
+    }
+
+    pub fn row_index_for_id(&self, id: &str) -> Option<usize> {
+        self.entries
+            .iter()
+            .filter_map(DataViewEntry::row)
+            .position(|row| row.id == id)
+    }
+
+    pub fn source_index_for_id(&self, id: &str) -> Option<usize> {
+        self.entries
+            .iter()
+            .filter_map(DataViewEntry::row)
+            .find(|row| row.id == id)
+            .map(|row| row.source_index)
+    }
+}
+
 /// Column metadata for virtualized data tables.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataTableColumn {
@@ -427,6 +733,118 @@ impl DataTableColumn {
 
     pub fn resolved_width(&self) -> f32 {
         self.width.max(self.min_width)
+    }
+}
+
+/// Sticky header/leading-column contract for renderer-specific table layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DataTableStickySpec {
+    pub header: bool,
+    pub leading_columns: usize,
+}
+
+impl DataTableStickySpec {
+    pub const NONE: Self = Self {
+        header: false,
+        leading_columns: 0,
+    };
+
+    pub const HEADER: Self = Self {
+        header: true,
+        leading_columns: 0,
+    };
+
+    pub const fn new() -> Self {
+        Self::NONE
+    }
+
+    pub const fn header() -> Self {
+        Self::HEADER
+    }
+
+    pub const fn leading_columns(leading_columns: usize) -> Self {
+        Self {
+            header: false,
+            leading_columns,
+        }
+    }
+
+    pub const fn with_header(mut self, header: bool) -> Self {
+        self.header = header;
+        self
+    }
+
+    pub const fn with_leading_columns(mut self, leading_columns: usize) -> Self {
+        self.leading_columns = leading_columns;
+        self
+    }
+
+    pub fn clamped(self, column_count: usize) -> Self {
+        Self {
+            header: self.header,
+            leading_columns: self.leading_columns.min(column_count),
+        }
+    }
+
+    pub fn has_sticky_columns(self, column_count: usize) -> bool {
+        self.clamped(column_count).leading_columns > 0
+    }
+
+    pub fn column_region(
+        self,
+        column_index: usize,
+        column_count: usize,
+    ) -> Option<DataTableColumnRegion> {
+        if column_index >= column_count {
+            return None;
+        }
+        if column_index < self.clamped(column_count).leading_columns {
+            Some(DataTableColumnRegion::StickyLeading)
+        } else {
+            Some(DataTableColumnRegion::Scrollable)
+        }
+    }
+
+    pub fn partition(self, columns: &[DataTableColumn]) -> DataTableStickyColumns {
+        let clamped = self.clamped(columns.len());
+        let leading_columns = 0..clamped.leading_columns;
+        let scrollable_columns = clamped.leading_columns..columns.len();
+        let leading_width = data_table_width(&columns[leading_columns.clone()]);
+        let scrollable_width = data_table_width(&columns[scrollable_columns.clone()]);
+
+        DataTableStickyColumns {
+            header: clamped.header,
+            leading_columns,
+            scrollable_columns,
+            leading_width,
+            scrollable_width,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataTableColumnRegion {
+    StickyLeading,
+    Scrollable,
+}
+
+/// Resolved sticky column partition with widths ready for layout/renderers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataTableStickyColumns {
+    pub header: bool,
+    pub leading_columns: Range<usize>,
+    pub scrollable_columns: Range<usize>,
+    pub leading_width: f32,
+    pub scrollable_width: f32,
+}
+
+impl DataTableStickyColumns {
+    pub fn has_sticky_columns(&self) -> bool {
+        !self.leading_columns.is_empty()
+    }
+
+    pub fn total_width(&self) -> f32 {
+        self.leading_width + self.scrollable_width
     }
 }
 
@@ -516,6 +934,108 @@ impl DataTableSelection {
                 clamp_index_delta(base.column, column_delta, column_count),
             ),
         )
+    }
+}
+
+/// Stable visible-row ID list used to remap index-based table selection.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DataViewRowIdentity {
+    pub row_ids: Vec<String>,
+}
+
+/// Table-oriented alias for [`DataViewRowIdentity`].
+pub type DataTableRowIdentity = DataViewRowIdentity;
+
+impl DataViewRowIdentity {
+    pub fn new(row_ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            row_ids: row_ids.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.row_ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.row_ids.is_empty()
+    }
+
+    pub fn id_at(&self, row_index: usize) -> Option<&str> {
+        self.row_ids.get(row_index).map(String::as_str)
+    }
+
+    pub fn index_of(&self, row_id: &str) -> Option<usize> {
+        self.row_ids.iter().position(|id| id == row_id)
+    }
+
+    pub fn contains_id(&self, row_id: &str) -> bool {
+        self.index_of(row_id).is_some()
+    }
+
+    pub fn duplicate_ids(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut duplicate_ids = Vec::new();
+        for id in &self.row_ids {
+            if !seen.insert(id.as_str()) && !duplicate_ids.iter().any(|duplicate| duplicate == id) {
+                duplicate_ids.push(id.clone());
+            }
+        }
+        duplicate_ids
+    }
+
+    pub fn has_unique_ids(&self) -> bool {
+        self.duplicate_ids().is_empty()
+    }
+
+    pub fn selected_row_ids(&self, selection: &DataTableSelection) -> Vec<String> {
+        selection
+            .selected_rows_clamped(self.len())
+            .into_iter()
+            .filter_map(|row| self.id_at(row).map(str::to_owned))
+            .collect()
+    }
+
+    pub fn active_row_id<'a>(&'a self, selection: &DataTableSelection) -> Option<&'a str> {
+        self.id_at(selection.active_cell?.row)
+    }
+
+    pub fn selection_from_row_ids(
+        &self,
+        row_ids: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> DataTableSelection {
+        let rows = row_ids
+            .into_iter()
+            .filter_map(|id| self.index_of(id.as_ref()))
+            .collect::<Vec<_>>();
+        DataTableSelection {
+            selected_rows: sorted_unique_indices(rows, self.len()),
+            active_cell: None,
+        }
+    }
+
+    pub fn selection_from_row_ids_with_active_cell(
+        &self,
+        row_ids: impl IntoIterator<Item = impl AsRef<str>>,
+        active_row_id: Option<&str>,
+        active_column: usize,
+    ) -> DataTableSelection {
+        let mut selection = self.selection_from_row_ids(row_ids);
+        selection.active_cell = active_row_id
+            .and_then(|row_id| self.index_of(row_id))
+            .map(|row| DataTableCellIndex::new(row, active_column));
+        selection
+    }
+
+    pub fn remap_selection_from(
+        &self,
+        previous: &DataViewRowIdentity,
+        selection: &DataTableSelection,
+    ) -> DataTableSelection {
+        let selected_ids = previous.selected_row_ids(selection);
+        let active_row_id = previous.active_row_id(selection);
+        let active_column = selection.active_cell.map(|cell| cell.column).unwrap_or(0);
+        self.selection_from_row_ids_with_active_cell(selected_ids, active_row_id, active_column)
     }
 }
 
@@ -2209,6 +2729,14 @@ fn accessibility_label_or_name(label: &Option<String>, name: &str) -> String {
     label.clone().unwrap_or_else(|| name.to_owned())
 }
 
+fn data_view_empty_reason_label(reason: DataViewEmptyReason) -> &'static str {
+    match reason {
+        DataViewEmptyReason::NoRows => "no rows",
+        DataViewEmptyReason::NoMatches => "no matches",
+        DataViewEmptyReason::NoVisibleRows => "no visible rows",
+    }
+}
+
 fn property_value_kind_label(kind: PropertyValueKind) -> &'static str {
     match kind {
         PropertyValueKind::Text => "text",
@@ -2630,6 +3158,153 @@ mod tests {
         assert!(warning_shader.uniforms.iter().any(|uniform| {
             uniform.name == "property_status_warning" && (uniform.value - 1.0).abs() < f32::EPSILON
         }));
+    }
+
+    #[test]
+    fn data_view_empty_state_distinguishes_source_filter_and_view_empty() {
+        assert_eq!(
+            DataViewEmptyState::for_counts(0, 0, ""),
+            Some(DataViewEmptyState::no_rows("No rows"))
+        );
+        assert_eq!(
+            DataViewEmptyState::for_counts(4, 0, ""),
+            Some(DataViewEmptyState::no_visible_rows("No visible rows"))
+        );
+        assert_eq!(DataViewEmptyState::for_counts(4, 2, "lead"), None);
+
+        let filtered = DataViewEmptyState::for_counts(4, 0, "lead")
+            .unwrap()
+            .message("Adjust the filter")
+            .action_label("Clear filter");
+        assert!(filtered.is_filter_empty());
+        assert!(filtered.accessibility_value().contains("query lead"));
+        assert!(filtered.accessibility_value().contains("Adjust the filter"));
+
+        let accessibility = filtered.accessibility();
+        assert_eq!(accessibility.role, AccessibilityRole::Status);
+        assert_eq!(accessibility.live_region, AccessibilityLiveRegion::Polite);
+        assert_eq!(accessibility.label.as_deref(), Some("No matching rows"));
+    }
+
+    #[test]
+    fn data_view_projection_flattens_section_headers_and_row_identity() {
+        let projection = DataViewProjection::from_sections(vec![
+            (
+                DataViewSectionHeader::new("audio", "Audio").with_row_count(2),
+                vec![
+                    DataViewRow::new("kick", 3).in_section("audio"),
+                    DataViewRow::new("snare", 7).in_section("audio"),
+                ],
+            ),
+            (
+                DataViewSectionHeader::new("hidden", "Hidden")
+                    .with_row_count(1)
+                    .collapsed(),
+                vec![DataViewRow::new("ghost", 9).in_section("hidden")],
+            ),
+        ]);
+
+        assert_eq!(projection.total_row_count, 3);
+        assert_eq!(projection.visible_row_count(), 2);
+        assert_eq!(projection.section_count(), 2);
+        assert_eq!(
+            projection
+                .entries
+                .iter()
+                .map(DataViewEntry::id)
+                .collect::<Vec<_>>(),
+            vec!["audio", "kick", "snare", "hidden"]
+        );
+        assert_eq!(projection.row_index_for_id("snare"), Some(1));
+        assert_eq!(projection.source_index_for_id("snare"), Some(7));
+        assert_eq!(
+            projection
+                .row_at_visible_index(0)
+                .unwrap()
+                .section_id
+                .as_deref(),
+            Some("audio")
+        );
+        assert_eq!(
+            projection.row_identity().row_ids,
+            vec!["kick".to_owned(), "snare".to_owned()]
+        );
+
+        let hidden = projection.entries[3].section_header().unwrap();
+        let accessibility = hidden.accessibility(1, 2);
+        assert_eq!(accessibility.role, AccessibilityRole::RowHeader);
+        assert_eq!(accessibility.expanded, Some(false));
+        assert!(accessibility
+            .value
+            .as_deref()
+            .unwrap()
+            .contains("collapsed"));
+    }
+
+    #[test]
+    fn data_table_sticky_spec_partitions_leading_columns() {
+        let columns = vec![
+            DataTableColumn::new("name", "Name", 120.0),
+            DataTableColumn::new("state", "State", 80.0),
+            DataTableColumn::new("note", "Note", 40.0).with_min_width(60.0),
+        ];
+
+        let spec = DataTableStickySpec::leading_columns(2).with_header(true);
+        let partition = spec.partition(&columns);
+
+        assert!(partition.header);
+        assert_eq!(partition.leading_columns, 0..2);
+        assert_eq!(partition.scrollable_columns, 2..3);
+        assert_eq!(partition.leading_width, 200.0);
+        assert_eq!(partition.scrollable_width, 60.0);
+        assert_eq!(partition.total_width(), data_table_width(&columns));
+        assert!(partition.has_sticky_columns());
+        assert_eq!(
+            spec.column_region(1, columns.len()),
+            Some(DataTableColumnRegion::StickyLeading)
+        );
+        assert_eq!(
+            spec.column_region(2, columns.len()),
+            Some(DataTableColumnRegion::Scrollable)
+        );
+        assert_eq!(
+            DataTableStickySpec::leading_columns(99)
+                .partition(&columns)
+                .scrollable_columns,
+            3..3
+        );
+    }
+
+    #[test]
+    fn data_view_row_identity_remaps_selection_after_filtering_and_sorting() {
+        let previous = DataViewRowIdentity::new(["bravo", "alpha", "charlie", "delta"]);
+        let current = DataViewRowIdentity::new(["delta", "charlie", "bravo"]);
+        let selection = DataTableSelection {
+            selected_rows: vec![2, 0, 2, 99],
+            active_cell: Some(DataTableCellIndex::new(2, 4)),
+        };
+
+        assert_eq!(
+            previous.selected_row_ids(&selection),
+            vec!["bravo".to_owned(), "charlie".to_owned()]
+        );
+        assert_eq!(previous.active_row_id(&selection), Some("charlie"));
+
+        let remapped = current.remap_selection_from(&previous, &selection);
+        assert_eq!(remapped.selected_rows, vec![1, 2]);
+        assert_eq!(remapped.active_cell, Some(DataTableCellIndex::new(1, 4)));
+
+        let filtered = DataViewRowIdentity::new(["delta"]);
+        let remapped = filtered.remap_selection_from(&previous, &selection);
+        assert!(remapped.selected_rows.is_empty());
+        assert_eq!(remapped.active_cell, None);
+
+        let duplicate = DataViewRowIdentity::new(["one", "two", "one", "two", "one"]);
+        assert_eq!(
+            duplicate.duplicate_ids(),
+            vec!["one".to_owned(), "two".to_owned()]
+        );
+        assert!(!duplicate.has_unique_ids());
     }
 
     #[test]

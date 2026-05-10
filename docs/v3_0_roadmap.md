@@ -248,6 +248,9 @@ The branch starts from Operad 2.0.0 plus:
   option indices, active enabled option navigation, empty-state metadata,
   accessibility values, and selection results using existing `SelectSelection`
   shapes.
+- Shared search-field state in `src/widget_ext/menu.rs` for listbox and command
+  palette filtering, clear-button metadata, debounced filter requests,
+  keyboard clear/close behavior, and polite accessible result status text.
 - Progress and meter indicator helpers in `src/widget_ext/surfaces.rs` for
   bounded or indeterminate values, normalized fill geometry, accessible
   progress/meter metadata, and renderer-neutral fill nodes.
@@ -264,3 +267,10 @@ The branch starts from Operad 2.0.0 plus:
 - Property-inspector status contracts in `src/widget_ext/data.rs` for invalid,
   error, warning, help, changed, and pending row metadata, accessibility
   hints/live regions, and optional status visual/shader hooks.
+- Dense data-view contracts in `src/widget_ext/data.rs` for empty states,
+  section headers, flattened row projections, stable row identity remapping
+  across filtering/sorting, and sticky header/leading-column partitions.
+- Drag/drop surface metadata in `src/drag_drop.rs` for stable draggable source
+  ids, drop target ids, payload acceptance policies, operation resolution,
+  topmost target hit testing, platform drag-start request construction, and
+  accessibility summaries for editor, data, tree, asset, and canvas surfaces.
