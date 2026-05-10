@@ -316,6 +316,9 @@ The branch starts from Operad 2.0.0 plus:
 - Platform request ID allocation turns renderer-neutral platform requests into
   deterministic service requests that host adapters can correlate with
   responses, including canvas host-capture transitions.
+- Host document-frame output can merge adapter-emitted service requests with
+  generated canvas-capture service requests so consumers can submit one
+  correlated host-service stream per frame.
 - Text input routing helpers that bridge document focus, editable text state,
   clipboard service requests, and IME activation/update/deactivation without
   requiring consumers to hand-assemble platform plumbing for each field.

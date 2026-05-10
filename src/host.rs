@@ -15,9 +15,9 @@ use crate::accessibility::{
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{GestureEvent, GesturePhase, PointerCapture, RawInputEvent};
 use crate::platform::{
-    BackendCapabilities, PlatformRequest, PlatformRequestId, PlatformResponse,
-    PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, TextImeRequest,
-    TextImeResponse, TextImeSession, TextInputId,
+    BackendCapabilities, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
+    PlatformResponse, PlatformServiceRequest, PlatformServiceResponse, RepaintRequest,
+    TextImeRequest, TextImeResponse, TextImeSession, TextInputId,
 };
 use crate::renderer::{
     CanvasHostCaptureState, CanvasHostCaptureTransition, RenderFrameRequest, RenderOptions,
@@ -518,6 +518,20 @@ pub struct HostDocumentFrameOutput {
     pub canvas_host_capture_transition: CanvasHostCaptureTransition,
 }
 
+impl HostDocumentFrameOutput {
+    pub fn platform_service_requests(
+        &self,
+        allocator: &mut PlatformRequestIdAllocator,
+    ) -> Vec<PlatformServiceRequest> {
+        let mut requests = self.host_output.platform_requests.clone();
+        requests.extend(
+            self.canvas_host_capture_transition
+                .platform_service_requests(allocator),
+        );
+        requests
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostShellEvent {
     ResizePanel {
@@ -793,7 +807,7 @@ mod tests {
     };
     use crate::platform::{
         BackendAdapterKind, CursorRequest, LogicalRect, PlatformRequestId,
-        PlatformServiceCapabilities, RepaintResponse, TextRange,
+        PlatformRequestIdAllocator, PlatformServiceCapabilities, RepaintResponse, TextRange,
     };
     use crate::{
         length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
@@ -1409,6 +1423,56 @@ mod tests {
             second.host_output.state.canvas_host_capture.active_plans()[0].node,
             canvas
         );
+    }
+
+    #[test]
+    fn document_frame_merges_host_and_generated_platform_service_requests() {
+        let viewport = UiSize::new(320.0, 200.0);
+        let mut measurer = ApproxTextMeasurer;
+        let (mut document, _) = canvas_document(CanvasInteractionPolicy::NATIVE_VIEWPORT);
+        let host_output = HostFrameOutput::new(HostInteractionState::default())
+            .repaint_next_frame(PlatformRequestId::new(7));
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            ),
+        )
+        .expect("frame");
+
+        let mut allocator = PlatformRequestIdAllocator::new(20);
+        let requests = frame.platform_service_requests(&mut allocator);
+
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.id)
+                .collect::<Vec<_>>(),
+            vec![
+                PlatformRequestId::new(7),
+                PlatformRequestId::new(20),
+                PlatformRequestId::new(21),
+            ]
+        );
+        assert_eq!(
+            requests[0].request,
+            PlatformRequest::Repaint(RepaintRequest::NextFrame)
+        );
+        assert_eq!(
+            requests[1].request,
+            PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
+                0.0, 0.0, 160.0, 96.0
+            )))
+        );
+        assert_eq!(
+            requests[2].request,
+            PlatformRequest::Cursor(CursorRequest::SetVisible(false))
+        );
+        assert_eq!(allocator.next_value(), 22);
     }
 
     #[test]
