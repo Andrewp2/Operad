@@ -5,6 +5,9 @@ use taffy::prelude::{
     Size as TaffySize, Style,
 };
 
+use crate::accessibility::{
+    AccessibilityAdapterRequest, AccessibilityCapabilities, FocusRestoreTarget, FocusTrap,
+};
 use crate::{
     length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, AccessibilityValueRange,
     AnimatedValues, AnimationMachine, AnimationState, AnimationTransition, AnimationTrigger,
@@ -1431,6 +1434,285 @@ impl PopoverState {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OverlayFrameState {
+    pub dialogs: DialogStack,
+    pub popover: PopoverState,
+    pub focus_trap: Option<FocusTrap>,
+}
+
+impl OverlayFrameState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn has_overlay(&self) -> bool {
+        !self.dialogs.dialogs.is_empty() || self.popover.current.is_some()
+    }
+
+    pub fn traps_focus(&self) -> bool {
+        self.focus_trap.is_some() || self.dialogs.traps_focus() || self.popover_modal()
+    }
+
+    pub fn popover_modal(&self) -> bool {
+        self.popover
+            .current
+            .as_ref()
+            .is_some_and(|popover| popover.modal)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OverlayFrameEvent {
+    OpenDialog {
+        dialog: DialogDescriptor,
+        focus_trap: Option<FocusTrap>,
+    },
+    CloseDialog {
+        id: String,
+    },
+    DismissDialog {
+        reason: DialogDismissReason,
+    },
+    OpenPopover {
+        popover: PopoverDescriptor,
+        focus_trap: Option<FocusTrap>,
+    },
+    TogglePopover {
+        popover: PopoverDescriptor,
+    },
+    DismissPopover {
+        reason: PopoverDismissReason,
+    },
+    SetFocusTrap(FocusTrap),
+    ClearFocusTrap {
+        restore: FocusRestoreTarget,
+    },
+}
+
+impl OverlayFrameEvent {
+    pub fn open_dialog(dialog: DialogDescriptor) -> Self {
+        Self::OpenDialog {
+            dialog,
+            focus_trap: None,
+        }
+    }
+
+    pub fn open_dialog_with_focus_trap(dialog: DialogDescriptor, focus_trap: FocusTrap) -> Self {
+        Self::OpenDialog {
+            dialog,
+            focus_trap: Some(focus_trap),
+        }
+    }
+
+    pub fn close_dialog(id: impl Into<String>) -> Self {
+        Self::CloseDialog { id: id.into() }
+    }
+
+    pub const fn dismiss_dialog(reason: DialogDismissReason) -> Self {
+        Self::DismissDialog { reason }
+    }
+
+    pub fn open_popover(popover: PopoverDescriptor) -> Self {
+        Self::OpenPopover {
+            popover,
+            focus_trap: None,
+        }
+    }
+
+    pub fn open_popover_with_focus_trap(popover: PopoverDescriptor, focus_trap: FocusTrap) -> Self {
+        Self::OpenPopover {
+            popover,
+            focus_trap: Some(focus_trap),
+        }
+    }
+
+    pub fn toggle_popover(popover: PopoverDescriptor) -> Self {
+        Self::TogglePopover { popover }
+    }
+
+    pub const fn dismiss_popover(reason: PopoverDismissReason) -> Self {
+        Self::DismissPopover { reason }
+    }
+
+    pub const fn set_focus_trap(focus_trap: FocusTrap) -> Self {
+        Self::SetFocusTrap(focus_trap)
+    }
+
+    pub const fn clear_focus_trap(restore: FocusRestoreTarget) -> Self {
+        Self::ClearFocusTrap { restore }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayFrameRequest {
+    pub state: OverlayFrameState,
+    pub events: Vec<OverlayFrameEvent>,
+    pub accessibility_capabilities: AccessibilityCapabilities,
+}
+
+impl OverlayFrameRequest {
+    pub fn new(state: OverlayFrameState) -> Self {
+        Self {
+            state,
+            events: Vec::new(),
+            accessibility_capabilities: AccessibilityCapabilities::NONE,
+        }
+    }
+
+    pub fn event(mut self, event: OverlayFrameEvent) -> Self {
+        self.events.push(event);
+        self
+    }
+
+    pub fn events(mut self, events: impl IntoIterator<Item = OverlayFrameEvent>) -> Self {
+        self.events.extend(events);
+        self
+    }
+
+    pub const fn accessibility_capabilities(
+        mut self,
+        capabilities: AccessibilityCapabilities,
+    ) -> Self {
+        self.accessibility_capabilities = capabilities;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OverlayFrameOutput {
+    pub state: OverlayFrameState,
+    pub dismissed_dialogs: Vec<DialogDescriptor>,
+    pub dismissed_popover: Option<PopoverDescriptor>,
+    pub accessibility_requests: Vec<AccessibilityAdapterRequest>,
+    pub changed: bool,
+}
+
+pub fn process_overlay_frame(request: OverlayFrameRequest) -> OverlayFrameOutput {
+    let OverlayFrameRequest {
+        mut state,
+        events,
+        accessibility_capabilities,
+    } = request;
+    let mut output = OverlayFrameOutput {
+        state: OverlayFrameState::new(),
+        dismissed_dialogs: Vec::new(),
+        dismissed_popover: None,
+        accessibility_requests: Vec::new(),
+        changed: false,
+    };
+
+    for event in events {
+        apply_overlay_event(&mut state, &mut output, event, accessibility_capabilities);
+    }
+
+    output.state = state;
+    output
+}
+
+fn apply_overlay_event(
+    state: &mut OverlayFrameState,
+    output: &mut OverlayFrameOutput,
+    event: OverlayFrameEvent,
+    capabilities: AccessibilityCapabilities,
+) {
+    match event {
+        OverlayFrameEvent::OpenDialog { dialog, focus_trap } => {
+            state.dialogs.open(dialog);
+            output.changed = true;
+            if let Some(focus_trap) = focus_trap {
+                set_overlay_focus_trap(state, output, focus_trap, capabilities);
+            }
+        }
+        OverlayFrameEvent::CloseDialog { id } => {
+            if let Some(dialog) = state.dialogs.close(&id) {
+                output.dismissed_dialogs.push(dialog);
+                output.changed = true;
+            }
+        }
+        OverlayFrameEvent::DismissDialog { reason } => {
+            if let Some(dialog) = state.dialogs.dismiss_top(reason) {
+                output.dismissed_dialogs.push(dialog);
+                output.changed = true;
+            }
+        }
+        OverlayFrameEvent::OpenPopover {
+            popover,
+            focus_trap,
+        } => {
+            state.popover.open(popover);
+            output.changed = true;
+            if let Some(focus_trap) = focus_trap {
+                set_overlay_focus_trap(state, output, focus_trap, capabilities);
+            }
+        }
+        OverlayFrameEvent::TogglePopover { popover } => {
+            let was_open = state.popover.is_open(&popover.id);
+            let dismissed = was_open.then(|| state.popover.current.clone()).flatten();
+            state.popover.toggle(popover);
+            output.dismissed_popover = dismissed;
+            output.changed = true;
+        }
+        OverlayFrameEvent::DismissPopover { reason } => {
+            if let Some(popover) = state.popover.dismiss(reason) {
+                output.dismissed_popover = Some(popover);
+                output.changed = true;
+            }
+        }
+        OverlayFrameEvent::SetFocusTrap(focus_trap) => {
+            set_overlay_focus_trap(state, output, focus_trap, capabilities);
+        }
+        OverlayFrameEvent::ClearFocusTrap { restore } => {
+            clear_overlay_focus_trap(state, output, restore, capabilities);
+        }
+    }
+}
+
+fn set_overlay_focus_trap(
+    state: &mut OverlayFrameState,
+    output: &mut OverlayFrameOutput,
+    focus_trap: FocusTrap,
+    capabilities: AccessibilityCapabilities,
+) {
+    if state.focus_trap == Some(focus_trap) {
+        return;
+    }
+    state.focus_trap = Some(focus_trap);
+    output.changed = true;
+    push_accessibility_request(
+        &mut output.accessibility_requests,
+        capabilities,
+        AccessibilityAdapterRequest::SetFocusTrap(focus_trap),
+    );
+}
+
+fn clear_overlay_focus_trap(
+    state: &mut OverlayFrameState,
+    output: &mut OverlayFrameOutput,
+    restore: FocusRestoreTarget,
+    capabilities: AccessibilityCapabilities,
+) {
+    if state.focus_trap.take().is_none() {
+        return;
+    }
+    output.changed = true;
+    push_accessibility_request(
+        &mut output.accessibility_requests,
+        capabilities,
+        AccessibilityAdapterRequest::ClearFocusTrap { restore },
+    );
+}
+
+fn push_accessibility_request(
+    requests: &mut Vec<AccessibilityAdapterRequest>,
+    capabilities: AccessibilityCapabilities,
+    request: AccessibilityAdapterRequest,
+) {
+    if capabilities.supports(request.kind()) {
+        requests.push(request);
+    }
+}
+
 pub fn resolve_popover_rect(
     anchor: UiRect,
     popover_size: UiSize,
@@ -2654,6 +2936,116 @@ mod tests {
         );
         assert!(guarded.x.is_finite());
         assert_eq!(guarded.width, 0.0);
+    }
+
+    #[test]
+    fn overlay_frame_opens_dialog_with_focus_trap_request() {
+        let focus_trap =
+            FocusTrap::new(UiNodeId(9)).restore_focus(FocusRestoreTarget::Node(UiNodeId(2)));
+
+        let output = process_overlay_frame(
+            OverlayFrameRequest::new(OverlayFrameState::new())
+                .accessibility_capabilities(AccessibilityCapabilities::FULL)
+                .event(OverlayFrameEvent::open_dialog_with_focus_trap(
+                    DialogDescriptor::new("settings", "Settings").modal(true),
+                    focus_trap,
+                )),
+        );
+
+        assert!(output.changed);
+        assert!(output.state.dialogs.is_open("settings"));
+        assert_eq!(output.state.focus_trap, Some(focus_trap));
+        assert!(output.state.traps_focus());
+        assert_eq!(
+            output.accessibility_requests,
+            vec![AccessibilityAdapterRequest::SetFocusTrap(focus_trap)]
+        );
+    }
+
+    #[test]
+    fn overlay_frame_dismisses_dialog_and_popover_by_policy() {
+        let mut state = OverlayFrameState::new();
+        state
+            .dialogs
+            .open(DialogDescriptor::new("confirm", "Confirm"));
+        state.popover.open(PopoverDescriptor::new(
+            "tools",
+            PopoverAnchor::Point(UiPoint::new(2.0, 3.0)),
+            PopoverPlacement::Right,
+        ));
+
+        let output = process_overlay_frame(OverlayFrameRequest::new(state).events([
+            OverlayFrameEvent::dismiss_dialog(DialogDismissReason::EscapeKey),
+            OverlayFrameEvent::dismiss_popover(PopoverDismissReason::OutsidePointer),
+        ]));
+
+        assert!(output.changed);
+        assert_eq!(output.dismissed_dialogs.len(), 1);
+        assert_eq!(output.dismissed_dialogs[0].id, "confirm");
+        assert_eq!(
+            output
+                .dismissed_popover
+                .as_ref()
+                .map(|popover| popover.id.as_str()),
+            Some("tools")
+        );
+        assert!(!output.state.has_overlay());
+    }
+
+    #[test]
+    fn overlay_frame_respects_focus_trap_capabilities_and_clear_restore() {
+        let focus_trap = FocusTrap::new(UiNodeId(7));
+        let unsupported = process_overlay_frame(
+            OverlayFrameRequest::new(OverlayFrameState::new())
+                .event(OverlayFrameEvent::set_focus_trap(focus_trap)),
+        );
+        assert_eq!(unsupported.state.focus_trap, Some(focus_trap));
+        assert!(unsupported.accessibility_requests.is_empty());
+
+        let output = process_overlay_frame(
+            OverlayFrameRequest::new(unsupported.state)
+                .accessibility_capabilities(AccessibilityCapabilities::FULL)
+                .event(OverlayFrameEvent::clear_focus_trap(
+                    FocusRestoreTarget::Previous,
+                )),
+        );
+
+        assert!(output.changed);
+        assert_eq!(output.state.focus_trap, None);
+        assert_eq!(
+            output.accessibility_requests,
+            vec![AccessibilityAdapterRequest::ClearFocusTrap {
+                restore: FocusRestoreTarget::Previous
+            }]
+        );
+    }
+
+    #[test]
+    fn overlay_frame_toggle_popover_reports_dismissed_popover() {
+        let popover = PopoverDescriptor::new(
+            "toolbox",
+            PopoverAnchor::Rect(UiRect::new(10.0, 10.0, 20.0, 20.0)),
+            PopoverPlacement::Bottom,
+        );
+        let output = process_overlay_frame(
+            OverlayFrameRequest::new(OverlayFrameState::new())
+                .event(OverlayFrameEvent::toggle_popover(popover.clone())),
+        );
+        assert!(output.state.popover.is_open("toolbox"));
+        assert!(output.dismissed_popover.is_none());
+
+        let output = process_overlay_frame(
+            OverlayFrameRequest::new(output.state)
+                .event(OverlayFrameEvent::toggle_popover(popover)),
+        );
+        assert!(!output.state.popover.is_open("toolbox"));
+        assert_eq!(
+            output
+                .dismissed_popover
+                .as_ref()
+                .map(|popover| popover.id.as_str()),
+            Some("toolbox")
+        );
     }
 
     #[test]

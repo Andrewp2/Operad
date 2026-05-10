@@ -232,6 +232,9 @@ The branch starts from Operad 2.0.0 plus:
   filtering, active descendant metadata, bounded visible rows, selected/active
   row accessibility, escape close, and outside-dismiss outcomes for combo and
   filter picker workflows.
+- Overlay frame contracts in `src/widget_ext/surfaces.rs` for dialog/popover
+  open, close, toggle, Escape/outside dismissal, dismissed overlay reporting,
+  focus trap state, and backend-gated accessibility focus-trap requests.
 - Chart, sparkline, and dense grid-map geometry helpers in `src/charts.rs` for
   numeric range mapping, path generation, cell rectangles, hit testing, and
   visible-cell queries, with screen-reader summaries, axis metadata, overlay
