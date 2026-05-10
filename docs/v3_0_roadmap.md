@@ -214,7 +214,8 @@ The branch starts from Operad 2.0.0 plus:
   requests, domain hit-testing flags, and renderer-facing canvas extraction.
 - Chart, sparkline, and dense grid-map geometry helpers in `src/charts.rs` for
   numeric range mapping, path generation, cell rectangles, hit testing, and
-  visible-cell queries.
+  visible-cell queries, with screen-reader summaries and accessibility metadata
+  for chart series, sparklines, and grid-map surfaces.
 - Host adapter contracts in `src/host.rs` for hover, pressed, focused,
   drag-captured, text/IME, wheel-targeted, shortcut-routed, command dispatch,
   and repaint/platform-service state before paint.
@@ -245,6 +246,9 @@ The branch starts from Operad 2.0.0 plus:
   prefixes/suffixes, normalized linear/logarithmic value mapping, formatted
   parameter accessibility metadata, and parameter-aware commit/cancel text
   editing.
+- Text-input editing helpers in `src/lib.rs` for selected text, Unicode-safe
+  caret line/column metadata, multiline line-start/line-end movement, and
+  vertical caret movement with shift selection.
 - Data-table export helpers in `src/widget_ext/data.rs` for selected rows,
   visible rows, active cells, and ranges, with TSV/CSV formatting and clipboard
   command-effect integration.

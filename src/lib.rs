@@ -38,8 +38,8 @@ pub use assets::{
     AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
 };
 pub use charts::{
-    ChartRange, ChartSample, ChartViewport, GridCell, GridCellRange, GridMapGeometry,
-    SparklineGeometry,
+    ChartDataSummary, ChartRange, ChartSample, ChartViewport, GridCell, GridCellRange,
+    GridMapGeometry, GridMapSummary, SparklineGeometry,
 };
 pub use commands::{
     Command, CommandEffect, CommandEffectInvocation, CommandId, CommandMeta, CommandRegistry,
@@ -3375,6 +3375,26 @@ pub mod widgets {
             Some(anchor.min(caret)..anchor.max(caret))
         }
 
+        pub fn selected_text(&self) -> Option<&str> {
+            self.selected_range().map(|range| &self.text[range])
+        }
+
+        pub fn caret_position(&self) -> TextInputPosition {
+            text_position_at(&self.text, self.caret)
+        }
+
+        pub fn caret_line_range(&self) -> Range<usize> {
+            line_range_at(&self.text, self.caret)
+        }
+
+        pub fn caret_info(&self) -> TextInputCaretInfo {
+            TextInputCaretInfo {
+                position: self.caret_position(),
+                line_range: self.caret_line_range(),
+                selected_range: self.selected_range(),
+            }
+        }
+
         pub fn select_all(&mut self) {
             self.selection_anchor = Some(0);
             self.caret = self.text.len();
@@ -3459,8 +3479,12 @@ pub mod widgets {
             self.caret = match movement {
                 CaretMovement::Start => 0,
                 CaretMovement::End => self.text.len(),
+                CaretMovement::LineStart => line_range_at(&self.text, self.caret).start,
+                CaretMovement::LineEnd => line_range_at(&self.text, self.caret).end,
                 CaretMovement::Left => previous_char_boundary(&self.text, self.caret),
                 CaretMovement::Right => next_char_boundary(&self.text, self.caret),
+                CaretMovement::Up => move_caret_vertically(&self.text, self.caret, -1),
+                CaretMovement::Down => move_caret_vertically(&self.text, self.caret, 1),
             };
             self.caret = clamp_to_char_boundary(&self.text, self.caret);
             self.selection_anchor = selecting.then_some(anchor);
@@ -3511,11 +3535,27 @@ pub mod widgets {
                     KeyCode::ArrowRight => {
                         self.move_caret(CaretMovement::Right, modifiers.shift);
                     }
+                    KeyCode::ArrowUp if self.multiline => {
+                        self.move_caret(CaretMovement::Up, modifiers.shift);
+                    }
+                    KeyCode::ArrowDown if self.multiline => {
+                        self.move_caret(CaretMovement::Down, modifiers.shift);
+                    }
                     KeyCode::Home => {
-                        self.move_caret(CaretMovement::Start, modifiers.shift);
+                        let movement = if self.multiline {
+                            CaretMovement::LineStart
+                        } else {
+                            CaretMovement::Start
+                        };
+                        self.move_caret(movement, modifiers.shift);
                     }
                     KeyCode::End => {
-                        self.move_caret(CaretMovement::End, modifiers.shift);
+                        let movement = if self.multiline {
+                            CaretMovement::LineEnd
+                        } else {
+                            CaretMovement::End
+                        };
+                        self.move_caret(movement, modifiers.shift);
                     }
                     KeyCode::Enter if self.multiline => {
                         self.insert_text("\n");
@@ -3542,8 +3582,26 @@ pub mod widgets {
     pub enum CaretMovement {
         Start,
         End,
+        LineStart,
+        LineEnd,
         Left,
         Right,
+        Up,
+        Down,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TextInputPosition {
+        pub byte_index: usize,
+        pub line: usize,
+        pub column: usize,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct TextInputCaretInfo {
+        pub position: TextInputPosition,
+        pub line_range: Range<usize>,
+        pub selected_range: Option<Range<usize>>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3777,6 +3835,77 @@ pub mod widgets {
             .nth(1)
             .map(|(offset, _)| index + offset)
             .unwrap_or(text.len())
+    }
+
+    fn text_position_at(text: &str, index: usize) -> TextInputPosition {
+        let index = clamp_to_char_boundary(text, index);
+        let mut line = 0;
+        let mut line_start = 0;
+        for (byte_index, character) in text.char_indices() {
+            if byte_index >= index {
+                break;
+            }
+            if character == '\n' {
+                line += 1;
+                line_start = byte_index + character.len_utf8();
+            }
+        }
+        let column = text[line_start..index].chars().count();
+        TextInputPosition {
+            byte_index: index,
+            line,
+            column,
+        }
+    }
+
+    fn line_range_at(text: &str, index: usize) -> Range<usize> {
+        let index = clamp_to_char_boundary(text, index);
+        let start = text[..index]
+            .rfind('\n')
+            .map(|offset| offset + '\n'.len_utf8())
+            .unwrap_or(0);
+        let end = text[index..]
+            .find('\n')
+            .map(|offset| index + offset)
+            .unwrap_or(text.len());
+        start..end
+    }
+
+    fn byte_index_for_line_column(text: &str, line: usize, column: usize) -> usize {
+        let mut current_line = 0;
+        let mut line_start = 0;
+        for (byte_index, character) in text.char_indices() {
+            if current_line == line {
+                break;
+            }
+            if character == '\n' {
+                current_line += 1;
+                line_start = byte_index + character.len_utf8();
+            }
+        }
+        if current_line != line {
+            return text.len();
+        }
+
+        text[line_start..]
+            .char_indices()
+            .take_while(|(_, character)| *character != '\n')
+            .nth(column)
+            .map(|(offset, _)| line_start + offset)
+            .unwrap_or_else(|| line_range_at(text, line_start).end)
+    }
+
+    fn move_caret_vertically(text: &str, index: usize, line_delta: isize) -> usize {
+        let position = text_position_at(text, index);
+        let last_line = text.chars().filter(|character| *character == '\n').count();
+        let target_line = match line_delta {
+            delta if delta < 0 => position.line.checked_sub(delta.unsigned_abs()),
+            delta => Some(position.line + delta as usize),
+        };
+        target_line
+            .filter(|line| *line <= last_line)
+            .map(|line| byte_index_for_line_column(text, line, position.column))
+            .unwrap_or(index)
     }
 
     fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
@@ -6101,6 +6230,68 @@ mod tests {
         let mut multiline = widgets::TextInputState::new("").multiline(true);
         multiline.paste_text("a\r\nb\rc");
         assert_eq!(multiline.text, "a\nb\nc");
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_reports_selection_and_caret_line_metadata() {
+        let mut state = widgets::TextInputState::new("alpha\nbéta\nomega").multiline(true);
+        state.caret = "alpha\nbé".len();
+        state.selection_anchor = Some("alpha\n".len());
+
+        assert_eq!(state.selected_text(), Some("bé"));
+        assert_eq!(
+            state.selected_range(),
+            Some("alpha\n".len().."alpha\nbé".len())
+        );
+
+        let info = state.caret_info();
+        assert_eq!(
+            info.position,
+            widgets::TextInputPosition {
+                byte_index: "alpha\nbé".len(),
+                line: 1,
+                column: 2,
+            }
+        );
+        assert_eq!(info.line_range, "alpha\n".len().."alpha\nbéta".len());
+        assert_eq!(info.selected_range, state.selected_range());
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_supports_multiline_line_caret_movement() {
+        let mut state = widgets::TextInputState::new("one\nfour\nsix").multiline(true);
+        state.caret = "one\nfo".len();
+
+        state.move_caret(widgets::CaretMovement::LineStart, false);
+        assert_eq!(state.caret, "one\n".len());
+
+        state.move_caret(widgets::CaretMovement::LineEnd, false);
+        assert_eq!(state.caret, "one\nfour".len());
+
+        state.move_caret(widgets::CaretMovement::Up, false);
+        assert_eq!(state.caret, "one".len());
+
+        state.move_caret(widgets::CaretMovement::Down, false);
+        assert_eq!(state.caret, "one\nfou".len());
+
+        let movement = state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::ArrowDown,
+            modifiers: KeyModifiers {
+                shift: true,
+                ..KeyModifiers::NONE
+            },
+        });
+        assert!(!movement.changed);
+        assert_eq!(state.caret, "one\nfour\nsix".len());
+        assert_eq!(state.selected_text(), Some("r\nsix"));
+
+        state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::Home,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(state.caret, "one\nfour\n".len());
     }
 
     #[cfg(feature = "widgets")]
