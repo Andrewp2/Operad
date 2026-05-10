@@ -1075,6 +1075,7 @@ pub struct UiNodeStyle {
     pub clip: ClipBehavior,
     pub opacity: f32,
     pub z_index: i16,
+    pub layer: Option<platform::UiLayer>,
 }
 
 impl Default for UiNodeStyle {
@@ -1084,6 +1085,7 @@ impl Default for UiNodeStyle {
             clip: ClipBehavior::None,
             opacity: 1.0,
             z_index: 0,
+            layer: None,
         }
     }
 }
@@ -1975,8 +1977,8 @@ impl UiDocument {
 
     pub fn paint_list(&self) -> PaintList {
         let mut list = PaintList::default();
-        let z_indexes = self.effective_z_indexes();
-        for index in self.visual_order_with_z(&z_indexes) {
+        let layer_orders = self.effective_layer_orders();
+        for index in self.visual_order_with_layer(&layer_orders) {
             let id = UiNodeId(index);
             let node = &self.nodes[index];
             if !node.layout.visible
@@ -1985,7 +1987,8 @@ impl UiDocument {
             {
                 continue;
             }
-            let z_index = z_indexes[index];
+            let layer_order = layer_orders[index];
+            let z_index = layer_order.local_z;
             let animation_values = node
                 .animation
                 .as_ref()
@@ -2007,6 +2010,7 @@ impl UiDocument {
                     rect: node.layout.rect,
                     clip_rect: node.layout.clip_rect,
                     z_index,
+                    layer_order,
                     opacity,
                     transform,
                     shader: node.shader.clone(),
@@ -2024,6 +2028,7 @@ impl UiDocument {
                     rect: node.layout.rect,
                     clip_rect: node.layout.clip_rect,
                     z_index,
+                    layer_order,
                     opacity,
                     transform,
                     shader: node.shader.clone(),
@@ -2034,6 +2039,7 @@ impl UiDocument {
                     rect: node.layout.rect,
                     clip_rect: node.layout.clip_rect,
                     z_index,
+                    layer_order,
                     opacity,
                     transform,
                     shader: node.shader.clone(),
@@ -2044,6 +2050,7 @@ impl UiDocument {
                     rect: node.layout.rect,
                     clip_rect: node.layout.clip_rect,
                     z_index,
+                    layer_order,
                     opacity,
                     transform,
                     shader: node.shader.clone(),
@@ -2058,6 +2065,7 @@ impl UiDocument {
                         node_rect: node.layout.rect,
                         clip_rect: node.layout.clip_rect,
                         z_index,
+                        layer_order,
                         opacity,
                         transform,
                         shader: node.shader.clone(),
@@ -2073,31 +2081,37 @@ impl UiDocument {
     }
 
     fn visual_order(&self) -> Vec<usize> {
-        let z_indexes = self.effective_z_indexes();
-        self.visual_order_with_z(&z_indexes)
+        let layer_orders = self.effective_layer_orders();
+        self.visual_order_with_layer(&layer_orders)
     }
 
-    fn visual_order_with_z(&self, z_indexes: &[i16]) -> Vec<usize> {
+    fn visual_order_with_layer(&self, layer_orders: &[platform::LayerOrder]) -> Vec<usize> {
         let mut order = (0..self.nodes.len()).collect::<Vec<_>>();
-        order.sort_by_key(|index| (z_indexes[*index], *index));
+        order.sort_by_key(|index| (layer_orders[*index], *index));
         order
     }
 
-    fn effective_z_indexes(&self) -> Vec<i16> {
-        let mut effective_z = vec![0_i16; self.nodes.len()];
+    fn effective_layer_orders(&self) -> Vec<platform::LayerOrder> {
+        let mut orders = vec![platform::LayerOrder::DEFAULT; self.nodes.len()];
         for index in 0..self.nodes.len() {
             let node = &self.nodes[index];
-            effective_z[index] = if index == self.root.0 {
+            let local_z = if index == self.root.0 {
                 node.style.z_index
             } else if node.style.z_index == 0 {
                 node.parent
-                    .map(|parent| effective_z[parent.0])
+                    .map(|parent| orders[parent.0].local_z)
                     .unwrap_or(node.style.z_index)
             } else {
                 node.style.z_index
             };
+            let layer = node
+                .style
+                .layer
+                .or_else(|| node.parent.map(|parent| orders[parent.0].layer))
+                .unwrap_or(platform::UiLayer::AppContent);
+            orders[index] = platform::LayerOrder::new(layer, local_z);
         }
-        effective_z
+        orders
     }
 }
 
@@ -2107,6 +2121,7 @@ struct ScenePaintContext {
     node_rect: UiRect,
     clip_rect: UiRect,
     z_index: i16,
+    layer_order: platform::LayerOrder,
     opacity: f32,
     transform: PaintTransform,
     shader: Option<ShaderEffect>,
@@ -2125,6 +2140,7 @@ fn scene_primitive_to_paint_item(
                 rect: rect_from_points(&[from, to]),
                 clip_rect: context.clip_rect,
                 z_index: context.z_index,
+                layer_order: context.layer_order,
                 opacity: context.opacity,
                 transform: context.transform,
                 shader: context.shader.clone(),
@@ -2152,6 +2168,7 @@ fn scene_primitive_to_paint_item(
                 ),
                 clip_rect: context.clip_rect,
                 z_index: context.z_index,
+                layer_order: context.layer_order,
                 opacity: context.opacity,
                 transform: context.transform,
                 shader: context.shader.clone(),
@@ -2177,6 +2194,7 @@ fn scene_primitive_to_paint_item(
                 rect: rect_from_points(&points),
                 clip_rect: context.clip_rect,
                 z_index: context.z_index,
+                layer_order: context.layer_order,
                 opacity: context.opacity,
                 transform: context.transform,
                 shader: context.shader.clone(),
@@ -2197,6 +2215,7 @@ fn scene_primitive_to_paint_item(
             ),
             clip_rect: context.clip_rect,
             z_index: context.z_index,
+            layer_order: context.layer_order,
             opacity: context.opacity,
             transform: context.transform,
             shader: context.shader.clone(),
@@ -2214,6 +2233,7 @@ fn scene_primitive_to_paint_item(
                 rect: rect.rect,
                 clip_rect: context.clip_rect,
                 z_index: context.z_index,
+                layer_order: context.layer_order,
                 opacity: context.opacity,
                 transform: context.transform,
                 shader: context.shader.clone(),
@@ -2229,6 +2249,7 @@ fn scene_primitive_to_paint_item(
                 rect: text.rect,
                 clip_rect: context.clip_rect,
                 z_index: context.z_index,
+                layer_order: context.layer_order,
                 opacity: context.opacity,
                 transform: context.transform,
                 shader: context.shader.clone(),
@@ -2244,6 +2265,7 @@ fn scene_primitive_to_paint_item(
                 rect: path.bounds(),
                 clip_rect: context.clip_rect,
                 z_index: context.z_index,
+                layer_order: context.layer_order,
                 opacity: context.opacity,
                 transform: context.transform,
                 shader: context.shader.clone(),
@@ -2259,6 +2281,7 @@ fn scene_primitive_to_paint_item(
                 rect: image.rect,
                 clip_rect: context.clip_rect,
                 z_index: context.z_index,
+                layer_order: context.layer_order,
                 opacity: context.opacity,
                 transform: context.transform,
                 shader: context.shader.clone(),
@@ -2306,6 +2329,7 @@ pub struct PaintItem {
     pub rect: UiRect,
     pub clip_rect: UiRect,
     pub z_index: i16,
+    pub layer_order: platform::LayerOrder,
     pub opacity: f32,
     pub transform: PaintTransform,
     pub shader: Option<ShaderEffect>,
@@ -5915,6 +5939,82 @@ mod tests {
 
         assert_eq!(doc.hit_test(UiPoint::new(10.0, 10.0)), Some(over_child));
         assert_ne!(doc.hit_test(UiPoint::new(10.0, 10.0)), Some(under));
+    }
+
+    #[test]
+    fn hit_testing_and_paint_order_use_platform_layers_before_local_z() {
+        let mut doc = UiDocument::new(root_style(240.0, 160.0));
+        let app_overlay = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "app_overlay",
+                UiNodeStyle {
+                    layout: Style {
+                        position: Position::Absolute,
+                        inset: Rect {
+                            left: LengthPercentageAuto::length(0.0),
+                            top: LengthPercentageAuto::length(0.0),
+                            ..Rect::length(0.0)
+                        },
+                        size: TaffySize {
+                            width: length(100.0),
+                            height: length(100.0),
+                        },
+                        ..Default::default()
+                    },
+                    layer: Some(platform::UiLayer::AppOverlay),
+                    z_index: platform::LAYER_LOCAL_Z_MAX,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
+        );
+        let debug_overlay = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "debug_overlay",
+                UiNodeStyle {
+                    layout: Style {
+                        position: Position::Absolute,
+                        inset: Rect {
+                            left: LengthPercentageAuto::length(0.0),
+                            top: LengthPercentageAuto::length(0.0),
+                            ..Rect::length(0.0)
+                        },
+                        size: TaffySize {
+                            width: length(100.0),
+                            height: length(100.0),
+                        },
+                        ..Default::default()
+                    },
+                    layer: Some(platform::UiLayer::DebugOverlay),
+                    z_index: platform::LAYER_LOCAL_Z_MIN,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
+        );
+        doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert_eq!(doc.hit_test(UiPoint::new(10.0, 10.0)), Some(debug_overlay));
+
+        let paint = doc.paint_list();
+        assert_eq!(
+            paint.items.iter().map(|item| item.node).collect::<Vec<_>>(),
+            vec![app_overlay, debug_overlay]
+        );
+        assert_eq!(
+            paint.items[0].layer_order,
+            platform::LayerOrder::new(platform::UiLayer::AppOverlay, platform::LAYER_LOCAL_Z_MAX)
+        );
+        assert_eq!(
+            paint.items[1].layer_order,
+            platform::LayerOrder::new(platform::UiLayer::DebugOverlay, platform::LAYER_LOCAL_Z_MIN)
+        );
+        assert!(paint.items[0].layer_order < paint.items[1].layer_order);
     }
 
     #[test]

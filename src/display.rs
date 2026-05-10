@@ -316,7 +316,7 @@ const fn dirty_flags_intersect(left: DirtyFlags, right: DirtyFlags) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ColorRgba, PaintItem, PaintKind, PaintTransform, UiRect};
+    use crate::{platform::LayerOrder, ColorRgba, PaintItem, PaintKind, PaintTransform, UiRect};
 
     fn paint_list(items: usize) -> PaintList {
         PaintList {
@@ -326,6 +326,7 @@ mod tests {
                     rect: UiRect::new(index as f32, 0.0, 1.0, 1.0),
                     clip_rect: UiRect::new(0.0, 0.0, 100.0, 100.0),
                     z_index: 0,
+                    layer_order: LayerOrder::DEFAULT,
                     opacity: 1.0,
                     transform: PaintTransform::default(),
                     shader: None,

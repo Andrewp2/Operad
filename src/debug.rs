@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::platform::UiLayer;
 use crate::{
     ColorRgba, CommandId, CommandScope, ComponentRole, ComponentState, ComponentStateSlot,
     DirtyFlags, FrameTiming, GestureEvent, GesturePhase, HostInteractionState, HostNodeInteraction,
@@ -122,13 +123,25 @@ pub struct DebugPaintStats {
     pub count: usize,
     pub min_z: Option<i16>,
     pub max_z: Option<i16>,
+    pub min_resolved_z: Option<i32>,
+    pub max_resolved_z: Option<i32>,
 }
 
 impl DebugPaintStats {
-    fn record(&mut self, z_index: i16) {
+    fn record(&mut self, item: &crate::PaintItem) {
         self.count += 1;
+        let z_index = item.z_index;
+        let resolved_z = item.layer_order.resolved_z();
         self.min_z = Some(self.min_z.map_or(z_index, |z| z.min(z_index)));
         self.max_z = Some(self.max_z.map_or(z_index, |z| z.max(z_index)));
+        self.min_resolved_z = Some(
+            self.min_resolved_z
+                .map_or(resolved_z, |z| z.min(resolved_z)),
+        );
+        self.max_resolved_z = Some(
+            self.max_resolved_z
+                .map_or(resolved_z, |z| z.max(resolved_z)),
+        );
     }
 }
 
@@ -214,6 +227,8 @@ pub struct DebugPaintItem {
     pub rect: UiRect,
     pub clip_rect: UiRect,
     pub z_index: i16,
+    pub layer: UiLayer,
+    pub resolved_z: i32,
     pub opacity: f32,
     pub shader_key: Option<String>,
 }
@@ -248,6 +263,8 @@ impl DebugPaintDump {
                     rect: item.rect,
                     clip_rect: item.clip_rect,
                     z_index: item.z_index,
+                    layer: item.layer_order.layer,
+                    resolved_z: item.layer_order.resolved_z(),
                     opacity: item.opacity,
                     shader_key: item.shader.as_ref().map(|shader| shader.key.clone()),
                 }
@@ -424,6 +441,7 @@ impl DebugHitTrace {
                 .contains_rect
                 .cmp(&left.contains_rect)
                 .then_with(|| right.contains_clip.cmp(&left.contains_clip))
+                .then_with(|| right.paint.max_resolved_z.cmp(&left.paint.max_resolved_z))
                 .then_with(|| right.paint.max_z.cmp(&left.paint.max_z))
                 .then_with(|| left.id.0.cmp(&right.id.0))
         });
@@ -500,7 +518,7 @@ fn paint_stats_by_node(paint: &PaintList) -> HashMap<UiNodeId, DebugPaintStats> 
         stats
             .entry(item.node)
             .or_insert_with(DebugPaintStats::default)
-            .record(item.z_index);
+            .record(item);
     }
     stats
 }
@@ -1179,7 +1197,9 @@ mod tests {
         ThemePatch, ThemeScope, ThemeScopeId, ThemeScopeKind, UiNode, UiNodeStyle, UiSize,
         UiVisual, WheelDeltaUnit, WheelPhase,
     };
-    use taffy::prelude::{Dimension, Size as TaffySize, Style};
+    use taffy::prelude::{
+        Dimension, LengthPercentageAuto, Position, Rect, Size as TaffySize, Style,
+    };
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
@@ -1190,6 +1210,32 @@ mod tests {
                 },
                 ..Default::default()
             },
+            ..Default::default()
+        }
+    }
+
+    fn layered_absolute_style(
+        layer: UiLayer,
+        z_index: i16,
+        width: f32,
+        height: f32,
+    ) -> UiNodeStyle {
+        UiNodeStyle {
+            layout: Style {
+                position: Position::Absolute,
+                inset: Rect {
+                    left: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(0.0),
+                    ..Rect::length(0.0)
+                },
+                size: TaffySize {
+                    width: length(width),
+                    height: length(height),
+                },
+                ..Default::default()
+            },
+            layer: Some(layer),
+            z_index,
             ..Default::default()
         }
     }
@@ -1307,6 +1353,38 @@ mod tests {
         );
         assert_eq!(dump.items[0].node, label);
         assert_eq!(dump.items[0].node_name.as_deref(), Some("status"));
+        assert_eq!(dump.items[0].layer, UiLayer::AppContent);
+        assert_eq!(dump.items[0].resolved_z, UiLayer::AppContent.base_z());
+    }
+
+    #[test]
+    fn debug_paint_dump_exposes_platform_layer_order() {
+        let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
+        let overlay = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "debug_overlay",
+                UiNodeStyle {
+                    layer: Some(UiLayer::DebugOverlay),
+                    z_index: -10,
+                    ..fixed_style(80.0, 40.0)
+                },
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(20, 30, 40, 255), None, 4.0)),
+        );
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let dump = DebugPaintDump::from_document(&doc);
+        let item = dump
+            .items
+            .iter()
+            .find(|item| item.node == overlay)
+            .expect("overlay paint item");
+
+        assert_eq!(item.layer, UiLayer::DebugOverlay);
+        assert_eq!(item.z_index, -10);
+        assert_eq!(item.resolved_z, UiLayer::DebugOverlay.base_z() - 10);
     }
 
     #[test]
@@ -1379,5 +1457,49 @@ mod tests {
             .any(|candidate| candidate.id == child && candidate.pointer));
         assert!(dump.contains("root#0 rect="));
         assert!(dump.contains("  target#1 rect="));
+    }
+
+    #[test]
+    fn debug_hit_trace_sorts_candidates_by_resolved_layer_order() {
+        let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
+        let app_overlay = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "app_overlay",
+                layered_absolute_style(
+                    UiLayer::AppOverlay,
+                    crate::platform::LAYER_LOCAL_Z_MAX,
+                    80.0,
+                    40.0,
+                ),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
+        );
+        let debug_overlay = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "debug_overlay",
+                layered_absolute_style(
+                    UiLayer::DebugOverlay,
+                    crate::platform::LAYER_LOCAL_Z_MIN,
+                    80.0,
+                    40.0,
+                ),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
+        );
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let trace = DebugHitTrace::from_document(&doc, UiPoint::new(10.0, 10.0));
+
+        assert_eq!(trace.hit, Some(debug_overlay));
+        assert_eq!(trace.candidates[0].id, debug_overlay);
+        assert_eq!(trace.candidates[1].id, app_overlay);
+        assert!(
+            trace.candidates[0].paint.max_resolved_z > trace.candidates[1].paint.max_resolved_z
+        );
     }
 }

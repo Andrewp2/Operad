@@ -218,13 +218,17 @@ The branch starts from Operad 2.0.0 plus:
   deterministic live-region snapshots, live-region diffing, and announcement
   queues that can be converted into supported screen-reader adapter requests.
 - Renderer-neutral debug snapshots in `src/debug.rs` for layout bounds, clip
-  rects, paint primitive counts, z ranges, host interaction flags, command
-  scopes, active gestures, repaint reasons, frame timings, theme token
-  inspection, resolved component state previews, and hit-test traces.
+  rects, paint primitive counts, local and resolved z ranges, host interaction
+  flags, command scopes, active gestures, repaint reasons, frame timings, theme
+  token inspection, resolved component state previews, and hit-test traces.
 - Renderer/backend adapter contracts in `src/renderer.rs` for render targets,
   resource deltas, dirty regions, paint batching, deterministic snapshots, and
   backend capability negotiation, with renderer-facing image extraction and
   image callback registries for app-owned icon/image/texture draw paths.
+- Document paint output now carries `platform::LayerOrder` through node styles,
+  hit testing, paint-list generation, renderer batch keys, image/canvas render
+  requests, and debug dumps so host, app, overlay, debug, and system surfaces
+  sort consistently before local z-index is applied.
 - Egui paint callback hooks in `src/lib.rs` for forwarding renderer-neutral
   image, image-placement, and canvas paint items to app-owned egui bridge code
   instead of silently dropping asset-backed primitives.

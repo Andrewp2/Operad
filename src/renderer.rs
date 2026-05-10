@@ -9,7 +9,9 @@ use std::collections::HashMap;
 
 use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
-use crate::platform::{BackendCapabilities, PixelSize, ResourceHandle, ResourceId, ResourceKind};
+use crate::platform::{
+    BackendCapabilities, LayerOrder, PixelSize, ResourceHandle, ResourceId, ResourceKind,
+};
 use crate::{
     CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintImage, PaintItem, PaintKind, PaintList,
     PaintTransform, ShaderEffect, UiNodeId, UiRect, UiSize,
@@ -373,6 +375,7 @@ pub struct CanvasRenderRequest {
     pub rect: UiRect,
     pub clip_rect: UiRect,
     pub z_index: i16,
+    pub layer_order: LayerOrder,
     pub opacity: f32,
     pub transform: PaintTransform,
 }
@@ -388,6 +391,7 @@ impl CanvasRenderRequest {
             rect: item.rect,
             clip_rect: item.clip_rect,
             z_index: item.z_index,
+            layer_order: item.layer_order,
             opacity: item.opacity,
             transform: item.transform,
         })
@@ -686,6 +690,7 @@ pub struct ImageRenderRequest {
     pub image: PaintImage,
     pub clip_rect: UiRect,
     pub z_index: i16,
+    pub layer_order: LayerOrder,
     pub opacity: f32,
     pub transform: PaintTransform,
 }
@@ -709,6 +714,7 @@ impl ImageRenderRequest {
             image,
             clip_rect: item.clip_rect,
             z_index: item.z_index,
+            layer_order: item.layer_order,
             opacity: item.opacity,
             transform: item.transform,
         })
@@ -1029,6 +1035,7 @@ impl PaintBatchKind {
 pub struct PaintBatchKey {
     pub kind: PaintBatchKind,
     pub z_index: i16,
+    pub layer_order: LayerOrder,
     pub clip_rect: UiRect,
     pub shader: Option<ShaderEffect>,
 }
@@ -1038,6 +1045,7 @@ impl PaintBatchKey {
         Self {
             kind: PaintBatchKind::from_kind(&item.kind),
             z_index: item.z_index,
+            layer_order: item.layer_order,
             clip_rect: item.clip_rect,
             shader: item.shader.clone(),
         }
@@ -1220,6 +1228,7 @@ mod tests {
             rect,
             clip_rect: UiRect::new(0.0, 0.0, 200.0, 100.0),
             z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
@@ -1278,9 +1287,14 @@ mod tests {
             UiRect::new(0.0, 0.0, 20.0, 20.0),
             rect.clone(),
         ));
-        paint
-            .items
-            .push(paint_item(1, UiRect::new(16.0, 0.0, 20.0, 20.0), rect));
+        paint.items.push(paint_item(
+            1,
+            UiRect::new(16.0, 0.0, 20.0, 20.0),
+            rect.clone(),
+        ));
+        let mut debug_overlay_item = paint_item(3, UiRect::new(24.0, 0.0, 20.0, 20.0), rect);
+        debug_overlay_item.layer_order = LayerOrder::new(crate::platform::UiLayer::DebugOverlay, 0);
+        paint.items.push(debug_overlay_item);
         let mut shader_item = paint_item(
             2,
             UiRect::new(40.0, 0.0, 20.0, 20.0),
@@ -1290,18 +1304,23 @@ mod tests {
         paint.items.push(shader_item);
 
         let batches = PaintBatcher::default().batch(&paint);
-        assert_eq!(batches.len(), 2);
+        assert_eq!(batches.len(), 3);
         assert_eq!(batches[0].key.kind, PaintBatchKind::Rect);
+        assert_eq!(batches[0].key.layer_order, LayerOrder::DEFAULT);
         assert_eq!(batches[0].item_indices, vec![0, 1]);
         assert_eq!(batches[0].bounds, UiRect::new(0.0, 0.0, 36.0, 20.0));
-        assert_eq!(batches[1].key.kind, PaintBatchKind::Text);
-        assert_eq!(batches[1].key.shader.as_ref().unwrap().key, "text.glow");
+        assert_eq!(
+            batches[1].key.layer_order,
+            LayerOrder::new(crate::platform::UiLayer::DebugOverlay, 0)
+        );
+        assert_eq!(batches[2].key.kind, PaintBatchKind::Text);
+        assert_eq!(batches[2].key.shader.as_ref().unwrap().key, "text.glow");
 
         let unbatched = PaintBatcher {
             preserve_order: true,
         }
         .batch(&paint);
-        assert_eq!(unbatched.len(), 3);
+        assert_eq!(unbatched.len(), 4);
     }
 
     #[test]
