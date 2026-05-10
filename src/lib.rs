@@ -3940,6 +3940,37 @@ pub mod widgets {
             text_input_caret_rect(&self.text, self.caret, metrics)
         }
 
+        pub fn position_at_point(
+            &self,
+            metrics: TextInputLayoutMetrics,
+            point: UiPoint,
+        ) -> TextInputPosition {
+            text_position_at(
+                &self.text,
+                text_input_byte_index_at_point(&self.text, self.multiline, metrics, point),
+            )
+        }
+
+        pub fn byte_index_at_point(
+            &self,
+            metrics: TextInputLayoutMetrics,
+            point: UiPoint,
+        ) -> usize {
+            text_input_byte_index_at_point(&self.text, self.multiline, metrics, point)
+        }
+
+        pub fn move_caret_to_point(
+            &mut self,
+            metrics: TextInputLayoutMetrics,
+            point: UiPoint,
+            selecting: bool,
+        ) {
+            self.normalize_selection();
+            let anchor = self.selection_anchor.unwrap_or(self.caret);
+            self.caret = self.byte_index_at_point(metrics, point);
+            self.selection_anchor = selecting.then_some(anchor);
+        }
+
         pub fn selection_rects(
             &self,
             metrics: TextInputLayoutMetrics,
@@ -4306,6 +4337,15 @@ pub mod widgets {
         pub const fn target(mut self, target: UiNodeId) -> Self {
             self.target = Some(target);
             self
+        }
+
+        pub const fn cursor_rect(mut self, cursor_rect: LogicalRect) -> Self {
+            self.cursor_rect = cursor_rect;
+            self
+        }
+
+        pub fn with_caret_rect(self, caret: TextInputCaretRect) -> Self {
+            self.cursor_rect(logical_rect_from_ui_rect(caret.rect))
         }
     }
 
@@ -4678,6 +4718,17 @@ pub mod widgets {
         event: UiInputEvent,
         platform_context: Option<TextInputPlatformContext>,
     ) -> TextInputEventOutcome {
+        handle_text_input_event_with_metrics(document, node, state, event, platform_context, None)
+    }
+
+    pub fn handle_text_input_event_with_metrics(
+        document: &mut UiDocument,
+        node: UiNodeId,
+        state: &mut TextInputState,
+        event: UiInputEvent,
+        platform_context: Option<TextInputPlatformContext>,
+        layout_metrics: Option<TextInputLayoutMetrics>,
+    ) -> TextInputEventOutcome {
         let was_focused = document.focus.focused == Some(node);
         let text_event = matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. });
         let input = if text_event {
@@ -4693,6 +4744,45 @@ pub mod widgets {
         };
         let focused = document.focus.focused == Some(node);
         let mut platform_requests = Vec::new();
+        let mut state_changed = false;
+        let mut edit = None;
+
+        if focused && text_event {
+            let before_text = state.text.clone();
+            let before_caret = state.caret;
+            let before_selection = state.selection_anchor;
+            let before_composing = state.composing.clone();
+            let outcome = state.handle_event(&event);
+            if let Some(request) = outcome.clipboard_request() {
+                platform_requests.push(PlatformRequest::Clipboard(request));
+            }
+            state_changed = before_text != state.text
+                || before_caret != state.caret
+                || before_selection != state.selection_anchor
+                || before_composing != state.composing;
+            edit = Some(outcome);
+        } else if focused {
+            if let Some((point, selecting)) =
+                text_input_pointer_edit(&event, input.pressed == Some(node))
+            {
+                if let Some(metrics) = layout_metrics {
+                    let before_caret = state.caret;
+                    let before_selection = state.selection_anchor;
+                    state.move_caret_to_point(metrics, point, selecting);
+                    state_changed =
+                        before_caret != state.caret || before_selection != state.selection_anchor;
+                    edit = Some(TextInputOutcome::new(EditPhase::Preview, false, None));
+                }
+            }
+        }
+
+        let platform_context = platform_context.map(|context| {
+            if let Some(metrics) = layout_metrics {
+                context.with_caret_rect(state.caret_rect(metrics))
+            } else {
+                context
+            }
+        });
 
         if !was_focused && focused {
             if let Some(context) = platform_context.clone() {
@@ -4714,20 +4804,8 @@ pub mod widgets {
             }
         }
 
-        let edit = if focused && text_event {
-            let before_text = state.text.clone();
-            let before_caret = state.caret;
-            let before_selection = state.selection_anchor;
-            let before_composing = state.composing.clone();
-            let outcome = state.handle_event(&event);
-            if let Some(request) = outcome.clipboard_request() {
-                platform_requests.push(PlatformRequest::Clipboard(request));
-            }
-            let state_changed = before_text != state.text
-                || before_caret != state.caret
-                || before_selection != state.selection_anchor
-                || before_composing != state.composing;
-            if let Some(context) = platform_context {
+        if focused {
+            if let (Some(context), Some(outcome)) = (platform_context, edit.as_ref()) {
                 if outcome.committed || outcome.canceled {
                     platform_requests.push(PlatformRequest::TextIme(
                         TextInputState::hide_keyboard_request(context.input.clone()),
@@ -4740,16 +4818,21 @@ pub mod widgets {
                         .push(PlatformRequest::TextIme(state.update_ime_request(context)));
                 }
             }
-            Some(outcome)
-        } else {
-            None
-        };
+        }
 
         TextInputEventOutcome {
             input,
             edit,
             focused,
             platform_requests,
+        }
+    }
+
+    fn text_input_pointer_edit(event: &UiInputEvent, pressed: bool) -> Option<(UiPoint, bool)> {
+        match event {
+            UiInputEvent::PointerDown(point) => Some((*point, false)),
+            UiInputEvent::PointerMove(point) if pressed => Some((*point, true)),
+            _ => None,
         }
     }
 
@@ -4884,6 +4967,33 @@ pub mod widgets {
             position,
             rect: UiRect::new(origin.x, origin.y, metrics.caret_width, metrics.line_height),
         }
+    }
+
+    fn text_input_byte_index_at_point(
+        text: &str,
+        multiline: bool,
+        metrics: TextInputLayoutMetrics,
+        point: UiPoint,
+    ) -> usize {
+        let line_ranges = text_line_ranges(text);
+        if line_ranges.is_empty() {
+            return 0;
+        }
+        let relative_y = point.y - metrics.text_rect.y + metrics.scroll_offset.y;
+        let requested_line = if multiline && relative_y.is_finite() {
+            (relative_y / metrics.line_height).floor().max(0.0) as usize
+        } else {
+            0
+        };
+        let line = requested_line.min(line_ranges.len().saturating_sub(1));
+        let line_start = line_ranges[line].1.start;
+        let relative_x = point.x - metrics.text_rect.x + metrics.scroll_offset.x;
+        let column = if relative_x.is_finite() {
+            (relative_x / metrics.char_width).round().max(0.0) as usize
+        } else {
+            0
+        };
+        byte_index_for_line_column(text, line, column).max(line_start)
     }
 
     fn text_input_selection_rects(
@@ -8795,6 +8905,101 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(state.caret, "one\nfour\n".len());
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_maps_pointer_points_to_caret_and_selection() {
+        let metrics =
+            widgets::TextInputLayoutMetrics::new(UiRect::new(10.0, 20.0, 120.0, 48.0), 8.0, 16.0);
+        let mut state = widgets::TextInputState::new("alpha\nbeta").multiline(true);
+
+        assert_eq!(
+            state.position_at_point(metrics, UiPoint::new(10.0 + 2.6 * 8.0, 20.0 + 18.0)),
+            widgets::TextInputPosition {
+                byte_index: "alpha\nbet".len(),
+                line: 1,
+                column: 3,
+            }
+        );
+        assert_eq!(
+            state.byte_index_at_point(metrics, UiPoint::new(-20.0, -10.0)),
+            0
+        );
+        assert_eq!(
+            state.byte_index_at_point(metrics, UiPoint::new(240.0, 240.0)),
+            "alpha\nbeta".len()
+        );
+
+        state.move_caret_to_point(metrics, UiPoint::new(10.0 + 2.0 * 8.0, 20.0), false);
+        assert_eq!(state.caret, "al".len());
+        assert_eq!(state.selection_anchor, None);
+
+        state.move_caret_to_point(metrics, UiPoint::new(10.0 + 4.0 * 8.0, 20.0 + 16.0), true);
+        assert_eq!(state.caret, "alpha\nbeta".len());
+        assert_eq!(state.selected_text(), Some("pha\nbeta"));
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_event_handler_places_caret_from_pointer_metrics() {
+        let mut doc = UiDocument::new(root_style(320.0, 120.0));
+        let root = doc.root;
+        let mut state = widgets::TextInputState::new("abcdef");
+        state.caret = 0;
+        let input = widgets::text_input(
+            &mut doc,
+            root,
+            "name",
+            &state,
+            widgets::TextInputOptions::default(),
+        );
+        doc.compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let metrics =
+            widgets::TextInputLayoutMetrics::new(UiRect::new(0.0, 0.0, 180.0, 30.0), 8.0, 18.0);
+        let context = widgets::TextInputPlatformContext::for_node(input, state.caret_rect(metrics));
+        let focused = widgets::handle_text_input_event_with_metrics(
+            &mut doc,
+            input,
+            &mut state,
+            UiInputEvent::PointerDown(UiPoint::new(26.0, 8.0)),
+            Some(context.clone()),
+            Some(metrics),
+        );
+
+        assert!(focused.focused);
+        assert_eq!(state.caret, 3);
+        assert_eq!(state.selection_anchor, None);
+        assert!(matches!(
+            &focused.platform_requests[..],
+            [
+                platform::PlatformRequest::TextIme(platform::TextImeRequest::Activate(session)),
+                platform::PlatformRequest::TextIme(platform::TextImeRequest::ShowKeyboard { input: keyboard_input }),
+                platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(update)),
+            ] if session.selection == platform::TextRange::caret(3)
+                && session.cursor_rect.origin.x == 24.0
+                && *keyboard_input == context.input
+                && update.selection == platform::TextRange::caret(3)
+        ));
+
+        let selected = widgets::handle_text_input_event_with_metrics(
+            &mut doc,
+            input,
+            &mut state,
+            UiInputEvent::PointerMove(UiPoint::new(50.0, 8.0)),
+            Some(context),
+            Some(metrics),
+        );
+        assert!(selected.focused);
+        assert_eq!(state.caret, 6);
+        assert_eq!(state.selected_text(), Some("def"));
+        assert!(matches!(
+            selected.platform_requests.last(),
+            Some(platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(update)))
+                if update.selection == platform::TextRange::new(3, 6)
+        ));
     }
 
     #[cfg(feature = "widgets")]

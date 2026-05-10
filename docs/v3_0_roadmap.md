@@ -233,6 +233,9 @@ The branch starts from Operad 2.0.0 plus:
   requests.
 - Existing core widgets and major widget families wired to richer accessibility
   states where the current APIs already expose that information.
+- Text input state now maps pointer coordinates to caret positions and drag
+  selections through renderer-neutral layout metrics, and can update IME cursor
+  sessions from those pointer-driven caret changes.
 - Orbifold, game-agent, and Fabricad/Rust-layout v3 migration notes preserved
   under `docs/`.
 - Cross-application reuse criteria in this roadmap now require new primitives
