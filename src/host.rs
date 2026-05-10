@@ -866,20 +866,20 @@ mod tests {
     };
     use crate::{
         length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
-        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, InputBehavior, ShellPanelState,
-        ShellRegion, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint,
+        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, InputBehavior, LayoutStyle,
+        ShellPanelState, ShellRegion, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint,
     };
     use taffy::prelude::{Size as TaffySize, Style};
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: length(width),
                     height: length(height),
                 },
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         }
     }

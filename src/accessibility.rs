@@ -818,19 +818,19 @@ mod tests {
     use super::*;
     use crate::{
         length, AccessibilityMeta, AccessibilityRole, AccessibilitySummary, ApproxTextMeasurer,
-        InputBehavior, UiDocument, UiNode, UiNodeStyle, UiSize,
+        InputBehavior, LayoutStyle, UiDocument, UiNode, UiNodeStyle, UiSize,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: length(width),
                     height: length(height),
                 },
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         }
     }
@@ -908,13 +908,13 @@ mod tests {
             UiNode::container(
                 "panel",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: Dimension::auto(),
                             height: Dimension::auto(),
                         },
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
             ),

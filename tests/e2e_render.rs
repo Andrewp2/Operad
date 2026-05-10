@@ -5,10 +5,6 @@ mod common;
 use common::{assert_snapshot, render_document};
 use operad::widgets::*;
 use operad::*;
-use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, LengthPercentageAuto, Position,
-    Rect as TaffyRect, Size as TaffySize, Style,
-};
 
 const VIEWPORT: UiSize = UiSize::new(640.0, 360.0);
 
@@ -21,17 +17,14 @@ fn core_controls_snapshot() {
         UiNode::container(
             "controls.panel",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    align_items: Some(AlignItems::FlexStart),
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    padding: TaffyRect::length(16.0),
-                    ..Default::default()
-                },
+                layout: layout::with_padding_all(
+                    layout::with_flex_start_children(layout::with_size(
+                        layout::row(),
+                        layout::percent(1.0),
+                        layout::percent(1.0),
+                    )),
+                    16.0,
+                ),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -49,20 +42,13 @@ fn core_controls_snapshot() {
         UiNode::container(
             "controls.preview",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: TaffySize {
-                        width: length(312.0),
-                        height: length(328.0),
-                    },
-                    margin: TaffyRect {
-                        left: LengthPercentageAuto::length(16.0),
-                        ..TaffyRect::length(0.0)
-                    },
-                    padding: TaffyRect::length(12.0),
-                    ..Default::default()
-                },
+                layout: layout::with_padding_all(
+                    layout::with_margin_left(
+                        layout::with_size(layout::column(), layout::px(312.0), layout::px(328.0)),
+                        16.0,
+                    ),
+                    12.0,
+                ),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -286,16 +272,10 @@ fn pickers_snapshot() {
         UiNode::container(
             "pickers.root",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    padding: TaffyRect::length(16.0),
-                    ..Default::default()
-                },
+                layout: layout::with_padding_all(
+                    layout::with_size(layout::row(), layout::percent(1.0), layout::percent(1.0)),
+                    16.0,
+                ),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -326,15 +306,7 @@ fn pickers_snapshot() {
             UiNode::container(
                 format!("pickers.calendar.week.{week_index}"),
                 UiNodeStyle {
-                    layout: Style {
-                        display: Display::Flex,
-                        flex_direction: FlexDirection::Row,
-                        size: TaffySize {
-                            width: length(280.0),
-                            height: length(32.0),
-                        },
-                        ..Default::default()
-                    },
+                    layout: layout::with_size(layout::row(), layout::px(280.0), layout::px(32.0)),
                     ..Default::default()
                 },
             ),
@@ -372,19 +344,10 @@ fn pickers_snapshot() {
         UiNode::container(
             "pickers.side",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: TaffySize {
-                        width: length(292.0),
-                        height: length(328.0),
-                    },
-                    margin: TaffyRect {
-                        left: LengthPercentageAuto::length(16.0),
-                        ..TaffyRect::length(0.0)
-                    },
-                    ..Default::default()
-                },
+                layout: layout::with_margin_left(
+                    layout::with_size(layout::column(), layout::px(292.0), layout::px(328.0)),
+                    16.0,
+                ),
                 ..Default::default()
             },
         ),
@@ -401,15 +364,7 @@ fn pickers_snapshot() {
         UiNode::container(
             "pickers.swatches",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    size: TaffySize {
-                        width: length(260.0),
-                        height: length(42.0),
-                    },
-                    ..Default::default()
-                },
+                layout: layout::with_size(layout::row(), layout::px(260.0), layout::px(42.0)),
                 ..Default::default()
             },
         ),
@@ -420,17 +375,7 @@ fn pickers_snapshot() {
             UiNode::container(
                 format!("pickers.swatch.{index}"),
                 UiNodeStyle {
-                    layout: Style {
-                        size: TaffySize {
-                            width: length(40.0),
-                            height: length(34.0),
-                        },
-                        margin: TaffyRect {
-                            right: LengthPercentageAuto::length(8.0),
-                            ..TaffyRect::length(0.0)
-                        },
-                        ..Default::default()
-                    },
+                    layout: layout::with_margin_right(layout::fixed(40.0, 34.0), 8.0),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -485,16 +430,10 @@ fn data_widgets_snapshot() {
         UiNode::container(
             "data.shell",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    padding: TaffyRect::length(14.0),
-                    ..Default::default()
-                },
+                layout: layout::with_padding_all(
+                    layout::with_size(layout::row(), layout::percent(1.0), layout::percent(1.0)),
+                    14.0,
+                ),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -542,19 +481,10 @@ fn data_widgets_snapshot() {
         UiNode::container(
             "data.right",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: TaffySize {
-                        width: length(354.0),
-                        height: length(332.0),
-                    },
-                    margin: TaffyRect {
-                        left: LengthPercentageAuto::length(12.0),
-                        ..TaffyRect::length(0.0)
-                    },
-                    ..Default::default()
-                },
+                layout: layout::with_margin_left(
+                    layout::with_size(layout::column(), layout::px(354.0), layout::px(332.0)),
+                    12.0,
+                ),
                 ..Default::default()
             },
         ),
@@ -645,15 +575,10 @@ fn surfaces_snapshot() {
         SplitAxis::Horizontal,
         SplitPaneState::new(0.42).with_min_sizes(160.0, 180.0),
         SplitPaneOptions {
-            layout: Style {
-                display: Display::Flex,
-                size: TaffySize {
-                    width: length(612.0),
-                    height: length(188.0),
-                },
-                margin: TaffyRect::length(14.0),
-                ..Default::default()
-            },
+            layout: layout::with_margin_all(
+                layout::with_size(layout::row(), layout::px(612.0), layout::px(188.0)),
+                14.0,
+            ),
             pane_visual: UiVisual::panel(
                 ColorRgba::new(17, 23, 30, 255),
                 Some(StrokeStyle::new(ColorRgba::new(57, 72, 88, 255), 1.0)),
@@ -701,21 +626,11 @@ fn surfaces_snapshot() {
         "surface.toasts",
         &stack,
         ToastStackOptions {
-            layout: Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                position: Position::Absolute,
-                inset: TaffyRect {
-                    left: LengthPercentageAuto::length(300.0),
-                    top: LengthPercentageAuto::length(210.0),
-                    ..TaffyRect::length(0.0)
-                },
-                size: TaffySize {
-                    width: length(310.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            },
+            layout: layout::with_absolute_position(
+                layout::with_size(layout::column(), layout::px(310.0), layout::auto()),
+                300.0,
+                210.0,
+            ),
             ..Default::default()
         },
     );
@@ -956,43 +871,17 @@ fn panel_visual() -> UiVisual {
     )
 }
 
-fn fixed_style(width: f32, height: f32) -> Style {
-    Style {
-        size: TaffySize {
-            width: length(width),
-            height: length(height),
-        },
-        ..Default::default()
-    }
+fn fixed_style(width: f32, height: f32) -> LayoutStyle {
+    layout::fixed(width, height)
 }
 
-fn absolute_style(x: f32, y: f32, width: f32, height: f32) -> Style {
-    Style {
-        position: Position::Absolute,
-        inset: TaffyRect {
-            left: LengthPercentageAuto::length(x),
-            top: LengthPercentageAuto::length(y),
-            ..TaffyRect::length(0.0)
-        },
-        size: TaffySize {
-            width: length(width),
-            height: length(height),
-        },
-        ..Default::default()
-    }
+fn absolute_style(x: f32, y: f32, width: f32, height: f32) -> LayoutStyle {
+    layout::absolute(x, y, width, height)
 }
 
 fn column_style(width: f32, height: f32) -> UiNodeStyle {
     UiNodeStyle {
-        layout: Style {
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            size: TaffySize {
-                width: length(width),
-                height: length(height),
-            },
-            ..Default::default()
-        },
+        layout: layout::with_size(layout::column(), layout::px(width), layout::px(height)),
         clip: ClipBehavior::Clip,
         ..Default::default()
     }

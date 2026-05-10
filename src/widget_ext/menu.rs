@@ -10,9 +10,9 @@ use taffy::prelude::{
 use crate::{
     length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
     AnimationMachine, ClipBehavior, ColorRgba, CommandId, CommandRegistry, CommandScope,
-    CommandTooltipResolver, ImageContent, InputBehavior, KeyCode, KeyModifiers, ScrollAxes,
-    ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode,
-    UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    CommandTooltipResolver, ImageContent, InputBehavior, KeyCode, KeyModifiers, LayoutStyle,
+    ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument, UiInputEvent,
+    UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2059,7 +2059,7 @@ pub fn select_menu_popup(
 
 #[derive(Debug, Clone)]
 pub struct DropdownSelectOptions {
-    pub trigger_layout: Style,
+    pub trigger_layout: LayoutStyle,
     pub trigger_visual: UiVisual,
     pub text_style: TextStyle,
     pub placeholder: String,
@@ -2070,7 +2070,7 @@ pub struct DropdownSelectOptions {
 impl Default for DropdownSelectOptions {
     fn default() -> Self {
         Self {
-            trigger_layout: Style {
+            trigger_layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
                 align_items: Some(AlignItems::Center),
@@ -2081,7 +2081,7 @@ impl Default for DropdownSelectOptions {
                 },
                 padding: TaffyRect::length(6.0),
                 ..Default::default()
-            },
+            }),
             trigger_visual: UiVisual::panel(
                 ColorRgba::new(31, 37, 46, 255),
                 Some(StrokeStyle::new(ColorRgba::new(84, 98, 121, 255), 1.0)),
@@ -2530,7 +2530,7 @@ pub struct MenuBarAnchors {
 
 #[derive(Debug, Clone)]
 pub struct MenuBarOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub visual: UiVisual,
     pub button_visual: UiVisual,
     pub active_button_visual: UiVisual,
@@ -2543,7 +2543,7 @@ pub struct MenuBarOptions {
 impl Default for MenuBarOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
                 align_items: Some(AlignItems::Center),
@@ -2552,7 +2552,7 @@ impl Default for MenuBarOptions {
                     height: length(30.0),
                 },
                 ..Default::default()
-            },
+            }),
             visual: UiVisual::panel(ColorRgba::new(22, 27, 34, 255), None, 0.0),
             button_visual: UiVisual::TRANSPARENT,
             active_button_visual: UiVisual::panel(ColorRgba::new(45, 55, 68, 255), None, 2.0),
@@ -2615,7 +2615,7 @@ pub fn menu_bar(
             root,
             format!("{name}.{}", menu.id),
             &menu.label,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
                 align_items: Some(AlignItems::Center),
@@ -2630,7 +2630,7 @@ pub fn menu_bar(
                     bottom: length_percentage(0.0),
                 },
                 ..Default::default()
-            },
+            }),
             visual,
             text_style,
             if menu.enabled {
@@ -3151,7 +3151,7 @@ pub fn command_palette(
         let mut node = UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Column,
                     size: TaffySize {
@@ -3160,7 +3160,7 @@ pub fn command_palette(
                     },
                     padding: TaffyRect::length(4.0),
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 z_index: options.z_index,
                 ..Default::default()
@@ -3184,7 +3184,7 @@ pub fn command_palette(
         UiNode::container(
             format!("{name}.input"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Row,
                     align_items: Some(AlignItems::Center),
@@ -3194,7 +3194,7 @@ pub fn command_palette(
                     },
                     padding: TaffyRect::length(8.0),
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3217,19 +3217,19 @@ pub fn command_palette(
             &state.query
         },
         options.text_style.clone(),
-        Style {
+        LayoutStyle::from_taffy_style(Style {
             size: TaffySize {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
             ..Default::default()
-        },
+        }),
     );
 
     let mut list_node = UiNode::container(
         format!("{name}.results"),
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -3237,7 +3237,7 @@ pub fn command_palette(
                     height: length(visible_rows as f32 * options.row_height),
                 },
                 ..Default::default()
-            },
+            }),
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -3293,7 +3293,7 @@ pub fn command_palette(
             UiNode::container(
                 format!("{name}.result.{}.text", palette_match.index),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Column,
                         justify_content: Some(JustifyContent::Center),
@@ -3302,7 +3302,7 @@ pub fn command_palette(
                             height: Dimension::auto(),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3314,13 +3314,13 @@ pub fn command_palette(
             format!("{name}.result.{}.title", palette_match.index),
             &item.title,
             text_style,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
         );
         if let Some(subtitle) = &item.subtitle {
             label(
@@ -3329,13 +3329,13 @@ pub fn command_palette(
                 format!("{name}.result.{}.subtitle", palette_match.index),
                 subtitle,
                 options.muted_text_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             );
         }
         if let Some(shortcut) = &item.shortcut {
@@ -3345,13 +3345,13 @@ pub fn command_palette(
                 format!("{name}.result.{}.shortcut", palette_match.index),
                 shortcut,
                 options.muted_text_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             );
         }
         rows.push(row);
@@ -3387,7 +3387,7 @@ fn command_palette_row_node(
     let mut node = UiNode::container(
         name,
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
                 align_items: Some(AlignItems::Center),
@@ -3398,7 +3398,7 @@ fn command_palette_row_node(
                 padding: TaffyRect::length(6.0),
                 flex_shrink: 0.0,
                 ..Default::default()
-            },
+            }),
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -3506,8 +3506,8 @@ fn constrain_axis(start: f32, size: f32, min: f32, max: f32) -> (f32, f32) {
     (start, size)
 }
 
-fn absolute_rect_style(rect: UiRect) -> Style {
-    Style {
+fn absolute_rect_style(rect: UiRect) -> LayoutStyle {
+    LayoutStyle::from_taffy_style(Style {
         position: Position::Absolute,
         inset: TaffyRect {
             left: LengthPercentageAuto::length(rect.x),
@@ -3520,7 +3520,7 @@ fn absolute_rect_style(rect: UiRect) -> Style {
             height: length(rect.height),
         },
         ..Default::default()
-    }
+    })
 }
 
 fn menu_container_node(
@@ -3535,7 +3535,7 @@ fn menu_container_node(
     let mut node = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -3543,7 +3543,7 @@ fn menu_container_node(
                     height: length(height.max(0.0)),
                 },
                 ..Default::default()
-            },
+            }),
             clip: ClipBehavior::Clip,
             z_index: options.z_index,
             ..Default::default()
@@ -3606,13 +3606,13 @@ fn populate_select_menu(
             format!("{name}.option.{index}.label"),
             &option.label,
             text_style,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
         );
         rows.push(row);
     }
@@ -3835,7 +3835,7 @@ fn menu_list_container_node(
     let mut node = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -3843,7 +3843,7 @@ fn menu_list_container_node(
                     height: length(height.max(0.0)),
                 },
                 ..Default::default()
-            },
+            }),
             clip: ClipBehavior::Clip,
             z_index: options.z_index,
             ..Default::default()
@@ -3916,13 +3916,13 @@ fn populate_menu_list(
             format!("{name}.item.{index}.label"),
             menu_item_label(item),
             text_style,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
         );
         if let Some(shortcut) = &item.shortcut {
             label(
@@ -3931,13 +3931,13 @@ fn populate_menu_list(
                 format!("{name}.item.{index}.shortcut"),
                 shortcut,
                 options.shortcut_text_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             );
         } else if item.children().is_some() {
             label(
@@ -3946,13 +3946,13 @@ fn populate_menu_list(
                 format!("{name}.item.{index}.submenu"),
                 ">",
                 options.shortcut_text_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             );
         }
         rows.push(row);
@@ -4023,7 +4023,7 @@ fn separator_row(
         UiNode::container(
             format!("{name}.separator.{index}"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Column,
                     justify_content: Some(JustifyContent::Center),
@@ -4039,7 +4039,7 @@ fn separator_row(
                         bottom: length_percentage(0.0),
                     },
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -4050,13 +4050,13 @@ fn separator_row(
         UiNode::container(
             format!("{name}.separator.{index}.line"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: length(1.0),
                     },
                     ..Default::default()
-                },
+                }),
                 ..Default::default()
             },
         )
@@ -4154,7 +4154,7 @@ fn visible_match_range(
 
 fn row_style(height: f32) -> UiNodeStyle {
     UiNodeStyle {
-        layout: Style {
+        layout: LayoutStyle::from_taffy_style(Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Row,
             align_items: Some(AlignItems::Center),
@@ -4165,21 +4165,21 @@ fn row_style(height: f32) -> UiNodeStyle {
             padding: TaffyRect::length(6.0),
             flex_shrink: 0.0,
             ..Default::default()
-        },
+        }),
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
 }
 
-fn leading_label_layout(width: f32) -> Style {
-    Style {
+fn leading_label_layout(width: f32) -> LayoutStyle {
+    LayoutStyle::from_taffy_style(Style {
         size: TaffySize {
             width: length(width.max(0.0)),
             height: Dimension::auto(),
         },
         flex_shrink: 0.0,
         ..Default::default()
-    }
+    })
 }
 
 fn leading_image(
@@ -4195,7 +4195,7 @@ fn leading_image(
         UiNode::image(
             name,
             image,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: length(image_size.width.max(0.0)),
                     height: length(image_size.height.max(0.0)),
@@ -4208,7 +4208,7 @@ fn leading_image(
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            },
+            }),
         )
         .with_accessibility(
             AccessibilityMeta::new(AccessibilityRole::Image).label(accessibility_label),
@@ -4307,7 +4307,7 @@ fn button_like(
     parent: UiNodeId,
     name: impl Into<String>,
     label_text: impl Into<String>,
-    layout: Style,
+    layout: LayoutStyle,
     visual: UiVisual,
     text_style: TextStyle,
 ) -> UiNodeId {
@@ -4329,7 +4329,7 @@ fn button_like_with_input(
     parent: UiNodeId,
     name: impl Into<String>,
     label_text: impl Into<String>,
-    layout: Style,
+    layout: LayoutStyle,
     visual: UiVisual,
     text_style: TextStyle,
     input: InputBehavior,
@@ -4354,13 +4354,13 @@ fn button_like_with_input(
         format!("{name}.label"),
         label_text,
         text_style,
-        Style {
+        LayoutStyle::from_taffy_style(Style {
             size: TaffySize {
                 width: Dimension::auto(),
                 height: Dimension::auto(),
             },
             ..Default::default()
-        },
+        }),
     );
     root
 }
@@ -4371,7 +4371,7 @@ fn label(
     name: impl Into<String>,
     text: impl Into<String>,
     text_style: TextStyle,
-    layout: Style,
+    layout: LayoutStyle,
 ) -> UiNodeId {
     document.add_child(parent, UiNode::text(name, text, text_style, layout))
 }
@@ -4614,7 +4614,7 @@ mod tests {
         );
 
         let node = document.node(popup);
-        assert_eq!(node.style.layout.position, Position::Absolute);
+        assert!(node.style.layout.is_absolute());
         assert_eq!(node.style.z_index, 100);
         assert!(node.scroll.is_some());
     }
@@ -5823,13 +5823,13 @@ mod tests {
             &state,
             None,
             DropdownSelectOptions {
-                trigger_layout: Style {
+                trigger_layout: LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(120.0),
                         height: length(30.0),
                     },
                     ..Default::default()
-                },
+                }),
                 ..Default::default()
             },
         );

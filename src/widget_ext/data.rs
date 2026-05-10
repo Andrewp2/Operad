@@ -14,8 +14,9 @@ use crate::{
     AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
     AccessibilitySortDirection, ClipBehavior, ColorRgba, CommandId, DragDropSurfaceKind,
     DragSourceDescriptor, DragSourceId, DropPayloadFilter, DropTargetDescriptor, DropTargetId,
-    EditPhase, FocusDirection, ImageContent, InputBehavior, ScrollAxes, ShaderEffect, StrokeStyle,
-    TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiVisual,
+    EditPhase, FocusDirection, ImageContent, InputBehavior, LayoutStyle, ScrollAxes, ShaderEffect,
+    StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect,
+    UiVisual,
 };
 
 /// Semantic hint for property value rendering and editing owned by the app.
@@ -871,7 +872,7 @@ pub fn editable_form_contract(
 /// Layout and styling knobs for [`property_inspector_grid`].
 #[derive(Debug, Clone)]
 pub struct PropertyInspectorOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub label_width: f32,
     pub row_height: f32,
     pub selected_index: Option<usize>,
@@ -893,7 +894,7 @@ pub struct PropertyInspectorOptions {
 impl Default for PropertyInspectorOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -901,7 +902,7 @@ impl Default for PropertyInspectorOptions {
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
             label_width: 140.0,
             row_height: 28.0,
             selected_index: None,
@@ -965,7 +966,7 @@ pub fn property_inspector_grid(
             UiNode::container(
                 format!("{name}.row.{}", row.id),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         align_items: Some(AlignItems::Center),
@@ -974,7 +975,7 @@ pub fn property_inspector_grid(
                             height: px(options.row_height),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -1014,14 +1015,14 @@ pub fn property_inspector_grid(
                 format!("{name}.row.{}.label", row.id),
                 &row.label,
                 options.label_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: px(options.label_width),
                         height: Dimension::percent(1.0),
                     },
                     padding: taffy::prelude::Rect::length(6.0),
                     ..Default::default()
-                },
+                }),
             )
             .with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::Label).label(row.label.clone()),
@@ -1039,7 +1040,7 @@ pub fn property_inspector_grid(
                 format!("{name}.row.{}.value", row.id),
                 &row.value,
                 value_style,
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     flex_grow: 1.0,
                     size: TaffySize {
                         width: Dimension::percent(1.0),
@@ -1047,7 +1048,7 @@ pub fn property_inspector_grid(
                     },
                     padding: taffy::prelude::Rect::length(6.0),
                     ..Default::default()
-                },
+                }),
             )
             .with_input(if row.editable {
                 if row.disabled {
@@ -2430,7 +2431,7 @@ impl VirtualDataTableSpec {
 
 #[derive(Debug, Clone)]
 pub struct DataTableOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub header_height: f32,
     pub selection: DataTableSelection,
     pub background_visual: UiVisual,
@@ -2449,7 +2450,7 @@ pub struct DataTableOptions {
 impl Default for DataTableOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -2457,7 +2458,7 @@ impl Default for DataTableOptions {
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
             header_height: 30.0,
             selection: DataTableSelection::default(),
             background_visual: UiVisual::panel(
@@ -2529,7 +2530,7 @@ pub fn virtualized_data_table(
         UiNode::container(
             format!("{name}.body"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Column,
                     size: TaffySize {
@@ -2537,7 +2538,7 @@ pub fn virtualized_data_table(
                         height: px(spec.viewport_height),
                     },
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -2569,7 +2570,7 @@ pub fn virtualized_data_table(
             UiNode::container(
                 format!("{name}.row.{row}"),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         size: TaffySize {
@@ -2578,7 +2579,7 @@ pub fn virtualized_data_table(
                         },
                         flex_shrink: 0.0,
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -2598,7 +2599,7 @@ pub fn virtualized_data_table(
             let mut cell = UiNode::container(
                 format!("{name}.row.{row}.cell.{}", column.id),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         align_items: Some(AlignItems::Center),
                         justify_content: Some(justify_content(column.alignment)),
@@ -2609,7 +2610,7 @@ pub fn virtualized_data_table(
                         padding: taffy::prelude::Rect::length(6.0),
                         flex_shrink: 0.0,
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3161,7 +3162,7 @@ impl TreeViewState {
 
 #[derive(Debug, Clone)]
 pub struct TreeViewOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub row_height: f32,
     pub indent_width: f32,
     pub disclosure_width: f32,
@@ -3180,7 +3181,7 @@ pub struct TreeViewOptions {
 impl Default for TreeViewOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -3188,7 +3189,7 @@ impl Default for TreeViewOptions {
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
             row_height: 26.0,
             indent_width: 16.0,
             disclosure_width: 18.0,
@@ -3259,7 +3260,7 @@ pub fn tree_view(
             UiNode::container(
                 format!("{name}.row.{}", item.id),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         align_items: Some(AlignItems::Center),
@@ -3268,7 +3269,7 @@ pub fn tree_view(
                             height: px(options.row_height),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3301,14 +3302,14 @@ pub fn tree_view(
                 UiNode::container(
                     format!("{name}.row.{}.indent", item.id),
                     UiNodeStyle {
-                        layout: Style {
+                        layout: LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: px(item.depth as f32 * options.indent_width),
                                 height: Dimension::percent(1.0),
                             },
                             flex_shrink: 0.0,
                             ..Default::default()
-                        },
+                        }),
                         ..Default::default()
                     },
                 ),
@@ -3330,13 +3331,13 @@ pub fn tree_view(
                 format!("{name}.row.{}.disclosure", item.id),
                 disclosure,
                 options.muted_text_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: px(options.disclosure_width),
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
 
@@ -3363,14 +3364,14 @@ pub fn tree_view(
                 format!("{name}.row.{}.label", item.id),
                 &item.label,
                 style,
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     flex_grow: 1.0,
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
     }
@@ -3510,7 +3511,7 @@ impl TabGroupState {
 
 #[derive(Debug, Clone)]
 pub struct TabGroupOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub tab_strip_height: f32,
     pub min_tab_width: f32,
     pub background_visual: UiVisual,
@@ -3529,7 +3530,7 @@ pub struct TabGroupOptions {
 impl Default for TabGroupOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -3537,7 +3538,7 @@ impl Default for TabGroupOptions {
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            },
+            }),
             tab_strip_height: 32.0,
             min_tab_width: 96.0,
             background_visual: UiVisual::panel(
@@ -3588,7 +3589,7 @@ pub fn tab_group(
         UiNode::container(
             format!("{name}.strip"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Row,
                     align_items: Some(AlignItems::Center),
@@ -3597,7 +3598,7 @@ pub fn tab_group(
                         height: px(options.tab_strip_height),
                     },
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3627,7 +3628,7 @@ pub fn tab_group(
             UiNode::container(
                 format!("{name}.tab.{}", tab.id),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         align_items: Some(AlignItems::Center),
@@ -3639,7 +3640,7 @@ pub fn tab_group(
                         padding: taffy::prelude::Rect::length(6.0),
                         flex_shrink: 0.0,
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3693,14 +3694,14 @@ pub fn tab_group(
                 format!("{name}.tab.{}.label", tab.id),
                 label,
                 style,
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     flex_grow: 1.0,
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
 
@@ -3711,13 +3712,13 @@ pub fn tab_group(
                     format!("{name}.tab.{}.close", tab.id),
                     "x",
                     options.muted_text_style.clone(),
-                    Style {
+                    LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: px(16.0),
                             height: Dimension::percent(1.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                 )
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
@@ -3733,14 +3734,14 @@ pub fn tab_group(
         UiNode::container(
             format!("{name}.panel"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     flex_grow: 1.0,
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3771,7 +3772,7 @@ fn data_table_header(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Row,
                     size: TaffySize {
@@ -3779,7 +3780,7 @@ fn data_table_header(
                         height: px(options.header_height),
                     },
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3798,7 +3799,7 @@ fn data_table_header(
             UiNode::container(
                 format!("{name}.{}", column.id),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         align_items: Some(AlignItems::Center),
@@ -3810,7 +3811,7 @@ fn data_table_header(
                         padding: taffy::prelude::Rect::length(6.0),
                         flex_shrink: 0.0,
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3838,14 +3839,14 @@ fn data_table_header(
                 format!("{name}.{}.label", column.id),
                 &column.label,
                 options.header_text_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     flex_grow: 1.0,
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
     }
@@ -3857,14 +3858,14 @@ fn vertical_spacer(name: impl Into<String>, width: f32, height: f32) -> UiNode {
     UiNode::container(
         name,
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: px(width),
                     height: px(height),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
     )
@@ -4230,7 +4231,7 @@ fn leading_image_node(
     let node = UiNode::image(
         name,
         image,
-        Style {
+        LayoutStyle::from_taffy_style(Style {
             size: TaffySize {
                 width: px(size),
                 height: px(size),
@@ -4241,7 +4242,7 @@ fn leading_image_node(
             },
             flex_shrink: 0.0,
             ..Default::default()
-        },
+        }),
     );
     if let Some(label) = label {
         node.with_accessibility(AccessibilityMeta::new(AccessibilityRole::Image).label(label))
@@ -5344,13 +5345,13 @@ mod tests {
                         format!("cell.{}.{}", cell.row, cell.column),
                         format!("{}:{}", cell.row, cell.column),
                         TextStyle::default(),
-                        Style {
+                        LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: Dimension::auto(),
                                 height: Dimension::auto(),
                             },
                             ..Default::default()
-                        },
+                        }),
                     ),
                 );
             },
@@ -5630,13 +5631,15 @@ mod tests {
                 focused_index: Some(0),
             },
             TabGroupOptions {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
                     size: TaffySize {
                         width: length(320.0),
                         height: length(180.0),
                     },
-                    ..TabGroupOptions::default().layout
-                },
+                    ..Default::default()
+                }),
                 selected_tab_shader: Some(ShaderEffect::new("ui.tab_selected")),
                 focused_tab_shader: Some(ShaderEffect::new("ui.tab_focused")),
                 panel_shader: Some(ShaderEffect::new("ui.panel")),
@@ -5649,13 +5652,13 @@ mod tests {
                         "selected_panel",
                         format!("tab {selected_index}"),
                         TextStyle::default(),
-                        Style {
+                        LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: Dimension::auto(),
                                 height: Dimension::auto(),
                             },
                             ..Default::default()
-                        },
+                        }),
                     ),
                 );
             },

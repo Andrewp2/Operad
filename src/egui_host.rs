@@ -808,8 +808,8 @@ mod tests {
     use crate::testing::AccessibilityResponseAssertions;
     use crate::{
         process_document_frame, ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy,
-        HostDocumentFrameRequest, HostFrameOutput, InputBehavior, RenderTarget, UiContent,
-        UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiSize,
+        HostDocumentFrameRequest, HostFrameOutput, InputBehavior, LayoutStyle, RenderTarget,
+        UiContent, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiSize,
     };
     use std::time::Duration;
     use taffy::prelude::{Dimension, Display, FlexDirection, Size as TaffySize, Style};
@@ -943,13 +943,13 @@ mod tests {
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::length(width),
                     height: Dimension::length(height),
                 },
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         }
     }
@@ -1175,7 +1175,7 @@ mod tests {
     #[test]
     fn translated_egui_events_feed_document_focus_routing() {
         let mut document = UiDocument::new(UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
                 size: TaffySize {
@@ -1183,7 +1183,7 @@ mod tests {
                     height: Dimension::length(80.0),
                 },
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         });
         let first = document.add_child(

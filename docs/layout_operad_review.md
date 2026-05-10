@@ -97,22 +97,23 @@ Without that, canvas nodes are only layout placeholders.
 
 ## Taffy Types Leak Through Core API
 
-The public API still takes and stores `taffy::Style` directly in `UiNodeStyle`
-and widget options.
+Status: addressed in the v3 branch.
 
-This is acceptable for the current spike, but it couples every consumer to
-Taffy's exact style model. If we later want Operad-owned layout types, every
-consumer view may need to be rewritten.
+`UiNodeStyle` and public widget option structs now store Operad-owned
+`LayoutStyle` values. Public node constructors accept `LayoutStyle`, and the
+layout helper module covers the common fixed/fill/flex/absolute/margin/padding
+cases that the repo's consumer probes and E2E rendering tests need.
 
-Recommended options:
+Core still uses Taffy internally as the layout backend and translates from
+`LayoutStyle` at document layout time. That keeps Taffy as an implementation
+choice rather than the primary application-facing style storage type.
 
-1. Keep exposing Taffy for the near term, but document that it is provisional.
-2. Add Operad-owned layout builder helpers around common cases.
-3. Eventually migrate public APIs to Operad layout types and translate to Taffy
-   internally.
+Remaining follow-up:
 
-The main risk is not Taffy itself. The risk is that product code starts depending
-on Taffy details everywhere.
+- Continue moving public length/alignment helpers toward Operad-owned enums and
+  scalar wrappers where that improves ergonomics.
+- Expand `LayoutStyle` builders only around real shared app needs, not every
+  Taffy field.
 
 ## Text Input Is Still Missing
 

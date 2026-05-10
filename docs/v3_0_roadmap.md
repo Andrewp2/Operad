@@ -325,9 +325,13 @@ The branch starts from Operad 2.0.0 plus:
 - Public `ColorRgba` contrast helpers compute alpha compositing, relative
   luminance, contrast ratios, contrast pass/fail checks, and highest-contrast
   foreground selection for theme, widget, audit, and snapshot code.
+- `UiNodeStyle` and widget option structs now store Operad-owned `LayoutStyle`
+  values. Core translates that owned type to Taffy internally, and public node
+  constructors plus screenshot/perf consumer probes use the `layout::*` helper
+  surface instead of raw Taffy style literals.
 - Operad-owned layout helper APIs in `src/lib.rs` cover common fixed, fill,
-  centered flex, absolute, gap, min/max size, flex item, and clipped node-style
-  shapes so consumers can use fewer raw Taffy struct literals.
+  row/column flex, centered/flex-start children, absolute, gap, margin, padding,
+  min/max size, flex item, and clipped node-style shapes.
 - Accessibility adapter contracts in `src/accessibility.rs` now include
   deterministic live-region snapshots, live-region diffing, and announcement
   queues that can be converted into supported screen-reader adapter requests,

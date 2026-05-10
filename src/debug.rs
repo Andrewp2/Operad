@@ -1197,8 +1197,8 @@ mod tests {
     use super::*;
     use crate::{
         length, ApproxTextMeasurer, ColorRgba, ComponentRole, ComponentState, ComponentStateSlot,
-        InputBehavior, RawWheelEvent, ScopedThemeRegistry, StrokeStyle, TextStyle, Theme,
-        ThemePatch, ThemeScope, ThemeScopeId, ThemeScopeKind, UiNode, UiNodeStyle, UiSize,
+        InputBehavior, LayoutStyle, RawWheelEvent, ScopedThemeRegistry, StrokeStyle, TextStyle,
+        Theme, ThemePatch, ThemeScope, ThemeScopeId, ThemeScopeKind, UiNode, UiNodeStyle, UiSize,
         UiVisual, WheelDeltaUnit, WheelPhase,
     };
     use taffy::prelude::{
@@ -1207,13 +1207,13 @@ mod tests {
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: length(width),
                     height: length(height),
                 },
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         }
     }
@@ -1225,7 +1225,7 @@ mod tests {
         height: f32,
     ) -> UiNodeStyle {
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 position: Position::Absolute,
                 inset: Rect {
                     left: LengthPercentageAuto::length(0.0),
@@ -1237,7 +1237,7 @@ mod tests {
                     height: length(height),
                 },
                 ..Default::default()
-            },
+            }),
             layer: Some(layer),
             z_index,
             ..Default::default()
@@ -1333,13 +1333,13 @@ mod tests {
                 "status",
                 "Ready",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)

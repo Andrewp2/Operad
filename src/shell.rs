@@ -12,8 +12,8 @@ use taffy::prelude::{
 
 use crate::{
     accessibility::FocusRestoreTarget, AccessibilityAction, AccessibilityMeta, AccessibilityRole,
-    AccessibilityValueRange, ClipBehavior, InputBehavior, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiPoint, UiRect, UiSize,
+    AccessibilityValueRange, ClipBehavior, InputBehavior, LayoutStyle, UiDocument, UiNode,
+    UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1488,7 +1488,7 @@ fn shell_node_style(rect: UiRect, origin: UiPoint) -> UiNodeStyle {
     let height = finite_nonnegative(rect.height);
 
     UiNodeStyle {
-        layout: Style {
+        layout: LayoutStyle::from_taffy_style(Style {
             position: Position::Absolute,
             inset: TaffyRect {
                 left: LengthPercentageAuto::length(x),
@@ -1501,7 +1501,7 @@ fn shell_node_style(rect: UiRect, origin: UiPoint) -> UiNodeStyle {
                 height: Dimension::length(height),
             },
             ..Default::default()
-        },
+        }),
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -2248,13 +2248,13 @@ mod tests {
                         format!("shell.panel.{}.label", panel.id),
                         panel.title.clone(),
                         TextStyle::default(),
-                        Style {
+                        LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: Dimension::auto(),
                                 height: Dimension::auto(),
                             },
                             ..Default::default()
-                        },
+                        }),
                     ),
                 );
             },

@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 use common::render_document;
 use operad::widgets::*;
 use operad::*;
-use taffy::prelude::{Dimension, Display, FlexDirection, Size as TaffySize, Style};
 
 const PERF_VIEWPORT: UiSize = UiSize::new(960.0, 540.0);
 
@@ -71,13 +70,7 @@ fn virtualized_table_layout_and_raster_smoke_stays_under_budget() {
                             color: ColorRgba::new(226, 232, 241, 255),
                             ..Default::default()
                         },
-                        Style {
-                            size: TaffySize {
-                                width: Dimension::auto(),
-                                height: Dimension::auto(),
-                            },
-                            ..Default::default()
-                        },
+                        layout::size(layout::auto(), layout::auto()),
                     ),
                 );
             },
@@ -412,8 +405,6 @@ fn scenario_harness_multi_frame_render_smoke_stays_under_budget() {
 fn perf_screen() -> UiDocument {
     let mut document = UiDocument::new(root_style(PERF_VIEWPORT.width, PERF_VIEWPORT.height));
     let root = document.root;
-    document.node_mut(root).style.layout.display = Display::Flex;
-    document.node_mut(root).style.layout.flex_direction = FlexDirection::Column;
     document.node_mut(root).visual = UiVisual::panel(
         ColorRgba::new(9, 12, 16, 255),
         Some(StrokeStyle::new(ColorRgba::new(34, 44, 56, 255), 1.0)),
@@ -430,15 +421,7 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
         UiNode::container(
             "perf.scenario.toolbar",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    size: TaffySize {
-                        width: length(920.0),
-                        height: length(42.0),
-                    },
-                    ..Default::default()
-                },
+                layout: layout::with_size(layout::row(), layout::px(920.0), layout::px(42.0)),
                 ..Default::default()
             },
         )
@@ -474,15 +457,7 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
         root,
         "perf.scenario.scroll",
         ScrollAxes::VERTICAL,
-        Style {
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            size: TaffySize {
-                width: length(920.0),
-                height: length(460.0),
-            },
-            ..Default::default()
-        },
+        layout::with_size(layout::column(), layout::px(920.0), layout::px(460.0)),
     );
 
     for row in 0..64 {
@@ -492,15 +467,7 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
             UiNode::container(
                 format!("perf.scenario.row.{row}"),
                 UiNodeStyle {
-                    layout: Style {
-                        display: Display::Flex,
-                        flex_direction: FlexDirection::Row,
-                        size: TaffySize {
-                            width: length(900.0),
-                            height: length(24.0),
-                        },
-                        ..Default::default()
-                    },
+                    layout: layout::with_size(layout::row(), layout::px(900.0), layout::px(24.0)),
                     ..Default::default()
                 },
             )
@@ -528,13 +495,7 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
                     color: ColorRgba::new(222, 229, 238, 255),
                     ..Default::default()
                 },
-                Style {
-                    size: TaffySize {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
-                },
+                layout::size(layout::auto(), layout::auto()),
             ),
         );
     }
@@ -564,12 +525,6 @@ fn retained_panel_paint(item_count: usize) -> PaintList {
     }
 }
 
-fn fixed_style(width: f32, height: f32) -> Style {
-    Style {
-        size: TaffySize {
-            width: length(width),
-            height: length(height),
-        },
-        ..Default::default()
-    }
+fn fixed_style(width: f32, height: f32) -> LayoutStyle {
+    layout::fixed(width, height)
 }

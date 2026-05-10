@@ -3970,22 +3970,23 @@ mod tests {
         ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy, CanvasRenderContext,
         CanvasRenderOutput, CanvasRenderRegistry, ClipBehavior, ColorRgba, DirtyRegionSet,
         HostDocumentFrameRequest, HostFrameOutput, HostInteractionState, ImageContent,
-        ImageRenderContext, ImageRenderOutput, ImageRenderRegistry, InputBehavior, PaintBatch,
-        PaintBatchKey, RawKeyboardEvent, RawWheelEvent, RenderFrameOutput, RenderFrameRequest,
-        RenderTarget, RenderTargetKind, RenderedImage, ResourceFormat, ScrollAxes, ShaderEffect,
-        StrokeStyle, TextStyle, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
+        ImageRenderContext, ImageRenderOutput, ImageRenderRegistry, InputBehavior, LayoutStyle,
+        PaintBatch, PaintBatchKey, RawKeyboardEvent, RawWheelEvent, RenderFrameOutput,
+        RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, ResourceFormat,
+        ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent, UiDocument, UiNode,
+        UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: length(width),
                     height: length(height),
                 },
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         }
     }
@@ -4035,13 +4036,13 @@ mod tests {
             UiNode::container(
                 "scroll",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(120.0),
                             height: length(48.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -4350,13 +4351,13 @@ mod tests {
                 "panel.label",
                 "Play",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         document
@@ -4893,13 +4894,13 @@ mod tests {
                 "choices.title",
                 "Choices",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             )
             .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label("Choices")),
         );
@@ -4909,13 +4910,13 @@ mod tests {
                 "choices.hint",
                 "Pick one option",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             )
             .with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::Tooltip).label("Pick one option"),
@@ -5370,13 +5371,13 @@ mod tests {
                 "panel.label",
                 "CPU",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         document.add_child(

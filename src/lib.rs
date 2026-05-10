@@ -1145,9 +1145,44 @@ impl ScrollState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutStyle {
+    style: Style,
+}
+
+impl LayoutStyle {
+    pub fn new() -> Self {
+        Self {
+            style: Style::default(),
+        }
+    }
+
+    pub(crate) fn from_taffy_style(style: Style) -> Self {
+        Self { style }
+    }
+
+    pub(crate) fn as_taffy_style(&self) -> &Style {
+        &self.style
+    }
+
+    pub(crate) fn as_taffy_style_mut(&mut self) -> &mut Style {
+        &mut self.style
+    }
+
+    pub fn is_absolute(&self) -> bool {
+        self.style.position == taffy::prelude::Position::Absolute
+    }
+}
+
+impl Default for LayoutStyle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UiNodeStyle {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub clip: ClipBehavior,
     pub opacity: f32,
     pub z_index: i16,
@@ -1157,7 +1192,7 @@ pub struct UiNodeStyle {
 impl Default for UiNodeStyle {
     fn default() -> Self {
         Self {
-            layout: Style::default(),
+            layout: LayoutStyle::default(),
             clip: ClipBehavior::None,
             opacity: 1.0,
             z_index: 0,
@@ -1204,7 +1239,7 @@ impl UiNode {
         name: impl Into<String>,
         text: impl Into<String>,
         text_style: TextStyle,
-        layout: Style,
+        layout: LayoutStyle,
     ) -> Self {
         Self {
             name: name.into(),
@@ -1225,7 +1260,7 @@ impl UiNode {
         }
     }
 
-    pub fn canvas(name: impl Into<String>, key: impl Into<String>, layout: Style) -> Self {
+    pub fn canvas(name: impl Into<String>, key: impl Into<String>, layout: LayoutStyle) -> Self {
         Self {
             name: name.into(),
             parent: None,
@@ -1250,7 +1285,7 @@ impl UiNode {
         }
     }
 
-    pub fn image(name: impl Into<String>, image: ImageContent, layout: Style) -> Self {
+    pub fn image(name: impl Into<String>, image: ImageContent, layout: LayoutStyle) -> Self {
         Self {
             name: name.into(),
             parent: None,
@@ -1270,7 +1305,11 @@ impl UiNode {
         }
     }
 
-    pub fn scene(name: impl Into<String>, primitives: Vec<ScenePrimitive>, layout: Style) -> Self {
+    pub fn scene(
+        name: impl Into<String>,
+        primitives: Vec<ScenePrimitive>,
+        layout: LayoutStyle,
+    ) -> Self {
         Self {
             name: name.into(),
             parent: None,
@@ -1880,13 +1919,15 @@ impl UiDocument {
         let taffy_node = if node.children.is_empty() {
             match &node.content {
                 UiContent::Text(text) => taffy.new_leaf_with_context(
-                    node.style.layout.clone(),
+                    node.style.layout.as_taffy_style().clone(),
                     MeasureContext::Text(text.clone()),
                 )?,
                 UiContent::Empty
                 | UiContent::Canvas(_)
                 | UiContent::Image(_)
-                | UiContent::Scene(_) => taffy.new_leaf(node.style.layout.clone())?,
+                | UiContent::Scene(_) => {
+                    taffy.new_leaf(node.style.layout.as_taffy_style().clone())?
+                }
             }
         } else {
             let children = node
@@ -1894,7 +1935,7 @@ impl UiDocument {
                 .iter()
                 .map(|child| self.build_taffy_subtree(*child, taffy, mapping))
                 .collect::<Result<Vec<_>, _>>()?;
-            taffy.new_with_children(node.style.layout.clone(), &children)?
+            taffy.new_with_children(node.style.layout.as_taffy_style().clone(), &children)?
         };
         mapping.insert(id, taffy_node);
         Ok(taffy_node)
@@ -3426,7 +3467,7 @@ pub mod widgets {
 
     #[derive(Debug, Clone)]
     pub struct ButtonOptions {
-        pub layout: Style,
+        pub layout: LayoutStyle,
         pub visual: UiVisual,
         pub pressed_visual: Option<UiVisual>,
         pub focused_visual: Option<UiVisual>,
@@ -3445,7 +3486,7 @@ pub mod widgets {
     }
 
     impl ButtonOptions {
-        pub fn new(layout: Style) -> Self {
+        pub fn new(layout: LayoutStyle) -> Self {
             Self {
                 layout,
                 ..Default::default()
@@ -3456,7 +3497,7 @@ pub mod widgets {
     impl Default for ButtonOptions {
         fn default() -> Self {
             Self {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     align_items: Some(AlignItems::Center),
                     justify_content: Some(JustifyContent::Center),
@@ -3465,7 +3506,7 @@ pub mod widgets {
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
                 visual: UiVisual::panel(
                     ColorRgba::new(36, 42, 52, 255),
                     Some(StrokeStyle::new(ColorRgba::new(74, 85, 104, 255), 1.0)),
@@ -3567,7 +3608,7 @@ pub mod widgets {
             let mut image_node = UiNode::image(
                 format!("{name}.image"),
                 image,
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(options.image_size.width),
                         height: length(options.image_size.height),
@@ -3577,7 +3618,7 @@ pub mod widgets {
                         ..taffy::prelude::Rect::length(0.0)
                     },
                     ..Default::default()
-                },
+                }),
             )
             .with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::Image).label(label.clone()),
@@ -3593,13 +3634,13 @@ pub mod widgets {
                 format!("{name}.label"),
                 label,
                 options.text_style,
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         button
@@ -3611,7 +3652,7 @@ pub mod widgets {
         name: impl Into<String>,
         text: impl Into<String>,
         style: TextStyle,
-        layout: Style,
+        layout: LayoutStyle,
     ) -> UiNodeId {
         let text = text.into();
         document.add_child(
@@ -3626,7 +3667,7 @@ pub mod widgets {
         parent: UiNodeId,
         name: impl Into<String>,
         axes: ScrollAxes,
-        layout: Style,
+        layout: LayoutStyle,
     ) -> UiNodeId {
         let name = name.into();
         document.add_child(
@@ -3671,7 +3712,7 @@ pub mod widgets {
 
     #[derive(Debug, Clone)]
     pub struct CheckboxOptions {
-        pub layout: Style,
+        pub layout: LayoutStyle,
         pub box_visual: UiVisual,
         pub checked_box_visual: Option<UiVisual>,
         pub disabled_box_visual: Option<UiVisual>,
@@ -3689,7 +3730,7 @@ pub mod widgets {
     impl Default for CheckboxOptions {
         fn default() -> Self {
             Self {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Row,
                     align_items: Some(AlignItems::Center),
@@ -3698,7 +3739,7 @@ pub mod widgets {
                         height: length(28.0),
                     },
                     ..Default::default()
-                },
+                }),
                 box_visual: UiVisual::panel(
                     ColorRgba::new(29, 35, 43, 255),
                     Some(StrokeStyle::new(ColorRgba::new(98, 113, 135, 255), 1.0)),
@@ -3788,7 +3829,7 @@ pub mod widgets {
             UiNode::container(
                 format!("{name}.box"),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(16.0),
                             height: length(16.0),
@@ -3800,7 +3841,7 @@ pub mod widgets {
                             bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
             )
@@ -3811,13 +3852,13 @@ pub mod widgets {
                 let mut check_node = UiNode::image(
                     format!("{name}.check"),
                     image,
-                    Style {
+                    LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(16.0),
                             height: length(16.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                 );
                 if let Some(shader) = options.check_shader {
                     check_node = check_node.with_shader(shader);
@@ -3838,13 +3879,13 @@ pub mod widgets {
                             stroke: StrokeStyle::new(options.check_color, 2.0),
                         },
                     ],
-                    Style {
+                    LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(16.0),
                             height: length(16.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                 );
                 if let Some(shader) = options.check_shader {
                     check_node = check_node.with_shader(shader);
@@ -3858,20 +3899,20 @@ pub mod widgets {
             format!("{name}.label"),
             label_text,
             options.text_style,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::auto(),
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
         );
         root
     }
 
     #[derive(Debug, Clone)]
     pub struct SliderOptions {
-        pub layout: Style,
+        pub layout: LayoutStyle,
         pub track_visual: UiVisual,
         pub fill_color: ColorRgba,
         pub thumb_visual: UiVisual,
@@ -3892,7 +3933,7 @@ pub mod widgets {
     impl Default for SliderOptions {
         fn default() -> Self {
             Self {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Row,
                     align_items: Some(AlignItems::Center),
@@ -3901,7 +3942,7 @@ pub mod widgets {
                         height: length(28.0),
                     },
                     ..Default::default()
-                },
+                }),
                 track_visual: UiVisual::panel(ColorRgba::new(42, 49, 58, 255), None, 3.0),
                 fill_color: ColorRgba::new(108, 180, 255, 255),
                 thumb_visual: UiVisual::panel(
@@ -4013,13 +4054,13 @@ pub mod widgets {
         let mut track_node = UiNode::container(
             format!("{name}.track"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: length(6.0),
                     },
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -4032,13 +4073,13 @@ pub mod widgets {
         let mut fill_node = UiNode::container(
             format!("{name}.fill"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::percent(t),
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                },
+                }),
                 ..Default::default()
             },
         )
@@ -4050,7 +4091,7 @@ pub mod widgets {
         let mut thumb_node = UiNode::container(
             format!("{name}.thumb"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(12.0),
                         height: length(12.0),
@@ -4062,7 +4103,7 @@ pub mod widgets {
                         bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
                     },
                     ..Default::default()
-                },
+                }),
                 z_index: 1,
                 ..Default::default()
             },
@@ -4768,7 +4809,7 @@ pub mod widgets {
 
     #[derive(Debug, Clone)]
     pub struct TextInputOptions {
-        pub layout: Style,
+        pub layout: LayoutStyle,
         pub visual: UiVisual,
         pub focused_visual: Option<UiVisual>,
         pub disabled_visual: Option<UiVisual>,
@@ -4790,14 +4831,14 @@ pub mod widgets {
                 ..Default::default()
             };
             Self {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(180.0),
                         height: length(30.0),
                     },
                     padding: taffy::prelude::Rect::length(6.0),
                     ..Default::default()
-                },
+                }),
                 visual: UiVisual::panel(
                     ColorRgba::new(18, 22, 28, 255),
                     Some(StrokeStyle::new(ColorRgba::new(72, 84, 104, 255), 1.0)),
@@ -4912,13 +4953,13 @@ pub mod widgets {
             format!("{name}.text"),
             display_text,
             style,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
         );
         root
     }
@@ -5289,7 +5330,7 @@ pub mod widgets {
 
     #[derive(Debug, Clone)]
     pub struct ComboBoxOptions {
-        pub layout: Style,
+        pub layout: LayoutStyle,
         pub visual: UiVisual,
         pub open_visual: Option<UiVisual>,
         pub disabled_visual: Option<UiVisual>,
@@ -5306,7 +5347,7 @@ pub mod widgets {
     impl Default for ComboBoxOptions {
         fn default() -> Self {
             Self {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Row,
                     align_items: Some(AlignItems::Center),
@@ -5316,7 +5357,7 @@ pub mod widgets {
                     },
                     padding: taffy::prelude::Rect::length(6.0),
                     ..Default::default()
-                },
+                }),
                 visual: UiVisual::panel(
                     ColorRgba::new(31, 37, 46, 255),
                     Some(StrokeStyle::new(ColorRgba::new(84, 98, 121, 255), 1.0)),
@@ -5450,7 +5491,7 @@ pub mod widgets {
             parent,
             name.clone(),
             ScrollAxes::VERTICAL,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -5458,7 +5499,7 @@ pub mod widgets {
                     height: length(spec.viewport_height),
                 },
                 ..Default::default()
-            },
+            }),
         );
         document.node_mut(list).accessibility = Some(
             AccessibilityMeta::new(AccessibilityRole::List)
@@ -5487,14 +5528,14 @@ pub mod widgets {
         UiNode::container(
             name,
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: length(height),
                     },
                     flex_shrink: 0.0,
                     ..Default::default()
-                },
+                }),
                 ..Default::default()
             },
         )
@@ -5519,7 +5560,7 @@ pub mod widgets {
             UiNode::container(
                 name.clone(),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         size: TaffySize {
@@ -5527,7 +5568,7 @@ pub mod widgets {
                             height: length(28.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -5550,14 +5591,14 @@ pub mod widgets {
                 format!("{name}.{}", column.id),
                 &column.label,
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(column.width),
                         height: Dimension::percent(1.0),
                     },
                     padding: taffy::prelude::Rect::length(4.0),
                     ..Default::default()
-                },
+                }),
             );
             document.node_mut(cell).accessibility = Some(
                 AccessibilityMeta::new(AccessibilityRole::GridCell)
@@ -5922,7 +5963,7 @@ impl AnimationMachine {
 
 pub fn root_style(width: f32, height: f32) -> UiNodeStyle {
     UiNodeStyle {
-        layout: Style {
+        layout: LayoutStyle::from_taffy_style(Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             size: TaffySize {
@@ -5930,7 +5971,7 @@ pub fn root_style(width: f32, height: f32) -> UiNodeStyle {
                 height: Dimension::length(height),
             },
             ..Default::default()
-        },
+        }),
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -5963,22 +6004,22 @@ pub mod layout {
         LengthPercentage::length(value)
     }
 
-    pub fn fixed(width: f32, height: f32) -> Style {
-        Style {
+    pub fn fixed(width: f32, height: f32) -> LayoutStyle {
+        LayoutStyle::from_taffy_style(Style {
             size: TaffySize {
                 width: px(width),
                 height: px(height),
             },
             ..Default::default()
-        }
+        })
     }
 
-    pub fn absolute(x: f32, y: f32, width: f32, height: f32) -> Style {
+    pub fn absolute(x: f32, y: f32, width: f32, height: f32) -> LayoutStyle {
         with_absolute_position(fixed(width, height), x, y)
     }
 
-    pub fn absolute_fill() -> Style {
-        Style {
+    pub fn absolute_fill() -> LayoutStyle {
+        LayoutStyle::from_taffy_style(Style {
             position: Position::Absolute,
             inset: Rect::length(0.0),
             size: TaffySize {
@@ -5986,121 +6027,163 @@ pub mod layout {
                 height: percent(1.0),
             },
             ..Default::default()
-        }
+        })
     }
 
-    pub fn size(width: Dimension, height: Dimension) -> Style {
-        Style {
+    pub fn size(width: Dimension, height: Dimension) -> LayoutStyle {
+        LayoutStyle::from_taffy_style(Style {
             size: TaffySize { width, height },
             ..Default::default()
-        }
+        })
     }
 
-    pub fn row() -> Style {
-        Style {
+    pub fn row() -> LayoutStyle {
+        LayoutStyle::from_taffy_style(Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Row,
             ..Default::default()
-        }
+        })
     }
 
-    pub fn column() -> Style {
-        Style {
+    pub fn column() -> LayoutStyle {
+        LayoutStyle::from_taffy_style(Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             ..Default::default()
-        }
+        })
     }
 
-    pub fn centered_row() -> Style {
+    pub fn centered_row() -> LayoutStyle {
         with_centered_children(row())
     }
 
-    pub fn centered_column() -> Style {
+    pub fn centered_column() -> LayoutStyle {
         with_centered_children(column())
     }
 
-    pub fn fill() -> Style {
+    pub fn fill() -> LayoutStyle {
         size(percent(1.0), percent(1.0))
     }
 
-    pub fn flex_item(grow: f32, shrink: f32, basis: Dimension) -> Style {
-        with_flex(Style::default(), grow, shrink, basis)
+    pub fn flex_item(grow: f32, shrink: f32, basis: Dimension) -> LayoutStyle {
+        with_flex(LayoutStyle::default(), grow, shrink, basis)
     }
 
-    pub fn with_size(mut style: Style, width: Dimension, height: Dimension) -> Style {
-        style.size = TaffySize { width, height };
+    pub fn with_size(mut style: LayoutStyle, width: Dimension, height: Dimension) -> LayoutStyle {
+        style.as_taffy_style_mut().size = TaffySize { width, height };
         style
     }
 
-    pub fn with_min_size(mut style: Style, width: Dimension, height: Dimension) -> Style {
-        style.min_size = TaffySize { width, height };
+    pub fn with_min_size(
+        mut style: LayoutStyle,
+        width: Dimension,
+        height: Dimension,
+    ) -> LayoutStyle {
+        style.as_taffy_style_mut().min_size = TaffySize { width, height };
         style
     }
 
-    pub fn with_max_size(mut style: Style, width: Dimension, height: Dimension) -> Style {
-        style.max_size = TaffySize { width, height };
+    pub fn with_max_size(
+        mut style: LayoutStyle,
+        width: Dimension,
+        height: Dimension,
+    ) -> LayoutStyle {
+        style.as_taffy_style_mut().max_size = TaffySize { width, height };
         style
     }
 
-    pub fn with_absolute_position(mut style: Style, x: f32, y: f32) -> Style {
-        style.position = Position::Absolute;
-        style.inset.left = LengthPercentageAuto::length(x);
-        style.inset.top = LengthPercentageAuto::length(y);
-        style.inset.right = LengthPercentageAuto::auto();
-        style.inset.bottom = LengthPercentageAuto::auto();
+    pub fn with_absolute_position(mut style: LayoutStyle, x: f32, y: f32) -> LayoutStyle {
+        let taffy_style = style.as_taffy_style_mut();
+        taffy_style.position = Position::Absolute;
+        taffy_style.inset.left = LengthPercentageAuto::length(x);
+        taffy_style.inset.top = LengthPercentageAuto::length(y);
+        taffy_style.inset.right = LengthPercentageAuto::auto();
+        taffy_style.inset.bottom = LengthPercentageAuto::auto();
         style
     }
 
-    pub fn with_flex(mut style: Style, grow: f32, shrink: f32, basis: Dimension) -> Style {
-        style.flex_grow = grow.max(0.0);
-        style.flex_shrink = shrink.max(0.0);
-        style.flex_basis = basis;
+    pub fn with_flex(
+        mut style: LayoutStyle,
+        grow: f32,
+        shrink: f32,
+        basis: Dimension,
+    ) -> LayoutStyle {
+        let taffy_style = style.as_taffy_style_mut();
+        taffy_style.flex_grow = grow.max(0.0);
+        taffy_style.flex_shrink = shrink.max(0.0);
+        taffy_style.flex_basis = basis;
         style
     }
 
-    pub fn with_centered_children(mut style: Style) -> Style {
-        style.align_items = Some(AlignItems::Center);
-        style.justify_content = Some(JustifyContent::Center);
+    pub fn with_centered_children(mut style: LayoutStyle) -> LayoutStyle {
+        let taffy_style = style.as_taffy_style_mut();
+        taffy_style.align_items = Some(AlignItems::Center);
+        taffy_style.justify_content = Some(JustifyContent::Center);
         style
     }
 
-    pub fn with_gap(mut style: Style, column_gap: f32, row_gap: f32) -> Style {
-        style.gap = TaffySize {
+    pub fn with_flex_start_children(mut style: LayoutStyle) -> LayoutStyle {
+        style.as_taffy_style_mut().align_items = Some(AlignItems::FlexStart);
+        style
+    }
+
+    pub fn with_gap(mut style: LayoutStyle, column_gap: f32, row_gap: f32) -> LayoutStyle {
+        style.as_taffy_style_mut().gap = TaffySize {
             width: spacing(column_gap.max(0.0)),
             height: spacing(row_gap.max(0.0)),
         };
         style
     }
 
-    pub fn with_gap_all(style: Style, value: f32) -> Style {
+    pub fn with_gap_all(style: LayoutStyle, value: f32) -> LayoutStyle {
         with_gap(style, value, value)
     }
 
-    pub fn with_margin_all(mut style: Style, value: f32) -> Style {
-        style.margin = Rect::length(value);
+    pub fn with_margin_all(mut style: LayoutStyle, value: f32) -> LayoutStyle {
+        style.as_taffy_style_mut().margin = Rect::length(value);
         style
     }
 
-    pub fn with_padding_all(mut style: Style, value: f32) -> Style {
-        style.padding = Rect::length(value);
+    pub fn with_margin_left(mut style: LayoutStyle, value: f32) -> LayoutStyle {
+        style.as_taffy_style_mut().margin.left = LengthPercentageAuto::length(value);
         style
     }
 
-    pub fn with_auto_horizontal_margin(mut style: Style) -> Style {
-        style.margin.left = LengthPercentageAuto::auto();
-        style.margin.right = LengthPercentageAuto::auto();
+    pub fn with_margin_right(mut style: LayoutStyle, value: f32) -> LayoutStyle {
+        style.as_taffy_style_mut().margin.right = LengthPercentageAuto::length(value);
         style
     }
 
-    pub fn node_style(layout: Style) -> UiNodeStyle {
+    pub fn with_margin_top(mut style: LayoutStyle, value: f32) -> LayoutStyle {
+        style.as_taffy_style_mut().margin.top = LengthPercentageAuto::length(value);
+        style
+    }
+
+    pub fn with_margin_bottom(mut style: LayoutStyle, value: f32) -> LayoutStyle {
+        style.as_taffy_style_mut().margin.bottom = LengthPercentageAuto::length(value);
+        style
+    }
+
+    pub fn with_padding_all(mut style: LayoutStyle, value: f32) -> LayoutStyle {
+        style.as_taffy_style_mut().padding = Rect::length(value);
+        style
+    }
+
+    pub fn with_auto_horizontal_margin(mut style: LayoutStyle) -> LayoutStyle {
+        let taffy_style = style.as_taffy_style_mut();
+        taffy_style.margin.left = LengthPercentageAuto::auto();
+        taffy_style.margin.right = LengthPercentageAuto::auto();
+        style
+    }
+
+    pub fn node_style(layout: LayoutStyle) -> UiNodeStyle {
         UiNodeStyle {
             layout,
             ..Default::default()
         }
     }
 
-    pub fn clipped_node_style(layout: Style) -> UiNodeStyle {
+    pub fn clipped_node_style(layout: LayoutStyle) -> UiNodeStyle {
         UiNodeStyle {
             layout,
             clip: ClipBehavior::Clip,
@@ -6626,13 +6709,13 @@ mod tests {
 
     fn button_style(width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: length(width),
                     height: length(height),
                 },
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         }
     }
@@ -6640,39 +6723,46 @@ mod tests {
     #[test]
     fn layout_helpers_cover_common_taffy_shapes() {
         let absolute = layout::absolute(12.0, 18.0, 80.0, 40.0);
-        assert_eq!(absolute.position, Position::Absolute);
-        assert_eq!(absolute.inset.left, LengthPercentageAuto::length(12.0));
-        assert_eq!(absolute.inset.top, LengthPercentageAuto::length(18.0));
-        assert_eq!(absolute.inset.right, LengthPercentageAuto::auto());
-        assert_eq!(absolute.size.width, layout::px(80.0));
-        assert_eq!(absolute.size.height, layout::px(40.0));
+        let absolute_taffy = absolute.as_taffy_style();
+        assert_eq!(absolute_taffy.position, Position::Absolute);
+        assert_eq!(
+            absolute_taffy.inset.left,
+            LengthPercentageAuto::length(12.0)
+        );
+        assert_eq!(absolute_taffy.inset.top, LengthPercentageAuto::length(18.0));
+        assert_eq!(absolute_taffy.inset.right, LengthPercentageAuto::auto());
+        assert_eq!(absolute_taffy.size.width, layout::px(80.0));
+        assert_eq!(absolute_taffy.size.height, layout::px(40.0));
 
         let centered = layout::with_gap_all(layout::centered_row(), 6.0);
-        assert_eq!(centered.display, Display::Flex);
-        assert_eq!(centered.flex_direction, FlexDirection::Row);
-        assert_eq!(centered.align_items, Some(AlignItems::Center));
-        assert_eq!(centered.justify_content, Some(JustifyContent::Center));
-        assert_eq!(centered.gap.width, layout::spacing(6.0));
-        assert_eq!(centered.gap.height, layout::spacing(6.0));
+        let centered_taffy = centered.as_taffy_style();
+        assert_eq!(centered_taffy.display, Display::Flex);
+        assert_eq!(centered_taffy.flex_direction, FlexDirection::Row);
+        assert_eq!(centered_taffy.align_items, Some(AlignItems::Center));
+        assert_eq!(centered_taffy.justify_content, Some(JustifyContent::Center));
+        assert_eq!(centered_taffy.gap.width, layout::spacing(6.0));
+        assert_eq!(centered_taffy.gap.height, layout::spacing(6.0));
 
         let flex = layout::flex_item(2.0, 0.5, layout::px(64.0));
-        assert_eq!(flex.flex_grow, 2.0);
-        assert_eq!(flex.flex_shrink, 0.5);
-        assert_eq!(flex.flex_basis, layout::px(64.0));
+        let flex_taffy = flex.as_taffy_style();
+        assert_eq!(flex_taffy.flex_grow, 2.0);
+        assert_eq!(flex_taffy.flex_shrink, 0.5);
+        assert_eq!(flex_taffy.flex_basis, layout::px(64.0));
 
         let constrained = layout::with_max_size(
             layout::with_min_size(layout::fill(), layout::px(120.0), layout::px(40.0)),
             layout::px(240.0),
             layout::auto(),
         );
-        assert_eq!(constrained.min_size.width, layout::px(120.0));
-        assert_eq!(constrained.min_size.height, layout::px(40.0));
-        assert_eq!(constrained.max_size.width, layout::px(240.0));
-        assert_eq!(constrained.max_size.height, layout::auto());
+        let constrained_taffy = constrained.as_taffy_style();
+        assert_eq!(constrained_taffy.min_size.width, layout::px(120.0));
+        assert_eq!(constrained_taffy.min_size.height, layout::px(40.0));
+        assert_eq!(constrained_taffy.max_size.width, layout::px(240.0));
+        assert_eq!(constrained_taffy.max_size.height, layout::auto());
 
         let node_style = layout::clipped_node_style(absolute);
         assert_eq!(node_style.clip, ClipBehavior::Clip);
-        assert_eq!(node_style.layout.position, Position::Absolute);
+        assert!(node_style.layout.is_absolute());
     }
 
     #[test]
@@ -6701,7 +6791,7 @@ mod tests {
             UiNode::container(
                 "hotbar",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(360.0),
                             height: length(64.0),
@@ -6713,7 +6803,7 @@ mod tests {
                             bottom: LengthPercentageAuto::length(18.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -6743,13 +6833,13 @@ mod tests {
                 "label",
                 "Inventory",
                 text_style,
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
@@ -6770,7 +6860,12 @@ mod tests {
             .expect("layout");
         assert_eq!(doc.node(child).layout.rect.width, 80.0);
 
-        doc.node_mut(child).style.layout.size.width = length(120.0);
+        doc.node_mut(child)
+            .style
+            .layout
+            .as_taffy_style_mut()
+            .size
+            .width = length(120.0);
         doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
@@ -6814,13 +6909,13 @@ mod tests {
             UiNode::container(
                 "clip",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(100.0),
                             height: length(100.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -6831,13 +6926,13 @@ mod tests {
             UiNode::container(
                 "oversized_button",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(160.0),
                             height: length(80.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
             )
@@ -6887,13 +6982,13 @@ mod tests {
             UiNode::container(
                 "under",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(100.0),
                             height: length(100.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     z_index: 5,
                     ..Default::default()
                 },
@@ -6905,7 +7000,7 @@ mod tests {
             UiNode::container(
                 "overlay",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(100.0),
                             height: length(100.0),
@@ -6915,7 +7010,7 @@ mod tests {
                             ..Rect::length(0.0)
                         },
                         ..Default::default()
-                    },
+                    }),
                     z_index: 10,
                     ..Default::default()
                 },
@@ -6941,7 +7036,7 @@ mod tests {
             UiNode::container(
                 "app_overlay",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         position: Position::Absolute,
                         inset: Rect {
                             left: LengthPercentageAuto::length(0.0),
@@ -6953,7 +7048,7 @@ mod tests {
                             height: length(100.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     layer: Some(platform::UiLayer::AppOverlay),
                     z_index: platform::LAYER_LOCAL_Z_MAX,
                     ..Default::default()
@@ -6967,7 +7062,7 @@ mod tests {
             UiNode::container(
                 "debug_overlay",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         position: Position::Absolute,
                         inset: Rect {
                             left: LengthPercentageAuto::length(0.0),
@@ -6979,7 +7074,7 @@ mod tests {
                             height: length(100.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     layer: Some(platform::UiLayer::DebugOverlay),
                     z_index: platform::LAYER_LOCAL_Z_MIN,
                     ..Default::default()
@@ -7017,13 +7112,13 @@ mod tests {
             UiNode::container(
                 "events",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(100.0),
                             height: length(60.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7061,13 +7156,13 @@ mod tests {
             UiNode::container(
                 "scroll",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(100.0),
                             height: length(60.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7098,13 +7193,13 @@ mod tests {
             UiNode::container(
                 "scroll",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(100.0),
                             height: length(60.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7157,13 +7252,13 @@ mod tests {
             UiNode::container(
                 "scroll",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(60.0),
                             height: length(50.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7201,13 +7296,13 @@ mod tests {
             UiNode::container(
                 "scroll",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(80.0),
                             height: length(50.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7252,13 +7347,13 @@ mod tests {
             UiNode::container(
                 "scroll",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(80.0),
                             height: length(50.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7491,13 +7586,13 @@ mod tests {
                 "hidden_label",
                 "Hidden label",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(80.0),
                         height: length(20.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         let related_label = doc.add_child(
@@ -7506,13 +7601,13 @@ mod tests {
                 "related_label",
                 "Related label",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(100.0),
                         height: length(20.0),
                     },
                     ..Default::default()
-                },
+                }),
             )
             .with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::Label).label("Related label"),
@@ -7904,13 +7999,13 @@ mod tests {
             UiNode::container(
                 "scroll",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(100.0),
                             height: length(60.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7951,13 +8046,13 @@ mod tests {
                 "label",
                 "Gain",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         let _canvas = doc.add_child(
@@ -7965,13 +8060,13 @@ mod tests {
             UiNode::canvas(
                 "editor_surface",
                 "app.editor_surface",
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(100.0),
                         height: length(50.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         doc.compute_layout(UiSize::new(240.0, 120.0), &mut ApproxTextMeasurer)
@@ -8012,13 +8107,13 @@ mod tests {
                         stroke: None,
                     },
                 ],
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(80.0),
                         height: length(60.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         doc.compute_layout(UiSize::new(120.0, 80.0), &mut ApproxTextMeasurer)
@@ -8103,13 +8198,13 @@ mod tests {
                             .align(ImageAlignment::End, ImageAlignment::Start),
                     ),
                 ],
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(120.0),
                         height: length(90.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         doc.compute_layout(UiSize::new(140.0, 100.0), &mut ApproxTextMeasurer)
@@ -8183,13 +8278,13 @@ mod tests {
             UiNode::image(
                 "icon",
                 ImageContent::new("icons.play").tinted(ColorRgba::new(120, 180, 255, 255)),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(24.0),
                         height: length(24.0),
                     },
                     ..Default::default()
-                },
+                }),
             )
             .with_shader(ShaderEffect::new("ui.glow").uniform("intensity", 0.5)),
         );
@@ -8221,13 +8316,13 @@ mod tests {
             UiNode::image(
                 "icon",
                 ImageContent::new("icons.play").tinted(ColorRgba::new(120, 180, 255, 255)),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(24.0),
                         height: length(24.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         doc.add_child(
@@ -8238,13 +8333,13 @@ mod tests {
                     PaintImage::new("thumbs.lot", UiRect::new(4.0, 6.0, 32.0, 20.0))
                         .fit(ImageFit::Contain),
                 )],
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(48.0),
                         height: length(32.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         doc.add_child(
@@ -8252,13 +8347,13 @@ mod tests {
             UiNode::canvas(
                 "mask",
                 "fabricad.mask.viewport",
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(80.0),
                         height: length(48.0),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
         doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
@@ -8316,13 +8411,13 @@ mod tests {
                 "play.name",
                 "Play",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             )
             .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label("Play")),
         );
@@ -8332,13 +8427,13 @@ mod tests {
                 "play.hint",
                 "Starts transport",
                 TextStyle::default(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             )
             .with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::Tooltip).label("Starts transport"),
@@ -8597,7 +8692,7 @@ mod tests {
             UiNode::container(
                 "inventory_panel",
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         align_items: Some(AlignItems::Center),
                         justify_content: Some(JustifyContent::Center),
                         position: Position::Relative,
@@ -8606,7 +8701,7 @@ mod tests {
                             height: length(80.0),
                         },
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
             )
@@ -8682,13 +8777,13 @@ mod tests {
             root,
             "play",
             "Play",
-            widgets::ButtonOptions::new(Style {
+            widgets::ButtonOptions::new(LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: length(80.0),
                     height: length(32.0),
                 },
                 ..Default::default()
-            }),
+            })),
         );
         doc.compute_layout(UiSize::new(200.0, 80.0), &mut ApproxTextMeasurer)
             .expect("layout");
@@ -8714,13 +8809,13 @@ mod tests {
             "render",
             "Render",
             widgets::ButtonOptions {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(96.0),
                         height: length(32.0),
                     },
                     ..Default::default()
-                },
+                }),
                 leading_image: Some(ImageContent::new("icons.render")),
                 image_shader: Some(ShaderEffect::new("ui.icon_mask")),
                 shader: Some(ShaderEffect::new("ui.disabled")),
@@ -8762,26 +8857,26 @@ mod tests {
             "title",
             "Oscillator",
             TextStyle::default(),
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::auto(),
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
         );
         let scroll = widgets::scroll_area(
             &mut doc,
             root,
             "modulation_matrix",
             ScrollAxes::BOTH,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: length(160.0),
                     height: length(60.0),
                 },
                 ..Default::default()
-            },
+            }),
         );
         let checkbox = widgets::checkbox(
             &mut doc,
@@ -9445,13 +9540,13 @@ mod tests {
                         format!("row.{row}"),
                         format!("Event {row}"),
                         TextStyle::default(),
-                        Style {
+                        LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: Dimension::percent(1.0),
                                 height: length(20.0),
                             },
                             ..Default::default()
-                        },
+                        }),
                     )
                     .with_input(InputBehavior::BUTTON),
                 );
@@ -9504,13 +9599,13 @@ mod tests {
                         format!("row.{row}"),
                         format!("Event {row}"),
                         TextStyle::default(),
-                        Style {
+                        LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: Dimension::percent(1.0),
                                 height: length(20.0),
                             },
                             ..Default::default()
-                        },
+                        }),
                     ),
                 );
             },

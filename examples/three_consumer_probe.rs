@@ -1,11 +1,7 @@
 use operad::{
-    length, root_style, ApproxTextMeasurer, ClipBehavior, ColorRgba, InputBehavior, ScrollAxes,
+    layout, root_style, ApproxTextMeasurer, ClipBehavior, ColorRgba, InputBehavior, ScrollAxes,
     StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeStyle, UiPoint, UiSize,
     UiVisual,
-};
-use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentageAuto, Rect,
-    Size as TaffySize, Style,
 };
 
 fn main() {
@@ -38,23 +34,14 @@ fn build_game_hud() -> UiDocument {
         UiNode::container(
             "game.hotbar",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    align_items: Some(AlignItems::Center),
-                    justify_content: Some(JustifyContent::Center),
-                    size: TaffySize {
-                        width: length(360.0),
-                        height: length(64.0),
-                    },
-                    margin: Rect {
-                        left: LengthPercentageAuto::auto(),
-                        right: LengthPercentageAuto::auto(),
-                        top: LengthPercentageAuto::auto(),
-                        bottom: LengthPercentageAuto::length(18.0),
-                    },
-                    ..Default::default()
-                },
+                layout: layout::with_margin_bottom(
+                    layout::with_auto_horizontal_margin(layout::with_size(
+                        layout::centered_row(),
+                        layout::px(360.0),
+                        layout::px(64.0),
+                    )),
+                    18.0,
+                ),
                 clip: ClipBehavior::Clip,
                 z_index: 10,
                 ..Default::default()
@@ -73,14 +60,7 @@ fn build_game_hud() -> UiDocument {
             UiNode::container(
                 format!("game.hotbar.slot.{slot}"),
                 UiNodeStyle {
-                    layout: Style {
-                        size: TaffySize {
-                            width: length(36.0),
-                            height: length(36.0),
-                        },
-                        margin: Rect::length(4.0),
-                        ..Default::default()
-                    },
+                    layout: layout::with_margin_all(layout::fixed(36.0, 36.0), 4.0),
                     ..Default::default()
                 },
             )
@@ -103,15 +83,7 @@ fn build_fabricad_panel() -> UiDocument {
         UiNode::container(
             "fabricad.sidebar.modules",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: TaffySize {
-                        width: length(260.0),
-                        height: length(220.0),
-                    },
-                    ..Default::default()
-                },
+                layout: layout::with_size(layout::column(), layout::px(260.0), layout::px(220.0)),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -131,13 +103,7 @@ fn build_fabricad_panel() -> UiDocument {
                 format!("fabricad.module.{row}"),
                 format!("Layer module {row}"),
                 TextStyle::default(),
-                Style {
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: length(32.0),
-                    },
-                    ..Default::default()
-                },
+                layout::size(layout::percent(1.0), layout::px(32.0)),
             )
             .with_input(InputBehavior::BUTTON),
         );
@@ -158,15 +124,11 @@ fn build_orbifold_editor() -> UiDocument {
         UiNode::container(
             "orbifold.shell",
             UiNodeStyle {
-                layout: Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
+                layout: layout::with_size(
+                    layout::column(),
+                    layout::percent(1.0),
+                    layout::percent(1.0),
+                ),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -179,13 +141,7 @@ fn build_orbifold_editor() -> UiDocument {
             "orbifold.transport",
             "Transport",
             TextStyle::default(),
-            Style {
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: length(32.0),
-                },
-                ..Default::default()
-            },
+            layout::size(layout::percent(1.0), layout::px(32.0)),
         )
         .with_visual(UiVisual::panel(
             ColorRgba::new(30, 36, 44, 255),
@@ -198,13 +154,7 @@ fn build_orbifold_editor() -> UiDocument {
         UiNode::canvas(
             "orbifold.piano_roll",
             "orbifold.piano_roll.display_list_surface",
-            Style {
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: length(260.0),
-                },
-                ..Default::default()
-            },
+            layout::size(layout::percent(1.0), layout::px(260.0)),
         )
         .with_visual(UiVisual::panel(
             ColorRgba::new(16, 19, 23, 255),

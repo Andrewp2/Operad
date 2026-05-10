@@ -11,9 +11,9 @@ use crate::accessibility::{
 use crate::{
     length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, AccessibilityValueRange,
     AnimatedValues, AnimationMachine, AnimationState, AnimationTransition, AnimationTrigger,
-    ClipBehavior, ColorRgba, ImageContent, InputBehavior, ScenePrimitive, ShaderEffect,
-    StrokeStyle, TextStyle, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize,
-    UiVisual,
+    ClipBehavior, ColorRgba, ImageContent, InputBehavior, LayoutStyle, ScenePrimitive,
+    ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint,
+    UiRect, UiSize, UiVisual,
 };
 
 const DEFAULT_SURFACE_BG: ColorRgba = ColorRgba::new(24, 29, 36, 255);
@@ -212,7 +212,7 @@ impl Default for SplitPaneState {
 
 #[derive(Debug, Clone)]
 pub struct SplitPaneOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub handle_thickness: f32,
     pub root_visual: UiVisual,
     pub pane_visual: UiVisual,
@@ -222,14 +222,14 @@ pub struct SplitPaneOptions {
 impl Default for SplitPaneOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            },
+            }),
             handle_thickness: 6.0,
             root_visual: UiVisual::TRANSPARENT,
             pane_visual: UiVisual::TRANSPARENT,
@@ -338,7 +338,7 @@ impl ProgressIndicatorValue {
 
 #[derive(Debug, Clone)]
 pub struct ProgressIndicatorOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub kind: ProgressIndicatorKind,
     pub track_visual: UiVisual,
     pub fill_visual: UiVisual,
@@ -351,13 +351,13 @@ pub struct ProgressIndicatorOptions {
 impl Default for ProgressIndicatorOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: length(8.0),
                 },
                 ..Default::default()
-            },
+            }),
             kind: ProgressIndicatorKind::Progress,
             track_visual: UiVisual::panel(DEFAULT_SURFACE_BG, None, 3.0),
             fill_visual: UiVisual::panel(DEFAULT_ACCENT, None, 3.0),
@@ -409,13 +409,13 @@ pub fn progress_indicator(
     let mut fill = UiNode::container(
         format!("{name}.fill"),
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(value.normalized().unwrap_or(0.0)),
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
     )
@@ -441,8 +441,11 @@ pub fn split_pane(
 ) -> SplitPaneNodes {
     let name = name.into();
     let mut layout = options.layout;
-    layout.display = Display::Flex;
-    layout.flex_direction = axis.flex_direction();
+    {
+        let layout = layout.as_taffy_style_mut();
+        layout.display = Display::Flex;
+        layout.flex_direction = axis.flex_direction();
+    }
 
     let root = document.add_child(
         parent,
@@ -526,7 +529,7 @@ fn split_pane_child_style(axis: SplitAxis, grow: f32, min_extent: f32) -> UiNode
         layout.min_size.height = length(min_extent.max(0.0));
     }
     UiNodeStyle {
-        layout,
+        layout: LayoutStyle::from_taffy_style(layout),
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -566,11 +569,11 @@ fn split_pane_handle_style(axis: SplitAxis, thickness: f32) -> UiNodeStyle {
         }
     };
     UiNodeStyle {
-        layout: Style {
+        layout: LayoutStyle::from_taffy_style(Style {
             flex_shrink: 0.0,
             size,
             ..Default::default()
-        },
+        }),
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -709,7 +712,7 @@ impl DockPanelDescriptor {
 
 #[derive(Debug, Clone)]
 pub struct DockWorkspaceOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub panel_visual: UiVisual,
     pub center_visual: UiVisual,
     pub resize_handle_visual: UiVisual,
@@ -722,7 +725,7 @@ pub struct DockWorkspaceOptions {
 impl Default for DockWorkspaceOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -730,7 +733,7 @@ impl Default for DockWorkspaceOptions {
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            },
+            }),
             panel_visual: UiVisual::panel(
                 DEFAULT_SURFACE_BG,
                 Some(StrokeStyle::new(DEFAULT_SURFACE_STROKE, 1.0)),
@@ -807,7 +810,7 @@ pub fn dock_workspace(
         UiNode::container(
             format!("{name}.body"),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Row,
                     flex_grow: 1.0,
@@ -818,7 +821,7 @@ pub fn dock_workspace(
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -898,7 +901,7 @@ fn add_dock_panel(
             UiNode::container(
                 format!("{workspace_name}.panel.{}.title", panel.id),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         align_items: Some(AlignItems::Center),
@@ -909,7 +912,7 @@ fn add_dock_panel(
                         padding: Rect::length(4.0),
                         flex_shrink: 0.0,
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
             ),
@@ -920,7 +923,7 @@ fn add_dock_panel(
                 UiNode::image(
                     format!("{workspace_name}.panel.{}.title.image", panel.id),
                     image.clone(),
-                    Style {
+                    LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: length(options.title_image_size.width),
                             height: length(options.title_image_size.height),
@@ -931,7 +934,7 @@ fn add_dock_panel(
                         },
                         flex_shrink: 0.0,
                         ..Default::default()
-                    },
+                    }),
                 )
                 .with_accessibility(
                     AccessibilityMeta::new(AccessibilityRole::Image).label(panel.title.clone()),
@@ -945,13 +948,13 @@ fn add_dock_panel(
                     format!("{workspace_name}.panel.{}.title.label", panel.id),
                     panel.title.clone(),
                     options.title_style.clone(),
-                    Style {
+                    LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: Dimension::percent(1.0),
                             height: Dimension::auto(),
                         },
                         ..Default::default()
-                    },
+                    }),
                 )
                 .with_accessibility(
                     AccessibilityMeta::new(AccessibilityRole::Label).label(panel.title.clone()),
@@ -968,7 +971,7 @@ fn add_dock_panel(
         UiNode::container(
             format!("{workspace_name}.panel.{}.content", panel.id),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Column,
                     flex_grow: 1.0,
@@ -979,7 +982,7 @@ fn add_dock_panel(
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                },
+                }),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -1034,7 +1037,7 @@ fn dock_panel_style(panel: &DockPanelDescriptor) -> UiNodeStyle {
         }
     }
     UiNodeStyle {
-        layout,
+        layout: LayoutStyle::from_taffy_style(layout),
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -1087,12 +1090,12 @@ fn add_dock_resize_handle(
         UiNode::container(
             format!("{workspace_name}.panel.{}.resize", panel.id),
             UiNodeStyle {
-                layout: Style {
+                layout: LayoutStyle::from_taffy_style(Style {
                     position: Position::Absolute,
                     inset,
                     size,
                     ..Default::default()
-                },
+                }),
                 z_index: 1,
                 ..Default::default()
             },
@@ -1983,7 +1986,7 @@ impl Default for ToastStack {
 
 #[derive(Debug, Clone)]
 pub struct ToastStackOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub info_visual: UiVisual,
     pub success_visual: UiVisual,
     pub warning_visual: UiVisual,
@@ -1997,7 +2000,7 @@ pub struct ToastStackOptions {
 impl Default for ToastStackOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 align_items: Some(AlignItems::FlexEnd),
@@ -2006,7 +2009,7 @@ impl Default for ToastStackOptions {
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
             info_visual: UiVisual::panel(
                 ColorRgba::new(31, 39, 50, 245),
                 Some(StrokeStyle::new(DEFAULT_SURFACE_STROKE, 1.0)),
@@ -2096,7 +2099,7 @@ fn add_toast_node(
     let mut root_node = UiNode::container(
         format!("{stack_name}.toast.{}", toast.id.0),
         UiNodeStyle {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 size: TaffySize {
@@ -2109,7 +2112,7 @@ fn add_toast_node(
                     ..Rect::length(0.0)
                 },
                 ..Default::default()
-            },
+            }),
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -2130,7 +2133,7 @@ fn add_toast_node(
             UiNode::container(
                 format!("{stack_name}.toast.{}.header", toast.id.0),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         align_items: Some(AlignItems::Center),
@@ -2139,7 +2142,7 @@ fn add_toast_node(
                             height: Dimension::auto(),
                         },
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
             ),
@@ -2149,7 +2152,7 @@ fn add_toast_node(
             UiNode::image(
                 format!("{stack_name}.toast.{}.icon", toast.id.0),
                 icon.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(18.0),
                         height: length(18.0),
@@ -2160,7 +2163,7 @@ fn add_toast_node(
                     },
                     flex_shrink: 0.0,
                     ..Default::default()
-                },
+                }),
             )
             .with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::Image)
@@ -2177,13 +2180,13 @@ fn add_toast_node(
             format!("{stack_name}.toast.{}.title", toast.id.0),
             toast.title.clone(),
             options.title_style.clone(),
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
                 ..Default::default()
-            },
+            }),
         )
         .with_accessibility(
             AccessibilityMeta::new(AccessibilityRole::Label).label(toast.title.clone()),
@@ -2196,13 +2199,13 @@ fn add_toast_node(
                 format!("{stack_name}.toast.{}.body", toast.id.0),
                 body.clone(),
                 options.body_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
     }
@@ -2212,7 +2215,7 @@ fn add_toast_node(
             UiNode::container(
                 format!("{stack_name}.toast.{}.actions", toast.id.0),
                 UiNodeStyle {
-                    layout: Style {
+                    layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
                         flex_direction: FlexDirection::Row,
                         size: TaffySize {
@@ -2224,7 +2227,7 @@ fn add_toast_node(
                             ..Rect::length(0.0)
                         },
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
             ),
@@ -2235,7 +2238,7 @@ fn add_toast_node(
                 UiNode::container(
                     format!("{stack_name}.toast.{}.action.{}", toast.id.0, action.id),
                     UiNodeStyle {
-                        layout: Style {
+                        layout: LayoutStyle::from_taffy_style(Style {
                             display: Display::Flex,
                             size: TaffySize {
                                 width: Dimension::auto(),
@@ -2247,7 +2250,7 @@ fn add_toast_node(
                                 ..Rect::length(0.0)
                             },
                             ..Default::default()
-                        },
+                        }),
                         clip: ClipBehavior::Clip,
                         ..Default::default()
                     },
@@ -2270,13 +2273,13 @@ fn add_toast_node(
                     ),
                     action.label.clone(),
                     options.body_style.clone(),
-                    Style {
+                    LayoutStyle::from_taffy_style(Style {
                         size: TaffySize {
                             width: Dimension::auto(),
                             height: Dimension::auto(),
                         },
                         ..Default::default()
-                    },
+                    }),
                 ),
             );
         }
@@ -2455,7 +2458,7 @@ fn format_ruler_label(value: f64) -> String {
 
 #[derive(Debug, Clone)]
 pub struct TimelineRulerOptions {
-    pub layout: Style,
+    pub layout: LayoutStyle,
     pub height: f32,
     pub background_visual: UiVisual,
     pub major_stroke: StrokeStyle,
@@ -2469,13 +2472,13 @@ pub struct TimelineRulerOptions {
 impl Default for TimelineRulerOptions {
     fn default() -> Self {
         Self {
-            layout: Style {
+            layout: LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: length(32.0),
                 },
                 ..Default::default()
-            },
+            }),
             height: 32.0,
             background_visual: UiVisual::panel(
                 ColorRgba::new(20, 24, 30, 255),
@@ -2516,7 +2519,7 @@ pub fn timeline_ruler(
     } else {
         0.0
     };
-    layout.size.height = length(height);
+    layout.as_taffy_style_mut().size.height = length(height);
     let range = spec.range.ordered();
     let mut root_node = UiNode::container(
         name.clone(),
@@ -2576,14 +2579,14 @@ pub fn timeline_ruler(
         UiNode::scene(
             format!("{name}.ticks"),
             primitives,
-            Style {
+            LayoutStyle::from_taffy_style(Style {
                 position: Position::Absolute,
                 size: TaffySize {
                     width: length(scene_width),
                     height: length(height),
                 },
                 ..Default::default()
-            },
+            }),
         ),
     );
 
@@ -2597,7 +2600,7 @@ pub fn timeline_ruler(
                 format!("{name}.label.{}", tick.value),
                 tick.label.clone().unwrap_or_default(),
                 options.label_style.clone(),
-                Style {
+                LayoutStyle::from_taffy_style(Style {
                     position: Position::Absolute,
                     inset,
                     size: TaffySize {
@@ -2605,7 +2608,7 @@ pub fn timeline_ruler(
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                },
+                }),
             ),
         );
     }
@@ -2719,13 +2722,13 @@ mod tests {
                         "left.label",
                         "Left",
                         TextStyle::default(),
-                        Style {
+                        LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: Dimension::auto(),
                                 height: Dimension::auto(),
                             },
                             ..Default::default()
-                        },
+                        }),
                     ),
                 );
             },
@@ -2736,13 +2739,13 @@ mod tests {
                         "right.label",
                         "Right",
                         TextStyle::default(),
-                        Style {
+                        LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: Dimension::auto(),
                                 height: Dimension::auto(),
                             },
                             ..Default::default()
-                        },
+                        }),
                     ),
                 );
             },
@@ -2792,13 +2795,13 @@ mod tests {
                         format!("{}.body", panel.id),
                         panel.id.clone(),
                         TextStyle::default(),
-                        Style {
+                        LayoutStyle::from_taffy_style(Style {
                             size: TaffySize {
                                 width: Dimension::auto(),
                                 height: Dimension::auto(),
                             },
                             ..Default::default()
-                        },
+                        }),
                     ),
                 );
             },
