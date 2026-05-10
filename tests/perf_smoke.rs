@@ -137,6 +137,125 @@ fn command_palette_filter_build_and_paint_stays_under_budget() {
     );
 }
 
+#[test]
+fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
+    let started = Instant::now();
+    let mut combined_hash = 0_u64;
+    let mut combined_hits = 0_usize;
+
+    for frame in 0..10 {
+        let mut document = perf_screen();
+        let root = document.root;
+        let transform = EditorTransform::new(UiRect::new(0.0, 0.0, 900.0, 500.0))
+            .with_scale(UiPoint::new(12.0, 1.0));
+        let arrangement = ArrangementGeometry::new(
+            transform,
+            LaneGeometry::new(18.0, 16)
+                .with_origin_y(24.0)
+                .with_lane_gap(4.0),
+        );
+        let range_geometry =
+            TimelineRangeItemGeometry::new(arrangement).with_resize_handle_width_px(4.0);
+        let curve_geometry = CurveEditorGeometry::new(
+            arrangement.timeline,
+            EditorAxisRange::new(0.0, 1.0),
+            UiRect::new(0.0, 398.0, 900.0, 72.0),
+        )
+        .with_point_radius_px(3.0);
+        let mut scene = Vec::with_capacity(640);
+
+        scene.push(ScenePrimitive::Rect(PaintRect::solid(
+            UiRect::new(0.0, 0.0, 900.0, 500.0),
+            ColorRgba::new(9, 13, 18, 255),
+        )));
+        for lane in 0..16 {
+            if let Some(rect) = arrangement.view_clip_rect(lane, EditorAxisRange::new(0.0, 75.0)) {
+                scene.push(ScenePrimitive::Rect(PaintRect::solid(
+                    rect,
+                    if lane % 2 == 0 {
+                        ColorRgba::new(13, 19, 27, 255)
+                    } else {
+                        ColorRgba::new(16, 23, 31, 255)
+                    },
+                )));
+            }
+        }
+        for unit in (0..=75).step_by(5) {
+            let x = arrangement.timeline.unit_to_view_x(unit as f32);
+            scene.push(ScenePrimitive::Line {
+                from: UiPoint::new(x, 20.0),
+                to: UiPoint::new(x, 382.0),
+                stroke: StrokeStyle::new(ColorRgba::new(34, 46, 60, 255), 1.0),
+            });
+        }
+
+        for index in 0..180 {
+            let lane = index % 16;
+            let start = ((index * 7 + frame * 3) % 68) as f32;
+            let duration = 2.0 + (index % 7) as f32 * 0.35;
+            let item = TimelineRangeItem::new(format!("range.{index}"), lane, start, duration)
+                .selected(index % 19 == 0)
+                .dragging(index % 37 == frame % 10);
+            combined_hits += range_geometry.hit_targets(&item).len();
+            let Some(rect) = range_geometry.item_view_rect(&item) else {
+                continue;
+            };
+            scene.push(ScenePrimitive::Rect(
+                PaintRect::solid(
+                    rect,
+                    if item.selected {
+                        ColorRgba::new(86, 157, 190, 255)
+                    } else if item.dragging {
+                        ColorRgba::new(136, 113, 197, 255)
+                    } else {
+                        ColorRgba::new(58, 104, 136, 255)
+                    },
+                )
+                .corner_radii(CornerRadii::uniform(3.0)),
+            ));
+        }
+
+        let curve_points = (0..96)
+            .map(|index| {
+                let unit = index as f32 * 0.75;
+                let value = ((index * 13 + frame * 5) % 100) as f32 / 100.0;
+                CurvePoint::new(format!("curve.{index}"), unit, value)
+            })
+            .collect::<Vec<_>>();
+        for segment in curve_geometry.segment_view_points(&curve_points) {
+            scene.push(ScenePrimitive::Line {
+                from: segment.from,
+                to: segment.to,
+                stroke: StrokeStyle::new(ColorRgba::new(230, 184, 88, 255), 1.0),
+            });
+        }
+        for point in curve_points.iter().step_by(4) {
+            scene.push(ScenePrimitive::Circle {
+                center: curve_geometry.point_view_position(point),
+                radius: 2.0,
+                fill: ColorRgba::new(241, 207, 121, 255),
+                stroke: None,
+            });
+        }
+
+        document.add_child(
+            root,
+            UiNode::scene("perf.editor", scene, fixed_style(920.0, 500.0)),
+        );
+        let image = render_document(&mut document, PERF_VIEWPORT);
+        combined_hash ^= image.hash();
+        black_box(document.paint_list().items.len());
+    }
+
+    let elapsed = started.elapsed();
+    assert_ne!(combined_hash, 0);
+    assert!(combined_hits > 1_000);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "editor geometry render smoke exceeded budget: {elapsed:?}"
+    );
+}
+
 fn perf_screen() -> UiDocument {
     let mut document = UiDocument::new(root_style(PERF_VIEWPORT.width, PERF_VIEWPORT.height));
     let root = document.root;
@@ -148,4 +267,14 @@ fn perf_screen() -> UiDocument {
         0.0,
     );
     document
+}
+
+fn fixed_style(width: f32, height: f32) -> Style {
+    Style {
+        size: TaffySize {
+            width: length(width),
+            height: length(height),
+        },
+        ..Default::default()
+    }
 }

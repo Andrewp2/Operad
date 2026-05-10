@@ -259,6 +259,9 @@ The branch starts from Operad 2.0.0 plus:
 - E2E snapshot coverage in `tests/e2e_render.rs` now includes a reusable editor
   surface scene built from timeline range-item, lane, ruler, playhead, curve
   point, interpolation path, and resize-handle primitives.
+- Performance smoke coverage in `tests/perf_smoke.rs` now exercises reusable
+  editor geometry, hit-target construction, curve segments, scene paint-list
+  generation, and deterministic raster snapshots under a fixed budget.
 - Layout audit checks in `src/lib.rs` now cover duplicate node names,
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   nodes outside the root, empty paint clips, and focusable controls missing from
