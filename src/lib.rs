@@ -84,10 +84,11 @@ pub use paint::{
     StrokeAlignment, TextHorizontalAlign, TextOverflow, TextVerticalAlign,
 };
 pub use renderer::{
-    CanvasRenderRequest, DirtyRegionSet, PaintBatch, PaintBatchKey, PaintBatchKind, PaintBatcher,
-    PixelRect, RenderError, RenderFrameOutput, RenderFrameRequest, RenderOptions, RenderTarget,
-    RenderTargetKind, RenderedImage, RendererAdapter, ResourceDescriptor, ResourceFormat,
-    ResourceResolver, ResourceUpdate,
+    CanvasRenderContext, CanvasRenderHandler, CanvasRenderOutcome, CanvasRenderOutput,
+    CanvasRenderRegistry, CanvasRenderReport, CanvasRenderRequest, DirtyRegionSet, PaintBatch,
+    PaintBatchKey, PaintBatchKind, PaintBatcher, PixelRect, RenderError, RenderFrameOutput,
+    RenderFrameRequest, RenderOptions, RenderTarget, RenderTargetKind, RenderedImage,
+    RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
 };
 pub use shell::{
     DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup, ScrollSyncMember,

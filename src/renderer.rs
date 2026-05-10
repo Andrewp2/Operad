@@ -5,6 +5,9 @@
 //! resource updates, dirty regions, deterministic snapshots, and adapter
 //! capabilities out of product state.
 
+use std::collections::HashMap;
+
+use crate::host::HostNodeInteraction;
 use crate::platform::{BackendCapabilities, PixelSize, ResourceHandle, ResourceId, ResourceKind};
 use crate::{
     CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintItem, PaintKind, PaintList,
@@ -273,6 +276,7 @@ pub struct RenderFrameRequest {
     pub paint: PaintList,
     pub dirty_regions: DirtyRegionSet,
     pub resource_updates: Vec<ResourceUpdate>,
+    pub node_interactions: HashMap<UiNodeId, HostNodeInteraction>,
     pub dirty_flags: DirtyFlags,
     pub options: RenderOptions,
 }
@@ -285,6 +289,7 @@ impl RenderFrameRequest {
             paint,
             dirty_regions: DirtyRegionSet::full(viewport),
             resource_updates: Vec::new(),
+            node_interactions: HashMap::new(),
             dirty_flags: DirtyFlags::ALL,
             options: RenderOptions::default(),
         }
@@ -298,6 +303,26 @@ impl RenderFrameRequest {
     pub fn resource_update(mut self, update: ResourceUpdate) -> Self {
         self.resource_updates.push(update);
         self
+    }
+
+    pub fn node_interaction(mut self, node: UiNodeId, interaction: HostNodeInteraction) -> Self {
+        self.node_interactions.insert(node, interaction);
+        self
+    }
+
+    pub fn node_interactions(
+        mut self,
+        interactions: impl IntoIterator<Item = (UiNodeId, HostNodeInteraction)>,
+    ) -> Self {
+        self.node_interactions.extend(interactions);
+        self
+    }
+
+    pub fn interaction_for(&self, node: UiNodeId) -> HostNodeInteraction {
+        self.node_interactions
+            .get(&node)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn dirty_flags(mut self, dirty_flags: DirtyFlags) -> Self {
@@ -359,6 +384,281 @@ impl CanvasRenderRequest {
 
     pub const fn requires_host_input_capture(&self) -> bool {
         self.canvas.requires_host_input_capture()
+    }
+}
+
+#[derive(Debug)]
+pub struct CanvasRenderContext<'a, B> {
+    pub request: &'a CanvasRenderRequest,
+    pub scale_factor: f32,
+    pub dirty_regions: &'a DirtyRegionSet,
+    pub interaction: HostNodeInteraction,
+    pub backend: &'a mut B,
+}
+
+impl<B> CanvasRenderContext<'_, B> {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty_regions.is_empty() || self.dirty_regions.covers(self.request.rect)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasRenderOutput {
+    pub dirty_region: Option<UiRect>,
+    pub resource_updates: Vec<ResourceUpdate>,
+    pub repaint_requested: bool,
+}
+
+impl CanvasRenderOutput {
+    pub fn new() -> Self {
+        Self {
+            dirty_region: None,
+            resource_updates: Vec::new(),
+            repaint_requested: false,
+        }
+    }
+
+    pub fn dirty_region(mut self, dirty_region: UiRect) -> Self {
+        self.dirty_region = Some(dirty_region);
+        self
+    }
+
+    pub fn resource_update(mut self, update: ResourceUpdate) -> Self {
+        self.resource_updates.push(update);
+        self
+    }
+
+    pub fn repaint_requested(mut self, repaint_requested: bool) -> Self {
+        self.repaint_requested = repaint_requested;
+        self
+    }
+}
+
+impl Default for CanvasRenderOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub trait CanvasRenderHandler<B> {
+    fn render_canvas(
+        &mut self,
+        context: CanvasRenderContext<'_, B>,
+    ) -> Result<CanvasRenderOutput, RenderError>;
+}
+
+impl<B, F> CanvasRenderHandler<B> for F
+where
+    F: for<'a> FnMut(CanvasRenderContext<'a, B>) -> Result<CanvasRenderOutput, RenderError>,
+{
+    fn render_canvas(
+        &mut self,
+        context: CanvasRenderContext<'_, B>,
+    ) -> Result<CanvasRenderOutput, RenderError> {
+        self(context)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CanvasRenderOutcome {
+    Rendered {
+        request: CanvasRenderRequest,
+        output: CanvasRenderOutput,
+    },
+    Missing {
+        request: CanvasRenderRequest,
+    },
+    Failed {
+        request: CanvasRenderRequest,
+        error: RenderError,
+    },
+}
+
+impl CanvasRenderOutcome {
+    pub const fn request(&self) -> &CanvasRenderRequest {
+        match self {
+            Self::Rendered { request, .. }
+            | Self::Missing { request }
+            | Self::Failed { request, .. } => request,
+        }
+    }
+
+    pub const fn is_rendered(&self) -> bool {
+        matches!(self, Self::Rendered { .. })
+    }
+
+    pub const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing { .. })
+    }
+
+    pub const fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CanvasRenderReport {
+    pub outcomes: Vec<CanvasRenderOutcome>,
+}
+
+impl CanvasRenderReport {
+    pub fn rendered_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.is_rendered())
+            .count()
+    }
+
+    pub fn missing_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.is_missing())
+            .count()
+    }
+
+    pub fn failed_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.is_failed())
+            .count()
+    }
+
+    pub fn repaint_requested(&self) -> bool {
+        self.outcomes.iter().any(|outcome| {
+            matches!(
+                outcome,
+                CanvasRenderOutcome::Rendered {
+                    output: CanvasRenderOutput {
+                        repaint_requested: true,
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+    }
+
+    pub fn first_failure(&self) -> Option<&RenderError> {
+        self.outcomes.iter().find_map(|outcome| match outcome {
+            CanvasRenderOutcome::Failed { error, .. } => Some(error),
+            _ => None,
+        })
+    }
+
+    pub fn first_missing(&self) -> Option<&CanvasRenderRequest> {
+        self.outcomes.iter().find_map(|outcome| match outcome {
+            CanvasRenderOutcome::Missing { request } => Some(request),
+            _ => None,
+        })
+    }
+
+    pub fn resource_updates(&self) -> Vec<ResourceUpdate> {
+        let mut updates = Vec::new();
+        for outcome in &self.outcomes {
+            if let CanvasRenderOutcome::Rendered { output, .. } = outcome {
+                updates.extend(output.resource_updates.iter().cloned());
+            }
+        }
+        updates
+    }
+
+    pub fn into_strict_result(self) -> Result<Self, RenderError> {
+        if let Some(error) = self.first_failure().cloned() {
+            return Err(error);
+        }
+        if let Some(missing) = self.first_missing() {
+            return Err(RenderError::MissingCanvasRenderer(
+                missing.canvas.key.clone(),
+            ));
+        }
+        Ok(self)
+    }
+}
+
+pub struct CanvasRenderRegistry<B> {
+    handlers: HashMap<String, Box<dyn CanvasRenderHandler<B>>>,
+}
+
+impl<B> CanvasRenderRegistry<B> {
+    pub fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+
+    pub fn register(
+        &mut self,
+        key: impl Into<String>,
+        handler: impl CanvasRenderHandler<B> + 'static,
+    ) -> bool {
+        self.handlers
+            .insert(key.into(), Box::new(handler))
+            .is_some()
+    }
+
+    pub fn unregister(&mut self, key: &str) -> bool {
+        self.handlers.remove(key).is_some()
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        self.handlers.contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.handlers.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+
+    pub fn render_frame_canvases(
+        &mut self,
+        request: &RenderFrameRequest,
+        backend: &mut B,
+    ) -> CanvasRenderReport {
+        let mut report = CanvasRenderReport::default();
+        for canvas_request in request.canvas_requests() {
+            let Some(handler) = self.handlers.get_mut(&canvas_request.canvas.key) else {
+                report.outcomes.push(CanvasRenderOutcome::Missing {
+                    request: canvas_request,
+                });
+                continue;
+            };
+            let outcome = match handler.render_canvas(CanvasRenderContext {
+                scale_factor: request.options.scale_factor,
+                dirty_regions: &request.dirty_regions,
+                interaction: request.interaction_for(canvas_request.node),
+                request: &canvas_request,
+                backend,
+            }) {
+                Ok(output) => CanvasRenderOutcome::Rendered {
+                    request: canvas_request,
+                    output,
+                },
+                Err(error) => CanvasRenderOutcome::Failed {
+                    request: canvas_request,
+                    error,
+                },
+            };
+            report.outcomes.push(outcome);
+        }
+        report
+    }
+
+    pub fn render_frame_canvases_strict(
+        &mut self,
+        request: &RenderFrameRequest,
+        backend: &mut B,
+    ) -> Result<CanvasRenderReport, RenderError> {
+        self.render_frame_canvases(request, backend)
+            .into_strict_result()
+    }
+}
+
+impl<B> Default for CanvasRenderRegistry<B> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -474,6 +774,7 @@ pub enum RenderError {
     UnsupportedTarget(RenderTargetKind),
     UnsupportedResource(ResourceKind),
     MissingResource(ResourceId),
+    MissingCanvasRenderer(String),
     InvalidResourceUpdate(String),
     Backend(String),
 }
@@ -489,6 +790,9 @@ impl std::fmt::Display for RenderError {
             }
             Self::MissingResource(resource) => {
                 write!(formatter, "missing render resource {:?}", resource.key)
+            }
+            Self::MissingCanvasRenderer(key) => {
+                write!(formatter, "missing canvas renderer for {key:?}")
             }
             Self::InvalidResourceUpdate(reason) => {
                 write!(formatter, "invalid render resource update: {reason}")
@@ -726,6 +1030,112 @@ mod tests {
         assert!(canvases[0].canvas.interaction.pointer_lock);
         assert!(canvases[0].canvas.interaction.domain_hit_testing);
         assert_eq!(canvases[0].rect, UiRect::new(12.0, 16.0, 320.0, 180.0));
+    }
+
+    #[derive(Debug, Default)]
+    struct CanvasBackend {
+        rendered: Vec<String>,
+        scale_factors: Vec<f32>,
+        focused: Vec<bool>,
+        dirty: Vec<bool>,
+    }
+
+    #[derive(Debug)]
+    struct RecordingCanvasHandler;
+
+    impl CanvasRenderHandler<CanvasBackend> for RecordingCanvasHandler {
+        fn render_canvas(
+            &mut self,
+            context: CanvasRenderContext<'_, CanvasBackend>,
+        ) -> Result<CanvasRenderOutput, RenderError> {
+            context
+                .backend
+                .rendered
+                .push(context.request.canvas.key.clone());
+            context.backend.scale_factors.push(context.scale_factor);
+            context.backend.focused.push(context.interaction.focused);
+            context.backend.dirty.push(context.is_dirty());
+            Ok(CanvasRenderOutput::new()
+                .dirty_region(context.request.rect)
+                .repaint_requested(context.interaction.focused))
+        }
+    }
+
+    #[test]
+    fn canvas_render_registry_dispatches_requests_with_context() {
+        let canvas = CanvasContent::new("fabricad.mask.viewport")
+            .callback()
+            .pointer_capture(true)
+            .keyboard_capture(true);
+        let mut paint = PaintList::default();
+        paint.items.push(paint_item(
+            7,
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+            PaintKind::Canvas(canvas),
+        ));
+        let request = RenderFrameRequest::new(
+            RenderTarget::window("main", UiSize::new(640.0, 480.0)),
+            UiSize::new(640.0, 480.0),
+            paint,
+        )
+        .options(RenderOptions {
+            scale_factor: 2.0,
+            ..RenderOptions::default()
+        })
+        .node_interaction(
+            UiNodeId(7),
+            HostNodeInteraction {
+                focused: true,
+                ..HostNodeInteraction::default()
+            },
+        );
+        let mut backend = CanvasBackend::default();
+        let mut registry = CanvasRenderRegistry::new();
+        assert!(!registry.register("fabricad.mask.viewport", RecordingCanvasHandler));
+
+        let report = registry
+            .render_frame_canvases_strict(&request, &mut backend)
+            .expect("canvas dispatch");
+
+        assert_eq!(report.rendered_count(), 1);
+        assert_eq!(report.missing_count(), 0);
+        assert_eq!(report.failed_count(), 0);
+        assert!(report.repaint_requested());
+        assert_eq!(backend.rendered, vec!["fabricad.mask.viewport".to_string()]);
+        assert_eq!(backend.scale_factors, vec![2.0]);
+        assert_eq!(backend.focused, vec![true]);
+        assert_eq!(backend.dirty, vec![true]);
+        assert_eq!(report.outcomes[0].request().node, UiNodeId(7));
+        assert_eq!(report.resource_updates(), Vec::<ResourceUpdate>::new());
+    }
+
+    #[test]
+    fn canvas_render_registry_reports_missing_handlers() {
+        let mut paint = PaintList::default();
+        paint.items.push(paint_item(
+            4,
+            UiRect::new(0.0, 0.0, 120.0, 80.0),
+            PaintKind::Canvas(CanvasContent::new("missing.viewport").native_viewport()),
+        ));
+        let request = RenderFrameRequest::new(
+            RenderTarget::app_owned("main", UiSize::new(640.0, 480.0)),
+            UiSize::new(640.0, 480.0),
+            paint,
+        );
+        let mut backend = CanvasBackend::default();
+        let mut registry = CanvasRenderRegistry::new();
+
+        let report = registry.render_frame_canvases(&request, &mut backend);
+        assert_eq!(report.rendered_count(), 0);
+        assert_eq!(report.missing_count(), 1);
+        assert_eq!(
+            report.first_missing().unwrap().canvas.key,
+            "missing.viewport"
+        );
+        assert_eq!(
+            report.into_strict_result().unwrap_err(),
+            RenderError::MissingCanvasRenderer("missing.viewport".to_string())
+        );
     }
 
     #[derive(Debug, Default)]

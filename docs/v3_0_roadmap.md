@@ -217,7 +217,10 @@ The branch starts from Operad 2.0.0 plus:
   backend capability negotiation.
 - Embedded canvas/native viewport contracts for callback, texture, and
   native-viewport render modes, host input capture policies, pointer-lock
-  requests, domain hit-testing flags, and renderer-facing canvas extraction.
+  requests, domain hit-testing flags, renderer-facing canvas extraction, and
+  renderer-neutral callback registries that pass rects, clips, scale factors,
+  dirty regions, and per-node host interaction state to app-owned canvas
+  renderers.
 - Chart, sparkline, and dense grid-map geometry helpers in `src/charts.rs` for
   numeric range mapping, path generation, cell rectangles, hit testing, and
   visible-cell queries, with screen-reader summaries and accessibility metadata
