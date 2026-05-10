@@ -6,9 +6,14 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::{
+    Dimension, LengthPercentageAuto, Position, Rect as TaffyRect, Size as TaffySize, Style,
+};
+
 use crate::{
     accessibility::FocusRestoreTarget, AccessibilityAction, AccessibilityMeta, AccessibilityRole,
-    AccessibilityValueRange, UiPoint, UiRect, UiSize,
+    AccessibilityValueRange, ClipBehavior, InputBehavior, UiDocument, UiNode, UiNodeId,
+    UiNodeStyle, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,6 +52,40 @@ impl ShellRegion {
 
     pub fn is_editor_surface(&self) -> bool {
         matches!(self, Self::TrackList | Self::Arrangement | Self::Editor)
+    }
+
+    pub fn stable_key(&self) -> String {
+        match self {
+            Self::MenuBar => "menu-bar".to_string(),
+            Self::TransportBar => "transport-bar".to_string(),
+            Self::Toolbar => "toolbar".to_string(),
+            Self::LeftPanel => "left-panel".to_string(),
+            Self::RightPanel => "right-panel".to_string(),
+            Self::BottomPanel => "bottom-panel".to_string(),
+            Self::StatusBar => "status-bar".to_string(),
+            Self::TrackList => "track-list".to_string(),
+            Self::Arrangement => "arrangement".to_string(),
+            Self::Editor => "editor".to_string(),
+            Self::CenterWorkspace => "center-workspace".to_string(),
+            Self::Custom(id) => format!("custom.{id}"),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::MenuBar => "Menu bar".to_string(),
+            Self::TransportBar => "Transport bar".to_string(),
+            Self::Toolbar => "Toolbar".to_string(),
+            Self::LeftPanel => "Left panel".to_string(),
+            Self::RightPanel => "Right panel".to_string(),
+            Self::BottomPanel => "Bottom panel".to_string(),
+            Self::StatusBar => "Status bar".to_string(),
+            Self::TrackList => "Track list".to_string(),
+            Self::Arrangement => "Arrangement".to_string(),
+            Self::Editor => "Editor".to_string(),
+            Self::CenterWorkspace => "Center workspace".to_string(),
+            Self::Custom(id) => id.clone(),
+        }
     }
 }
 
@@ -1131,6 +1170,71 @@ pub struct ShellLayoutPlan {
     pub hidden_panel_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellDocumentOptions {
+    pub include_empty_regions: bool,
+    pub include_hidden_panels: bool,
+    pub include_resize_handles: bool,
+    pub resize_handle_thickness: f32,
+}
+
+impl Default for ShellDocumentOptions {
+    fn default() -> Self {
+        Self {
+            include_empty_regions: true,
+            include_hidden_panels: true,
+            include_resize_handles: true,
+            resize_handle_thickness: 4.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellRegionDocumentNode {
+    pub region: ShellRegion,
+    pub node: UiNodeId,
+    pub rect: UiRect,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellPanelDocumentNode {
+    pub id: String,
+    pub title: String,
+    pub node: UiNodeId,
+    pub content: Option<UiNodeId>,
+    pub resize_handle: Option<UiNodeId>,
+    pub rect: UiRect,
+    pub region: Option<ShellRegion>,
+    pub floating: bool,
+    pub hidden: bool,
+    pub collapsed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellDocumentNodes {
+    pub root: UiNodeId,
+    pub regions: Vec<ShellRegionDocumentNode>,
+    pub panels: Vec<ShellPanelDocumentNode>,
+}
+
+impl ShellDocumentNodes {
+    pub fn region(&self, region: &ShellRegion) -> Option<&ShellRegionDocumentNode> {
+        self.regions.iter().find(|node| &node.region == region)
+    }
+
+    pub fn region_node(&self, region: &ShellRegion) -> Option<UiNodeId> {
+        self.region(region).map(|node| node.node)
+    }
+
+    pub fn panel(&self, id: &str) -> Option<&ShellPanelDocumentNode> {
+        self.panels.iter().find(|panel| panel.id == id)
+    }
+
+    pub fn panel_node(&self, id: &str) -> Option<UiNodeId> {
+        self.panel(id).map(|panel| panel.node)
+    }
+}
+
 impl ShellLayoutPlan {
     pub fn from_workspace(workspace: &ShellWorkspaceState, viewport: UiRect) -> Self {
         let viewport = sanitize_rect(viewport);
@@ -1160,6 +1264,302 @@ impl ShellLayoutPlan {
         self.panels
             .iter()
             .filter(move |panel| &panel.region == region)
+    }
+
+    pub fn build_document(
+        &self,
+        document: &mut UiDocument,
+        parent: UiNodeId,
+        name: impl Into<String>,
+        options: ShellDocumentOptions,
+        build_panel: impl FnMut(&mut UiDocument, UiNodeId, &ShellPanelLayout),
+    ) -> ShellDocumentNodes {
+        build_shell_document(document, parent, name, self, options, build_panel)
+    }
+}
+
+pub fn build_shell_document(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    plan: &ShellLayoutPlan,
+    options: ShellDocumentOptions,
+    mut build_panel: impl FnMut(&mut UiDocument, UiNodeId, &ShellPanelLayout),
+) -> ShellDocumentNodes {
+    let name = name.into();
+    let root = document.add_child(
+        parent,
+        UiNode::container(
+            name.clone(),
+            shell_node_style(plan.viewport, UiPoint::new(0.0, 0.0)),
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Application)
+                .label(format!("{name} shell workspace"))
+                .hint("Contains shell regions and panels"),
+        ),
+    );
+    let origin = UiPoint::new(plan.viewport.x, plan.viewport.y);
+    let mut regions = Vec::new();
+    let mut panels = Vec::new();
+
+    for region in &plan.regions {
+        if !options.include_empty_regions && region.panel_ids.is_empty() {
+            continue;
+        }
+        let node = document.add_child(
+            root,
+            UiNode::container(
+                format!("{name}.region.{}", region.region.stable_key()),
+                shell_node_style(region.rect, origin),
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Group).label(region.region.label()),
+            ),
+        );
+        regions.push(ShellRegionDocumentNode {
+            region: region.region.clone(),
+            node,
+            rect: region.rect,
+        });
+    }
+
+    for panel in &plan.panels {
+        let region_node = regions
+            .iter()
+            .find(|region| region.region == panel.region)
+            .map(|region| (region.node, UiPoint::new(region.rect.x, region.rect.y)));
+        let (parent, parent_origin) =
+            region_node.unwrap_or((root, UiPoint::new(plan.viewport.x, plan.viewport.y)));
+        panels.push(add_shell_panel_document_node(
+            document,
+            &name,
+            panel,
+            ShellPanelDocumentTarget {
+                parent,
+                origin: parent_origin,
+                region: Some(panel.region.clone()),
+                floating: false,
+            },
+            options,
+            &mut build_panel,
+        ));
+    }
+
+    for panel in &plan.floating_panels {
+        panels.push(add_shell_panel_document_node(
+            document,
+            &name,
+            panel,
+            ShellPanelDocumentTarget {
+                parent: root,
+                origin: UiPoint::new(plan.viewport.x, plan.viewport.y),
+                region: Some(panel.region.clone()),
+                floating: true,
+            },
+            options,
+            &mut build_panel,
+        ));
+    }
+
+    if options.include_hidden_panels {
+        for id in &plan.hidden_panel_ids {
+            let node = document.add_child(
+                root,
+                UiNode::container(
+                    format!("{name}.panel.{id}.hidden"),
+                    shell_node_style(
+                        UiRect::new(plan.viewport.x, plan.viewport.y, 0.0, 0.0),
+                        origin,
+                    ),
+                )
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Group)
+                        .label(id.clone())
+                        .hidden(),
+                ),
+            );
+            panels.push(ShellPanelDocumentNode {
+                id: id.clone(),
+                title: id.clone(),
+                node,
+                content: None,
+                resize_handle: None,
+                rect: UiRect::new(0.0, 0.0, 0.0, 0.0),
+                region: None,
+                floating: false,
+                hidden: true,
+                collapsed: false,
+            });
+        }
+    }
+
+    ShellDocumentNodes {
+        root,
+        regions,
+        panels,
+    }
+}
+
+fn add_shell_panel_document_node(
+    document: &mut UiDocument,
+    workspace_name: &str,
+    panel: &ShellPanelLayout,
+    target: ShellPanelDocumentTarget,
+    options: ShellDocumentOptions,
+    build_panel: &mut impl FnMut(&mut UiDocument, UiNodeId, &ShellPanelLayout),
+) -> ShellPanelDocumentNode {
+    let node = document.add_child(
+        target.parent,
+        UiNode::container(
+            format!("{workspace_name}.panel.{}", panel.id),
+            shell_node_style(panel.rect, target.origin),
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::TabPanel)
+                .label(panel.title.clone())
+                .value(panel_state_value(panel)),
+        ),
+    );
+    let content = document.add_child(
+        node,
+        UiNode::container(
+            format!("{workspace_name}.panel.{}.content", panel.id),
+            shell_node_style(
+                UiRect::new(0.0, 0.0, panel.rect.width, panel.rect.height),
+                UiPoint::new(0.0, 0.0),
+            ),
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Group)
+                .label(format!("{} content", panel.title)),
+        ),
+    );
+    build_panel(document, content, panel);
+
+    let resize_handle = if options.include_resize_handles && panel.resizable {
+        let rect = resize_handle_rect(panel, options.resize_handle_thickness);
+        Some(
+            document.add_child(
+                node,
+                UiNode::container(
+                    format!("{workspace_name}.panel.{}.resize", panel.id),
+                    shell_node_style(rect, UiPoint::new(0.0, 0.0)),
+                )
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Slider)
+                        .label(format!("{} resize handle", panel.title))
+                        .value(format!("{:.0}px", panel_extent(panel)))
+                        .focusable(),
+                ),
+            ),
+        )
+    } else {
+        None
+    };
+
+    ShellPanelDocumentNode {
+        id: panel.id.clone(),
+        title: panel.title.clone(),
+        node,
+        content: Some(content),
+        resize_handle,
+        rect: panel.rect,
+        region: target.region,
+        floating: target.floating,
+        hidden: false,
+        collapsed: panel.collapsed,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ShellPanelDocumentTarget {
+    parent: UiNodeId,
+    origin: UiPoint,
+    region: Option<ShellRegion>,
+    floating: bool,
+}
+
+fn shell_node_style(rect: UiRect, origin: UiPoint) -> UiNodeStyle {
+    let x = finite_or_zero(rect.x - origin.x);
+    let y = finite_or_zero(rect.y - origin.y);
+    let width = finite_nonnegative(rect.width);
+    let height = finite_nonnegative(rect.height);
+
+    UiNodeStyle {
+        layout: Style {
+            position: Position::Absolute,
+            inset: TaffyRect {
+                left: LengthPercentageAuto::length(x),
+                top: LengthPercentageAuto::length(y),
+                right: LengthPercentageAuto::auto(),
+                bottom: LengthPercentageAuto::auto(),
+            },
+            size: TaffySize {
+                width: Dimension::length(width),
+                height: Dimension::length(height),
+            },
+            ..Default::default()
+        },
+        clip: ClipBehavior::Clip,
+        ..Default::default()
+    }
+}
+
+fn panel_state_value(panel: &ShellPanelLayout) -> String {
+    let mut parts = Vec::new();
+    parts.push(if panel.collapsed {
+        "collapsed".to_string()
+    } else {
+        "expanded".to_string()
+    });
+    if let Some(tab) = &panel.active_tab {
+        parts.push(format!("active tab {tab}"));
+    }
+    parts.join(", ")
+}
+
+fn panel_extent(panel: &ShellPanelLayout) -> f32 {
+    match panel.region {
+        ShellRegion::LeftPanel | ShellRegion::RightPanel | ShellRegion::TrackList => {
+            panel.rect.width
+        }
+        ShellRegion::MenuBar
+        | ShellRegion::TransportBar
+        | ShellRegion::Toolbar
+        | ShellRegion::BottomPanel
+        | ShellRegion::StatusBar
+        | ShellRegion::Editor => panel.rect.height,
+        ShellRegion::Arrangement | ShellRegion::CenterWorkspace | ShellRegion::Custom(_) => {
+            panel.rect.width.max(panel.rect.height)
+        }
+    }
+}
+
+fn resize_handle_rect(panel: &ShellPanelLayout, thickness: f32) -> UiRect {
+    let thickness = finite_nonnegative(thickness).min(panel.rect.width.max(panel.rect.height));
+    match panel.region {
+        ShellRegion::RightPanel => UiRect::new(0.0, 0.0, thickness, panel.rect.height),
+        ShellRegion::BottomPanel | ShellRegion::Editor | ShellRegion::StatusBar => {
+            UiRect::new(0.0, 0.0, panel.rect.width, thickness)
+        }
+        ShellRegion::MenuBar | ShellRegion::TransportBar | ShellRegion::Toolbar => UiRect::new(
+            0.0,
+            (panel.rect.height - thickness).max(0.0),
+            panel.rect.width,
+            thickness,
+        ),
+        ShellRegion::LeftPanel
+        | ShellRegion::TrackList
+        | ShellRegion::Arrangement
+        | ShellRegion::CenterWorkspace
+        | ShellRegion::Custom(_) => UiRect::new(
+            (panel.rect.width - thickness).max(0.0),
+            0.0,
+            thickness,
+            panel.rect.height,
+        ),
     }
 }
 
@@ -1401,7 +1801,7 @@ fn finite_nonnegative(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::UiNodeId;
+    use crate::{root_style, ApproxTextMeasurer, TextStyle, UiDocument, UiNodeId};
 
     #[test]
     fn shell_bar_layout_keeps_transport_readouts_and_overflows_low_priority_items() {
@@ -1798,5 +2198,120 @@ mod tests {
             .region_panels(&ShellRegion::LeftPanel)
             .next()
             .is_some_and(|panel| panel.collapsed));
+    }
+
+    #[test]
+    fn shell_layout_plan_builds_stable_document_nodes() {
+        let mut workspace = ShellWorkspaceState::new();
+        workspace.upsert_panel(ShellPanelState::new(
+            "menu",
+            "Menu",
+            ShellRegion::MenuBar,
+            24.0,
+        ));
+        let mut browser = ShellPanelState::new("browser", "Browser", ShellRegion::LeftPanel, 180.0)
+            .resizable(true)
+            .active_tab("assets");
+        browser.collapsed_extent = 32.0;
+        assert!(browser.collapse());
+        workspace.upsert_panel(browser);
+        workspace.upsert_panel(ShellPanelState::new(
+            "arrangement",
+            "Arrangement",
+            ShellRegion::Arrangement,
+            1.0,
+        ));
+        workspace.upsert_panel(ShellPanelState::new(
+            "piano-roll",
+            "Piano Roll",
+            ShellRegion::Editor,
+            160.0,
+        ));
+        workspace.upsert_panel(
+            ShellPanelState::new("inspector", "Inspector", ShellRegion::RightPanel, 220.0)
+                .visible(false),
+        );
+
+        let plan = workspace.layout_for_size(UiSize::new(800.0, 500.0));
+        let mut document = UiDocument::new(root_style(800.0, 500.0));
+        let root = document.root;
+        let nodes = build_shell_document(
+            &mut document,
+            root,
+            "shell",
+            &plan,
+            ShellDocumentOptions::default(),
+            |document, parent, panel| {
+                document.add_child(
+                    parent,
+                    UiNode::text(
+                        format!("shell.panel.{}.label", panel.id),
+                        panel.title.clone(),
+                        TextStyle::default(),
+                        Style {
+                            size: TaffySize {
+                                width: Dimension::auto(),
+                                height: Dimension::auto(),
+                            },
+                            ..Default::default()
+                        },
+                    ),
+                );
+            },
+        );
+
+        document
+            .compute_layout(UiSize::new(800.0, 500.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert_eq!(document.node(nodes.root).name, "shell");
+        assert!(nodes.region_node(&ShellRegion::MenuBar).is_some());
+        assert!(nodes.region_node(&ShellRegion::LeftPanel).is_some());
+        assert!(nodes.panel("arrangement").is_some());
+
+        let browser = nodes.panel("browser").expect("browser node");
+        assert!(browser.collapsed);
+        assert_eq!(browser.rect, plan.panel_rect("browser").unwrap());
+        assert_eq!(
+            document.node(browser.node).layout.rect,
+            plan.panel_rect("browser").unwrap()
+        );
+        assert_eq!(
+            document.node(browser.content.unwrap()).layout.rect,
+            plan.panel_rect("browser").unwrap()
+        );
+        assert_eq!(
+            document
+                .node(browser.node)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value,
+            Some("collapsed, active tab assets".to_string())
+        );
+
+        let handle = browser.resize_handle.expect("resize handle");
+        let browser_rect = plan.panel_rect("browser").unwrap();
+        assert_eq!(
+            document.node(handle).layout.rect,
+            UiRect::new(
+                browser_rect.right() - 4.0,
+                browser_rect.y,
+                4.0,
+                browser_rect.height
+            )
+        );
+        let handle_accessibility = document.node(handle).accessibility.as_ref().unwrap();
+        assert_eq!(handle_accessibility.role, AccessibilityRole::Slider);
+        assert!(handle_accessibility.focusable);
+        assert!(document.node(handle).input.focusable);
+
+        let hidden = nodes.panel("inspector").expect("hidden node");
+        assert!(hidden.hidden);
+        assert!(hidden.content.is_none());
+        let hidden_node = document.node(hidden.node);
+        assert!(hidden_node.accessibility.as_ref().unwrap().hidden);
+        assert_eq!(hidden_node.layout.rect.width, 0.0);
+        assert_eq!(hidden_node.layout.rect.height, 0.0);
     }
 }

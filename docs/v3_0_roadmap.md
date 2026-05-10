@@ -201,6 +201,9 @@ The branch starts from Operad 2.0.0 plus:
   bars, left/right/bottom dock regions, central workspace, track list,
   arrangement, editor, hidden panels, floating panels, and persisted panel
   scroll offsets.
+- Shell layout document bridges in `src/shell.rs` for turning persisted shell
+  plans into stable region, panel, panel-content, hidden-panel, and accessible
+  resize-handle nodes inside a `UiDocument` without depending on a renderer.
 - Shell bar and transport planning in `src/shell.rs` for command/toggle/readout
   item metadata, enabled/active/pressed state, width priorities, cluster spacing,
   deterministic overflow plans, and renderer-neutral accessibility metadata.

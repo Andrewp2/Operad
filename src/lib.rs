@@ -97,11 +97,12 @@ pub use renderer::{
     ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
 };
 pub use shell::{
-    DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup, ScrollSyncMember,
-    ShellBarCluster, ShellBarItem, ShellBarItemLayout, ShellBarItemRole, ShellBarLayoutPlan,
-    ShellBarLayoutSpacing, ShellBarOverflowItem, ShellBarOverflowPolicy, ShellExtent,
-    ShellLayoutPlan, ShellNumericReadout, ShellPanelLayout, ShellPanelState, ShellRegion,
-    ShellRegionLayout, ShellWorkspaceState, SplitPaneSide,
+    build_shell_document, DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup,
+    ScrollSyncMember, ShellBarCluster, ShellBarItem, ShellBarItemLayout, ShellBarItemRole,
+    ShellBarLayoutPlan, ShellBarLayoutSpacing, ShellBarOverflowItem, ShellBarOverflowPolicy,
+    ShellDocumentNodes, ShellDocumentOptions, ShellExtent, ShellLayoutPlan, ShellNumericReadout,
+    ShellPanelDocumentNode, ShellPanelLayout, ShellPanelState, ShellRegion,
+    ShellRegionDocumentNode, ShellRegionLayout, ShellWorkspaceState, SplitPaneSide,
 };
 pub use testing::{
     diff_rgba8, AccessibilityAssertions, CommandReplayReport, CommandReplayStepResult, DirtyFlags,
