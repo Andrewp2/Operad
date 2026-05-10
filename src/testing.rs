@@ -1307,6 +1307,70 @@ impl FrameTiming {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct FrameTimingAssertions<'a> {
+    timing: &'a FrameTiming,
+}
+
+impl<'a> FrameTimingAssertions<'a> {
+    pub const fn new(timing: &'a FrameTiming) -> Self {
+        Self { timing }
+    }
+
+    pub const fn timing(&self) -> &'a FrameTiming {
+        self.timing
+    }
+
+    pub fn require_section(&self, name: &str) -> TestResult<Duration> {
+        self.timing.duration(name).ok_or_else(|| {
+            TestFailure::new(format!(
+                "missing frame timing section `{name}`; available sections: {:?}",
+                self.section_names()
+            ))
+        })
+    }
+
+    pub fn require_sections<'b>(
+        &self,
+        names: impl IntoIterator<Item = &'b str>,
+    ) -> TestResult<Vec<Duration>> {
+        names
+            .into_iter()
+            .map(|name| self.require_section(name))
+            .collect()
+    }
+
+    pub fn require_total_within(&self, budget: Duration) -> TestResult<Duration> {
+        let total = self.timing.total();
+        if total <= budget {
+            Ok(total)
+        } else {
+            Err(TestFailure::new(format!(
+                "frame timing total {total:?} exceeded budget {budget:?}"
+            )))
+        }
+    }
+
+    pub fn require_section_within(&self, name: &str, budget: Duration) -> TestResult<Duration> {
+        let duration = self.require_section(name)?;
+        if duration <= budget {
+            Ok(duration)
+        } else {
+            Err(TestFailure::new(format!(
+                "frame timing section `{name}` duration {duration:?} exceeded budget {budget:?}"
+            )))
+        }
+    }
+
+    fn section_names(&self) -> Vec<&str> {
+        self.timing
+            .sections
+            .iter()
+            .map(|section| section.name.as_str())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2079,6 +2143,31 @@ mod tests {
         assert_eq!(timing.total(), Duration::from_millis(15));
         assert!(timing.within_budget(Duration::from_millis(16)));
         assert!(!timing.within_budget(Duration::from_millis(10)));
+
+        let assertions = FrameTimingAssertions::new(&timing);
+        assert_eq!(
+            assertions
+                .require_sections(["layout", "paint", "render"])
+                .expect("required sections"),
+            vec![
+                Duration::from_millis(3),
+                Duration::from_millis(4),
+                Duration::from_millis(8)
+            ]
+        );
+        assert!(assertions
+            .require_total_within(Duration::from_millis(16))
+            .is_ok());
+        assert!(assertions
+            .require_total_within(Duration::from_millis(10))
+            .is_err());
+        assert!(assertions
+            .require_section_within("paint", Duration::from_millis(4))
+            .is_ok());
+        assert!(assertions
+            .require_section_within("paint", Duration::from_millis(3))
+            .is_err());
+        assert!(assertions.require_section("input").is_err());
     }
 
     #[test]

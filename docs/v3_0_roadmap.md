@@ -256,13 +256,14 @@ The branch starts from Operad 2.0.0 plus:
 - Renderer-neutral testing helpers in `src/testing.rs` for event replay, raw
   input conversion checks, platform-output assertions, stable-name layout
   assertions, paint-list assertions, RGBA pixel diffs with tolerances, dirty
-  flags, deterministic snapshot hash/content assertions, frame timing sections,
-  command-aware shortcut replay assertions, and stable-name accessibility
-  assertions for roles, labels, values, summaries, live regions, focus order,
-  active descendants, document-frame generated platform-service requests,
-  request/response coverage, correlated unsupported platform-service responses,
-  and render-frame conformance assertions for canvas/image handler coverage,
-  dirty regions, host input capture, and per-node interaction state.
+  flags, deterministic snapshot hash/content assertions, frame timing
+  section/budget assertions, command-aware shortcut replay assertions, and
+  stable-name accessibility assertions for roles, labels, values, summaries,
+  live regions, focus order, active descendants, document-frame generated
+  platform-service requests, request/response coverage, correlated unsupported
+  platform-service responses, and render-frame conformance assertions for
+  canvas/image handler coverage, dirty regions, host input capture, and
+  per-node interaction state.
 - E2E snapshot coverage in `tests/e2e_render.rs` now includes a reusable editor
   surface scene built from timeline range-item, lane, ruler, playhead, curve
   point, interpolation path, and resize-handle primitives.

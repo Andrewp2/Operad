@@ -120,9 +120,10 @@ pub use shell::{
 pub use testing::{
     diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, CommandReplayReport,
     CommandReplayStepResult, DirtyFlags, EventReplay, EventReplayReport, EventReplayStep,
-    EventReplayStepResult, FrameTiming, FrameTimingSection, LayoutAssertions, PaintAssertions,
-    PaintKindSelector, PixelDiffReport, PixelDiffTolerance, PlatformAssertions, RenderAssertions,
-    ReplayInput, RgbaImageView, SnapshotAssertions, TestFailure, TestResult,
+    EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
+    LayoutAssertions, PaintAssertions, PaintKindSelector, PixelDiffReport, PixelDiffTolerance,
+    PlatformAssertions, RenderAssertions, ReplayInput, RgbaImageView, SnapshotAssertions,
+    TestFailure, TestResult,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,
