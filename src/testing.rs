@@ -9,12 +9,19 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::commands::{CommandId, CommandRegistry};
-use crate::host::{HostCommandDispatch, HostFrameOutput, HostInteractionState, HostShortcutRoute};
+use crate::host::{
+    HostCommandDispatch, HostFrameOutput, HostInteractionState, HostNodeInteraction,
+    HostShortcutRoute,
+};
 use crate::platform::{
     AppLifecycleResponse, ClipboardResponse, CursorResponse, DragDropResponse, FileDialogResponse,
     NotificationResponse, OpenUrlResponse, PlatformResponse, PlatformServiceError,
     PlatformServiceKind, PlatformServiceRequest, PlatformServiceResponse, RepaintResponse,
     ScreenshotResponse, TextImeResponse,
+};
+use crate::renderer::{
+    CanvasRenderRegistry, CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest,
+    RenderFrameRequest,
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole, AccessibilityTree, PaintItem,
@@ -565,6 +572,144 @@ impl<'a> PaintAssertions<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct RenderAssertions<'a> {
+    request: &'a RenderFrameRequest,
+}
+
+impl<'a> RenderAssertions<'a> {
+    pub const fn new(request: &'a RenderFrameRequest) -> Self {
+        Self { request }
+    }
+
+    pub const fn request(&self) -> &'a RenderFrameRequest {
+        self.request
+    }
+
+    pub fn canvas_requests(&self) -> Vec<CanvasRenderRequest> {
+        self.request.canvas_requests()
+    }
+
+    pub fn image_requests(&self) -> Vec<ImageRenderRequest> {
+        self.request.image_requests()
+    }
+
+    pub fn require_canvas(&self, key: &str) -> TestResult<CanvasRenderRequest> {
+        self.canvas_requests()
+            .into_iter()
+            .find(|request| request.canvas.key == key)
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing canvas render request `{key}`; available canvases: {:?}",
+                    self.canvas_keys()
+                ))
+            })
+    }
+
+    pub fn require_image(&self, key: &str) -> TestResult<ImageRenderRequest> {
+        self.image_requests()
+            .into_iter()
+            .find(|request| request.key() == key)
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "missing image render request `{key}`; available images: {:?}",
+                    self.image_keys()
+                ))
+            })
+    }
+
+    pub fn require_canvas_host_capture(&self, key: &str) -> TestResult {
+        let request = self.require_canvas(key)?;
+        if request.requires_host_input_capture() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "canvas `{key}` does not require host input capture"
+            )))
+        }
+    }
+
+    pub fn require_canvas_dirty(&self, key: &str) -> TestResult {
+        let request = self.require_canvas(key)?;
+        if self.request.dirty_regions.is_empty() || self.request.dirty_regions.covers(request.rect)
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "canvas `{key}` rect {:?} is not covered by dirty regions {:?}",
+                request.rect, self.request.dirty_regions.regions
+            )))
+        }
+    }
+
+    pub fn require_node_interaction(
+        &self,
+        node: UiNodeId,
+        expected: HostNodeInteraction,
+    ) -> TestResult {
+        let actual = self.request.interaction_for(node);
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node {node:?} expected render interaction {expected:?}, got {actual:?}"
+            )))
+        }
+    }
+
+    pub fn missing_canvas_handlers<B>(&self, registry: &CanvasRenderRegistry<B>) -> Vec<String> {
+        self.canvas_requests()
+            .into_iter()
+            .filter(|request| !registry.contains(&request.canvas.key))
+            .map(|request| request.canvas.key)
+            .collect()
+    }
+
+    pub fn missing_image_handlers<B>(&self, registry: &ImageRenderRegistry<B>) -> Vec<String> {
+        self.image_requests()
+            .into_iter()
+            .filter(|request| !registry.contains(request.key()))
+            .map(|request| request.image.key)
+            .collect()
+    }
+
+    pub fn require_all_canvas_handlers<B>(&self, registry: &CanvasRenderRegistry<B>) -> TestResult {
+        let missing = self.missing_canvas_handlers(registry);
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "missing canvas render handlers for {missing:?}"
+            )))
+        }
+    }
+
+    pub fn require_all_image_handlers<B>(&self, registry: &ImageRenderRegistry<B>) -> TestResult {
+        let missing = self.missing_image_handlers(registry);
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "missing image render handlers for {missing:?}"
+            )))
+        }
+    }
+
+    fn canvas_keys(&self) -> Vec<String> {
+        self.canvas_requests()
+            .into_iter()
+            .map(|request| request.canvas.key)
+            .collect()
+    }
+
+    fn image_keys(&self) -> Vec<String> {
+        self.image_requests()
+            .into_iter()
+            .map(|request| request.image.key)
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct PlatformAssertions<'a> {
     requests: &'a [PlatformServiceRequest],
     responses: &'a [PlatformServiceResponse],
@@ -889,9 +1034,12 @@ mod tests {
     };
     use crate::{
         length, root_style, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
-        AccessibilitySummary, ApproxTextMeasurer, ClipBehavior, ColorRgba, HostFrameOutput,
-        HostInteractionState, ImageContent, InputBehavior, RawKeyboardEvent, RawPointerEvent,
-        RawWheelEvent, StrokeStyle, TextStyle, UiNode, UiNodeStyle, UiPoint, UiVisual,
+        AccessibilitySummary, ApproxTextMeasurer, CanvasContent, CanvasRenderContext,
+        CanvasRenderOutput, CanvasRenderRegistry, ClipBehavior, ColorRgba, DirtyRegionSet,
+        HostFrameOutput, HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
+        ImageRenderRegistry, InputBehavior, RawKeyboardEvent, RawPointerEvent, RawWheelEvent,
+        RenderFrameRequest, RenderTarget, StrokeStyle, TextStyle, UiContent, UiNode, UiNodeStyle,
+        UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -1170,6 +1318,91 @@ mod tests {
         paint
             .require_node_kind("panel.label", PaintKindSelector::Text)
             .expect("text paint");
+    }
+
+    #[test]
+    fn render_assertions_check_canvas_image_handlers_and_interaction() {
+        let mut document = UiDocument::new(root_style(240.0, 120.0));
+        let root = document.root;
+        let mut canvas = UiNode::canvas(
+            "editor.viewport",
+            "editor.viewport",
+            fixed_style(120.0, 80.0).layout,
+        );
+        canvas.content = UiContent::Canvas(
+            CanvasContent::new("editor.viewport")
+                .pointer_capture(true)
+                .keyboard_capture(true)
+                .domain_hit_testing(true),
+        );
+        let canvas_node = document.add_child(root, canvas);
+        document.add_child(
+            root,
+            UiNode::image(
+                "editor.thumbnail",
+                ImageContent::new("images.thumbnail"),
+                fixed_style(48.0, 48.0).layout,
+            ),
+        );
+        document
+            .compute_layout(UiSize::new(240.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let mut dirty_regions = DirtyRegionSet::empty();
+        assert!(dirty_regions.push(document.node(canvas_node).layout.rect));
+        let interaction = HostNodeInteraction {
+            focused: true,
+            drag_captured: true,
+            ..HostNodeInteraction::default()
+        };
+        let request = RenderFrameRequest::new(
+            RenderTarget::window("main", UiSize::new(240.0, 120.0)),
+            UiSize::new(240.0, 120.0),
+            document.paint_list(),
+        )
+        .dirty_regions(dirty_regions)
+        .node_interaction(canvas_node, interaction);
+        let assertions = RenderAssertions::new(&request);
+
+        let canvas_request = assertions
+            .require_canvas("editor.viewport")
+            .expect("canvas request");
+        assert!(canvas_request.canvas.interaction.domain_hit_testing);
+        assertions
+            .require_canvas_host_capture("editor.viewport")
+            .expect("host capture");
+        assertions
+            .require_canvas_dirty("editor.viewport")
+            .expect("dirty canvas");
+        assertions
+            .require_image("images.thumbnail")
+            .expect("image request");
+        assertions
+            .require_node_interaction(canvas_node, interaction)
+            .expect("node interaction");
+
+        let mut canvas_registry: CanvasRenderRegistry<()> = CanvasRenderRegistry::new();
+        canvas_registry.register(
+            "editor.viewport",
+            |_context: CanvasRenderContext<'_, ()>| Ok(CanvasRenderOutput::new()),
+        );
+        let mut image_registry: ImageRenderRegistry<()> = ImageRenderRegistry::new();
+        image_registry.register(
+            "images.thumbnail",
+            |_context: ImageRenderContext<'_, ()>| Ok(ImageRenderOutput::new()),
+        );
+        assertions
+            .require_all_canvas_handlers(&canvas_registry)
+            .expect("canvas handlers");
+        assertions
+            .require_all_image_handlers(&image_registry)
+            .expect("image handlers");
+
+        let empty_canvas_registry: CanvasRenderRegistry<()> = CanvasRenderRegistry::new();
+        let missing = assertions
+            .require_all_canvas_handlers(&empty_canvas_registry)
+            .expect_err("missing canvas handler");
+        assert!(missing.message.contains("editor.viewport"));
     }
 
     #[test]

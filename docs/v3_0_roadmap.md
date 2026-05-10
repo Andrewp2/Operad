@@ -253,7 +253,9 @@ The branch starts from Operad 2.0.0 plus:
   assertions, paint-list assertions, RGBA pixel diffs with tolerances, dirty
   flags, frame timing sections, command-aware shortcut replay assertions, and
   stable-name accessibility assertions for roles, labels, values, summaries,
-  live regions, focus order, and active descendants.
+  live regions, focus order, active descendants, and render-frame conformance
+  assertions for canvas/image handler coverage, dirty regions, host input
+  capture, and per-node interaction state.
 - Layout audit checks in `src/lib.rs` now cover duplicate node names,
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   nodes outside the root, empty paint clips, and focusable controls missing from
