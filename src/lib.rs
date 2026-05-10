@@ -42,7 +42,7 @@ pub use charts::{
     ChartAxisMeta, ChartAxisOrientation, ChartAxisTick, ChartDataSummary, ChartHitCollection,
     ChartHitKind, ChartHitMeta, ChartOverlayKind, ChartOverlayLayer, ChartOverlayStack, ChartRange,
     ChartSample, ChartSelectionSummary, ChartSeriesId, ChartViewport, GridCell, GridCellRange,
-    GridMapGeometry, GridMapSummary, SparklineGeometry,
+    GridMapCellMeta, GridMapGeometry, GridMapSummary, SparklineGeometry,
 };
 pub use commands::{
     Command, CommandEffect, CommandEffectInvocation, CommandId, CommandMeta, CommandRegistry,

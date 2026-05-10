@@ -868,6 +868,87 @@ impl GridCell {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridMapCellMeta {
+    pub cell: GridCell,
+    pub id: Option<String>,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub selectable: bool,
+    pub enabled: bool,
+}
+
+impl GridMapCellMeta {
+    pub const fn new(cell: GridCell) -> Self {
+        Self {
+            cell,
+            id: None,
+            label: None,
+            value: None,
+            selectable: true,
+            enabled: true,
+        }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    pub const fn selectable(mut self, selectable: bool) -> Self {
+        self.selectable = selectable;
+        self
+    }
+
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub const fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    pub const fn hit_selectable(&self) -> bool {
+        self.enabled && self.selectable
+    }
+
+    fn hit_id(&self) -> String {
+        self.id
+            .clone()
+            .unwrap_or_else(|| default_grid_cell_id(self.cell))
+    }
+
+    fn hit_value(&self) -> String {
+        self.value
+            .clone()
+            .unwrap_or_else(|| format_grid_cell(self.cell))
+    }
+}
+
+impl From<GridCell> for GridMapCellMeta {
+    fn from(cell: GridCell) -> Self {
+        Self::new(cell)
+    }
+}
+
+impl From<&GridMapCellMeta> for GridMapCellMeta {
+    fn from(meta: &GridMapCellMeta) -> Self {
+        meta.clone()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GridCellRange {
     pub start_column: usize,
@@ -1055,12 +1136,36 @@ impl GridMapGeometry {
     }
 
     pub fn hit_meta_for_cell(self, cell: GridCell) -> Option<ChartHitMeta> {
-        self.cell_rect(cell).map(|rect| {
-            ChartHitMeta::new(ChartHitKind::GridCell, rect)
-                .id(format!("cell.{}.{}", cell.column, cell.row))
-                .cell(cell)
-                .value(format_grid_cell(cell))
+        self.hit_meta_for_cell_meta(&GridMapCellMeta::new(cell))
+    }
+
+    pub fn hit_meta_for_cell_meta(self, meta: &GridMapCellMeta) -> Option<ChartHitMeta> {
+        self.cell_rect(meta.cell).map(|rect| {
+            let mut hit = ChartHitMeta::new(ChartHitKind::GridCell, rect)
+                .id(meta.hit_id())
+                .cell(meta.cell)
+                .value(meta.hit_value())
+                .selectable(meta.hit_selectable());
+            if let Some(label) = &meta.label {
+                hit = hit.label(label.clone());
+            }
+            hit
         })
+    }
+
+    pub fn hit_collection_for_cells<I, C>(self, cells: I) -> ChartHitCollection
+    where
+        I: IntoIterator<Item = C>,
+        C: Into<GridMapCellMeta>,
+    {
+        let mut collection = ChartHitCollection::new();
+        for cell in cells {
+            let meta = cell.into();
+            if let Some(hit) = self.hit_meta_for_cell_meta(&meta) {
+                collection.push(hit);
+            }
+        }
+        collection
     }
 
     pub fn hit_cell(self, point: UiPoint) -> Option<GridCell> {
@@ -1203,6 +1308,10 @@ fn format_chart_number(value: f32) -> String {
 
 fn format_grid_cell(cell: GridCell) -> String {
     format!("column {}, row {}", cell.column, cell.row)
+}
+
+fn default_grid_cell_id(cell: GridCell) -> String {
+    format!("cell.{}.{}", cell.column, cell.row)
 }
 
 fn format_index_range(start: usize, end: usize) -> String {
@@ -1476,6 +1585,99 @@ mod tests {
             geometry.visible_cell_range(UiRect::new(23.5, 24.0, 2.0, 2.0)),
             None
         );
+    }
+
+    #[test]
+    fn grid_map_cell_metadata_builds_domain_hit_targets() {
+        let geometry = GridMapGeometry::new(UiRect::new(0.0, 0.0, 90.0, 90.0), 3, 3);
+        let meta = GridMapCellMeta::new(GridCell::new(1, 2))
+            .id("die.B3")
+            .label("Die B3")
+            .value("yield 98.1%");
+
+        let hit = geometry.hit_meta_for_cell_meta(&meta).unwrap();
+
+        assert_eq!(hit.id.as_deref(), Some("die.B3"));
+        assert_eq!(hit.label.as_deref(), Some("Die B3"));
+        assert_eq!(hit.value.as_deref(), Some("yield 98.1%"));
+        assert_eq!(hit.cell, Some(GridCell::new(1, 2)));
+        assert_eq!(hit.bounds, UiRect::new(30.0, 60.0, 30.0, 30.0));
+        assert!(hit.selectable);
+    }
+
+    #[test]
+    fn grid_map_hit_collection_skips_out_of_bounds_cells() {
+        let geometry = GridMapGeometry::new(UiRect::new(0.0, 0.0, 40.0, 40.0), 2, 2);
+        let hits = geometry.hit_collection_for_cells([
+            GridMapCellMeta::new(GridCell::new(0, 0)).id("die.A1"),
+            GridMapCellMeta::new(GridCell::new(5, 0)).id("masked.outside"),
+            GridMapCellMeta::new(GridCell::new(1, 1)).id("die.B2"),
+        ]);
+
+        assert_eq!(hits.hits.len(), 2);
+        assert_eq!(
+            hits.hits
+                .iter()
+                .filter_map(|hit| hit.id.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["die.A1", "die.B2"]
+        );
+        assert_eq!(
+            hits.hit_test(UiPoint::new(30.0, 30.0))
+                .and_then(|hit| hit.id.as_deref()),
+            Some("die.B2")
+        );
+    }
+
+    #[test]
+    fn grid_map_cell_metadata_marks_disabled_cells_non_selectable() {
+        let geometry = GridMapGeometry::new(UiRect::new(0.0, 0.0, 40.0, 20.0), 2, 1);
+        let hits = geometry.hit_collection_for_cells([
+            GridMapCellMeta::new(GridCell::new(0, 0)).id("die.enabled"),
+            GridMapCellMeta::new(GridCell::new(1, 0))
+                .id("die.disabled")
+                .disabled(),
+        ]);
+
+        let disabled = hits
+            .hits
+            .iter()
+            .find(|hit| hit.id.as_deref() == Some("die.disabled"))
+            .unwrap();
+        assert!(!disabled.selectable);
+        assert_eq!(
+            hits.selectable_in_rect(UiRect::new(0.0, 0.0, 40.0, 20.0))
+                .iter()
+                .filter_map(|hit| hit.id.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["die.enabled"]
+        );
+    }
+
+    #[test]
+    fn grid_map_cell_metadata_exports_labels_values_and_ids() {
+        let geometry = GridMapGeometry::new(UiRect::new(0.0, 0.0, 20.0, 20.0), 1, 1);
+
+        let fallback = geometry
+            .hit_meta_for_cell_meta(&GridMapCellMeta::new(GridCell::new(0, 0)))
+            .unwrap();
+        assert_eq!(fallback.id.as_deref(), Some("cell.0.0"));
+        assert_eq!(fallback.value.as_deref(), Some("column 0, row 0"));
+        assert_eq!(fallback.label, None);
+
+        let custom = geometry
+            .hit_meta_for_cell_meta(
+                &GridMapCellMeta::new(GridCell::new(0, 0))
+                    .id("wafer.die.17")
+                    .label("Center die")
+                    .value("defects 2")
+                    .selectable(false),
+            )
+            .unwrap();
+        assert_eq!(custom.id.as_deref(), Some("wafer.die.17"));
+        assert_eq!(custom.label.as_deref(), Some("Center die"));
+        assert_eq!(custom.value.as_deref(), Some("defects 2"));
+        assert!(!custom.selectable);
     }
 
     #[test]

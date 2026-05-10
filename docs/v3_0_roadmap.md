@@ -237,6 +237,9 @@ The branch starts from Operad 2.0.0 plus:
   visible-cell queries, with screen-reader summaries, axis metadata, overlay
   layers, selection summaries, and hit metadata for chart series, sparklines,
   and grid-map surfaces.
+- Grid-map cell metadata in `src/charts.rs` for masked dense analytic surfaces,
+  domain cell IDs, labels, values, disabled/non-selectable cells, and hit
+  collections that skip out-of-bounds cells.
 - Dense table metadata in `src/widget_ext/data.rs` for sortable/filterable
   columns, app-owned sort/filter/resize commands, accessibility sort state,
   active-cell copy/export contracts, row/cell action metadata, sticky column
