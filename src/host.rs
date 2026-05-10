@@ -532,6 +532,61 @@ impl HostDocumentFrameOutput {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HostDocumentFrameState {
+    pub interaction: HostInteractionState,
+    pub accessibility: HostAccessibilityState,
+}
+
+impl HostDocumentFrameState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_parts(
+        interaction: HostInteractionState,
+        accessibility: HostAccessibilityState,
+    ) -> Self {
+        Self {
+            interaction,
+            accessibility,
+        }
+    }
+
+    pub fn with_interaction(mut self, interaction: HostInteractionState) -> Self {
+        self.interaction = interaction;
+        self
+    }
+
+    pub fn with_accessibility(mut self, accessibility: HostAccessibilityState) -> Self {
+        self.accessibility = accessibility;
+        self
+    }
+
+    pub fn host_frame_request(&self, viewport: UiSize) -> HostFrameRequest {
+        HostFrameRequest::new(viewport, self.interaction.clone())
+    }
+
+    pub fn document_frame_request(
+        &self,
+        viewport: UiSize,
+        target: RenderTarget,
+        host_output: HostFrameOutput,
+    ) -> HostDocumentFrameRequest {
+        HostDocumentFrameRequest::new(viewport, target, host_output)
+            .previous_accessibility_state(self.accessibility.clone())
+    }
+
+    pub fn apply_host_frame_output(&mut self, output: &HostFrameOutput) {
+        self.interaction = output.state.clone();
+    }
+
+    pub fn apply_document_frame_output(&mut self, output: &HostDocumentFrameOutput) {
+        self.interaction = output.host_output.state.clone();
+        self.accessibility = output.accessibility_state.clone();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostShellEvent {
     ResizePanel {
@@ -1157,6 +1212,58 @@ mod tests {
             request.previous_accessibility_preferences,
             Some(preferences)
         );
+    }
+
+    #[test]
+    fn host_document_frame_state_builds_requests_and_carries_outputs() {
+        let viewport = UiSize::new(180.0, 80.0);
+        let focused = UiNodeId(4);
+        let interaction = HostInteractionState {
+            focused: Some(focused),
+            ..HostInteractionState::default()
+        };
+        let accessibility = HostAccessibilityState::new().focused(Some(focused));
+        let mut state =
+            HostDocumentFrameState::from_parts(interaction.clone(), accessibility.clone());
+
+        let host_request = state.host_frame_request(viewport);
+        assert_eq!(host_request.viewport, viewport);
+        assert_eq!(host_request.state, interaction);
+
+        let host_output = HostFrameOutput::new(host_request.state.clone());
+        state.apply_host_frame_output(&host_output);
+        assert_eq!(state.interaction, host_output.state);
+
+        let frame_request = state.document_frame_request(
+            viewport,
+            RenderTarget::window("main", viewport),
+            host_output,
+        );
+        assert_eq!(frame_request.previous_focused, Some(Some(focused)));
+
+        let mut document = UiDocument::new(fixed_style(180.0, 80.0));
+        let button = document.add_child(
+            document.root,
+            UiNode::container("button", fixed_style(80.0, 28.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Button")
+                        .focusable(),
+                ),
+        );
+        let mut measurer = ApproxTextMeasurer;
+        let frame =
+            process_document_frame(&mut document, &mut measurer, frame_request).expect("frame");
+        state.apply_document_frame_output(&frame);
+
+        assert_eq!(state.interaction, frame.host_output.state);
+        assert_eq!(state.accessibility, frame.accessibility_state);
+        assert!(state
+            .accessibility
+            .tree
+            .as_ref()
+            .is_some_and(|tree| tree.node(button).is_some()));
     }
 
     #[test]
