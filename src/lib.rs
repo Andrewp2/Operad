@@ -2692,7 +2692,7 @@ impl UiDocument {
                 .filter(|accessibility| !accessibility.hidden)
             {
                 if accessibility_needs_name(accessibility.role)
-                    && !accessibility_has_name(accessibility)
+                    && accessibility_snapshot.accessible_name(id).is_none()
                 {
                     warnings.push(AuditWarning::AccessibleNameMissing {
                         node: id,
@@ -2790,18 +2790,6 @@ fn accessibility_focus_order(nodes: &[AccessibilityNode]) -> Vec<UiNodeId> {
         .collect::<Vec<_>>();
     focusable.sort_by_key(|(focus_order, document_order, _)| (*focus_order, *document_order));
     focusable.into_iter().map(|(_, _, id)| id).collect()
-}
-
-fn accessibility_has_name(accessibility: &AccessibilityMeta) -> bool {
-    accessibility
-        .label
-        .as_deref()
-        .is_some_and(|label| !label.trim().is_empty())
-        || !accessibility.relations.labelled_by.is_empty()
-        || accessibility
-            .summary
-            .as_ref()
-            .is_some_and(|summary| !summary.screen_reader_text().trim().is_empty())
 }
 
 fn accessibility_needs_name(role: AccessibilityRole) -> bool {
@@ -6649,6 +6637,35 @@ mod tests {
                 },
             ),
         );
+        let related_label = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "related_label",
+                "Related label",
+                TextStyle::default(),
+                Style {
+                    size: TaffySize {
+                        width: length(100.0),
+                        height: length(20.0),
+                    },
+                    ..Default::default()
+                },
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Label).label("Related label"),
+            ),
+        );
+        let named_by_relation = doc.add_child(
+            doc.root,
+            UiNode::container("named_by_relation", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .labelled_by(related_label)
+                        .action(AccessibilityAction::new("activate", "Activate"))
+                        .focusable(),
+                ),
+        );
         let relation_gap = doc.add_child(
             doc.root,
             UiNode::container("relation_gap", button_style(80.0, 24.0))
@@ -6687,6 +6704,11 @@ mod tests {
                 role: AccessibilityRole::Button,
             })
         );
+        assert!(warnings.contains(&AuditWarning::AccessibleNameMissing {
+            node: relation_gap,
+            name: "relation_gap".to_string(),
+            role: AccessibilityRole::Button,
+        }));
         assert!(
             warnings.contains(&AuditWarning::AccessibilityRelationTargetMissing {
                 node: relation_gap,
@@ -6695,6 +6717,11 @@ mod tests {
                 target: hidden_label,
             })
         );
+        assert!(!warnings.contains(&AuditWarning::AccessibleNameMissing {
+            node: named_by_relation,
+            name: "named_by_relation".to_string(),
+            role: AccessibilityRole::Button,
+        }));
         assert!(!warnings.contains(&AuditWarning::AccessibleNameMissing {
             node: complete,
             name: "complete".to_string(),
@@ -7233,6 +7260,11 @@ mod tests {
         assert_eq!(button_node.relations.labelled_by, vec![name]);
         assert_eq!(button_node.relations.described_by, vec![hint]);
         assert_eq!(button_node.relations.controls, vec![slider]);
+        assert_eq!(snapshot.accessible_name(button).as_deref(), Some("Play"));
+        assert_eq!(
+            snapshot.accessible_description(button).as_deref(),
+            Some("Starts transport")
+        );
 
         let slider_node = snapshot
             .nodes

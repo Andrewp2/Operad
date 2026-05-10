@@ -484,6 +484,43 @@ impl AccessibilityTree {
         self.nodes.iter().find(|node| node.id == id)
     }
 
+    pub fn accessible_name(&self, id: UiNodeId) -> Option<String> {
+        let node = self.node(id)?;
+        let related = self.relation_names(&node.relations.labelled_by);
+        if !related.is_empty() {
+            return Some(related.join(" "));
+        }
+        node.direct_accessible_name()
+    }
+
+    pub fn accessible_description(&self, id: UiNodeId) -> Option<String> {
+        let node = self.node(id)?;
+        let related = self.relation_descriptions(&node.relations.described_by);
+        if !related.is_empty() {
+            return Some(related.join(" "));
+        }
+        node.direct_accessible_description()
+    }
+
+    pub fn screen_reader_text(&self, id: UiNodeId) -> Option<String> {
+        let node = self.node(id)?;
+        let mut parts = Vec::new();
+        if let Some(name) = self.accessible_name(id) {
+            parts.push(name);
+        }
+        if let Some(value) = non_empty_text(node.value.as_deref()) {
+            parts.push(value);
+        }
+        if let Some(description) = self.accessible_description(id) {
+            parts.push(description);
+        }
+        parts.extend(accessibility_state_text(node));
+        if !node.key_shortcuts.is_empty() {
+            parts.push(format!("Shortcut: {}", node.key_shortcuts.join(", ")));
+        }
+        (!parts.is_empty()).then(|| parts.join(". "))
+    }
+
     pub fn focusable_nodes(&self) -> impl Iterator<Item = &AccessibilityNode> {
         self.nodes
             .iter()
@@ -525,6 +562,46 @@ impl AccessibilityTree {
 
         false
     }
+
+    fn relation_names(&self, ids: &[UiNodeId]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|id| self.node(*id))
+            .filter_map(AccessibilityNode::direct_accessible_name)
+            .collect()
+    }
+
+    fn relation_descriptions(&self, ids: &[UiNodeId]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|id| self.node(*id))
+            .filter_map(|node| {
+                node.direct_accessible_name()
+                    .or_else(|| node.direct_accessible_description())
+            })
+            .collect()
+    }
+}
+
+impl AccessibilityNode {
+    pub fn direct_accessible_name(&self) -> Option<String> {
+        non_empty_text(self.label.as_deref()).or_else(|| {
+            self.summary.as_ref().and_then(|summary| {
+                let text = summary.screen_reader_text();
+                non_empty_text(Some(&text))
+            })
+        })
+    }
+
+    pub fn direct_accessible_description(&self) -> Option<String> {
+        non_empty_text(self.hint.as_deref()).or_else(|| {
+            self.invalid.as_ref().map(|reason| {
+                if reason.trim().is_empty() {
+                    "Invalid".to_string()
+                } else {
+                    format!("Invalid: {}", reason.trim())
+                }
+            })
+        })
+    }
 }
 
 fn live_region_message(node: &AccessibilityNode) -> String {
@@ -552,6 +629,45 @@ fn live_region_message(node: &AccessibilityNode) -> String {
         }
     }
     parts.join(": ")
+}
+
+fn non_empty_text(text: Option<&str>) -> Option<String> {
+    text.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn accessibility_state_text(node: &AccessibilityNode) -> Vec<String> {
+    let mut parts = Vec::new();
+    if !node.enabled {
+        parts.push("Disabled".to_string());
+    }
+    if node.selected == Some(true) {
+        parts.push("Selected".to_string());
+    }
+    if let Some(checked) = node.checked {
+        parts.push(
+            match checked {
+                crate::AccessibilityChecked::False => "Not checked",
+                crate::AccessibilityChecked::True => "Checked",
+                crate::AccessibilityChecked::Mixed => "Mixed",
+            }
+            .to_string(),
+        );
+    }
+    if let Some(expanded) = node.expanded {
+        parts.push(if expanded { "Expanded" } else { "Collapsed" }.to_string());
+    }
+    if node.pressed == Some(true) {
+        parts.push("Pressed".to_string());
+    }
+    if node.read_only {
+        parts.push("Read only".to_string());
+    }
+    if node.required {
+        parts.push("Required".to_string());
+    }
+    parts
 }
 
 #[cfg(test)]
@@ -715,6 +831,53 @@ mod tests {
                 "Piano roll. Clip editor with note lanes and velocity lane. Visible bars: 1 through 8. Selected notes: 3. Use arrow keys to move selected notes"
             )
         );
+    }
+
+    #[test]
+    fn accessibility_tree_resolves_relation_names_and_screen_reader_text() {
+        let label = UiNodeId(1);
+        let hint = UiNodeId(2);
+        let button = UiNodeId(3);
+        let tree = AccessibilityTree {
+            nodes: vec![
+                AccessibilityNode {
+                    role: AccessibilityRole::Label,
+                    label: Some(" Play ".to_string()),
+                    ..accessible_node(label, None, false)
+                },
+                AccessibilityNode {
+                    role: AccessibilityRole::Tooltip,
+                    label: Some("Starts transport".to_string()),
+                    ..accessible_node(hint, None, false)
+                },
+                AccessibilityNode {
+                    role: AccessibilityRole::ToggleButton,
+                    label: Some("Transport play".to_string()),
+                    value: Some("On".to_string()),
+                    pressed: Some(true),
+                    key_shortcuts: vec!["Space".to_string()],
+                    relations: crate::AccessibilityRelations {
+                        labelled_by: vec![label],
+                        described_by: vec![hint],
+                        ..Default::default()
+                    },
+                    ..accessible_node(button, None, true)
+                },
+            ],
+            focus_order: vec![button],
+            modal_scope: None,
+        };
+
+        assert_eq!(tree.accessible_name(button).as_deref(), Some("Play"));
+        assert_eq!(
+            tree.accessible_description(button).as_deref(),
+            Some("Starts transport")
+        );
+        assert_eq!(
+            tree.screen_reader_text(button).as_deref(),
+            Some("Play. On. Starts transport. Pressed. Shortcut: Space")
+        );
+        assert_eq!(tree.screen_reader_text(UiNodeId(404)), None);
     }
 
     #[test]
