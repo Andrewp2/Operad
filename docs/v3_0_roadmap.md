@@ -264,6 +264,10 @@ The branch starts from Operad 2.0.0 plus:
 - Text-input rendering contracts in `src/lib.rs` for deterministic caret rects,
   multiline selection rects, scene paint plans, and accessibility summaries that
   expose caret and selection position to backend adapters.
+- Text-input platform helpers in `src/lib.rs` for deriving IME sessions from
+  caret geometry, producing activate/update/deactivate and keyboard
+  show/hide requests, mapping clipboard outcomes to platform clipboard
+  requests, and applying IME commit/preedit/delete responses.
 - Data-table export helpers in `src/widget_ext/data.rs` for selected rows,
   visible rows, active cells, and ranges, with TSV/CSV formatting and clipboard
   command-effect integration.

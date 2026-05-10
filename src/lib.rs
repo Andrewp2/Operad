@@ -2670,6 +2670,10 @@ mod widget_ext;
 pub mod widgets {
     use std::ops::Range;
 
+    use crate::platform::{
+        ClipboardRequest, LogicalRect, TextImeRequest, TextImeResponse, TextImeSession,
+        TextInputId, TextRange,
+    };
     use taffy::prelude::{AlignItems, JustifyContent};
 
     use super::*;
@@ -3420,6 +3424,63 @@ pub mod widgets {
             TextInputRenderPlan::new(self, metrics, text_style, paint)
         }
 
+        pub fn ime_session(&self, context: TextInputPlatformContext) -> TextImeSession {
+            TextImeSession::new(context.input, context.cursor_rect)
+                .surrounding_text(self.text.clone(), self.platform_selection_range())
+                .multiline(self.multiline)
+        }
+
+        pub fn activate_ime_request(&self, context: TextInputPlatformContext) -> TextImeRequest {
+            TextImeRequest::Activate(self.ime_session(context))
+        }
+
+        pub fn update_ime_request(&self, context: TextInputPlatformContext) -> TextImeRequest {
+            TextImeRequest::Update(self.ime_session(context))
+        }
+
+        pub fn deactivate_ime_request(input: TextInputId) -> TextImeRequest {
+            TextImeRequest::Deactivate { input }
+        }
+
+        pub fn show_keyboard_request(input: TextInputId) -> TextImeRequest {
+            TextImeRequest::ShowKeyboard { input }
+        }
+
+        pub fn hide_keyboard_request(input: TextInputId) -> TextImeRequest {
+            TextImeRequest::HideKeyboard { input }
+        }
+
+        pub fn apply_ime_response(&mut self, response: &TextImeResponse) -> TextInputOutcome {
+            let before = self.text.clone();
+            let mut phase = EditPhase::Preview;
+            match response {
+                TextImeResponse::Commit { text, .. } => {
+                    self.composing = None;
+                    self.insert_text(text);
+                    phase = EditPhase::UpdateEdit;
+                }
+                TextImeResponse::Preedit { text, .. } => {
+                    self.composing = (!text.is_empty()).then_some(text.clone());
+                }
+                TextImeResponse::DeleteSurrounding {
+                    before_chars,
+                    after_chars,
+                    ..
+                } => {
+                    if self.delete_surrounding_chars(*before_chars, *after_chars) {
+                        phase = EditPhase::UpdateEdit;
+                    }
+                }
+                TextImeResponse::Deactivated { .. } => {
+                    self.composing = None;
+                }
+                TextImeResponse::Activated { .. }
+                | TextImeResponse::Unsupported
+                | TextImeResponse::Error(_) => {}
+            }
+            TextInputOutcome::new(phase, before != self.text, None)
+        }
+
         pub fn select_all(&mut self) {
             self.selection_anchor = Some(0);
             self.caret = self.text.len();
@@ -3595,6 +3656,37 @@ pub mod widgets {
             TextInputOutcome::new(phase, before != self.text, clipboard)
         }
 
+        fn platform_selection_range(&self) -> TextRange {
+            self.selected_range()
+                .map(|range| TextRange::new(range.start, range.end))
+                .unwrap_or_else(|| TextRange::caret(clamp_to_char_boundary(&self.text, self.caret)))
+        }
+
+        fn delete_surrounding_chars(&mut self, before_chars: usize, after_chars: usize) -> bool {
+            self.normalize_selection();
+            let mut start = self.caret;
+            for _ in 0..before_chars {
+                if start == 0 {
+                    break;
+                }
+                start = previous_char_boundary(&self.text, start);
+            }
+            let mut end = self.caret;
+            for _ in 0..after_chars {
+                if end >= self.text.len() {
+                    break;
+                }
+                end = next_char_boundary(&self.text, end);
+            }
+            if start == end {
+                return false;
+            }
+            self.text.replace_range(start..end, "");
+            self.caret = start;
+            self.selection_anchor = None;
+            true
+        }
+
         fn normalize_selection(&mut self) {
             self.caret = clamp_to_char_boundary(&self.text, self.caret);
             self.selection_anchor = self
@@ -3642,6 +3734,36 @@ pub mod widgets {
                 );
             }
             summary
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct TextInputPlatformContext {
+        pub input: TextInputId,
+        pub cursor_rect: LogicalRect,
+        pub target: Option<UiNodeId>,
+    }
+
+    impl TextInputPlatformContext {
+        pub fn new(input: TextInputId, cursor_rect: LogicalRect) -> Self {
+            Self {
+                input,
+                cursor_rect,
+                target: None,
+            }
+        }
+
+        pub fn from_caret_rect(input: TextInputId, caret: TextInputCaretRect) -> Self {
+            Self::new(input, logical_rect_from_ui_rect(caret.rect))
+        }
+
+        pub fn for_node(node: UiNodeId, caret: TextInputCaretRect) -> Self {
+            Self::from_caret_rect(text_input_id_for_node(node), caret).target(node)
+        }
+
+        pub const fn target(mut self, target: UiNodeId) -> Self {
+            self.target = Some(target);
+            self
         }
     }
 
@@ -3788,6 +3910,15 @@ pub mod widgets {
         Paste,
     }
 
+    impl TextInputClipboardAction {
+        pub fn clipboard_request(&self) -> ClipboardRequest {
+            match self {
+                Self::Copy(text) | Self::Cut(text) => ClipboardRequest::WriteText(text.clone()),
+                Self::Paste => ClipboardRequest::ReadText,
+            }
+        }
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct TextInputOutcome {
         pub phase: EditPhase,
@@ -3810,6 +3941,12 @@ pub mod widgets {
                 canceled: phase == EditPhase::CancelEdit,
                 clipboard,
             }
+        }
+
+        pub fn clipboard_request(&self) -> Option<ClipboardRequest> {
+            self.clipboard
+                .as_ref()
+                .map(TextInputClipboardAction::clipboard_request)
         }
     }
 
@@ -4168,6 +4305,10 @@ pub mod widgets {
         } else {
             fallback.max(1.0)
         }
+    }
+
+    fn logical_rect_from_ui_rect(rect: UiRect) -> LogicalRect {
+        LogicalRect::new(rect.x, rect.y, rect.width, rect.height)
     }
 
     fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
@@ -6492,6 +6633,117 @@ mod tests {
         let mut multiline = widgets::TextInputState::new("").multiline(true);
         multiline.paste_text("a\r\nb\rc");
         assert_eq!(multiline.text, "a\nb\nc");
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_maps_clipboard_and_ime_platform_contracts() {
+        let mut state = widgets::TextInputState::new("scale").multiline(true);
+        state.caret = 2;
+        state.selection_anchor = Some(0);
+        let metrics =
+            widgets::TextInputLayoutMetrics::new(UiRect::new(10.0, 20.0, 180.0, 40.0), 8.0, 18.0)
+                .caret_width(2.0);
+        let context =
+            widgets::TextInputPlatformContext::for_node(UiNodeId(7), state.caret_rect(metrics));
+
+        let session = state.ime_session(context.clone());
+        assert_eq!(context.target, Some(UiNodeId(7)));
+        assert_eq!(session.input, text_input_id_for_node(UiNodeId(7)));
+        assert_eq!(
+            session.cursor_rect,
+            platform::LogicalRect::new(26.0, 20.0, 2.0, 18.0)
+        );
+        assert_eq!(session.surrounding_text, "scale");
+        assert_eq!(session.selection, platform::TextRange::new(0, 2));
+        assert!(session.multiline);
+        assert_eq!(
+            state.activate_ime_request(context.clone()),
+            platform::TextImeRequest::Activate(session.clone())
+        );
+        assert_eq!(
+            state.update_ime_request(context.clone()),
+            platform::TextImeRequest::Update(session)
+        );
+        assert_eq!(
+            widgets::TextInputState::deactivate_ime_request(context.input.clone()),
+            platform::TextImeRequest::Deactivate {
+                input: context.input.clone()
+            }
+        );
+        assert_eq!(
+            widgets::TextInputState::show_keyboard_request(context.input.clone()),
+            platform::TextImeRequest::ShowKeyboard {
+                input: context.input.clone()
+            }
+        );
+        assert_eq!(
+            widgets::TextInputState::hide_keyboard_request(context.input.clone()),
+            platform::TextImeRequest::HideKeyboard {
+                input: context.input.clone()
+            }
+        );
+
+        let copy = state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::Character('c'),
+            modifiers: KeyModifiers {
+                ctrl: true,
+                ..KeyModifiers::NONE
+            },
+        });
+        assert_eq!(
+            copy.clipboard_request(),
+            Some(platform::ClipboardRequest::WriteText("sc".to_string()))
+        );
+        let paste = state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::Character('v'),
+            modifiers: KeyModifiers {
+                ctrl: true,
+                ..KeyModifiers::NONE
+            },
+        });
+        assert_eq!(
+            paste.clipboard_request(),
+            Some(platform::ClipboardRequest::ReadText)
+        );
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_applies_ime_commit_preedit_and_delete_responses() {
+        let input = platform::TextInputId::new("field");
+        let mut state = widgets::TextInputState::new("abcd");
+        state.caret = 2;
+
+        let preedit = state.apply_ime_response(&platform::TextImeResponse::Preedit {
+            input: input.clone(),
+            text: "候".to_string(),
+            selection: Some(platform::TextRange::caret(1)),
+        });
+        assert!(!preedit.changed);
+        assert_eq!(state.composing.as_deref(), Some("候"));
+
+        let commit = state.apply_ime_response(&platform::TextImeResponse::Commit {
+            input: input.clone(),
+            text: "X".to_string(),
+        });
+        assert!(commit.changed);
+        assert_eq!(state.text, "abXcd");
+        assert_eq!(state.caret, 3);
+        assert_eq!(state.composing, None);
+
+        let delete = state.apply_ime_response(&platform::TextImeResponse::DeleteSurrounding {
+            input: input.clone(),
+            before_chars: 1,
+            after_chars: 1,
+        });
+        assert!(delete.changed);
+        assert_eq!(state.text, "abd");
+        assert_eq!(state.caret, 2);
+
+        state.composing = Some("x".to_string());
+        state.apply_ime_response(&platform::TextImeResponse::Deactivated { input });
+        assert_eq!(state.composing, None);
     }
 
     #[cfg(feature = "widgets")]
