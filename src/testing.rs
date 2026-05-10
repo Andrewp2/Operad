@@ -3254,6 +3254,140 @@ impl<'a> FrameTimingAssertions<'a> {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrameTimingSeries {
+    name: String,
+    frames: Vec<FrameTiming>,
+}
+
+impl FrameTimingSeries {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            frames: Vec::new(),
+        }
+    }
+
+    pub fn frame(mut self, timing: FrameTiming) -> Self {
+        self.push(timing);
+        self
+    }
+
+    pub fn push(&mut self, timing: FrameTiming) {
+        self.frames.push(timing);
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn frames(&self) -> &[FrameTiming] {
+        &self.frames
+    }
+
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    pub fn section_names(&self) -> Vec<&str> {
+        let mut names = Vec::new();
+        for frame in &self.frames {
+            for section in &frame.sections {
+                if !names.contains(&section.name.as_str()) {
+                    names.push(section.name.as_str());
+                }
+            }
+        }
+        names
+    }
+
+    pub fn total_samples(&self) -> PerformanceSamples {
+        let mut samples = PerformanceSamples::new(format!("{}.total", self.name));
+        for frame in &self.frames {
+            samples.push(frame.total());
+        }
+        samples
+    }
+
+    pub fn section_samples(&self, section_name: &str) -> PerformanceSamples {
+        let mut samples = PerformanceSamples::new(format!("{}.{}", self.name, section_name));
+        for frame in &self.frames {
+            for section in &frame.sections {
+                if section.name == section_name {
+                    samples.push(section.duration);
+                }
+            }
+        }
+        samples
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FrameTimingSeriesAssertions<'a> {
+    series: &'a FrameTimingSeries,
+}
+
+impl<'a> FrameTimingSeriesAssertions<'a> {
+    pub const fn new(series: &'a FrameTimingSeries) -> Self {
+        Self { series }
+    }
+
+    pub const fn series(&self) -> &'a FrameTimingSeries {
+        self.series
+    }
+
+    pub fn require_frame_count(&self, expected_count: usize) -> TestResult {
+        let actual = self.series.len();
+        if actual == expected_count {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected {expected_count} frame timing samples, got {actual}",
+                self.series.name()
+            )))
+        }
+    }
+
+    pub fn require_section_sample_count(
+        &self,
+        section_name: &str,
+        expected_count: usize,
+    ) -> TestResult {
+        PerformanceAssertions::new(&self.series.section_samples(section_name))
+            .require_sample_count(expected_count)
+    }
+
+    pub fn require_total_average_within(&self, budget: Duration) -> TestResult<Duration> {
+        PerformanceAssertions::new(&self.series.total_samples()).require_average_within(budget)
+    }
+
+    pub fn require_total_max_within(&self, budget: Duration) -> TestResult<Duration> {
+        PerformanceAssertions::new(&self.series.total_samples()).require_max_sample_within(budget)
+    }
+
+    pub fn require_section_average_within(
+        &self,
+        section_name: &str,
+        budget: Duration,
+    ) -> TestResult<Duration> {
+        PerformanceAssertions::new(&self.series.section_samples(section_name))
+            .require_average_within(budget)
+    }
+
+    pub fn require_section_max_within(
+        &self,
+        section_name: &str,
+        budget: Duration,
+    ) -> TestResult<Duration> {
+        PerformanceAssertions::new(&self.series.section_samples(section_name))
+            .require_max_sample_within(budget)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PerformanceSamples {
     name: String,
     samples: Vec<Duration>,
@@ -4833,6 +4967,50 @@ mod tests {
             .require_section_within("paint", Duration::from_millis(3))
             .is_err());
         assert!(assertions.require_section("input").is_err());
+
+        let series = FrameTimingSeries::new("scenario")
+            .frame(timing.clone())
+            .frame(
+                FrameTiming::new()
+                    .section("layout", Duration::from_millis(2))
+                    .section("paint", Duration::from_millis(6))
+                    .section("render", Duration::from_millis(7)),
+            );
+        assert_eq!(series.len(), 2);
+        assert_eq!(series.section_names(), vec!["layout", "paint", "render"]);
+        assert_eq!(series.total_samples().samples().len(), 2);
+        assert_eq!(series.section_samples("layout").samples().len(), 2);
+        assert_eq!(series.section_samples("input").samples().len(), 0);
+
+        let series_assertions = FrameTimingSeriesAssertions::new(&series);
+        series_assertions
+            .require_frame_count(2)
+            .expect("frame count");
+        series_assertions
+            .require_section_sample_count("paint", 2)
+            .expect("paint sample count");
+        series_assertions
+            .require_total_average_within(Duration::from_millis(15))
+            .expect("total average budget");
+        series_assertions
+            .require_total_max_within(Duration::from_millis(15))
+            .expect("total max budget");
+        series_assertions
+            .require_section_average_within("paint", Duration::from_millis(5))
+            .expect("paint average budget");
+        series_assertions
+            .require_section_max_within("paint", Duration::from_millis(6))
+            .expect("paint max budget");
+        assert!(series_assertions.require_frame_count(3).is_err());
+        assert!(series_assertions
+            .require_section_sample_count("input", 1)
+            .is_err());
+        assert!(series_assertions
+            .require_section_average_within("paint", Duration::from_millis(4))
+            .is_err());
+        assert!(series_assertions
+            .require_section_max_within("paint", Duration::from_millis(5))
+            .is_err());
 
         let mut samples = PerformanceSamples::new("render smoke");
         samples.push(Duration::from_millis(4));
