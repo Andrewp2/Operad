@@ -15,8 +15,9 @@ use crate::platform::{
     PlatformRequestIdAllocator, PlatformServiceRequest, ResourceHandle, ResourceId, ResourceKind,
 };
 use crate::{
-    CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintImage, PaintItem, PaintKind, PaintList,
-    PaintTransform, ShaderEffect, UiNodeId, UiPoint, UiRect, UiSize,
+    AccessibilityMeta, AccessibilityRole, AccessibilitySummary, CanvasContent, ColorRgba,
+    DirtyFlags, FrameTiming, PaintImage, PaintItem, PaintKind, PaintList, PaintTransform,
+    ShaderEffect, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -757,6 +758,58 @@ impl CanvasHitTarget {
     pub fn contains(&self, point: UiPoint) -> bool {
         !self.disabled && self.rect.contains_point(point)
     }
+
+    pub fn display_label(&self) -> &str {
+        self.label.as_deref().unwrap_or(self.id.as_str())
+    }
+
+    pub fn display_value(&self, index: usize, total: usize) -> String {
+        let position = format!("{} of {}", index.saturating_add(1), total);
+        match &self.value {
+            Some(value) if !value.is_empty() => format!("{value}; target {position}"),
+            _ => format!("target {position}"),
+        }
+    }
+
+    pub fn accessibility_summary(&self) -> AccessibilitySummary {
+        let mut summary = AccessibilitySummary::new(self.display_label())
+            .item("Target id", self.id.clone())
+            .item(
+                "Bounds",
+                format!(
+                    "{:.1}, {:.1}, {:.1}, {:.1}",
+                    self.rect.x, self.rect.y, self.rect.width, self.rect.height
+                ),
+            );
+        if let Some(value) = &self.value {
+            if !value.is_empty() {
+                summary = summary.item("Value", value.clone());
+            }
+        }
+        for (key, value) in &self.metadata {
+            summary = summary.item(key.clone(), value.clone());
+        }
+        summary
+    }
+
+    pub fn accessibility_meta(
+        &self,
+        index: usize,
+        total: usize,
+        active: bool,
+    ) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::ListItem)
+            .label(self.display_label())
+            .value(self.display_value(index, total))
+            .selected(active)
+            .summary(self.accessibility_summary());
+        if self.disabled {
+            meta = meta.disabled();
+        } else {
+            meta = meta.focusable();
+        }
+        meta
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -797,6 +850,41 @@ impl CanvasHitCollection {
                     .cmp(&right.z_index)
                     .then_with(|| left.id.cmp(&right.id))
             })
+    }
+
+    pub fn accessibility_summary(&self, title: impl Into<String>) -> AccessibilitySummary {
+        let enabled = self
+            .targets
+            .iter()
+            .filter(|target| !target.disabled)
+            .count();
+        let labelled = self
+            .targets
+            .iter()
+            .filter(|target| target.label.is_some())
+            .count();
+        AccessibilitySummary::new(title)
+            .item("Canvas key", self.key.clone())
+            .item("Targets", self.targets.len().to_string())
+            .item("Enabled targets", enabled.to_string())
+            .item("Labelled targets", labelled.to_string())
+    }
+
+    pub fn accessibility_meta(&self, label: impl Into<String>) -> AccessibilityMeta {
+        let label = label.into();
+        let enabled = self
+            .targets
+            .iter()
+            .filter(|target| !target.disabled)
+            .count();
+        AccessibilityMeta::new(AccessibilityRole::List)
+            .label(label.clone())
+            .value(format!(
+                "{} targets; {} enabled",
+                self.targets.len(),
+                enabled
+            ))
+            .summary(self.accessibility_summary(label))
     }
 }
 
@@ -2175,6 +2263,48 @@ mod tests {
             report.into_strict_result().unwrap_err(),
             RenderError::MissingCanvasRenderer("missing.viewport".to_string())
         );
+    }
+
+    #[test]
+    fn canvas_hit_targets_export_accessibility_metadata() {
+        let target = CanvasHitTarget::new("item.7", UiRect::new(10.0, 12.0, 30.0, 16.0))
+            .label("Selected item")
+            .value("ready")
+            .metadata("Layer", "foreground")
+            .z_index(2);
+        let disabled =
+            CanvasHitTarget::new("disabled", UiRect::new(0.0, 0.0, 80.0, 80.0)).disabled(true);
+        let collection = CanvasHitCollection::new(UiNodeId(5), "editor.viewport")
+            .target(disabled.clone())
+            .target(target.clone());
+
+        let meta = target.accessibility_meta(1, 2, true);
+        assert_eq!(meta.role, AccessibilityRole::ListItem);
+        assert_eq!(meta.label.as_deref(), Some("Selected item"));
+        assert_eq!(meta.value.as_deref(), Some("ready; target 2 of 2"));
+        assert_eq!(meta.selected, Some(true));
+        assert!(meta.focusable);
+        let summary_text = meta.summary.unwrap().screen_reader_text();
+        assert!(summary_text.contains("Target id: item.7"));
+        assert!(summary_text.contains("Layer: foreground"));
+
+        let disabled_meta = disabled.accessibility_meta(0, 2, false);
+        assert!(!disabled_meta.enabled);
+        assert!(!disabled_meta.focusable);
+        assert_eq!(
+            collection.topmost_at(UiPoint::new(14.0, 14.0)),
+            Some(&target)
+        );
+
+        let collection_meta = collection.accessibility_meta("Canvas hits");
+        assert_eq!(collection_meta.role, AccessibilityRole::List);
+        assert_eq!(
+            collection_meta.value.as_deref(),
+            Some("2 targets; 1 enabled")
+        );
+        let collection_text = collection_meta.summary.unwrap().screen_reader_text();
+        assert!(collection_text.contains("Canvas key: editor.viewport"));
+        assert!(collection_text.contains("Labelled targets: 1"));
     }
 
     #[test]

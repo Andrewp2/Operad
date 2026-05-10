@@ -335,6 +335,8 @@ The branch starts from Operad 2.0.0 plus:
   outputs, with per-canvas hit collections aggregated by render reports so apps
   can map their own domain IDs to viewport/editor selections without Operad
   naming those domains.
+- Canvas hit targets and collections expose accessibility metadata and
+  screen-reader summaries for app-owned canvas/editor/viewport surfaces.
 - Canvas host-capture plans in `src/renderer.rs` convert canvas interaction
   policies into renderer-neutral host capture metadata and cursor
   confine/visibility platform requests for pointer-locked surfaces.
