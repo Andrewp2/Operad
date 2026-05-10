@@ -19,6 +19,38 @@ Operad 3.0 should focus on workstation-grade UI infrastructure:
 8. Backend-neutral input, platform output, image handles, and layer policy.
 9. Screenshot, layout, interaction, and performance tooling.
 
+## Cross-App Reuse Gate
+
+Every v3 slice should be reviewed as shared toolkit infrastructure before it is
+implemented. A feature belongs in Operad when it can be described without game,
+music, semiconductor, or application-specific nouns and when consumers can bind
+their own state, commands, and drawing to the same primitive.
+
+Use neutral API names for reusable mechanics:
+
+- Prefer `TimelineGeometry`, `LaneGeometry`, `RangeItem`, `CurvePoint`,
+  `Overlay`, `CommandId`, `CanvasContent`, `DataTable`, `EditableForm`, and
+  `ShellRegion`.
+- Avoid public APIs named after product concepts such as inventory slots, MIDI
+  notes, wafer dies, fabrication recipes, synth parameters, or game debug tools
+  unless the type is explicitly only test/sample data.
+- Keep examples free to mention Orbifold clips, Fabricad wafers, or game HUDs,
+  but keep core structs and widget contracts app-neutral.
+
+Before landing a nontrivial v3 primitive, it should have a short reuse check:
+
+- **Game:** does this remove egui coupling, improve renderer-neutral input,
+  layering, assets, debugging, or reusable menus/HUD/editor tools?
+- **Orbifold:** does this support dense workstation shell, timeline/lane/range
+  editing, commands, text/list inputs, or custom editor surfaces without owning
+  musical state?
+- **Fabricad/layout:** does this support inspectable panels, forms, data grids,
+  canvas/viewports, charts, auditability, accessibility, or custom domain hit
+  targets without owning semiconductor state?
+
+If a slice only benefits one application, keep it in that application unless it
+can be reduced to a neutral primitive with typed app-owned payloads.
+
 ## Accessibility Track
 
 The first v3 commit expands the core accessibility contract beyond v2 metadata:
@@ -117,18 +149,24 @@ Add app-owned command routing without importing app semantics:
 
 ## Shell And Editor Track
 
-Make common DAW layouts easier to assemble:
+Make dense workstation layouts easier to assemble without baking in one
+application's domain model:
 
-- Persistent top, left, track, arrangement, editor, right, and status regions.
+- Persistent top, left, lane list, timeline/editor, right, bottom, and status
+  regions.
 - Higher-level shell host for menu/transport/status bars, left/right/bottom
   resizable panels, central workspace, scroll containers, visibility, docking,
   saved layout state, and persisted offsets.
 - Split pane collapse/restore, min/max sizes, and keyboard accessible resizing.
 - Dock panel visibility and persisted size state.
 - Tab strips for inspector/editor panels.
-- Track list and arrangement scroll synchronization.
+- Lane-list and timeline/editor scroll synchronization.
 - Editor surfaces with world/view transforms, hover, hit testing, drag capture,
   marquee selection, snapping, cursor override, tool mode, and overlay layers.
+- Timeline range-item geometry, resize handles, lane headers, curve points, and
+  segment helpers should be named as generic editor primitives; Orbifold clips
+  and automation, Fabricad timeline/review ranges, and game editor ranges should
+  all adapt their own domain payloads on top.
 - Scene/editor text should not require an egui painter escape hatch.
 
 ## Data And Editing Track
@@ -184,6 +222,9 @@ The branch starts from Operad 2.0.0 plus:
   states where the current APIs already expose that information.
 - Orbifold, game-agent, and Fabricad/Rust-layout v3 migration notes preserved
   under `docs/`.
+- Cross-application reuse criteria in this roadmap now require new primitives
+  to be named and tested as neutral toolkit mechanics, with product-specific
+  concepts passed in as app-owned data rather than embedded in Operad APIs.
 - Renderer-neutral paint extensions in `src/paint.rs` for gradient brushes,
   stroke alignment, corner radii, shadows/glows/inset shadows, anchored scene
   text with alignment and overflow policy, image placement, path primitives,
