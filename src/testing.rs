@@ -547,6 +547,64 @@ impl<'a> AuditAssertions<'a> {
         })
     }
 
+    pub fn require_accessibility_action_id_gap(&self, name: &str) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityActionIdMissing { .. })
+        })
+    }
+
+    pub fn require_no_accessibility_action_id_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityActionIdMissing { .. })
+        })
+    }
+
+    pub fn require_accessibility_action_label_gap(&self, name: &str) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::AccessibilityActionLabelMissing { .. }
+            )
+        })
+    }
+
+    pub fn require_no_accessibility_action_label_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::AccessibilityActionLabelMissing { .. }
+            )
+        })
+    }
+
+    pub fn require_accessibility_action_duplicate_gap(
+        &self,
+        name: &str,
+        action_id: &str,
+    ) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::AccessibilityActionDuplicate {
+                    action_id: actual,
+                    ..
+                } if actual == action_id
+            )
+        })
+    }
+
+    pub fn require_no_accessibility_action_duplicate_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(warning, AuditWarning::AccessibilityActionDuplicate { .. })
+        })
+    }
+
     pub fn require_accessibility_value_gap(&self, name: &str) -> TestResult<&AuditWarning> {
         let node = self.node_id(name)?;
         self.require_warning_for(name, node, |warning| {
@@ -653,6 +711,9 @@ fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
         warning,
         AuditWarning::AccessibleNameMissing { .. }
             | AuditWarning::AccessibilityActionMissing { .. }
+            | AuditWarning::AccessibilityActionIdMissing { .. }
+            | AuditWarning::AccessibilityActionLabelMissing { .. }
+            | AuditWarning::AccessibilityActionDuplicate { .. }
             | AuditWarning::AccessibilityValueMissing { .. }
             | AuditWarning::AccessibilityValueRangeMissing { .. }
             | AuditWarning::AccessibilityRelationTargetMissing { .. }
@@ -669,6 +730,9 @@ fn warning_node(warning: &AuditWarning) -> Option<UiNodeId> {
         | AuditWarning::FocusableMissingFromAccessibilityTree { node, .. }
         | AuditWarning::AccessibleNameMissing { node, .. }
         | AuditWarning::AccessibilityActionMissing { node, .. }
+        | AuditWarning::AccessibilityActionIdMissing { node, .. }
+        | AuditWarning::AccessibilityActionLabelMissing { node, .. }
+        | AuditWarning::AccessibilityActionDuplicate { node, .. }
         | AuditWarning::AccessibilityValueMissing { node, .. }
         | AuditWarning::AccessibilityValueRangeMissing { node, .. }
         | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
@@ -2456,6 +2520,40 @@ mod tests {
         );
         document.add_child(
             root,
+            UiNode::container("action_id_gap", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Blank action id")
+                        .action(AccessibilityAction::new(" ", "Activate"))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
+            UiNode::container("action_label_gap", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Blank action label")
+                        .action(AccessibilityAction::new("activate", " "))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
+            UiNode::container("action_duplicate_gap", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Duplicate action")
+                        .action(AccessibilityAction::new("activate", "Activate"))
+                        .action(AccessibilityAction::new("activate", "Activate again"))
+                        .focusable(),
+                ),
+        );
+        document.add_child(
+            root,
             UiNode::container("complete", fixed_style(80.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
@@ -2506,11 +2604,29 @@ mod tests {
             .require_accessibility_value_range_gap("value_gap")
             .expect("missing range");
         audit
+            .require_accessibility_action_id_gap("action_id_gap")
+            .expect("missing action id");
+        audit
+            .require_accessibility_action_label_gap("action_label_gap")
+            .expect("missing action label");
+        audit
+            .require_accessibility_action_duplicate_gap("action_duplicate_gap", "activate")
+            .expect("duplicate action id");
+        audit
             .require_no_accessible_name_gap("complete")
             .expect("complete label");
         audit
             .require_no_accessibility_action_gap("complete")
             .expect("complete action");
+        audit
+            .require_no_accessibility_action_id_gap("complete")
+            .expect("complete action id");
+        audit
+            .require_no_accessibility_action_label_gap("complete")
+            .expect("complete action label");
+        audit
+            .require_no_accessibility_action_duplicate_gap("complete")
+            .expect("complete action ids");
         audit
             .require_no_relation_target_gap("complete")
             .expect("complete relations");

@@ -2494,6 +2494,20 @@ pub enum AuditWarning {
         name: String,
         role: AccessibilityRole,
     },
+    AccessibilityActionIdMissing {
+        node: UiNodeId,
+        name: String,
+    },
+    AccessibilityActionLabelMissing {
+        node: UiNodeId,
+        name: String,
+        action_id: String,
+    },
+    AccessibilityActionDuplicate {
+        node: UiNodeId,
+        name: String,
+        action_id: String,
+    },
     AccessibilityValueMissing {
         node: UiNodeId,
         name: String,
@@ -2721,6 +2735,7 @@ impl UiDocument {
                         role: accessibility.role,
                     });
                 }
+                push_action_quality_warnings(&mut warnings, id, &node.name, &accessibility.actions);
                 if accessibility_needs_value(accessibility.role)
                     && accessibility
                         .value
@@ -2897,6 +2912,37 @@ fn accessibility_needs_value_range(role: AccessibilityRole) -> bool {
         role,
         AccessibilityRole::Slider | AccessibilityRole::SpinButton
     )
+}
+
+fn push_action_quality_warnings(
+    warnings: &mut Vec<AuditWarning>,
+    node: UiNodeId,
+    name: &str,
+    actions: &[AccessibilityAction],
+) {
+    let mut seen_ids = HashSet::new();
+    for action in actions {
+        let action_id = action.id.trim();
+        if action_id.is_empty() {
+            warnings.push(AuditWarning::AccessibilityActionIdMissing {
+                node,
+                name: name.to_string(),
+            });
+        } else if !seen_ids.insert(action_id.to_string()) {
+            warnings.push(AuditWarning::AccessibilityActionDuplicate {
+                node,
+                name: name.to_string(),
+                action_id: action_id.to_string(),
+            });
+        }
+        if action.label.trim().is_empty() {
+            warnings.push(AuditWarning::AccessibilityActionLabelMissing {
+                node,
+                name: name.to_string(),
+                action_id: action.id.clone(),
+            });
+        }
+    }
 }
 
 fn push_missing_relation_target_warnings(
@@ -6725,6 +6771,40 @@ mod tests {
                         .focusable(),
                 ),
         );
+        let action_id_gap = doc.add_child(
+            doc.root,
+            UiNode::container("action_id_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Blank action id")
+                        .action(AccessibilityAction::new(" ", "Activate"))
+                        .focusable(),
+                ),
+        );
+        let action_label_gap = doc.add_child(
+            doc.root,
+            UiNode::container("action_label_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Blank action label")
+                        .action(AccessibilityAction::new("activate", " "))
+                        .focusable(),
+                ),
+        );
+        let action_duplicate_gap = doc.add_child(
+            doc.root,
+            UiNode::container("action_duplicate_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Duplicate action")
+                        .action(AccessibilityAction::new("activate", "Activate"))
+                        .action(AccessibilityAction::new("activate", "Activate again"))
+                        .focusable(),
+                ),
+        );
         let value_gap = doc.add_child(
             doc.root,
             UiNode::container("value_gap", button_style(80.0, 24.0))
@@ -6804,6 +6884,26 @@ mod tests {
                 target: hidden_label,
             })
         );
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityActionIdMissing {
+                node: action_id_gap,
+                name: "action_id_gap".to_string(),
+            })
+        );
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityActionLabelMissing {
+                node: action_label_gap,
+                name: "action_label_gap".to_string(),
+                action_id: "activate".to_string(),
+            })
+        );
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityActionDuplicate {
+                node: action_duplicate_gap,
+                name: "action_duplicate_gap".to_string(),
+                action_id: "activate".to_string(),
+            })
+        );
         assert!(warnings.contains(&AuditWarning::AccessibilityValueMissing {
             node: value_gap,
             name: "value_gap".to_string(),
@@ -6838,6 +6938,26 @@ mod tests {
                 node: complete,
                 name: "complete".to_string(),
                 role: AccessibilityRole::Button,
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityActionIdMissing {
+                node: complete,
+                name: "complete".to_string(),
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityActionLabelMissing {
+                node: complete,
+                name: "complete".to_string(),
+                action_id: "activate".to_string(),
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityActionDuplicate {
+                node: complete,
+                name: "complete".to_string(),
+                action_id: "activate".to_string(),
             })
         );
         assert!(
