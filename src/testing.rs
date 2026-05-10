@@ -794,6 +794,55 @@ impl<'a> AccessibilityAssertions<'a> {
         }
     }
 
+    pub fn require_action(&self, name: &str, action_id: &str, label: &str) -> TestResult {
+        let node = self.node(name)?;
+        if node
+            .actions
+            .iter()
+            .any(|action| action.id == action_id && action.label == label)
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected accessibility action `{action_id}` with label `{label}`, got {:?}",
+                node.actions
+            )))
+        }
+    }
+
+    pub fn require_action_shortcut(
+        &self,
+        name: &str,
+        action_id: &str,
+        shortcut: &str,
+    ) -> TestResult {
+        let node = self.node(name)?;
+        if node
+            .actions
+            .iter()
+            .any(|action| action.id == action_id && action.shortcut.as_deref() == Some(shortcut))
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected accessibility action `{action_id}` shortcut `{shortcut}`, got {:?}",
+                node.actions
+            )))
+        }
+    }
+
+    pub fn require_key_shortcut(&self, name: &str, shortcut: &str) -> TestResult {
+        let node = self.node(name)?;
+        if node.key_shortcuts.iter().any(|actual| actual == shortcut) {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "node `{name}` expected accessibility key shortcut `{shortcut}`, got {:?}",
+                node.key_shortcuts
+            )))
+        }
+    }
+
     pub fn require_accessible_name(&self, name: &str, expected: &str) -> TestResult {
         let node = self.node(name)?;
         let actual = self.tree.accessible_name(node.id);
@@ -2847,6 +2896,8 @@ mod tests {
                 AccessibilityMeta::new(AccessibilityRole::ListItem)
                     .label("Alpha")
                     .selected(true)
+                    .shortcut("Enter")
+                    .action(AccessibilityAction::new("select", "Select").shortcut("Enter"))
                     .focusable()
                     .focus_order(1),
             ),
@@ -2890,6 +2941,15 @@ mod tests {
         accessibility
             .require_label("choices.alpha", "Alpha")
             .expect("option label");
+        accessibility
+            .require_action("choices.alpha", "select", "Select")
+            .expect("option action");
+        accessibility
+            .require_action_shortcut("choices.alpha", "select", "Enter")
+            .expect("option action shortcut");
+        accessibility
+            .require_key_shortcut("choices.alpha", "Enter")
+            .expect("option key shortcut");
         accessibility
             .require_accessible_name("choices", "Choices")
             .expect("resolved list name");
