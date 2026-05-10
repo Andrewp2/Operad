@@ -169,6 +169,8 @@ The branch starts from Operad 2.0.0 plus:
   scope.
 - Accessibility tree helpers for nearest accessible parents, focusable nodes,
   live regions, and modal/focus-trap traversal.
+- Screen-reader summary payloads for custom editor surfaces, with structured
+  title, description, key/value items, instructions, and tree lookup helpers.
 - Backend-facing accessibility adapter request/response contracts and host
   preference flags for screen reader, reduced motion, high contrast, forced
   colors, transparency, and text scaling.

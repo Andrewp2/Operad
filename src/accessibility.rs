@@ -347,6 +347,16 @@ impl AccessibilityTree {
             .filter(|node| node.live_region != AccessibilityLiveRegion::Off)
     }
 
+    pub fn summary_nodes(&self) -> impl Iterator<Item = &AccessibilityNode> {
+        self.nodes.iter().filter(|node| node.summary.is_some())
+    }
+
+    pub fn screen_reader_summary(&self, node: UiNodeId) -> Option<String> {
+        self.node(node)
+            .and_then(|node| node.summary.as_ref())
+            .map(|summary| summary.screen_reader_text())
+    }
+
     pub fn contains_node(&self, ancestor: UiNodeId, node: UiNodeId) -> bool {
         if ancestor == node {
             return self.node(node).is_some();
@@ -372,8 +382,8 @@ impl AccessibilityTree {
 mod tests {
     use super::*;
     use crate::{
-        length, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer, InputBehavior,
-        UiDocument, UiNode, UiNodeStyle, UiSize,
+        length, AccessibilityMeta, AccessibilityRole, AccessibilitySummary, ApproxTextMeasurer,
+        InputBehavior, UiDocument, UiNode, UiNodeStyle, UiSize,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -420,6 +430,7 @@ mod tests {
             key_shortcuts: Vec::new(),
             actions: Vec::new(),
             relations: Default::default(),
+            summary: None,
         }
     }
 
@@ -491,6 +502,43 @@ mod tests {
         assert_eq!(tree.node(button).expect("button").parent, Some(doc.root));
         assert!(tree.contains_node(doc.root, button));
         assert_eq!(tree.focus_order, vec![doc.root, button]);
+    }
+
+    #[test]
+    fn accessibility_summaries_round_trip_for_custom_editor_surfaces() {
+        let mut doc = UiDocument::new(fixed_style(480.0, 240.0));
+        let summary = AccessibilitySummary::new("Piano roll")
+            .description("Clip editor with note lanes and velocity lane")
+            .item("Visible bars", "1 through 8")
+            .item("Selected notes", "3")
+            .instruction("Use arrow keys to move selected notes");
+        let editor = doc.add_child(
+            doc.root,
+            UiNode::container("piano-roll", fixed_style(420.0, 180.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::EditorSurface)
+                    .label("Piano roll")
+                    .focusable()
+                    .summary(summary.clone()),
+            ),
+        );
+
+        doc.compute_layout(UiSize::new(480.0, 240.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let tree = doc.accessibility_snapshot();
+        let node = tree.node(editor).expect("editor node");
+
+        assert_eq!(node.summary.as_ref(), Some(&summary));
+        assert_eq!(
+            tree.summary_nodes().map(|node| node.id).collect::<Vec<_>>(),
+            vec![editor]
+        );
+        assert_eq!(
+            tree.screen_reader_summary(editor).as_deref(),
+            Some(
+                "Piano roll. Clip editor with note lanes and velocity lane. Visible bars: 1 through 8. Selected notes: 3. Use arrow keys to move selected notes"
+            )
+        );
     }
 
     #[test]

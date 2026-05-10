@@ -534,6 +534,81 @@ impl AccessibilityAction {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibilitySummaryItem {
+    pub label: String,
+    pub value: String,
+}
+
+impl AccessibilitySummaryItem {
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibilitySummary {
+    pub title: String,
+    pub description: Option<String>,
+    pub items: Vec<AccessibilitySummaryItem>,
+    pub instructions: Vec<String>,
+}
+
+impl AccessibilitySummary {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            description: None,
+            items: Vec::new(),
+            instructions: Vec::new(),
+        }
+    }
+
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn item(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
+        self.items.push(AccessibilitySummaryItem::new(label, value));
+        self
+    }
+
+    pub fn instruction(mut self, instruction: impl Into<String>) -> Self {
+        self.instructions.push(instruction.into());
+        self
+    }
+
+    pub fn screen_reader_text(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.title.is_empty() {
+            parts.push(self.title.clone());
+        }
+        if let Some(description) = &self.description {
+            if !description.is_empty() {
+                parts.push(description.clone());
+            }
+        }
+        for item in &self.items {
+            if item.value.is_empty() {
+                parts.push(item.label.clone());
+            } else {
+                parts.push(format!("{}: {}", item.label, item.value));
+            }
+        }
+        parts.extend(
+            self.instructions
+                .iter()
+                .filter(|instruction| !instruction.is_empty())
+                .cloned(),
+        );
+        parts.join(". ")
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AccessibilityRelations {
     pub labelled_by: Vec<UiNodeId>,
@@ -567,6 +642,7 @@ pub struct AccessibilityMeta {
     pub key_shortcuts: Vec<String>,
     pub actions: Vec<AccessibilityAction>,
     pub relations: AccessibilityRelations,
+    pub summary: Option<AccessibilitySummary>,
 }
 
 impl AccessibilityMeta {
@@ -594,6 +670,7 @@ impl AccessibilityMeta {
             key_shortcuts: Vec::new(),
             actions: Vec::new(),
             relations: AccessibilityRelations::default(),
+            summary: None,
         }
     }
 
@@ -703,6 +780,11 @@ impl AccessibilityMeta {
 
     pub fn action(mut self, action: AccessibilityAction) -> Self {
         self.actions.push(action);
+        self
+    }
+
+    pub fn summary(mut self, summary: AccessibilitySummary) -> Self {
+        self.summary = Some(summary);
         self
     }
 
@@ -2187,6 +2269,7 @@ pub struct AccessibilityNode {
     pub key_shortcuts: Vec<String>,
     pub actions: Vec<AccessibilityAction>,
     pub relations: AccessibilityRelations,
+    pub summary: Option<AccessibilitySummary>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -2287,6 +2370,7 @@ impl UiDocument {
                     key_shortcuts: accessibility.key_shortcuts.clone(),
                     actions: accessibility.actions.clone(),
                     relations: accessibility.relations.clone(),
+                    summary: accessibility.summary.clone(),
                 })
             })
             .collect::<Vec<_>>();
