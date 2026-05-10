@@ -70,7 +70,8 @@ pub use editor::{
     VisibleLaneRange,
 };
 pub use host::{
-    text_input_id_for_node, HostAdapter, HostAdapterError, HostCommandDispatch, HostFrameOutput,
+    process_document_frame, text_input_id_for_node, HostAdapter, HostAdapterError,
+    HostCommandDispatch, HostDocumentFrameOutput, HostDocumentFrameRequest, HostFrameOutput,
     HostFrameRequest, HostInteractionState, HostNodeInteraction, HostShortcutRoute,
 };
 pub use input::{

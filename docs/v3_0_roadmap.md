@@ -242,7 +242,10 @@ The branch starts from Operad 2.0.0 plus:
   partitions, and row drag/drop descriptors.
 - Host adapter contracts in `src/host.rs` for hover, pressed, focused,
   drag-captured, text/IME, wheel-targeted, shortcut-routed, command dispatch,
-  and repaint/platform-service state before paint.
+  and repaint/platform-service state before paint, plus a document-frame
+  coordinator that applies host UI events, recomputes layout, builds render
+  requests with node interaction state, snapshots accessibility, and emits
+  live-region announcement requests.
 - Command effect hooks in `src/commands.rs` for mapping enabled app commands to
   platform service requests or opaque app-owned effects, including clipboard,
   file dialog, screenshot, repaint, close-window, and quit requests.

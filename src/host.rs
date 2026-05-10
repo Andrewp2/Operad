@@ -7,6 +7,10 @@
 
 use std::fmt;
 
+use crate::accessibility::{
+    AccessibilityAdapterRequest, AccessibilityAnnouncementQueue, AccessibilityCapabilities,
+    AccessibilityLiveRegionSnapshot,
+};
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{GestureEvent, GesturePhase, PointerCapture, RawInputEvent};
 use crate::platform::{
@@ -14,7 +18,11 @@ use crate::platform::{
     PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, TextImeRequest,
     TextImeResponse, TextImeSession, TextInputId,
 };
-use crate::{KeyCode, KeyModifiers, UiInputEvent, UiInputResult, UiNodeId, UiSize};
+use crate::renderer::{RenderFrameRequest, RenderOptions, RenderTarget};
+use crate::{
+    AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers, TextMeasurer, UiDocument, UiInputEvent,
+    UiInputResult, UiNodeId, UiSize,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostShortcutRoute {
@@ -353,6 +361,128 @@ pub trait HostAdapter {
     ) -> Result<HostFrameOutput, HostAdapterError>;
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostDocumentFrameRequest {
+    pub viewport: UiSize,
+    pub target: RenderTarget,
+    pub host_output: HostFrameOutput,
+    pub previous_live_regions: Option<AccessibilityLiveRegionSnapshot>,
+    pub accessibility_capabilities: AccessibilityCapabilities,
+    pub render_options: RenderOptions,
+    pub dirty_flags: DirtyFlags,
+}
+
+impl HostDocumentFrameRequest {
+    pub fn new(viewport: UiSize, target: RenderTarget, host_output: HostFrameOutput) -> Self {
+        Self {
+            viewport,
+            target,
+            host_output,
+            previous_live_regions: None,
+            accessibility_capabilities: AccessibilityCapabilities::NONE,
+            render_options: RenderOptions::default(),
+            dirty_flags: DirtyFlags::ALL,
+        }
+    }
+
+    pub fn previous_live_regions(mut self, previous: AccessibilityLiveRegionSnapshot) -> Self {
+        self.previous_live_regions = Some(previous);
+        self
+    }
+
+    pub const fn accessibility_capabilities(
+        mut self,
+        capabilities: AccessibilityCapabilities,
+    ) -> Self {
+        self.accessibility_capabilities = capabilities;
+        self
+    }
+
+    pub const fn render_options(mut self, options: RenderOptions) -> Self {
+        self.render_options = options;
+        self
+    }
+
+    pub const fn dirty_flags(mut self, dirty_flags: DirtyFlags) -> Self {
+        self.dirty_flags = dirty_flags;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostDocumentFrameOutput {
+    pub host_output: HostFrameOutput,
+    pub input_results: Vec<UiInputResult>,
+    pub render_request: RenderFrameRequest,
+    pub accessibility_tree: AccessibilityTree,
+    pub live_regions: AccessibilityLiveRegionSnapshot,
+    pub announcements: AccessibilityAnnouncementQueue,
+    pub accessibility_requests: Vec<AccessibilityAdapterRequest>,
+}
+
+pub fn process_document_frame(
+    document: &mut UiDocument,
+    measurer: &mut impl TextMeasurer,
+    request: HostDocumentFrameRequest,
+) -> Result<HostDocumentFrameOutput, taffy::TaffyError> {
+    let HostDocumentFrameRequest {
+        viewport,
+        target,
+        mut host_output,
+        previous_live_regions,
+        accessibility_capabilities,
+        render_options,
+        dirty_flags,
+    } = request;
+
+    let mut state = host_output.state.clone();
+    let mut input_results = Vec::with_capacity(host_output.ui_events.len());
+    for event in host_output.ui_events.iter().cloned() {
+        let result = document.handle_input(event);
+        state.apply_input_result(result.clone());
+        input_results.push(result);
+    }
+    host_output.state = state.clone();
+
+    document.compute_layout(viewport, measurer)?;
+
+    let accessibility_tree = document.accessibility_snapshot();
+    let live_regions = AccessibilityLiveRegionSnapshot::from_tree(&accessibility_tree);
+    let previous_live_regions = previous_live_regions.unwrap_or_default();
+    let announcements = AccessibilityAnnouncementQueue::from_live_region_diff(
+        &previous_live_regions,
+        &live_regions,
+    );
+    let accessibility_requests = announcements.supported_requests(accessibility_capabilities);
+
+    let paint = document.paint_list();
+    let mut node_interactions = paint
+        .items
+        .iter()
+        .map(|item| (item.node, state.node_state(item.node)))
+        .collect::<Vec<_>>();
+    node_interactions.extend(
+        accessibility_tree
+            .nodes
+            .iter()
+            .map(|node| (node.id, state.node_state(node.id))),
+    );
+    let render_request = RenderFrameRequest::new(target, viewport, paint)
+        .node_interactions(node_interactions)
+        .dirty_flags(dirty_flags)
+        .options(render_options);
+
+    Ok(HostDocumentFrameOutput {
+        host_output,
+        input_results,
+        render_request,
+        accessibility_tree,
+        live_regions,
+        announcements,
+        accessibility_requests,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,7 +494,24 @@ mod tests {
         BackendAdapterKind, LogicalRect, PlatformRequestId, PlatformServiceCapabilities,
         RepaintResponse, TextRange,
     };
-    use crate::UiPoint;
+    use crate::{
+        length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
+        InputBehavior, UiDocument, UiNode, UiNodeStyle, UiPoint,
+    };
+    use taffy::prelude::{Size as TaffySize, Style};
+
+    fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
+        UiNodeStyle {
+            layout: Style {
+                size: TaffySize {
+                    width: length(width),
+                    height: length(height),
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 
     fn drag(target: UiNodeId, phase: GesturePhase) -> GestureEvent {
         GestureEvent::Drag(DragGesture {
@@ -504,6 +651,82 @@ mod tests {
         assert_eq!(state.text_target, Some(UiNodeId(7)));
         assert!(state.node_state(UiNodeId(7)).text_editing);
         assert_eq!(input.0, "node:7");
+    }
+
+    #[test]
+    fn document_frame_processes_input_render_and_accessibility_announcements() {
+        let viewport = UiSize::new(240.0, 120.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(240.0, 120.0));
+        let root = document.root;
+        let button = document.add_child(
+            root,
+            UiNode::container("apply", fixed_style(80.0, 28.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Apply")
+                        .focusable(),
+                ),
+        );
+        let status = document.add_child(
+            root,
+            UiNode::container("status", fixed_style(140.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Status)
+                    .label("Status")
+                    .value("Ready")
+                    .live_region(AccessibilityLiveRegion::Polite),
+            ),
+        );
+        document
+            .compute_layout(viewport, &mut measurer)
+            .expect("initial layout");
+        let previous_live_regions =
+            AccessibilityLiveRegionSnapshot::from_tree(&document.accessibility_snapshot());
+        document
+            .node_mut(status)
+            .accessibility
+            .as_mut()
+            .expect("status accessibility")
+            .value = Some("Running".to_string());
+
+        let mut host_output = HostFrameOutput::new(HostInteractionState::default());
+        host_output
+            .ui_events
+            .push(UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0)));
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            )
+            .previous_live_regions(previous_live_regions)
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
+        )
+        .expect("document frame");
+
+        assert_eq!(frame.input_results[0].focused, Some(button));
+        assert_eq!(frame.host_output.state.focused, Some(button));
+        assert_eq!(frame.render_request.viewport, viewport);
+        assert!(frame.render_request.interaction_for(button).focused);
+        assert_eq!(
+            frame
+                .accessibility_tree
+                .node(status)
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("Running")
+        );
+        assert_eq!(frame.announcements.pending.len(), 1);
+        assert_eq!(frame.announcements.pending[0].message, "Status: Running");
+        assert_eq!(frame.accessibility_requests.len(), 1);
+        assert!(matches!(
+            frame.accessibility_requests[0],
+            AccessibilityAdapterRequest::Announce(_)
+        ));
     }
 
     #[derive(Debug)]
