@@ -173,6 +173,7 @@ impl Default for EguiInputAdapter {
 #[derive(Clone, Default, PartialEq)]
 pub struct EguiPlatformOutputPlan {
     pub platform_output: egui::PlatformOutput,
+    pub viewport_commands: Vec<egui::ViewportCommand>,
     pub repaint_requests: Vec<RepaintRequest>,
     pub unsupported_requests: Vec<PlatformRequest>,
 }
@@ -223,6 +224,20 @@ impl EguiPlatformOutputPlan {
                 } else {
                     egui::CursorIcon::None
                 };
+                self.viewport_commands
+                    .push(egui::ViewportCommand::CursorVisible(*visible));
+                true
+            }
+            PlatformRequest::Cursor(CursorRequest::Confine(_)) => {
+                self.viewport_commands
+                    .push(egui::ViewportCommand::CursorGrab(
+                        egui::CursorGrab::Confined,
+                    ));
+                true
+            }
+            PlatformRequest::Cursor(CursorRequest::ReleaseConfine) => {
+                self.viewport_commands
+                    .push(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
                 true
             }
             PlatformRequest::Repaint(request) => {
@@ -247,6 +262,7 @@ impl fmt::Debug for EguiPlatformOutputPlan {
             .debug_struct("EguiPlatformOutputPlan")
             .field("commands", &self.platform_output.commands)
             .field("cursor_icon", &self.platform_output.cursor_icon)
+            .field("viewport_commands", &self.viewport_commands)
             .field("repaint_requests", &self.repaint_requests)
             .field("unsupported_requests", &self.unsupported_requests)
             .finish()
@@ -913,6 +929,28 @@ mod tests {
         assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::None);
         assert!(plan.push_request(&PlatformRequest::Cursor(CursorRequest::SetVisible(true,))));
         assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::Default);
+    }
+
+    #[test]
+    fn egui_platform_output_plan_maps_cursor_confinement_to_viewport_commands() {
+        let requests = [
+            PlatformRequest::Cursor(CursorRequest::Confine(crate::platform::LogicalRect::new(
+                0.0, 0.0, 100.0, 80.0,
+            ))),
+            PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+        ];
+
+        let plan = EguiPlatformOutputPlan::from_requests(requests.iter());
+
+        assert!(plan.is_fully_supported());
+        assert_eq!(
+            plan.viewport_commands,
+            vec![
+                egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined),
+                egui::ViewportCommand::CursorGrab(egui::CursorGrab::None),
+            ]
+        );
+        assert!(plan.unsupported_requests.is_empty());
     }
 
     #[test]

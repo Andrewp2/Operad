@@ -18,7 +18,10 @@ use crate::platform::{
     PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, TextImeRequest,
     TextImeResponse, TextImeSession, TextInputId,
 };
-use crate::renderer::{RenderFrameRequest, RenderOptions, RenderTarget};
+use crate::renderer::{
+    CanvasHostCaptureState, CanvasHostCaptureTransition, RenderFrameRequest, RenderOptions,
+    RenderTarget,
+};
 use crate::shell::{ShellLayoutPlan, ShellWorkspaceState};
 use crate::{
     AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers, TextMeasurer, UiDocument, UiInputEvent,
@@ -80,6 +83,7 @@ pub struct HostInteractionState {
     pub wheel_target: Option<UiNodeId>,
     pub active_shortcut_scopes: Vec<CommandScope>,
     pub shortcut_route: Option<HostShortcutRoute>,
+    pub canvas_host_capture: CanvasHostCaptureState,
 }
 
 impl HostInteractionState {
@@ -429,6 +433,7 @@ pub struct HostDocumentFrameOutput {
     pub live_regions: AccessibilityLiveRegionSnapshot,
     pub announcements: AccessibilityAnnouncementQueue,
     pub accessibility_requests: Vec<AccessibilityAdapterRequest>,
+    pub canvas_host_capture_transition: CanvasHostCaptureTransition,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -640,6 +645,10 @@ pub fn process_document_frame(
         .node_interactions(node_interactions)
         .dirty_flags(dirty_flags)
         .options(render_options);
+    let canvas_host_capture_transition = state
+        .canvas_host_capture
+        .sync(render_request.canvas_host_capture_plans());
+    host_output.state = state.clone();
 
     Ok(HostDocumentFrameOutput {
         host_output,
@@ -649,6 +658,7 @@ pub fn process_document_frame(
         live_regions,
         announcements,
         accessibility_requests,
+        canvas_host_capture_transition,
     })
 }
 
@@ -660,12 +670,13 @@ mod tests {
         DragGesture, PointerButton, PointerId, RawKeyboardEvent, RawWheelEvent, WheelPhase,
     };
     use crate::platform::{
-        BackendAdapterKind, LogicalRect, PlatformRequestId, PlatformServiceCapabilities,
-        RepaintResponse, TextRange,
+        BackendAdapterKind, CursorRequest, LogicalRect, PlatformRequestId,
+        PlatformServiceCapabilities, RepaintResponse, TextRange,
     };
     use crate::{
         length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
-        InputBehavior, ShellPanelState, ShellRegion, UiDocument, UiNode, UiNodeStyle, UiPoint,
+        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, InputBehavior, ShellPanelState,
+        ShellRegion, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint,
     };
     use taffy::prelude::{Size as TaffySize, Style};
 
@@ -907,6 +918,147 @@ mod tests {
             frame.accessibility_requests[0],
             AccessibilityAdapterRequest::Announce(_)
         ));
+    }
+
+    fn canvas_document(interaction: CanvasInteractionPolicy) -> (UiDocument, UiNodeId) {
+        let mut document = UiDocument::new(fixed_style(320.0, 200.0));
+        let canvas = document.add_child(
+            document.root,
+            UiNode::canvas("viewport", "app.viewport", fixed_style(160.0, 96.0).layout),
+        );
+        document.set_node_content(
+            canvas,
+            UiContent::Canvas(
+                CanvasContent::new("app.viewport")
+                    .native_viewport()
+                    .interaction(interaction),
+            ),
+        );
+        (document, canvas)
+    }
+
+    #[test]
+    fn document_frame_carries_canvas_capture_state_across_frames() {
+        let viewport = UiSize::new(320.0, 200.0);
+        let mut measurer = ApproxTextMeasurer;
+        let (mut document, canvas) = canvas_document(CanvasInteractionPolicy::NATIVE_VIEWPORT);
+
+        let first = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            ),
+        )
+        .expect("first frame");
+
+        assert_eq!(first.render_request.canvas_requests().len(), 1);
+        assert_eq!(
+            first.render_request.canvas_requests()[0].canvas.render_mode,
+            CanvasRenderMode::NativeViewport
+        );
+        assert_eq!(
+            first.host_output.state.canvas_host_capture.active_plans()[0].node,
+            canvas
+        );
+        assert_eq!(
+            first.canvas_host_capture_transition.platform_requests(),
+            vec![
+                PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
+                    0.0, 0.0, 160.0, 96.0
+                ))),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+            ]
+        );
+
+        let second = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(first.host_output.state),
+            ),
+        )
+        .expect("second frame");
+
+        assert!(second.canvas_host_capture_transition.is_empty());
+        assert_eq!(
+            second.host_output.state.canvas_host_capture.active_plans()[0].node,
+            canvas
+        );
+    }
+
+    #[test]
+    fn document_frame_releases_canvas_capture_when_canvas_disappears() {
+        let viewport = UiSize::new(320.0, 200.0);
+        let mut measurer = ApproxTextMeasurer;
+        let (mut document, canvas) = canvas_document(CanvasInteractionPolicy::NATIVE_VIEWPORT);
+        let first = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            ),
+        )
+        .expect("first frame");
+
+        document.set_node_content(canvas, UiContent::Empty);
+        let released = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(first.host_output.state),
+            ),
+        )
+        .expect("released frame");
+
+        assert!(released
+            .host_output
+            .state
+            .canvas_host_capture
+            .active_plans()
+            .is_empty());
+        assert_eq!(
+            released.canvas_host_capture_transition.platform_requests(),
+            vec![
+                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn document_frame_tracks_editor_canvas_capture_without_cursor_requests() {
+        let viewport = UiSize::new(320.0, 200.0);
+        let mut measurer = ApproxTextMeasurer;
+        let (mut document, canvas) = canvas_document(CanvasInteractionPolicy::EDITOR);
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            ),
+        )
+        .expect("frame");
+
+        assert_eq!(
+            frame.host_output.state.canvas_host_capture.active_plans()[0].node,
+            canvas
+        );
+        assert!(frame
+            .canvas_host_capture_transition
+            .platform_requests()
+            .is_empty());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! resource updates, dirty regions, deterministic snapshots, and adapter
 //! capabilities out of product state.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::accessibility::AccessibilityPreferences;
@@ -477,6 +478,209 @@ impl CanvasHostCapturePlan {
             Vec::new()
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CanvasHostCaptureId {
+    pub node: UiNodeId,
+    pub key: String,
+}
+
+impl CanvasHostCaptureId {
+    pub fn new(node: UiNodeId, key: impl Into<String>) -> Self {
+        Self {
+            node,
+            key: key.into(),
+        }
+    }
+
+    pub fn from_plan(plan: &CanvasHostCapturePlan) -> Self {
+        Self::new(plan.node, plan.key.clone())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CanvasHostCaptureState {
+    active: Vec<CanvasHostCapturePlan>,
+}
+
+impl CanvasHostCaptureState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn active_plans(&self) -> &[CanvasHostCapturePlan] {
+        &self.active
+    }
+
+    pub fn active_plan(&self, id: &CanvasHostCaptureId) -> Option<&CanvasHostCapturePlan> {
+        self.active
+            .iter()
+            .find(|plan| CanvasHostCaptureId::from_plan(plan) == *id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.active.is_empty()
+    }
+
+    pub fn sync(
+        &mut self,
+        plans: impl IntoIterator<Item = CanvasHostCapturePlan>,
+    ) -> CanvasHostCaptureTransition {
+        let next = normalized_capture_plans(plans);
+        let previous = self.active.clone();
+        let mut transition = CanvasHostCaptureTransition::new();
+
+        for previous_plan in &previous {
+            let id = CanvasHostCaptureId::from_plan(previous_plan);
+            match next
+                .iter()
+                .find(|plan| CanvasHostCaptureId::from_plan(plan) == id)
+            {
+                Some(next_plan) if next_plan != previous_plan => {
+                    transition.changes.push(CanvasHostCaptureChange {
+                        kind: CanvasHostCaptureChangeKind::Updated,
+                        id,
+                        previous: Some(previous_plan.clone()),
+                        current: Some(next_plan.clone()),
+                    });
+                }
+                None => {
+                    transition.changes.push(CanvasHostCaptureChange {
+                        kind: CanvasHostCaptureChangeKind::Released,
+                        id,
+                        previous: Some(previous_plan.clone()),
+                        current: None,
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+
+        for next_plan in &next {
+            let id = CanvasHostCaptureId::from_plan(next_plan);
+            if previous
+                .iter()
+                .all(|plan| CanvasHostCaptureId::from_plan(plan) != id)
+            {
+                transition.changes.push(CanvasHostCaptureChange {
+                    kind: CanvasHostCaptureChangeKind::Acquired,
+                    id,
+                    previous: None,
+                    current: Some(next_plan.clone()),
+                });
+            }
+        }
+
+        transition.sort();
+        self.active = next;
+        transition
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasHostCaptureChangeKind {
+    Acquired,
+    Updated,
+    Released,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasHostCaptureChange {
+    pub kind: CanvasHostCaptureChangeKind,
+    pub id: CanvasHostCaptureId,
+    pub previous: Option<CanvasHostCapturePlan>,
+    pub current: Option<CanvasHostCapturePlan>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CanvasHostCaptureTransition {
+    pub changes: Vec<CanvasHostCaptureChange>,
+}
+
+impl CanvasHostCaptureTransition {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
+
+    pub fn platform_requests(&self) -> Vec<PlatformRequest> {
+        let mut requests = Vec::new();
+        for change in &self.changes {
+            if matches!(
+                change.kind,
+                CanvasHostCaptureChangeKind::Updated | CanvasHostCaptureChangeKind::Released
+            ) {
+                if let Some(previous) = &change.previous {
+                    requests.extend(previous.release_platform_requests());
+                }
+            }
+        }
+        for change in &self.changes {
+            if matches!(
+                change.kind,
+                CanvasHostCaptureChangeKind::Acquired | CanvasHostCaptureChangeKind::Updated
+            ) {
+                if let Some(current) = &change.current {
+                    requests.extend(current.platform_requests());
+                }
+            }
+        }
+        requests
+    }
+
+    fn sort(&mut self) {
+        self.changes.sort_by(|a, b| {
+            let release_order = change_order(a.kind).cmp(&change_order(b.kind));
+            if release_order == Ordering::Equal {
+                capture_id_order(&a.id, &b.id)
+            } else {
+                release_order
+            }
+        });
+    }
+}
+
+fn normalized_capture_plans(
+    plans: impl IntoIterator<Item = CanvasHostCapturePlan>,
+) -> Vec<CanvasHostCapturePlan> {
+    let mut normalized = Vec::new();
+    for plan in plans {
+        if !plan.requires_host_capture() {
+            continue;
+        }
+        let id = CanvasHostCaptureId::from_plan(&plan);
+        if let Some(existing) = normalized
+            .iter()
+            .position(|existing| CanvasHostCaptureId::from_plan(existing) == id)
+        {
+            normalized[existing] = plan;
+        } else {
+            normalized.push(plan);
+        }
+    }
+    normalized.sort_by(|a, b| {
+        capture_id_order(
+            &CanvasHostCaptureId::from_plan(a),
+            &CanvasHostCaptureId::from_plan(b),
+        )
+    });
+    normalized
+}
+
+fn change_order(kind: CanvasHostCaptureChangeKind) -> u8 {
+    match kind {
+        CanvasHostCaptureChangeKind::Released => 0,
+        CanvasHostCaptureChangeKind::Updated => 1,
+        CanvasHostCaptureChangeKind::Acquired => 2,
+    }
+}
+
+fn capture_id_order(a: &CanvasHostCaptureId, b: &CanvasHostCaptureId) -> Ordering {
+    a.node.0.cmp(&b.node.0).then_with(|| a.key.cmp(&b.key))
 }
 
 #[derive(Debug)]
@@ -1555,6 +1759,128 @@ mod tests {
         assert!(plans[0].platform_requests().is_empty());
         assert!(plans[0].release_platform_requests().is_empty());
         assert!(request.canvas_platform_requests().is_empty());
+    }
+
+    fn capture_plan(node: usize, key: &str, rect: UiRect) -> CanvasHostCapturePlan {
+        CanvasHostCapturePlan {
+            node: UiNodeId(node),
+            key: key.to_string(),
+            rect,
+            pointer_capture: true,
+            keyboard_capture: true,
+            wheel_capture: true,
+            pointer_lock: true,
+            domain_hit_testing: true,
+        }
+    }
+
+    #[test]
+    fn canvas_host_capture_state_acquires_pointer_locked_canvas() {
+        let mut state = CanvasHostCaptureState::new();
+        let plan = capture_plan(
+            7,
+            "fabricad.mask.viewport",
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+        );
+
+        let transition = state.sync([plan.clone()]);
+
+        assert_eq!(state.active_plans(), std::slice::from_ref(&plan));
+        assert_eq!(transition.changes.len(), 1);
+        assert_eq!(
+            transition.changes[0].kind,
+            CanvasHostCaptureChangeKind::Acquired
+        );
+        assert_eq!(
+            transition.changes[0].id,
+            CanvasHostCaptureId::new(UiNodeId(7), "fabricad.mask.viewport")
+        );
+        assert_eq!(
+            transition.platform_requests(),
+            vec![
+                PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
+                    12.0, 16.0, 320.0, 180.0
+                ))),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+            ]
+        );
+    }
+
+    #[test]
+    fn canvas_host_capture_state_unchanged_plan_emits_no_transition() {
+        let mut state = CanvasHostCaptureState::new();
+        let plan = capture_plan(
+            7,
+            "fabricad.mask.viewport",
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+        );
+        assert!(!state.sync([plan.clone()]).is_empty());
+
+        let transition = state.sync([plan]);
+
+        assert!(transition.is_empty());
+        assert!(transition.platform_requests().is_empty());
+    }
+
+    #[test]
+    fn canvas_host_capture_state_updates_release_before_reacquire() {
+        let mut state = CanvasHostCaptureState::new();
+        let initial = capture_plan(
+            7,
+            "fabricad.mask.viewport",
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+        );
+        let moved = capture_plan(
+            7,
+            "fabricad.mask.viewport",
+            UiRect::new(24.0, 32.0, 400.0, 220.0),
+        );
+        state.sync([initial]);
+
+        let transition = state.sync([moved]);
+
+        assert_eq!(transition.changes.len(), 1);
+        assert_eq!(
+            transition.changes[0].kind,
+            CanvasHostCaptureChangeKind::Updated
+        );
+        assert_eq!(
+            transition.platform_requests(),
+            vec![
+                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
+                PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
+                    24.0, 32.0, 400.0, 220.0
+                ))),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+            ]
+        );
+    }
+
+    #[test]
+    fn canvas_host_capture_state_releases_missing_capture() {
+        let mut state = CanvasHostCaptureState::new();
+        state.sync([capture_plan(
+            7,
+            "fabricad.mask.viewport",
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+        )]);
+
+        let transition = state.sync([]);
+
+        assert!(state.is_empty());
+        assert_eq!(transition.changes.len(), 1);
+        assert_eq!(
+            transition.changes[0].kind,
+            CanvasHostCaptureChangeKind::Released
+        );
+        assert_eq!(
+            transition.platform_requests(),
+            vec![
+                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
+            ]
+        );
     }
 
     #[derive(Debug, Default)]
