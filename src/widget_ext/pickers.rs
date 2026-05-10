@@ -1195,6 +1195,210 @@ impl Default for NumericPrecision {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NumericScale {
+    Linear,
+    Logarithmic { base: f64 },
+}
+
+impl NumericScale {
+    pub const LINEAR: Self = Self::Linear;
+
+    pub fn logarithmic(base: f64) -> Self {
+        Self::Logarithmic {
+            base: if base.is_finite() && base > 1.0 {
+                base
+            } else {
+                10.0
+            },
+        }
+    }
+
+    pub fn supports_range(self, range: NumericRange) -> bool {
+        match self {
+            Self::Linear => range.span() > 0.0,
+            Self::Logarithmic { .. } => range.min > 0.0 && range.span() > 0.0,
+        }
+    }
+
+    pub fn position_for_value(self, range: NumericRange, value: f64) -> Option<f64> {
+        if !self.supports_range(range) {
+            return None;
+        }
+        let value = range.clamp(value);
+        let position = match self {
+            Self::Linear => (value - range.min) / range.span(),
+            Self::Logarithmic { base } => {
+                let min = range.min.log(base);
+                let max = range.max.log(base);
+                let value = value.log(base);
+                (value - min) / (max - min)
+            }
+        };
+        Some(position.clamp(0.0, 1.0))
+    }
+
+    pub fn value_at_position(self, range: NumericRange, position: f64) -> Option<f64> {
+        if !self.supports_range(range) {
+            return None;
+        }
+        let position = finite_or(position, 0.0).clamp(0.0, 1.0);
+        let value = match self {
+            Self::Linear => range.min + range.span() * position,
+            Self::Logarithmic { base } => {
+                let min = range.min.log(base);
+                let max = range.max.log(base);
+                base.powf(min + (max - min) * position)
+            }
+        };
+        Some(range.clamp(value))
+    }
+}
+
+impl Default for NumericScale {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NumericUnitFormat {
+    pub prefix: String,
+    pub suffix: String,
+}
+
+impl NumericUnitFormat {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.prefix = prefix.into();
+        self
+    }
+
+    pub fn suffix(mut self, suffix: impl Into<String>) -> Self {
+        self.suffix = suffix.into();
+        self
+    }
+
+    pub fn format(&self, value: impl AsRef<str>) -> String {
+        format!("{}{}{}", self.prefix, value.as_ref(), self.suffix)
+    }
+
+    pub fn strip_affixes(&self, text: &str) -> String {
+        let mut text = text.trim();
+        if !self.prefix.is_empty() {
+            text = text.strip_prefix(&self.prefix).unwrap_or(text).trim_start();
+        }
+        if !self.suffix.is_empty() {
+            text = text.strip_suffix(&self.suffix).unwrap_or(text).trim_end();
+        }
+        text.trim().replace(['_', ','], "")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.prefix.is_empty() && self.suffix.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumericParameterSpec {
+    pub label: String,
+    pub range: NumericRange,
+    pub precision: NumericPrecision,
+    pub scale: NumericScale,
+    pub unit: NumericUnitFormat,
+}
+
+impl NumericParameterSpec {
+    pub fn new(label: impl Into<String>, range: NumericRange, precision: NumericPrecision) -> Self {
+        Self {
+            label: label.into(),
+            range,
+            precision,
+            scale: NumericScale::Linear,
+            unit: NumericUnitFormat::default(),
+        }
+    }
+
+    pub fn logarithmic(mut self, base: f64) -> Self {
+        self.scale = NumericScale::logarithmic(base);
+        self
+    }
+
+    pub fn unit_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.unit.prefix = prefix.into();
+        self
+    }
+
+    pub fn unit_suffix(mut self, suffix: impl Into<String>) -> Self {
+        self.unit.suffix = suffix.into();
+        self
+    }
+
+    pub fn normalize_value(&self, value: f64) -> f64 {
+        self.precision.quantize(self.range.clamp(value))
+    }
+
+    pub fn format_value(&self, value: f64) -> String {
+        self.unit
+            .format(self.precision.format(self.normalize_value(value)))
+    }
+
+    pub fn validate_text(&self, text: &str) -> NumericTextValidation {
+        validate_numeric_text(
+            &self.unit.strip_affixes(text),
+            Some(self.range),
+            self.precision,
+        )
+    }
+
+    pub fn parse_text(&self, text: &str) -> Option<f64> {
+        parse_numeric_text(&self.unit.strip_affixes(text)).map(|value| self.normalize_value(value))
+    }
+
+    pub fn position_for_value(&self, value: f64) -> f64 {
+        self.scale
+            .position_for_value(self.range, value)
+            .or_else(|| NumericScale::Linear.position_for_value(self.range, value))
+            .unwrap_or(0.0)
+    }
+
+    pub fn value_at_position(&self, position: f64) -> f64 {
+        let value = self
+            .scale
+            .value_at_position(self.range, position)
+            .or_else(|| NumericScale::Linear.value_at_position(self.range, position))
+            .unwrap_or(self.range.min);
+        self.normalize_value(value)
+    }
+
+    pub fn text_accessibility_meta(&self, value_text: impl Into<String>) -> AccessibilityMeta {
+        let value_text = value_text.into();
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::TextBox)
+            .label(self.label.clone())
+            .value(value_text.clone())
+            .hint(numeric_range_hint(self.range, self.precision))
+            .focusable()
+            .action(crate::AccessibilityAction::new("commit", "Commit value"))
+            .action(crate::AccessibilityAction::new("cancel", "Cancel edit"));
+        if !self.validate_text(&value_text).is_valid() {
+            meta = meta.invalid("Enter a valid parameter value");
+        }
+        meta
+    }
+
+    pub fn slider_accessibility_meta(&self, value: f64) -> AccessibilityMeta {
+        AccessibilityMeta::new(AccessibilityRole::Slider)
+            .label(self.label.clone())
+            .value(self.format_value(value))
+            .hint(numeric_range_hint(self.range, self.precision))
+            .value_range(AccessibilityValueRange::new(self.range.min, self.range.max))
+            .focusable()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericValidationStatus {
     Valid,
@@ -1284,6 +1488,14 @@ impl NumericInputState {
         self
     }
 
+    pub fn with_parameter(mut self, parameter: &NumericParameterSpec) -> Self {
+        self.range = Some(parameter.range);
+        self.precision = parameter.precision;
+        self.value = parameter.normalize_value(self.value);
+        self.text = parameter.format_value(self.value);
+        self
+    }
+
     pub fn validation(&self) -> NumericTextValidation {
         self.validate_text_value(&self.text)
     }
@@ -1350,6 +1562,20 @@ impl NumericInputState {
         self.outcome(previous, previous != self.value)
     }
 
+    pub fn update_parameter_text(
+        &mut self,
+        text: impl Into<String>,
+        parameter: &NumericParameterSpec,
+    ) -> NumericInputOutcome {
+        let previous = self.value;
+        self.phase = EditPhase::UpdateEdit;
+        self.text = text.into();
+        if let Some(parsed) = parameter.parse_text(&self.text) {
+            self.value = parsed;
+        }
+        self.outcome(previous, previous != self.value)
+    }
+
     pub fn commit_text(&mut self) -> NumericInputOutcome {
         let previous = self.value;
         if let Some(parsed) = parse_numeric_text(&self.text) {
@@ -1364,9 +1590,35 @@ impl NumericInputState {
         }
     }
 
+    pub fn commit_parameter_text(
+        &mut self,
+        parameter: &NumericParameterSpec,
+    ) -> NumericInputOutcome {
+        let previous = self.value;
+        if let Some(parsed) = parameter.parse_text(&self.text) {
+            self.value = parsed;
+            self.text = parameter.format_value(self.value);
+            self.phase = EditPhase::CommitEdit;
+            self.outcome(previous, previous != self.value)
+        } else {
+            self.text = parameter.format_value(self.value);
+            self.phase = EditPhase::CancelEdit;
+            self.outcome(previous, false)
+        }
+    }
+
     pub fn cancel_edit(&mut self) -> NumericInputOutcome {
         self.phase = EditPhase::CancelEdit;
         self.text = self.precision.format(self.value);
+        self.outcome(self.value, false)
+    }
+
+    pub fn cancel_parameter_edit(
+        &mut self,
+        parameter: &NumericParameterSpec,
+    ) -> NumericInputOutcome {
+        self.phase = EditPhase::CancelEdit;
+        self.text = parameter.format_value(self.value);
         self.outcome(self.value, false)
     }
 
@@ -1376,6 +1628,30 @@ impl NumericInputState {
         self.text = self.precision.format(self.value);
         self.phase = phase;
         self.outcome(previous, previous != self.value)
+    }
+
+    pub fn set_parameter_value(
+        &mut self,
+        value: f64,
+        phase: EditPhase,
+        parameter: &NumericParameterSpec,
+    ) -> NumericInputOutcome {
+        let previous = self.value;
+        self.range = Some(parameter.range);
+        self.precision = parameter.precision;
+        self.value = parameter.normalize_value(value);
+        self.text = parameter.format_value(self.value);
+        self.phase = phase;
+        self.outcome(previous, previous != self.value)
+    }
+
+    pub fn set_parameter_position(
+        &mut self,
+        position: f64,
+        phase: EditPhase,
+        parameter: &NumericParameterSpec,
+    ) -> NumericInputOutcome {
+        self.set_parameter_value(parameter.value_at_position(position), phase, parameter)
     }
 
     pub fn nudge(&mut self, steps: i32) -> NumericInputOutcome {
@@ -2482,6 +2758,72 @@ mod tests {
             drag_value(1.0, 10.0, precision, range, drag, NumericDragSpeed::Fine),
             1.0
         );
+    }
+
+    #[test]
+    fn numeric_parameter_spec_formats_units_and_log_positions() {
+        let frequency = NumericParameterSpec::new(
+            "Filter frequency",
+            NumericRange::new(20.0, 20_000.0),
+            NumericPrecision::decimals(1).with_step(0.1),
+        )
+        .logarithmic(10.0)
+        .unit_suffix(" Hz");
+
+        assert_eq!(frequency.format_value(1234.56), "1234.6 Hz");
+        assert_eq!(frequency.parse_text("1,000.25 Hz"), Some(1000.3));
+
+        let midpoint = frequency.value_at_position(0.5);
+        assert!((midpoint - 632.5).abs() < 0.2, "{midpoint}");
+        assert!((frequency.position_for_value(midpoint) - 0.5).abs() < 0.001);
+
+        let text_meta = frequency.text_accessibility_meta("1000.0 Hz");
+        assert_eq!(text_meta.role, AccessibilityRole::TextBox);
+        assert_eq!(text_meta.value.as_deref(), Some("1000.0 Hz"));
+        assert!(text_meta.actions.iter().any(|action| action.id == "commit"));
+
+        let slider_meta = frequency.slider_accessibility_meta(1000.0);
+        assert_eq!(slider_meta.role, AccessibilityRole::Slider);
+        assert_eq!(slider_meta.value.as_deref(), Some("1000.0 Hz"));
+        assert_eq!(slider_meta.value_range.as_ref().unwrap().min, 20.0);
+    }
+
+    #[test]
+    fn numeric_input_state_applies_parameter_affixes_and_commit_phases() {
+        let gain = NumericParameterSpec::new(
+            "Gain",
+            NumericRange::new(-96.0, 12.0),
+            NumericPrecision::decimals(1).with_step(0.1),
+        )
+        .unit_suffix(" dB");
+        let budget = NumericParameterSpec::new(
+            "Budget",
+            NumericRange::new(0.0, 100.0),
+            NumericPrecision::decimals(2).with_step(0.01),
+        )
+        .unit_prefix("$");
+        let mut input = NumericInputState::new(0.0).with_parameter(&gain);
+
+        assert_eq!(input.text, "0.0 dB");
+        assert_eq!(budget.format_value(12.0), "$12.00");
+
+        let update = input.update_parameter_text("6.24 dB", &gain);
+        assert_eq!(update.phase, EditPhase::UpdateEdit);
+        assert_eq!(update.value, 6.2);
+
+        let commit = input.commit_parameter_text(&gain);
+        assert_eq!(commit.phase, EditPhase::CommitEdit);
+        assert_eq!(commit.text, "6.2 dB");
+
+        let position = gain.position_for_value(-42.0);
+        let positioned = input.set_parameter_position(position, EditPhase::UpdateEdit, &gain);
+        assert_eq!(positioned.value, -42.0);
+        assert_eq!(positioned.text, "-42.0 dB");
+
+        input.update_parameter_text("not gain", &gain);
+        let cancel = input.commit_parameter_text(&gain);
+        assert_eq!(cancel.phase, EditPhase::CancelEdit);
+        assert_eq!(cancel.text, "-42.0 dB");
     }
 
     #[test]

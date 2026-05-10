@@ -224,6 +224,10 @@ The branch starts from Operad 2.0.0 plus:
 - Menu and command-palette helpers in `src/widget_ext/menu.rs` for building
   items from the command registry, preserving enabled/disabled command state,
   displaying scoped shortcuts, and returning typed `CommandId` selections.
+- Numeric parameter contracts in `src/widget_ext/pickers.rs` for unit
+  prefixes/suffixes, normalized linear/logarithmic value mapping, formatted
+  parameter accessibility metadata, and parameter-aware commit/cancel text
+  editing.
 - Data-table export helpers in `src/widget_ext/data.rs` for selected rows,
   visible rows, active cells, and ranges, with TSV/CSV formatting and clipboard
   command-effect integration.
