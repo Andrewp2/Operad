@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
 use crate::{
-    ColorRgba, FontFamily, FontStretch, FontStyle, FontWeight, StrokeStyle, TextStyle, TextWrap,
-    UiVisual,
+    accessibility::AccessibilityPreferences, ColorRgba, FontFamily, FontStretch, FontStyle,
+    FontWeight, StrokeStyle, TextStyle, TextWrap, UiVisual,
 };
 
 pub const OPERAD_DARK_THEME_NAME: &str = "operad.dark.v3";
@@ -70,6 +70,46 @@ impl Theme {
 
     pub fn resolve_icon(&self, role: ComponentRole, state: ComponentState) -> IconStyle {
         self.component(role).resolve_icon(state)
+    }
+
+    pub fn with_accessibility_preferences(&self, preferences: AccessibilityPreferences) -> Self {
+        let mut theme = self.clone();
+        theme.apply_accessibility_preferences(preferences);
+        theme
+    }
+
+    pub fn apply_accessibility_preferences(&mut self, preferences: AccessibilityPreferences) {
+        let text_scale = preferences.normalized_text_scale();
+        if text_scale != AccessibilityPreferences::DEFAULT.text_scale {
+            self.typography = typography_with_scale(&self.typography, text_scale);
+            self.components = component_tokens_with_text_scale(&self.components, text_scale);
+        }
+
+        if preferences.should_reduce_motion() {
+            self.motion = motion_tokens_with_reduced_motion(self.motion);
+        }
+
+        if preferences.should_use_high_contrast() {
+            let source_colors = self.colors;
+            self.colors = color_tokens_with_high_contrast(self.colors);
+            self.stroke = stroke_tokens_with_high_contrast(self.stroke, &self.colors);
+            self.typography =
+                typography_with_high_contrast(&self.typography, &source_colors, &self.colors);
+            self.components = component_tokens_with_high_contrast(
+                &self.components,
+                &source_colors,
+                &self.colors,
+                &self.stroke,
+            );
+        }
+
+        if preferences.prefers_reduced_transparency() {
+            self.colors = color_tokens_without_transparency(self.colors);
+            self.opacity = opacity_tokens_without_transparency(self.opacity);
+            self.effects = effect_tokens_without_transparency(self.effects);
+            self.typography = typography_without_transparency(&self.typography);
+            self.components = component_tokens_without_transparency(&self.components);
+        }
     }
 }
 
@@ -1473,8 +1513,650 @@ pub fn text_style_with_color(style: &TextStyle, color: ColorRgba) -> TextStyle {
     next
 }
 
+pub fn text_style_with_scale(style: &TextStyle, scale: f32) -> TextStyle {
+    let scale = normalized_text_scale(scale);
+    let mut next = style.clone();
+    next.font_size *= scale;
+    next.line_height *= scale;
+    next
+}
+
 pub const fn color_with_alpha(color: ColorRgba, alpha: u8) -> ColorRgba {
     ColorRgba::new(color.r, color.g, color.b, alpha)
+}
+
+fn normalized_text_scale(scale: f32) -> f32 {
+    if scale.is_finite() {
+        scale.clamp(
+            AccessibilityPreferences::MIN_TEXT_SCALE,
+            AccessibilityPreferences::MAX_TEXT_SCALE,
+        )
+    } else {
+        AccessibilityPreferences::DEFAULT.text_scale
+    }
+}
+
+fn color_without_transparency(color: ColorRgba) -> ColorRgba {
+    if color.a == 0 || color.a == 255 {
+        color
+    } else {
+        color_with_alpha(color, 255)
+    }
+}
+
+fn opacity_without_transparency(opacity: f32) -> f32 {
+    if !opacity.is_finite() {
+        1.0
+    } else if opacity <= 0.0 {
+        0.0
+    } else {
+        1.0
+    }
+}
+
+fn width_at_least(width: f32, minimum: f32) -> f32 {
+    if width.is_finite() {
+        width.max(minimum)
+    } else {
+        minimum
+    }
+}
+
+fn stroke_with_min_width(stroke: StrokeStyle, minimum: f32) -> StrokeStyle {
+    StrokeStyle::new(
+        color_without_transparency(stroke.color),
+        width_at_least(stroke.width, minimum),
+    )
+}
+
+fn visual_without_transparency(visual: UiVisual) -> UiVisual {
+    UiVisual {
+        fill: color_without_transparency(visual.fill),
+        stroke: visual
+            .stroke
+            .map(|stroke| stroke_with_min_width(stroke, stroke.width)),
+        corner_radius: visual.corner_radius,
+    }
+}
+
+fn visual_with_high_contrast(visual: UiVisual, stroke: &StrokeTokens) -> UiVisual {
+    UiVisual {
+        fill: color_without_transparency(visual.fill),
+        stroke: visual
+            .stroke
+            .map(|value| stroke_with_min_width(value, stroke.thin_width)),
+        corner_radius: visual.corner_radius,
+    }
+}
+
+fn focused_visual_with_high_contrast(visual: UiVisual, stroke: &StrokeTokens) -> UiVisual {
+    UiVisual {
+        stroke: Some(stroke.focus),
+        ..visual_with_high_contrast(visual, stroke)
+    }
+}
+
+fn text_color_with_high_contrast(
+    color: ColorRgba,
+    source: &ColorTokens,
+    contrast: &ColorTokens,
+) -> ColorRgba {
+    if color == source.text_muted
+        || color == source.text_subtle
+        || color == source.text_disabled
+        || (color.a > 0 && color.a < 220)
+    {
+        contrast.text
+    } else {
+        color_without_transparency(color)
+    }
+}
+
+fn text_style_without_transparency(style: &TextStyle) -> TextStyle {
+    text_style_with_color(style, color_without_transparency(style.color))
+}
+
+fn text_style_with_high_contrast(
+    style: &TextStyle,
+    source: &ColorTokens,
+    contrast: &ColorTokens,
+) -> TextStyle {
+    text_style_with_color(
+        style,
+        text_color_with_high_contrast(style.color, source, contrast),
+    )
+}
+
+fn typography_with_scale(tokens: &TypographyTokens, scale: f32) -> TypographyTokens {
+    TypographyTokens {
+        caption: text_style_with_scale(&tokens.caption, scale),
+        caption_strong: text_style_with_scale(&tokens.caption_strong, scale),
+        body: text_style_with_scale(&tokens.body, scale),
+        body_strong: text_style_with_scale(&tokens.body_strong, scale),
+        label: text_style_with_scale(&tokens.label, scale),
+        label_strong: text_style_with_scale(&tokens.label_strong, scale),
+        heading: text_style_with_scale(&tokens.heading, scale),
+        title: text_style_with_scale(&tokens.title, scale),
+        mono: text_style_with_scale(&tokens.mono, scale),
+        numeric: text_style_with_scale(&tokens.numeric, scale),
+        disabled: text_style_with_scale(&tokens.disabled, scale),
+    }
+}
+
+fn typography_without_transparency(tokens: &TypographyTokens) -> TypographyTokens {
+    TypographyTokens {
+        caption: text_style_without_transparency(&tokens.caption),
+        caption_strong: text_style_without_transparency(&tokens.caption_strong),
+        body: text_style_without_transparency(&tokens.body),
+        body_strong: text_style_without_transparency(&tokens.body_strong),
+        label: text_style_without_transparency(&tokens.label),
+        label_strong: text_style_without_transparency(&tokens.label_strong),
+        heading: text_style_without_transparency(&tokens.heading),
+        title: text_style_without_transparency(&tokens.title),
+        mono: text_style_without_transparency(&tokens.mono),
+        numeric: text_style_without_transparency(&tokens.numeric),
+        disabled: text_style_without_transparency(&tokens.disabled),
+    }
+}
+
+fn typography_with_high_contrast(
+    tokens: &TypographyTokens,
+    source: &ColorTokens,
+    contrast: &ColorTokens,
+) -> TypographyTokens {
+    TypographyTokens {
+        caption: text_style_with_high_contrast(&tokens.caption, source, contrast),
+        caption_strong: text_style_with_high_contrast(&tokens.caption_strong, source, contrast),
+        body: text_style_with_high_contrast(&tokens.body, source, contrast),
+        body_strong: text_style_with_high_contrast(&tokens.body_strong, source, contrast),
+        label: text_style_with_high_contrast(&tokens.label, source, contrast),
+        label_strong: text_style_with_high_contrast(&tokens.label_strong, source, contrast),
+        heading: text_style_with_high_contrast(&tokens.heading, source, contrast),
+        title: text_style_with_high_contrast(&tokens.title, source, contrast),
+        mono: text_style_with_high_contrast(&tokens.mono, source, contrast),
+        numeric: text_style_with_high_contrast(&tokens.numeric, source, contrast),
+        disabled: text_style_with_high_contrast(&tokens.disabled, source, contrast),
+    }
+}
+
+fn motion_tokens_with_reduced_motion(mut motion: MotionTokens) -> MotionTokens {
+    motion.micro_ms = scaled_motion_duration(motion.micro_ms, motion);
+    motion.fast_ms = scaled_motion_duration(motion.fast_ms, motion);
+    motion.normal_ms = scaled_motion_duration(motion.normal_ms, motion);
+    motion.slow_ms = scaled_motion_duration(motion.slow_ms, motion);
+    motion.standard = MotionCurve::Linear;
+    motion.emphasized = MotionCurve::Linear;
+    motion.exit = MotionCurve::Linear;
+    motion
+}
+
+fn scaled_motion_duration(duration: u16, motion: MotionTokens) -> u16 {
+    let scale = motion.reduced_motion_scale;
+    if !scale.is_finite() || scale <= 0.0 {
+        return motion.instant_ms;
+    }
+
+    ((duration as f32) * scale)
+        .round()
+        .clamp(motion.instant_ms as f32, u16::MAX as f32) as u16
+}
+
+fn color_tokens_without_transparency(mut colors: ColorTokens) -> ColorTokens {
+    colors.canvas = color_without_transparency(colors.canvas);
+    colors.canvas_subtle = color_without_transparency(colors.canvas_subtle);
+    colors.surface = color_without_transparency(colors.surface);
+    colors.surface_muted = color_without_transparency(colors.surface_muted);
+    colors.surface_elevated = color_without_transparency(colors.surface_elevated);
+    colors.surface_overlay = color_without_transparency(colors.surface_overlay);
+    colors.surface_sunken = color_without_transparency(colors.surface_sunken);
+    colors.border = color_without_transparency(colors.border);
+    colors.border_muted = color_without_transparency(colors.border_muted);
+    colors.border_strong = color_without_transparency(colors.border_strong);
+    colors.divider = color_without_transparency(colors.divider);
+    colors.text = color_without_transparency(colors.text);
+    colors.text_muted = color_without_transparency(colors.text_muted);
+    colors.text_subtle = color_without_transparency(colors.text_subtle);
+    colors.text_disabled = color_without_transparency(colors.text_disabled);
+    colors.text_inverse = color_without_transparency(colors.text_inverse);
+    colors.accent = color_without_transparency(colors.accent);
+    colors.accent_hover = color_without_transparency(colors.accent_hover);
+    colors.accent_pressed = color_without_transparency(colors.accent_pressed);
+    colors.accent_muted = color_without_transparency(colors.accent_muted);
+    colors.accent_strong = color_without_transparency(colors.accent_strong);
+    colors.accent_text = color_without_transparency(colors.accent_text);
+    colors.success = color_without_transparency(colors.success);
+    colors.warning = color_without_transparency(colors.warning);
+    colors.danger = color_without_transparency(colors.danger);
+    colors.info = color_without_transparency(colors.info);
+    colors.selected = color_without_transparency(colors.selected);
+    colors.selected_hover = color_without_transparency(colors.selected_hover);
+    colors.selected_text = color_without_transparency(colors.selected_text);
+    colors.focus_ring = color_without_transparency(colors.focus_ring);
+    colors.overlay_scrim = color_without_transparency(colors.overlay_scrim);
+    colors.editor_background = color_without_transparency(colors.editor_background);
+    colors.editor_grid_major = color_without_transparency(colors.editor_grid_major);
+    colors.editor_grid_minor = color_without_transparency(colors.editor_grid_minor);
+    colors.track_header = color_without_transparency(colors.track_header);
+    colors.track_header_selected = color_without_transparency(colors.track_header_selected);
+    colors.clip_audio = color_without_transparency(colors.clip_audio);
+    colors.clip_midi = color_without_transparency(colors.clip_midi);
+    colors.clip_automation = color_without_transparency(colors.clip_automation);
+    colors.piano_roll_lane = color_without_transparency(colors.piano_roll_lane);
+    colors.piano_roll_lane_alt = color_without_transparency(colors.piano_roll_lane_alt);
+    colors.transport_active = color_without_transparency(colors.transport_active);
+    colors
+}
+
+fn color_tokens_with_high_contrast(mut colors: ColorTokens) -> ColorTokens {
+    colors.canvas_subtle = colors.canvas;
+    colors.surface_muted = colors.surface_elevated;
+    colors.surface_overlay = colors.surface_elevated;
+    colors.border_muted = colors.border;
+    colors.divider = colors.border_strong;
+    colors.text_muted = colors.text;
+    colors.text_subtle = colors.text;
+    colors.text_disabled = colors.text;
+    colors.focus_ring = color_without_transparency(colors.focus_ring);
+    colors.overlay_scrim = color_with_alpha(colors.overlay_scrim, colors.overlay_scrim.a.max(220));
+    colors.editor_grid_minor = colors.border_muted;
+    colors
+}
+
+fn stroke_tokens_with_high_contrast(
+    mut stroke: StrokeTokens,
+    colors: &ColorTokens,
+) -> StrokeTokens {
+    stroke.hairline_width = width_at_least(stroke.hairline_width, 1.0);
+    stroke.thin_width = width_at_least(stroke.thin_width, 1.5);
+    stroke.medium_width = width_at_least(stroke.medium_width, 2.0);
+    stroke.strong_width = width_at_least(stroke.strong_width, 2.5);
+    stroke.divider = StrokeStyle::new(colors.border_strong, stroke.thin_width);
+    stroke.surface = StrokeStyle::new(colors.border, stroke.thin_width);
+    stroke.surface_strong = StrokeStyle::new(colors.border_strong, stroke.medium_width);
+    stroke.control = StrokeStyle::new(colors.border_strong, stroke.thin_width);
+    stroke.control_hover = StrokeStyle::new(colors.focus_ring, stroke.medium_width);
+    stroke.focus = StrokeStyle::new(colors.focus_ring, stroke.strong_width);
+    stroke.selected = StrokeStyle::new(colors.selected_text, stroke.medium_width);
+    stroke.invalid = StrokeStyle::new(colors.danger, stroke.medium_width);
+    stroke.warning = StrokeStyle::new(colors.warning, stroke.medium_width);
+    stroke
+}
+
+fn opacity_tokens_without_transparency(mut opacity: OpacityTokens) -> OpacityTokens {
+    opacity.opaque = 1.0;
+    opacity.hover_overlay = opacity_without_transparency(opacity.hover_overlay);
+    opacity.pressed_overlay = opacity_without_transparency(opacity.pressed_overlay);
+    opacity.selected_overlay = opacity_without_transparency(opacity.selected_overlay);
+    opacity.disabled = opacity_without_transparency(opacity.disabled);
+    opacity.muted = opacity_without_transparency(opacity.muted);
+    opacity.scrim = opacity_without_transparency(opacity.scrim);
+    opacity.drag_preview = opacity_without_transparency(opacity.drag_preview);
+    opacity.focus_glow = opacity_without_transparency(opacity.focus_glow);
+    opacity
+}
+
+fn effect_without_transparency(mut effect: LayerEffect) -> LayerEffect {
+    effect.color = color_without_transparency(effect.color);
+    effect.opacity = opacity_without_transparency(effect.opacity);
+    effect.fallback_stroke = effect
+        .fallback_stroke
+        .map(|stroke| stroke_with_min_width(stroke, stroke.width));
+    effect
+}
+
+fn effect_tokens_without_transparency(effects: EffectTokens) -> EffectTokens {
+    EffectTokens {
+        panel_shadow: effect_without_transparency(effects.panel_shadow),
+        floating_shadow: effect_without_transparency(effects.floating_shadow),
+        popover_shadow: effect_without_transparency(effects.popover_shadow),
+        focus_glow: effect_without_transparency(effects.focus_glow),
+        accent_glow: effect_without_transparency(effects.accent_glow),
+        danger_glow: effect_without_transparency(effects.danger_glow),
+        inset_hairline: effect_without_transparency(effects.inset_hairline),
+    }
+}
+
+fn map_component_tokens(
+    tokens: &ComponentTokens,
+    mut map: impl FnMut(&ComponentStyle) -> ComponentStyle,
+) -> ComponentTokens {
+    ComponentTokens {
+        button: map(&tokens.button),
+        tab: map(&tokens.tab),
+        search_field: map(&tokens.search_field),
+        track_header: map(&tokens.track_header),
+        clip_block: map(&tokens.clip_block),
+        piano_roll_lane: map(&tokens.piano_roll_lane),
+        property_row: map(&tokens.property_row),
+        menu_row: map(&tokens.menu_row),
+        transport_control: map(&tokens.transport_control),
+    }
+}
+
+fn component_tokens_with_text_scale(tokens: &ComponentTokens, scale: f32) -> ComponentTokens {
+    map_component_tokens(tokens, |style| ComponentStyle {
+        text: text_states_with_scale(&style.text, scale),
+        ..style.clone()
+    })
+}
+
+fn component_tokens_without_transparency(tokens: &ComponentTokens) -> ComponentTokens {
+    map_component_tokens(tokens, component_style_without_transparency)
+}
+
+fn component_tokens_with_high_contrast(
+    tokens: &ComponentTokens,
+    source: &ColorTokens,
+    contrast: &ColorTokens,
+    stroke: &StrokeTokens,
+) -> ComponentTokens {
+    map_component_tokens(tokens, |style| {
+        component_style_with_high_contrast(style, source, contrast, stroke)
+    })
+}
+
+fn text_states_with_scale(states: &ComponentTextStates, scale: f32) -> ComponentTextStates {
+    ComponentTextStates {
+        base: text_style_with_scale(&states.base, scale),
+        hovered: states
+            .hovered
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        pressed: states
+            .pressed
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        focused: states
+            .focused
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        selected: states
+            .selected
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        active: states
+            .active
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        invalid: states
+            .invalid
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        warning: states
+            .warning
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        changed: states
+            .changed
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        pending: states
+            .pending
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        open: states
+            .open
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        checked: states
+            .checked
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+        disabled: states
+            .disabled
+            .as_ref()
+            .map(|style| text_style_with_scale(style, scale)),
+    }
+}
+
+fn text_states_without_transparency(states: &ComponentTextStates) -> ComponentTextStates {
+    ComponentTextStates {
+        base: text_style_without_transparency(&states.base),
+        hovered: states.hovered.as_ref().map(text_style_without_transparency),
+        pressed: states.pressed.as_ref().map(text_style_without_transparency),
+        focused: states.focused.as_ref().map(text_style_without_transparency),
+        selected: states
+            .selected
+            .as_ref()
+            .map(text_style_without_transparency),
+        active: states.active.as_ref().map(text_style_without_transparency),
+        invalid: states.invalid.as_ref().map(text_style_without_transparency),
+        warning: states.warning.as_ref().map(text_style_without_transparency),
+        changed: states.changed.as_ref().map(text_style_without_transparency),
+        pending: states.pending.as_ref().map(text_style_without_transparency),
+        open: states.open.as_ref().map(text_style_without_transparency),
+        checked: states.checked.as_ref().map(text_style_without_transparency),
+        disabled: states
+            .disabled
+            .as_ref()
+            .map(text_style_without_transparency),
+    }
+}
+
+fn text_states_with_high_contrast(
+    states: &ComponentTextStates,
+    source: &ColorTokens,
+    contrast: &ColorTokens,
+) -> ComponentTextStates {
+    ComponentTextStates {
+        base: text_style_with_high_contrast(&states.base, source, contrast),
+        hovered: states
+            .hovered
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        pressed: states
+            .pressed
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        focused: states
+            .focused
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        selected: states
+            .selected
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        active: states
+            .active
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        invalid: states
+            .invalid
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        warning: states
+            .warning
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        changed: states
+            .changed
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        pending: states
+            .pending
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        open: states
+            .open
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        checked: states
+            .checked
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+        disabled: states
+            .disabled
+            .as_ref()
+            .map(|style| text_style_with_high_contrast(style, source, contrast)),
+    }
+}
+
+fn visual_states_without_transparency(states: ComponentVisualStates) -> ComponentVisualStates {
+    ComponentVisualStates {
+        base: visual_without_transparency(states.base),
+        hovered: states.hovered.map(visual_without_transparency),
+        pressed: states.pressed.map(visual_without_transparency),
+        focused: states.focused.map(visual_without_transparency),
+        selected: states.selected.map(visual_without_transparency),
+        active: states.active.map(visual_without_transparency),
+        invalid: states.invalid.map(visual_without_transparency),
+        warning: states.warning.map(visual_without_transparency),
+        changed: states.changed.map(visual_without_transparency),
+        pending: states.pending.map(visual_without_transparency),
+        open: states.open.map(visual_without_transparency),
+        checked: states.checked.map(visual_without_transparency),
+        disabled: states.disabled.map(visual_without_transparency),
+    }
+}
+
+fn visual_states_with_high_contrast(
+    states: ComponentVisualStates,
+    stroke: &StrokeTokens,
+) -> ComponentVisualStates {
+    ComponentVisualStates {
+        base: visual_with_high_contrast(states.base, stroke),
+        hovered: states
+            .hovered
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        pressed: states
+            .pressed
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        focused: states
+            .focused
+            .map(|visual| focused_visual_with_high_contrast(visual, stroke)),
+        selected: states
+            .selected
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        active: states
+            .active
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        invalid: states
+            .invalid
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        warning: states
+            .warning
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        changed: states
+            .changed
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        pending: states
+            .pending
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        open: states
+            .open
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        checked: states
+            .checked
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+        disabled: states
+            .disabled
+            .map(|visual| visual_with_high_contrast(visual, stroke)),
+    }
+}
+
+fn icon_without_transparency(icon: IconStyle) -> IconStyle {
+    IconStyle {
+        tint: color_without_transparency(icon.tint),
+        opacity: opacity_without_transparency(icon.opacity),
+    }
+}
+
+fn icon_with_high_contrast(
+    icon: IconStyle,
+    source: &ColorTokens,
+    contrast: &ColorTokens,
+) -> IconStyle {
+    IconStyle {
+        tint: text_color_with_high_contrast(icon.tint, source, contrast),
+        opacity: opacity_without_transparency(icon.opacity),
+    }
+}
+
+fn icon_states_without_transparency(states: ComponentIconStates) -> ComponentIconStates {
+    ComponentIconStates {
+        base: icon_without_transparency(states.base),
+        hovered: states.hovered.map(icon_without_transparency),
+        pressed: states.pressed.map(icon_without_transparency),
+        focused: states.focused.map(icon_without_transparency),
+        selected: states.selected.map(icon_without_transparency),
+        active: states.active.map(icon_without_transparency),
+        invalid: states.invalid.map(icon_without_transparency),
+        warning: states.warning.map(icon_without_transparency),
+        changed: states.changed.map(icon_without_transparency),
+        pending: states.pending.map(icon_without_transparency),
+        open: states.open.map(icon_without_transparency),
+        checked: states.checked.map(icon_without_transparency),
+        disabled: states.disabled.map(icon_without_transparency),
+    }
+}
+
+fn icon_states_with_high_contrast(
+    states: ComponentIconStates,
+    source: &ColorTokens,
+    contrast: &ColorTokens,
+) -> ComponentIconStates {
+    ComponentIconStates {
+        base: icon_with_high_contrast(states.base, source, contrast),
+        hovered: states
+            .hovered
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        pressed: states
+            .pressed
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        focused: states
+            .focused
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        selected: states
+            .selected
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        active: states
+            .active
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        invalid: states
+            .invalid
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        warning: states
+            .warning
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        changed: states
+            .changed
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        pending: states
+            .pending
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        open: states
+            .open
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        checked: states
+            .checked
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+        disabled: states
+            .disabled
+            .map(|icon| icon_with_high_contrast(icon, source, contrast)),
+    }
+}
+
+fn component_style_without_transparency(style: &ComponentStyle) -> ComponentStyle {
+    ComponentStyle {
+        visual: visual_states_without_transparency(style.visual),
+        text: text_states_without_transparency(&style.text),
+        icon: icon_states_without_transparency(style.icon),
+        layout: style.layout,
+    }
+}
+
+fn component_style_with_high_contrast(
+    style: &ComponentStyle,
+    source: &ColorTokens,
+    contrast: &ColorTokens,
+    stroke: &StrokeTokens,
+) -> ComponentStyle {
+    ComponentStyle {
+        visual: visual_states_with_high_contrast(style.visual, stroke),
+        text: text_states_with_high_contrast(&style.text, source, contrast),
+        icon: icon_states_with_high_contrast(style.icon, source, contrast),
+        layout: style.layout,
+    }
 }
 
 fn button_tokens(
@@ -2270,6 +2952,86 @@ mod tests {
                 .resolve_icon(ComponentRole::TransportControl, state)
                 .tint,
             theme.colors.text_inverse
+        );
+    }
+
+    #[test]
+    fn theme_preferences_scale_typography_and_component_text() {
+        let theme = Theme::dark();
+        let adjusted =
+            theme.with_accessibility_preferences(AccessibilityPreferences::DEFAULT.text_scale(1.5));
+
+        assert_eq!(adjusted.typography.body.font_size, 21.0);
+        assert_eq!(adjusted.typography.body.line_height, 30.0);
+        assert_eq!(
+            adjusted
+                .resolve_text(ComponentRole::Button, ComponentState::NORMAL)
+                .font_size,
+            theme
+                .resolve_text(ComponentRole::Button, ComponentState::NORMAL)
+                .font_size
+                * 1.5
+        );
+    }
+
+    #[test]
+    fn theme_preferences_reduce_motion_tokens() {
+        let theme = Theme::dark();
+        let adjusted = theme
+            .with_accessibility_preferences(AccessibilityPreferences::DEFAULT.reduced_motion(true));
+
+        assert_eq!(adjusted.motion.micro_ms, adjusted.motion.instant_ms);
+        assert_eq!(adjusted.motion.fast_ms, adjusted.motion.instant_ms);
+        assert_eq!(adjusted.motion.normal_ms, adjusted.motion.instant_ms);
+        assert_eq!(adjusted.motion.slow_ms, adjusted.motion.instant_ms);
+        assert_eq!(adjusted.motion.standard, MotionCurve::Linear);
+        assert_eq!(adjusted.motion.emphasized, MotionCurve::Linear);
+        assert_eq!(adjusted.motion.exit, MotionCurve::Linear);
+    }
+
+    #[test]
+    fn theme_preferences_remove_translucent_component_colors() {
+        let theme = Theme::dark();
+        let adjusted = theme.with_accessibility_preferences(
+            AccessibilityPreferences::DEFAULT.reduced_transparency(true),
+        );
+        let disabled_button =
+            adjusted.resolve_visual(ComponentRole::Button, ComponentState::DISABLED);
+
+        assert_eq!(adjusted.colors.overlay_scrim.a, 255);
+        assert_eq!(adjusted.typography.disabled.color.a, 255);
+        assert_eq!(disabled_button.fill.a, 255);
+        assert_eq!(
+            adjusted
+                .resolve_icon(ComponentRole::Button, ComponentState::DISABLED)
+                .opacity,
+            1.0
+        );
+        assert_eq!(adjusted.opacity.scrim, 1.0);
+    }
+
+    #[test]
+    fn forced_colors_implies_high_contrast_theme_policy() {
+        let theme = Theme::dark();
+        let adjusted = theme
+            .with_accessibility_preferences(AccessibilityPreferences::DEFAULT.forced_colors(true));
+
+        assert_eq!(adjusted.colors.text_muted, adjusted.colors.text);
+        assert_eq!(adjusted.colors.text_subtle, adjusted.colors.text);
+        assert_eq!(adjusted.colors.text_disabled, adjusted.colors.text);
+        assert_eq!(adjusted.colors.overlay_scrim.a, 255);
+        assert!(adjusted.stroke.focus.width > theme.stroke.focus.width);
+        assert_eq!(
+            adjusted
+                .resolve_text(ComponentRole::Button, ComponentState::DISABLED)
+                .color,
+            adjusted.colors.text
+        );
+        assert_eq!(
+            adjusted
+                .resolve_visual(ComponentRole::Button, ComponentState::FOCUSED)
+                .stroke,
+            Some(adjusted.stroke.focus)
         );
     }
 

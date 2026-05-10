@@ -9,7 +9,7 @@ use std::fmt;
 
 use crate::accessibility::{
     AccessibilityAdapterRequest, AccessibilityAnnouncementQueue, AccessibilityCapabilities,
-    AccessibilityLiveRegionSnapshot, FocusRestoreTarget,
+    AccessibilityLiveRegionSnapshot, AccessibilityPreferences, FocusRestoreTarget,
 };
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{GestureEvent, GesturePhase, PointerCapture, RawInputEvent};
@@ -369,6 +369,7 @@ pub struct HostDocumentFrameRequest {
     pub host_output: HostFrameOutput,
     pub previous_live_regions: Option<AccessibilityLiveRegionSnapshot>,
     pub accessibility_capabilities: AccessibilityCapabilities,
+    pub accessibility_preferences: AccessibilityPreferences,
     pub render_options: RenderOptions,
     pub dirty_flags: DirtyFlags,
 }
@@ -381,6 +382,7 @@ impl HostDocumentFrameRequest {
             host_output,
             previous_live_regions: None,
             accessibility_capabilities: AccessibilityCapabilities::NONE,
+            accessibility_preferences: AccessibilityPreferences::DEFAULT,
             render_options: RenderOptions::default(),
             dirty_flags: DirtyFlags::ALL,
         }
@@ -396,6 +398,14 @@ impl HostDocumentFrameRequest {
         capabilities: AccessibilityCapabilities,
     ) -> Self {
         self.accessibility_capabilities = capabilities;
+        self
+    }
+
+    pub const fn accessibility_preferences(
+        mut self,
+        preferences: AccessibilityPreferences,
+    ) -> Self {
+        self.accessibility_preferences = preferences;
         self
     }
 
@@ -586,6 +596,7 @@ pub fn process_document_frame(
         mut host_output,
         previous_live_regions,
         accessibility_capabilities,
+        accessibility_preferences,
         render_options,
         dirty_flags,
     } = request;
@@ -622,6 +633,9 @@ pub fn process_document_frame(
             .iter()
             .map(|node| (node.id, state.node_state(node.id))),
     );
+    let mut render_options = render_options;
+    render_options.accessibility_preferences = accessibility_preferences;
+
     let render_request = RenderFrameRequest::new(target, viewport, paint)
         .node_interactions(node_interactions)
         .dirty_flags(dirty_flags)
@@ -858,7 +872,12 @@ mod tests {
                 host_output,
             )
             .previous_live_regions(previous_live_regions)
-            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER),
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER)
+            .accessibility_preferences(
+                AccessibilityPreferences::DEFAULT
+                    .reduced_motion(true)
+                    .text_scale(1.25),
+            ),
         )
         .expect("document frame");
 
@@ -878,6 +897,12 @@ mod tests {
         assert_eq!(frame.announcements.pending.len(), 1);
         assert_eq!(frame.announcements.pending[0].message, "Status: Running");
         assert_eq!(frame.accessibility_requests.len(), 1);
+        assert_eq!(
+            frame.render_request.options.accessibility_preferences,
+            AccessibilityPreferences::DEFAULT
+                .reduced_motion(true)
+                .text_scale(1.25)
+        );
         assert!(matches!(
             frame.accessibility_requests[0],
             AccessibilityAdapterRequest::Announce(_)

@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
 use crate::platform::{BackendCapabilities, PixelSize, ResourceHandle, ResourceId, ResourceKind};
 use crate::{
@@ -256,6 +257,7 @@ pub struct RenderOptions {
     pub deterministic: bool,
     pub allow_partial_updates: bool,
     pub clear_color: ColorRgba,
+    pub accessibility_preferences: AccessibilityPreferences,
 }
 
 impl Default for RenderOptions {
@@ -265,6 +267,7 @@ impl Default for RenderOptions {
             deterministic: false,
             allow_partial_updates: true,
             clear_color: ColorRgba::TRANSPARENT,
+            accessibility_preferences: AccessibilityPreferences::DEFAULT,
         }
     }
 }
@@ -1222,6 +1225,14 @@ mod tests {
             shader: None,
             kind,
         }
+    }
+
+    #[test]
+    fn render_options_default_to_neutral_accessibility_preferences() {
+        assert_eq!(
+            RenderOptions::default().accessibility_preferences,
+            AccessibilityPreferences::DEFAULT
+        );
     }
 
     #[test]

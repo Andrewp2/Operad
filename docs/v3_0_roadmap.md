@@ -176,6 +176,10 @@ The branch starts from Operad 2.0.0 plus:
 - Backend-facing accessibility adapter request/response contracts and host
   preference flags for screen reader, reduced motion, high contrast, forced
   colors, transparency, and text scaling.
+- Accessibility preference resolution in `src/theme.rs`, `src/renderer.rs`,
+  and `src/host.rs` for text scaling, reduced motion, high contrast/forced
+  colors, reduced transparency, and render-option propagation from host frame
+  requests.
 - Existing core widgets and major widget families wired to richer accessibility
   states where the current APIs already expose that information.
 - Orbifold, game-agent, and Fabricad/Rust-layout v3 migration notes preserved

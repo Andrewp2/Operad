@@ -19,6 +19,9 @@ pub struct AccessibilityPreferences {
 }
 
 impl AccessibilityPreferences {
+    pub const MIN_TEXT_SCALE: f32 = 0.75;
+    pub const MAX_TEXT_SCALE: f32 = 2.0;
+
     pub const DEFAULT: Self = Self {
         screen_reader_active: false,
         reduced_motion: false,
@@ -64,6 +67,19 @@ impl AccessibilityPreferences {
 
     pub const fn should_use_high_contrast(self) -> bool {
         self.high_contrast || self.forced_colors
+    }
+
+    pub const fn prefers_reduced_transparency(self) -> bool {
+        self.reduced_transparency || self.forced_colors
+    }
+
+    pub fn normalized_text_scale(self) -> f32 {
+        if self.text_scale.is_finite() {
+            self.text_scale
+                .clamp(Self::MIN_TEXT_SCALE, Self::MAX_TEXT_SCALE)
+        } else {
+            Self::DEFAULT.text_scale
+        }
     }
 }
 
@@ -860,10 +876,21 @@ mod tests {
         let preferences = AccessibilityPreferences::DEFAULT
             .screen_reader_active(true)
             .forced_colors(true)
-            .text_scale(1.25);
+            .reduced_transparency(true)
+            .text_scale(4.0);
 
         assert!(preferences.should_reduce_motion());
         assert!(preferences.should_use_high_contrast());
-        assert_eq!(preferences.text_scale, 1.25);
+        assert!(preferences.prefers_reduced_transparency());
+        assert_eq!(
+            preferences.normalized_text_scale(),
+            AccessibilityPreferences::MAX_TEXT_SCALE
+        );
+        assert_eq!(
+            AccessibilityPreferences::DEFAULT
+                .text_scale(f32::NAN)
+                .normalized_text_scale(),
+            1.0
+        );
     }
 }

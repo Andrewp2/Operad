@@ -110,11 +110,11 @@ pub use testing::{
     ReplayInput, RgbaImageView, TestFailure, TestResult,
 };
 pub use theme::{
-    color_with_alpha, text_style_with_color, ColorTokens, ComponentIconStates,
-    ComponentLayoutTokens, ComponentRole, ComponentState, ComponentStateSlot, ComponentStyle,
-    ComponentTextStates, ComponentTokens, ComponentVisualStates, EffectTokens, IconStyle,
-    LayerEffect, LayerEffectKind, MotionCurve, MotionTokens, OpacityTokens, RadiusTokens,
-    ScopedThemeRegistry, SpacingTokens, StrokeTokens, Theme, ThemePatch, ThemeScope,
+    color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,
+    ComponentIconStates, ComponentLayoutTokens, ComponentRole, ComponentState, ComponentStateSlot,
+    ComponentStyle, ComponentTextStates, ComponentTokens, ComponentVisualStates, EffectTokens,
+    IconStyle, LayerEffect, LayerEffectKind, MotionCurve, MotionTokens, OpacityTokens,
+    RadiusTokens, ScopedThemeRegistry, SpacingTokens, StrokeTokens, Theme, ThemePatch, ThemeScope,
     ThemeScopeError, ThemeScopeId, ThemeScopeKind, TypographyTokens, OPERAD_DARK_THEME_NAME,
 };
 pub use tooltips::{
