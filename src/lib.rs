@@ -20,6 +20,7 @@ use taffy::prelude::{
 pub mod accessibility;
 pub mod assets;
 pub mod commands;
+pub mod debug;
 pub mod display;
 pub mod editor;
 pub mod host;
@@ -38,6 +39,11 @@ pub use assets::{
 pub use commands::{
     Command, CommandEffect, CommandEffectInvocation, CommandId, CommandMeta, CommandRegistry,
     CommandRegistryError, CommandScope, Shortcut, ShortcutBinding, ShortcutConflict,
+};
+pub use debug::{
+    layout_snapshot_dump, DebugGestureKind, DebugGestureState, DebugHitCandidate, DebugHitTrace,
+    DebugOverlayContext, DebugOverlayNode, DebugOverlayOptions, DebugOverlaySnapshot,
+    DebugPaintDump, DebugPaintItem, DebugPaintKindCount, DebugPaintStats,
 };
 pub use display::{
     DisplayListId, DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKey,

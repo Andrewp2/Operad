@@ -192,6 +192,9 @@ The branch starts from Operad 2.0.0 plus:
   input conversion checks, platform-output assertions, stable-name layout
   assertions, paint-list assertions, RGBA pixel diffs with tolerances, dirty
   flags, and frame timing sections.
+- Renderer-neutral debug snapshots in `src/debug.rs` for layout bounds, clip
+  rects, paint primitive counts, z ranges, host interaction flags, command
+  scopes, active gestures, repaint reasons, frame timings, and hit-test traces.
 - Renderer/backend adapter contracts in `src/renderer.rs` for render targets,
   resource deltas, dirty regions, paint batching, deterministic snapshots, and
   backend capability negotiation.
