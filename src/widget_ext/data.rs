@@ -9,9 +9,10 @@ use taffy::prelude::{
 };
 
 use crate::{
-    commands::CommandEffect, platform::ClipboardRequest, AccessibilityMeta, AccessibilityRole,
-    ClipBehavior, ColorRgba, ImageContent, InputBehavior, ScrollAxes, ShaderEffect, StrokeStyle,
-    TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiVisual,
+    commands::CommandEffect, platform::ClipboardRequest, AccessibilityLiveRegion,
+    AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, ImageContent, InputBehavior,
+    ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId,
+    UiNodeStyle, UiPoint, UiVisual,
 };
 
 /// Semantic hint for property value rendering and editing owned by the app.
@@ -31,6 +32,61 @@ impl Default for PropertyValueKind {
     }
 }
 
+/// Domain-neutral state carried by one property inspector row.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PropertyRowStatus {
+    pub invalid: Option<String>,
+    pub error: Option<String>,
+    pub warning: Option<String>,
+    pub help: Option<String>,
+    pub changed: bool,
+    pub pending: bool,
+}
+
+impl PropertyRowStatus {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn invalid(mut self, reason: impl Into<String>) -> Self {
+        self.invalid = Some(reason.into());
+        self
+    }
+
+    pub fn error(mut self, message: impl Into<String>) -> Self {
+        self.error = Some(message.into());
+        self
+    }
+
+    pub fn warning(mut self, message: impl Into<String>) -> Self {
+        self.warning = Some(message.into());
+        self
+    }
+
+    pub fn help(mut self, message: impl Into<String>) -> Self {
+        self.help = Some(message.into());
+        self
+    }
+
+    pub fn changed(mut self) -> Self {
+        self.changed = true;
+        self
+    }
+
+    pub fn pending(mut self) -> Self {
+        self.pending = true;
+        self
+    }
+
+    pub fn has_visual_status(&self) -> bool {
+        self.invalid.is_some()
+            || self.error.is_some()
+            || self.warning.is_some()
+            || self.changed
+            || self.pending
+    }
+}
+
 /// One row in a renderer-neutral property inspector grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyGridRow {
@@ -40,6 +96,7 @@ pub struct PropertyGridRow {
     pub value_kind: PropertyValueKind,
     pub editable: bool,
     pub disabled: bool,
+    pub status: PropertyRowStatus,
     pub leading_image: Option<ImageContent>,
 }
 
@@ -52,6 +109,7 @@ impl PropertyGridRow {
             value_kind: PropertyValueKind::Text,
             editable: true,
             disabled: false,
+            status: PropertyRowStatus::default(),
             leading_image: None,
         }
     }
@@ -68,6 +126,41 @@ impl PropertyGridRow {
 
     pub fn disabled(mut self) -> Self {
         self.disabled = true;
+        self
+    }
+
+    pub fn with_status(mut self, status: PropertyRowStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    pub fn invalid(mut self, reason: impl Into<String>) -> Self {
+        self.status = self.status.invalid(reason);
+        self
+    }
+
+    pub fn error(mut self, message: impl Into<String>) -> Self {
+        self.status = self.status.error(message);
+        self
+    }
+
+    pub fn warning(mut self, message: impl Into<String>) -> Self {
+        self.status = self.status.warning(message);
+        self
+    }
+
+    pub fn help(mut self, message: impl Into<String>) -> Self {
+        self.status = self.status.help(message);
+        self
+    }
+
+    pub fn changed(mut self) -> Self {
+        self.status = self.status.changed();
+        self
+    }
+
+    pub fn pending(mut self) -> Self {
+        self.status = self.status.pending();
         self
     }
 
@@ -88,8 +181,10 @@ pub struct PropertyInspectorOptions {
     pub background_visual: UiVisual,
     pub row_visual: UiVisual,
     pub selected_row_visual: UiVisual,
+    pub status_row_visual: UiVisual,
     pub selected_row_shader: Option<ShaderEffect>,
     pub focused_row_shader: Option<ShaderEffect>,
+    pub status_row_shader: Option<ShaderEffect>,
     pub label_style: TextStyle,
     pub value_style: TextStyle,
     pub read_only_value_style: TextStyle,
@@ -120,8 +215,10 @@ impl Default for PropertyInspectorOptions {
             ),
             row_visual: UiVisual::TRANSPARENT,
             selected_row_visual: UiVisual::panel(ColorRgba::new(43, 62, 86, 255), None, 0.0),
+            status_row_visual: UiVisual::TRANSPARENT,
             selected_row_shader: None,
             focused_row_shader: None,
+            status_row_shader: None,
             label_style: muted_text_style(),
             value_style: TextStyle::default(),
             read_only_value_style: muted_text_style(),
@@ -164,11 +261,8 @@ pub fn property_inspector_grid(
     for (index, row) in rows.iter().enumerate() {
         let selected = options.selected_index == Some(index);
         let focused = options.focused_index == Some(index);
-        let visual = if selected {
-            options.selected_row_visual
-        } else {
-            options.row_visual
-        };
+        let visual = property_row_visual(row, selected, &options);
+        let shader = property_row_shader(row, selected, focused, &options);
         let row_node = with_optional_shader(
             UiNode::container(
                 format!("{name}.row.{}", row.id),
@@ -200,13 +294,7 @@ pub fn property_inspector_grid(
                 selected,
                 focused,
             )),
-            if selected {
-                options.selected_row_shader.as_ref()
-            } else if focused {
-                options.focused_row_shader.as_ref()
-            } else {
-                None
-            },
+            shader.as_ref(),
         );
         let row_node = document.add_child(root, row_node);
 
@@ -1838,6 +1926,58 @@ fn justify_content(alignment: DataCellAlignment) -> JustifyContent {
     }
 }
 
+fn property_row_visual(
+    row: &PropertyGridRow,
+    selected: bool,
+    options: &PropertyInspectorOptions,
+) -> UiVisual {
+    if selected {
+        options.selected_row_visual
+    } else if row.status.has_visual_status() {
+        options.status_row_visual
+    } else {
+        options.row_visual
+    }
+}
+
+fn property_row_shader(
+    row: &PropertyGridRow,
+    selected: bool,
+    focused: bool,
+    options: &PropertyInspectorOptions,
+) -> Option<ShaderEffect> {
+    let shader = if selected {
+        options.selected_row_shader.as_ref()
+    } else if focused {
+        options.focused_row_shader.as_ref()
+    } else if row.status.has_visual_status() {
+        options.status_row_shader.as_ref()
+    } else {
+        None
+    };
+
+    shader.map(|shader| property_status_shader(shader.clone(), &row.status))
+}
+
+fn property_status_shader(mut shader: ShaderEffect, status: &PropertyRowStatus) -> ShaderEffect {
+    if status.has_visual_status() || status.help.is_some() {
+        shader = shader
+            .uniform(
+                "property_status_invalid",
+                status.invalid.is_some() as u8 as f32,
+            )
+            .uniform("property_status_error", status.error.is_some() as u8 as f32)
+            .uniform(
+                "property_status_warning",
+                status.warning.is_some() as u8 as f32,
+            )
+            .uniform("property_status_changed", status.changed as u8 as f32)
+            .uniform("property_status_pending", status.pending as u8 as f32)
+            .uniform("property_status_help", status.help.is_some() as u8 as f32);
+    }
+    shader
+}
+
 fn property_row_accessibility(
     row: &PropertyGridRow,
     index: usize,
@@ -1858,15 +1998,15 @@ fn property_row_accessibility(
     push_state(&mut value, "selected", selected);
     push_state(&mut value, "focused", focused);
     push_state(&mut value, "disabled", row.disabled);
+    push_property_status_value(&mut value, &row.status);
 
-    apply_enabled(
-        AccessibilityMeta::new(AccessibilityRole::ListItem)
-            .label(row.label.clone())
-            .value(value.join("; "))
-            .selected(selected)
-            .focusable(),
-        !row.disabled,
-    )
+    let mut meta = AccessibilityMeta::new(AccessibilityRole::ListItem)
+        .label(row.label.clone())
+        .value(value.join("; "))
+        .selected(selected)
+        .focusable();
+    meta = apply_property_status_accessibility(meta, &row.status);
+    apply_enabled(meta, !row.disabled)
 }
 
 fn property_value_accessibility(
@@ -1882,6 +2022,7 @@ fn property_value_accessibility(
     push_state(&mut value, "focused row", focused);
     push_state(&mut value, "read only", !row.editable);
     push_state(&mut value, "disabled", row.disabled);
+    push_property_status_value(&mut value, &row.status);
 
     let mut meta = AccessibilityMeta::new(AccessibilityRole::GridCell)
         .label(format!("{} value", row.label))
@@ -1893,6 +2034,7 @@ fn property_value_accessibility(
     if row.editable && !row.disabled {
         meta = meta.focusable();
     }
+    meta = apply_property_status_accessibility(meta, &row.status);
     apply_enabled(meta, !row.disabled)
 }
 
@@ -2075,6 +2217,69 @@ fn property_value_kind_label(kind: PropertyValueKind) -> &'static str {
         PropertyValueKind::Choice => "choice",
         PropertyValueKind::Color => "color",
         PropertyValueKind::Custom => "custom",
+    }
+}
+
+fn push_property_status_value(values: &mut Vec<String>, status: &PropertyRowStatus) {
+    push_state(values, "changed", status.changed);
+    push_state(values, "pending", status.pending);
+    if status.invalid.is_some() {
+        values.push("invalid".to_owned());
+    }
+    if status.error.is_some() {
+        values.push("error".to_owned());
+    }
+    if status.warning.is_some() {
+        values.push("warning".to_owned());
+    }
+    if status.help.is_some() {
+        values.push("help available".to_owned());
+    }
+}
+
+fn apply_property_status_accessibility(
+    mut meta: AccessibilityMeta,
+    status: &PropertyRowStatus,
+) -> AccessibilityMeta {
+    if let Some(message) = property_status_invalid_message(status) {
+        meta = meta.invalid(message);
+    }
+    if let Some(hint) = property_status_hint(status) {
+        meta = meta.hint(hint);
+    }
+    if status.error.is_some() {
+        meta = meta.live_region(AccessibilityLiveRegion::Assertive);
+    } else if status.pending {
+        meta = meta.live_region(AccessibilityLiveRegion::Polite);
+    }
+    meta
+}
+
+fn property_status_invalid_message(status: &PropertyRowStatus) -> Option<String> {
+    status.error.clone().or_else(|| status.invalid.clone())
+}
+
+fn property_status_hint(status: &PropertyRowStatus) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(error) = &status.error {
+        parts.push(format!("Error: {error}"));
+    }
+    if let Some(invalid) = &status.invalid {
+        parts.push(format!("Invalid: {invalid}"));
+    }
+    if let Some(warning) = &status.warning {
+        parts.push(format!("Warning: {warning}"));
+    }
+    if let Some(help) = &status.help {
+        parts.push(format!("Help: {help}"));
+    }
+    if status.pending {
+        parts.push("Pending".to_owned());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
     }
 }
 
@@ -2329,6 +2534,102 @@ mod tests {
         let disabled_row = doc.node(node_named(&doc, "props.row.locked"));
         assert!(!disabled_row.input.pointer);
         assert!(!disabled_row.accessibility.as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn property_inspector_grid_maps_status_metadata_to_accessibility() {
+        let mut doc = test_root();
+        let rows = vec![
+            PropertyGridRow::new("gain", "Gain", "12 dB")
+                .invalid("Out of range")
+                .warning("May clip")
+                .help("Use a lower gain")
+                .changed()
+                .pending(),
+            PropertyGridRow::new("mode", "Mode", "Auto").error("Unsupported mode"),
+        ];
+        let root = doc.root;
+        property_inspector_grid(
+            &mut doc,
+            root,
+            "props",
+            &rows,
+            PropertyInspectorOptions::default(),
+        );
+
+        let gain_row = doc.node(node_named(&doc, "props.row.gain"));
+        let gain_meta = gain_row.accessibility.as_ref().unwrap();
+        let gain_value = gain_meta.value.as_deref().unwrap();
+        assert!(gain_value.contains("changed"));
+        assert!(gain_value.contains("pending"));
+        assert!(gain_value.contains("invalid"));
+        assert!(gain_value.contains("warning"));
+        assert!(gain_value.contains("help available"));
+        assert_eq!(gain_meta.invalid.as_deref(), Some("Out of range"));
+        assert_eq!(gain_meta.live_region, AccessibilityLiveRegion::Polite);
+        assert!(gain_meta
+            .hint
+            .as_deref()
+            .unwrap()
+            .contains("Warning: May clip"));
+
+        let gain_value_node = doc.node(node_named(&doc, "props.row.gain.value"));
+        let gain_value_meta = gain_value_node.accessibility.as_ref().unwrap();
+        assert_eq!(gain_value_meta.invalid.as_deref(), Some("Out of range"));
+        assert!(gain_value_meta
+            .hint
+            .as_deref()
+            .unwrap()
+            .contains("Help: Use a lower gain"));
+
+        let mode_row = doc.node(node_named(&doc, "props.row.mode"));
+        let mode_meta = mode_row.accessibility.as_ref().unwrap();
+        assert_eq!(mode_meta.invalid.as_deref(), Some("Unsupported mode"));
+        assert_eq!(mode_meta.live_region, AccessibilityLiveRegion::Assertive);
+    }
+
+    #[test]
+    fn property_inspector_grid_maps_status_to_visual_and_shader_hooks() {
+        let mut doc = test_root();
+        let rows = vec![
+            PropertyGridRow::new("dirty", "Dirty", "Yes").changed(),
+            PropertyGridRow::new("warn", "Warning", "High").warning("Near limit"),
+        ];
+        let status_visual = UiVisual::panel(
+            ColorRgba::new(28, 34, 43, 255),
+            Some(StrokeStyle::new(ColorRgba::new(214, 158, 46, 255), 1.0)),
+            0.0,
+        );
+        let root = doc.root;
+        property_inspector_grid(
+            &mut doc,
+            root,
+            "props",
+            &rows,
+            PropertyInspectorOptions {
+                selected_index: Some(0),
+                selected_row_shader: Some(ShaderEffect::new("ui.selected")),
+                status_row_visual: status_visual,
+                status_row_shader: Some(ShaderEffect::new("ui.status")),
+                ..Default::default()
+            },
+        );
+
+        let selected_row = doc.node(node_named(&doc, "props.row.dirty"));
+        assert_eq!(selected_row.visual.fill, ColorRgba::new(43, 62, 86, 255));
+        let selected_shader = selected_row.shader.as_ref().unwrap();
+        assert_eq!(selected_shader.key, "ui.selected");
+        assert!(selected_shader.uniforms.iter().any(|uniform| {
+            uniform.name == "property_status_changed" && (uniform.value - 1.0).abs() < f32::EPSILON
+        }));
+
+        let warning_row = doc.node(node_named(&doc, "props.row.warn"));
+        assert_eq!(warning_row.visual, status_visual);
+        let warning_shader = warning_row.shader.as_ref().unwrap();
+        assert_eq!(warning_shader.key, "ui.status");
+        assert!(warning_shader.uniforms.iter().any(|uniform| {
+            uniform.name == "property_status_warning" && (uniform.value - 1.0).abs() < f32::EPSILON
+        }));
     }
 
     #[test]

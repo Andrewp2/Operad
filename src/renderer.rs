@@ -7,8 +7,8 @@
 
 use crate::platform::{BackendCapabilities, PixelSize, ResourceHandle, ResourceId, ResourceKind};
 use crate::{
-    ColorRgba, DirtyFlags, FrameTiming, PaintItem, PaintKind, PaintList, ShaderEffect, UiRect,
-    UiSize,
+    CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintItem, PaintKind, PaintList,
+    PaintTransform, ShaderEffect, UiNodeId, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -314,11 +314,51 @@ impl RenderFrameRequest {
         PaintBatcher::default().batch(&self.paint)
     }
 
+    pub fn canvas_requests(&self) -> Vec<CanvasRenderRequest> {
+        self.paint
+            .items
+            .iter()
+            .filter_map(CanvasRenderRequest::from_paint_item)
+            .collect()
+    }
+
     pub fn requires_full_repaint(&self) -> bool {
         self.dirty_regions.is_empty()
             || self.dirty_flags.layout
             || self.dirty_flags.theme
             || self.dirty_flags.text_measurement
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasRenderRequest {
+    pub node: UiNodeId,
+    pub canvas: CanvasContent,
+    pub rect: UiRect,
+    pub clip_rect: UiRect,
+    pub z_index: i16,
+    pub opacity: f32,
+    pub transform: PaintTransform,
+}
+
+impl CanvasRenderRequest {
+    pub fn from_paint_item(item: &PaintItem) -> Option<Self> {
+        let PaintKind::Canvas(canvas) = &item.kind else {
+            return None;
+        };
+        Some(Self {
+            node: item.node,
+            canvas: canvas.clone(),
+            rect: item.rect,
+            clip_rect: item.clip_rect,
+            z_index: item.z_index,
+            opacity: item.opacity,
+            transform: item.transform,
+        })
+    }
+
+    pub const fn requires_host_input_capture(&self) -> bool {
+        self.canvas.requires_host_input_capture()
     }
 }
 
@@ -531,7 +571,10 @@ mod tests {
         BackendAdapterKind, ImageHandle, RenderingCapabilities, ResourceCapabilities,
         ResourceDomain,
     };
-    use crate::{PaintTransform, ShaderEffect, StrokeStyle, TextContent, TextStyle, UiNodeId};
+    use crate::{
+        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, PaintTransform, ShaderEffect,
+        StrokeStyle, TextContent, TextStyle, UiNodeId,
+    };
 
     fn paint_item(index: usize, rect: UiRect, kind: PaintKind) -> PaintItem {
         PaintItem {
@@ -651,6 +694,38 @@ mod tests {
             ..DirtyFlags::NONE
         });
         assert!(full.requires_full_repaint());
+    }
+
+    #[test]
+    fn render_request_extracts_embedded_canvas_requests() {
+        let canvas = CanvasContent::new("fabricad.mask.viewport")
+            .native_viewport()
+            .interaction(CanvasInteractionPolicy::NATIVE_VIEWPORT);
+        let mut paint = PaintList::default();
+        paint.items.push(paint_item(
+            7,
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+            PaintKind::Canvas(canvas),
+        ));
+
+        let request = RenderFrameRequest::new(
+            RenderTarget::app_owned("main", UiSize::new(640.0, 480.0)),
+            UiSize::new(640.0, 480.0),
+            paint,
+        );
+        let canvases = request.canvas_requests();
+
+        assert_eq!(canvases.len(), 1);
+        assert_eq!(canvases[0].node, UiNodeId(7));
+        assert_eq!(canvases[0].canvas.key, "fabricad.mask.viewport");
+        assert_eq!(
+            canvases[0].canvas.render_mode,
+            CanvasRenderMode::NativeViewport
+        );
+        assert!(canvases[0].requires_host_input_capture());
+        assert!(canvases[0].canvas.interaction.pointer_lock);
+        assert!(canvases[0].canvas.interaction.domain_hit_testing);
+        assert_eq!(canvases[0].rect, UiRect::new(12.0, 16.0, 320.0, 180.0));
     }
 
     #[derive(Debug, Default)]

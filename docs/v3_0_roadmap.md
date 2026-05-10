@@ -206,6 +206,9 @@ The branch starts from Operad 2.0.0 plus:
 - Renderer/backend adapter contracts in `src/renderer.rs` for render targets,
   resource deltas, dirty regions, paint batching, deterministic snapshots, and
   backend capability negotiation.
+- Embedded canvas/native viewport contracts for callback, texture, and
+  native-viewport render modes, host input capture policies, pointer-lock
+  requests, domain hit-testing flags, and renderer-facing canvas extraction.
 - Host adapter contracts in `src/host.rs` for hover, pressed, focused,
   drag-captured, text/IME, wheel-targeted, shortcut-routed, command dispatch,
   and repaint/platform-service state before paint.
@@ -236,3 +239,6 @@ The branch starts from Operad 2.0.0 plus:
 - Data-table export helpers in `src/widget_ext/data.rs` for selected rows,
   visible rows, active cells, and ranges, with TSV/CSV formatting and clipboard
   command-effect integration.
+- Property-inspector status contracts in `src/widget_ext/data.rs` for invalid,
+  error, warning, help, changed, and pending row metadata, accessibility
+  hints/live regions, and optional status visual/shader hooks.

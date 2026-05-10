@@ -72,8 +72,8 @@ pub use paint::{
     StrokeAlignment, TextHorizontalAlign, TextOverflow, TextVerticalAlign,
 };
 pub use renderer::{
-    DirtyRegionSet, PaintBatch, PaintBatchKey, PaintBatchKind, PaintBatcher, PixelRect,
-    RenderError, RenderFrameOutput, RenderFrameRequest, RenderOptions, RenderTarget,
+    CanvasRenderRequest, DirtyRegionSet, PaintBatch, PaintBatchKey, PaintBatchKind, PaintBatcher,
+    PixelRect, RenderError, RenderFrameOutput, RenderFrameRequest, RenderOptions, RenderTarget,
     RenderTargetKind, RenderedImage, RendererAdapter, ResourceDescriptor, ResourceFormat,
     ResourceResolver, ResourceUpdate,
 };
@@ -373,11 +373,114 @@ impl TextContent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CanvasContent {
     pub key: String,
+    pub render_mode: CanvasRenderMode,
+    pub interaction: CanvasInteractionPolicy,
 }
 
 impl CanvasContent {
     pub fn new(key: impl Into<String>) -> Self {
-        Self { key: key.into() }
+        Self {
+            key: key.into(),
+            render_mode: CanvasRenderMode::Callback,
+            interaction: CanvasInteractionPolicy::default(),
+        }
+    }
+
+    pub fn render_mode(mut self, render_mode: CanvasRenderMode) -> Self {
+        self.render_mode = render_mode;
+        self
+    }
+
+    pub fn callback(self) -> Self {
+        self.render_mode(CanvasRenderMode::Callback)
+    }
+
+    pub fn texture(self) -> Self {
+        self.render_mode(CanvasRenderMode::Texture)
+    }
+
+    pub fn native_viewport(self) -> Self {
+        self.render_mode(CanvasRenderMode::NativeViewport)
+    }
+
+    pub fn interaction(mut self, interaction: CanvasInteractionPolicy) -> Self {
+        self.interaction = interaction;
+        self
+    }
+
+    pub fn pointer_capture(mut self, pointer_capture: bool) -> Self {
+        self.interaction.pointer_capture = pointer_capture;
+        self
+    }
+
+    pub fn keyboard_capture(mut self, keyboard_capture: bool) -> Self {
+        self.interaction.keyboard_capture = keyboard_capture;
+        self
+    }
+
+    pub fn wheel_capture(mut self, wheel_capture: bool) -> Self {
+        self.interaction.wheel_capture = wheel_capture;
+        self
+    }
+
+    pub fn pointer_lock(mut self, pointer_lock: bool) -> Self {
+        self.interaction.pointer_lock = pointer_lock;
+        self
+    }
+
+    pub fn domain_hit_testing(mut self, domain_hit_testing: bool) -> Self {
+        self.interaction.domain_hit_testing = domain_hit_testing;
+        self
+    }
+
+    pub const fn requires_host_input_capture(&self) -> bool {
+        self.interaction.requires_host_capture()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasRenderMode {
+    Callback,
+    Texture,
+    NativeViewport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CanvasInteractionPolicy {
+    pub pointer_capture: bool,
+    pub keyboard_capture: bool,
+    pub wheel_capture: bool,
+    pub pointer_lock: bool,
+    pub domain_hit_testing: bool,
+}
+
+impl CanvasInteractionPolicy {
+    pub const NONE: Self = Self {
+        pointer_capture: false,
+        keyboard_capture: false,
+        wheel_capture: false,
+        pointer_lock: false,
+        domain_hit_testing: false,
+    };
+
+    pub const EDITOR: Self = Self {
+        pointer_capture: true,
+        keyboard_capture: true,
+        wheel_capture: true,
+        pointer_lock: false,
+        domain_hit_testing: true,
+    };
+
+    pub const NATIVE_VIEWPORT: Self = Self {
+        pointer_capture: true,
+        keyboard_capture: true,
+        wheel_capture: true,
+        pointer_lock: true,
+        domain_hit_testing: true,
+    };
+
+    pub const fn requires_host_capture(self) -> bool {
+        self.pointer_capture || self.keyboard_capture || self.wheel_capture || self.pointer_lock
     }
 }
 
