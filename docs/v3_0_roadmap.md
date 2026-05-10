@@ -435,6 +435,9 @@ The branch starts from Operad 2.0.0 plus:
   caret geometry, producing activate/update/deactivate and keyboard
   show/hide requests, mapping clipboard outcomes to platform clipboard
   requests, and applying IME commit/preedit/delete responses.
+- Programmatic scroll helpers in `src/lib.rs` for bringing explicit document
+  rects or nested target nodes into scroll-container view with axis-aware
+  clamping.
 - Scrollbar drag contracts in `src/lib.rs` for mapping vertical and horizontal
   thumb pointer deltas to clamped scroll offsets without backend-specific
   widget state.

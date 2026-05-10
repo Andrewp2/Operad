@@ -1679,14 +1679,20 @@ impl UiDocument {
     }
 
     pub fn scroll_to_node(&mut self, scroll_node: UiNodeId, target: UiNodeId) -> bool {
-        let Some(scroll) = self.scroll_state(scroll_node) else {
-            return false;
-        };
         let Some(target_node) = self.nodes.get(target.0) else {
             return false;
         };
-        let viewport = self.nodes[scroll_node.0].layout.rect;
-        let target_rect = target_node.layout.rect;
+        self.scroll_rect_into_view(scroll_node, target_node.layout.rect)
+    }
+
+    pub fn scroll_rect_into_view(&mut self, scroll_node: UiNodeId, target_rect: UiRect) -> bool {
+        let Some(scroll) = self.scroll_state(scroll_node) else {
+            return false;
+        };
+        let Some(scroll_node_ref) = self.nodes.get(scroll_node.0) else {
+            return false;
+        };
+        let viewport = scroll_node_ref.layout.rect;
         let mut offset = scroll.offset;
         if scroll.axes.horizontal {
             if target_rect.x < viewport.x {
@@ -6461,6 +6467,110 @@ mod tests {
 
         assert_eq!(input.scrolled, Some(scroll_area));
         assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 30.0);
+    }
+
+    #[test]
+    fn scroll_rect_into_view_scrolls_explicit_rects_by_enabled_axes() {
+        let mut doc = UiDocument::new(root_style(200.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: Style {
+                        size: TaffySize {
+                            width: length(80.0),
+                            height: length(50.0),
+                        },
+                        ..Default::default()
+                    },
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::BOTH),
+        );
+        let content = doc.add_child(
+            scroll_area,
+            UiNode::container("content", button_style(240.0, 180.0)),
+        );
+        doc.add_child(
+            content,
+            UiNode::container(
+                "content_extent",
+                UiNodeStyle {
+                    layout: layout::absolute(230.0, 170.0, 10.0, 10.0),
+                    ..Default::default()
+                },
+            ),
+        );
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert!(doc.scroll_rect_into_view(scroll_area, UiRect::new(140.0, 90.0, 12.0, 14.0)));
+        assert_eq!(
+            doc.scroll_state(scroll_area).unwrap().offset,
+            UiPoint::new(72.0, 54.0)
+        );
+
+        assert!(doc.set_scroll_offset(scroll_area, UiPoint::new(500.0, 500.0)));
+        assert_eq!(
+            doc.scroll_state(scroll_area).unwrap().offset,
+            UiPoint::new(160.0, 130.0)
+        );
+    }
+
+    #[test]
+    fn scroll_to_node_scrolls_nested_targets_into_view() {
+        let mut doc = UiDocument::new(root_style(200.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: Style {
+                        size: TaffySize {
+                            width: length(80.0),
+                            height: length(50.0),
+                        },
+                        ..Default::default()
+                    },
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::BOTH),
+        );
+        let content = doc.add_child(
+            scroll_area,
+            UiNode::container("content", button_style(240.0, 180.0)),
+        );
+        let target = doc.add_child(
+            content,
+            UiNode::container(
+                "target",
+                UiNodeStyle {
+                    layout: layout::absolute(160.0, 130.0, 20.0, 20.0),
+                    ..Default::default()
+                },
+            ),
+        );
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert!(doc.scroll_to_node(scroll_area, target));
+        assert_eq!(
+            doc.scroll_state(scroll_area).unwrap().offset,
+            UiPoint::new(100.0, 100.0)
+        );
+
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let target_rect = doc.node(target).layout.rect;
+        let viewport = doc.node(scroll_area).layout.rect;
+        assert!(viewport.contains_point(UiPoint::new(target_rect.x, target_rect.y)));
+        assert!(viewport.contains_point(UiPoint::new(target_rect.right(), target_rect.bottom())));
+        assert!(!doc.scroll_to_node(scroll_area, target));
     }
 
     #[test]
