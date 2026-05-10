@@ -246,10 +246,65 @@ pub struct ColorRgba {
 
 impl ColorRgba {
     pub const WHITE: Self = Self::new(255, 255, 255, 255);
+    pub const BLACK: Self = Self::new(0, 0, 0, 255);
     pub const TRANSPARENT: Self = Self::new(0, 0, 0, 0);
 
     pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
+    }
+
+    pub fn composite_over(self, background: Self) -> Self {
+        let foreground_alpha = self.a as f32 / 255.0;
+        let background_alpha = background.a as f32 / 255.0;
+        let alpha = foreground_alpha + background_alpha * (1.0 - foreground_alpha);
+        if alpha <= f32::EPSILON {
+            return Self::TRANSPARENT;
+        }
+        let channel = |foreground: u8, background: u8| {
+            ((foreground as f32 * foreground_alpha
+                + background as f32 * background_alpha * (1.0 - foreground_alpha))
+                / alpha)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        Self::new(
+            channel(self.r, background.r),
+            channel(self.g, background.g),
+            channel(self.b, background.b),
+            (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+        )
+    }
+
+    pub fn relative_luminance(self) -> f32 {
+        fn channel(value: u8) -> f32 {
+            let value = value as f32 / 255.0;
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(self.r) + 0.7152 * channel(self.g) + 0.0722 * channel(self.b)
+    }
+
+    pub fn contrast_ratio(self, other: Self) -> f32 {
+        let first = self.relative_luminance();
+        let second = other.relative_luminance();
+        let lighter = first.max(second);
+        let darker = first.min(second);
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    pub fn meets_contrast_ratio(self, background: Self, minimum_ratio: f32) -> bool {
+        self.contrast_ratio(background) + f32::EPSILON >= minimum_ratio
+    }
+
+    pub fn highest_contrast_against(self, first: Self, second: Self) -> Self {
+        if first.contrast_ratio(self) >= second.contrast_ratio(self) {
+            first
+        } else {
+            second
+        }
     }
 }
 
@@ -2935,7 +2990,7 @@ impl UiDocument {
                 }
                 if let Some(background_color) = self.effective_background_color(id) {
                     let text_color = effective_foreground_color(text.style.color, background_color);
-                    let contrast_ratio = contrast_ratio(text_color, background_color);
+                    let contrast_ratio = text_color.contrast_ratio(background_color);
                     let required_ratio = required_text_contrast_ratio(&text.style);
                     if contrast_ratio + f32::EPSILON < required_ratio {
                         warnings.push(AuditWarning::TextContrastTooLow {
@@ -2993,7 +3048,7 @@ impl UiDocument {
             let fill = self.nodes[id.0].visual.fill;
             if fill.a > 0 {
                 color = Some(match color {
-                    Some(background) => composite_color(fill, background),
+                    Some(background) => fill.composite_over(background),
                     None => fill,
                 });
             }
@@ -3006,50 +3061,8 @@ fn effective_foreground_color(foreground: ColorRgba, background: ColorRgba) -> C
     if foreground.a == u8::MAX {
         foreground
     } else {
-        composite_color(foreground, background)
+        foreground.composite_over(background)
     }
-}
-
-fn composite_color(foreground: ColorRgba, background: ColorRgba) -> ColorRgba {
-    let foreground_alpha = foreground.a as f32 / 255.0;
-    let background_alpha = background.a as f32 / 255.0;
-    let alpha = foreground_alpha + background_alpha * (1.0 - foreground_alpha);
-    if alpha <= f32::EPSILON {
-        return ColorRgba::TRANSPARENT;
-    }
-    let channel = |foreground: u8, background: u8| {
-        ((foreground as f32 * foreground_alpha
-            + background as f32 * background_alpha * (1.0 - foreground_alpha))
-            / alpha)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    ColorRgba::new(
-        channel(foreground.r, background.r),
-        channel(foreground.g, background.g),
-        channel(foreground.b, background.b),
-        (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
-    )
-}
-
-fn contrast_ratio(first: ColorRgba, second: ColorRgba) -> f32 {
-    let first = relative_luminance(first);
-    let second = relative_luminance(second);
-    let lighter = first.max(second);
-    let darker = first.min(second);
-    (lighter + 0.05) / (darker + 0.05)
-}
-
-fn relative_luminance(color: ColorRgba) -> f32 {
-    fn channel(value: u8) -> f32 {
-        let value = value as f32 / 255.0;
-        if value <= 0.03928 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
 }
 
 fn required_text_contrast_ratio(style: &TextStyle) -> f32 {
@@ -6570,6 +6583,24 @@ mod tests {
         let node_style = layout::clipped_node_style(absolute);
         assert_eq!(node_style.clip, ClipBehavior::Clip);
         assert_eq!(node_style.layout.position, Position::Absolute);
+    }
+
+    #[test]
+    fn color_contrast_helpers_support_accessible_text_selection() {
+        let dark = ColorRgba::new(18, 22, 28, 255);
+        let translucent = ColorRgba::new(255, 255, 255, 128);
+        let composited = translucent.composite_over(dark);
+        assert!(composited.r > dark.r);
+        assert_eq!(
+            ColorRgba::WHITE.contrast_ratio(ColorRgba::BLACK).round(),
+            21.0
+        );
+        assert!(ColorRgba::WHITE.meets_contrast_ratio(dark, 4.5));
+        assert!(!ColorRgba::new(44, 50, 58, 255).meets_contrast_ratio(dark, 4.5));
+        assert_eq!(
+            dark.highest_contrast_against(ColorRgba::WHITE, ColorRgba::BLACK),
+            ColorRgba::WHITE
+        );
     }
 
     #[test]

@@ -320,6 +320,9 @@ The branch starts from Operad 2.0.0 plus:
   empty paint clips, focusable controls missing from the accessibility
   traversal, and accessible-name/action/action-id/action-label/duplicate-action/
   state/value/value-range/relation-target gaps.
+- Public `ColorRgba` contrast helpers compute alpha compositing, relative
+  luminance, contrast ratios, contrast pass/fail checks, and highest-contrast
+  foreground selection for theme, widget, audit, and snapshot code.
 - Operad-owned layout helper APIs in `src/lib.rs` cover common fixed, fill,
   centered flex, absolute, gap, min/max size, flex item, and clipped node-style
   shapes so consumers can use fewer raw Taffy struct literals.
