@@ -293,6 +293,9 @@ The branch starts from Operad 2.0.0 plus:
   renderer-neutral callback registries that pass rects, clips, scale factors,
   dirty regions, and per-node host interaction state to app-owned canvas
   renderers.
+- Canvas host-capture plans in `src/renderer.rs` convert canvas interaction
+  policies into renderer-neutral host capture metadata and cursor
+  confine/visibility platform requests for pointer-locked surfaces.
 - Text input routing helpers that bridge document focus, editable text state,
   clipboard service requests, and IME activation/update/deactivation without
   requiring consumers to hand-assemble platform plumbing for each field.

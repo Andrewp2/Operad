@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
 use crate::platform::{
-    BackendCapabilities, LayerOrder, PixelSize, ResourceHandle, ResourceId, ResourceKind,
+    BackendCapabilities, CursorRequest, LayerOrder, LogicalRect, PixelSize, PlatformRequest,
+    ResourceHandle, ResourceId, ResourceKind,
 };
 use crate::{
     CanvasContent, ColorRgba, DirtyFlags, FrameTiming, PaintImage, PaintItem, PaintKind, PaintList,
@@ -352,6 +353,21 @@ impl RenderFrameRequest {
             .collect()
     }
 
+    pub fn canvas_host_capture_plans(&self) -> Vec<CanvasHostCapturePlan> {
+        self.canvas_requests()
+            .into_iter()
+            .filter(|request| request.requires_host_input_capture())
+            .map(|request| request.host_capture_plan())
+            .collect()
+    }
+
+    pub fn canvas_platform_requests(&self) -> Vec<PlatformRequest> {
+        self.canvas_host_capture_plans()
+            .into_iter()
+            .flat_map(|plan| plan.platform_requests())
+            .collect()
+    }
+
     pub fn image_requests(&self) -> Vec<ImageRenderRequest> {
         self.paint
             .items
@@ -399,6 +415,67 @@ impl CanvasRenderRequest {
 
     pub const fn requires_host_input_capture(&self) -> bool {
         self.canvas.requires_host_input_capture()
+    }
+
+    pub fn host_capture_plan(&self) -> CanvasHostCapturePlan {
+        CanvasHostCapturePlan::from_request(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasHostCapturePlan {
+    pub node: UiNodeId,
+    pub key: String,
+    pub rect: UiRect,
+    pub pointer_capture: bool,
+    pub keyboard_capture: bool,
+    pub wheel_capture: bool,
+    pub pointer_lock: bool,
+    pub domain_hit_testing: bool,
+}
+
+impl CanvasHostCapturePlan {
+    pub fn from_request(request: &CanvasRenderRequest) -> Self {
+        let interaction = request.canvas.interaction;
+        Self {
+            node: request.node,
+            key: request.canvas.key.clone(),
+            rect: request.rect,
+            pointer_capture: interaction.pointer_capture,
+            keyboard_capture: interaction.keyboard_capture,
+            wheel_capture: interaction.wheel_capture,
+            pointer_lock: interaction.pointer_lock,
+            domain_hit_testing: interaction.domain_hit_testing,
+        }
+    }
+
+    pub const fn requires_host_capture(&self) -> bool {
+        self.pointer_capture || self.keyboard_capture || self.wheel_capture || self.pointer_lock
+    }
+
+    pub fn cursor_confine_rect(&self) -> Option<LogicalRect> {
+        self.pointer_lock.then(|| ui_rect_to_logical(self.rect))
+    }
+
+    pub fn platform_requests(&self) -> Vec<PlatformRequest> {
+        let Some(rect) = self.cursor_confine_rect() else {
+            return Vec::new();
+        };
+        vec![
+            PlatformRequest::Cursor(CursorRequest::Confine(rect)),
+            PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+        ]
+    }
+
+    pub fn release_platform_requests(&self) -> Vec<PlatformRequest> {
+        if self.pointer_lock {
+            vec![
+                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
+            ]
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -1200,6 +1277,10 @@ fn rect_is_finite(rect: UiRect) -> bool {
     rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()
 }
 
+fn ui_rect_to_logical(rect: UiRect) -> LogicalRect {
+    LogicalRect::new(rect.x, rect.y, rect.width, rect.height)
+}
+
 fn union_rect(a: UiRect, b: UiRect) -> UiRect {
     let left = a.x.min(b.x);
     let top = a.y.min(b.y);
@@ -1391,6 +1472,89 @@ mod tests {
         assert!(canvases[0].canvas.interaction.pointer_lock);
         assert!(canvases[0].canvas.interaction.domain_hit_testing);
         assert_eq!(canvases[0].rect, UiRect::new(12.0, 16.0, 320.0, 180.0));
+    }
+
+    #[test]
+    fn canvas_host_capture_plan_maps_pointer_lock_to_cursor_requests() {
+        let canvas = CanvasContent::new("fabricad.mask.viewport")
+            .native_viewport()
+            .interaction(CanvasInteractionPolicy::NATIVE_VIEWPORT);
+        let mut paint = PaintList::default();
+        paint.items.push(paint_item(
+            7,
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+            PaintKind::Canvas(canvas),
+        ));
+
+        let request = RenderFrameRequest::new(
+            RenderTarget::app_owned("main", UiSize::new(640.0, 480.0)),
+            UiSize::new(640.0, 480.0),
+            paint,
+        );
+        let plans = request.canvas_host_capture_plans();
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].node, UiNodeId(7));
+        assert_eq!(plans[0].key, "fabricad.mask.viewport");
+        assert_eq!(plans[0].rect, UiRect::new(12.0, 16.0, 320.0, 180.0));
+        assert!(plans[0].pointer_capture);
+        assert!(plans[0].keyboard_capture);
+        assert!(plans[0].wheel_capture);
+        assert!(plans[0].pointer_lock);
+        assert!(plans[0].domain_hit_testing);
+        assert!(plans[0].requires_host_capture());
+        assert_eq!(
+            plans[0].cursor_confine_rect(),
+            Some(LogicalRect::new(12.0, 16.0, 320.0, 180.0))
+        );
+        assert_eq!(
+            request.canvas_platform_requests(),
+            vec![
+                PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
+                    12.0, 16.0, 320.0, 180.0
+                ))),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+            ]
+        );
+        assert_eq!(
+            plans[0].release_platform_requests(),
+            vec![
+                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn canvas_host_capture_plan_keeps_editor_capture_without_pointer_lock_requests() {
+        let canvas = CanvasContent::new("orbifold.curve.editor")
+            .interaction(CanvasInteractionPolicy::EDITOR);
+        let mut paint = PaintList::default();
+        paint.items.push(paint_item(
+            11,
+            UiRect::new(24.0, 32.0, 400.0, 240.0),
+            PaintKind::Canvas(canvas),
+        ));
+
+        let request = RenderFrameRequest::new(
+            RenderTarget::window("main", UiSize::new(800.0, 600.0)),
+            UiSize::new(800.0, 600.0),
+            paint,
+        );
+        let plans = request.canvas_host_capture_plans();
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].node, UiNodeId(11));
+        assert_eq!(plans[0].key, "orbifold.curve.editor");
+        assert!(plans[0].pointer_capture);
+        assert!(plans[0].keyboard_capture);
+        assert!(plans[0].wheel_capture);
+        assert!(!plans[0].pointer_lock);
+        assert!(plans[0].domain_hit_testing);
+        assert_eq!(plans[0].cursor_confine_rect(), None);
+        assert!(plans[0].platform_requests().is_empty());
+        assert!(plans[0].release_platform_requests().is_empty());
+        assert!(request.canvas_platform_requests().is_empty());
     }
 
     #[derive(Debug, Default)]
