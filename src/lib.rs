@@ -2666,6 +2666,10 @@ pub enum AuditWarning {
         node: UiNodeId,
         name: String,
     },
+    InteractiveAccessibilityMissing {
+        node: UiNodeId,
+        name: String,
+    },
     AccessibleNameMissing {
         node: UiNodeId,
         name: String,
@@ -2910,6 +2914,18 @@ impl UiDocument {
             }
             if node.input.focusable && !focus_order.contains(&id) {
                 warnings.push(AuditWarning::FocusableMissingFromAccessibilityTree {
+                    node: id,
+                    name: node.name.clone(),
+                });
+            }
+            if (node.input.pointer || node.input.focusable)
+                && node.layout.visible
+                && node
+                    .accessibility
+                    .as_ref()
+                    .is_none_or(|accessibility| accessibility.hidden)
+            {
+                warnings.push(AuditWarning::InteractiveAccessibilityMissing {
                     node: id,
                     name: node.name.clone(),
                 });
@@ -7246,13 +7262,31 @@ mod tests {
             })
         );
         assert!(
+            warnings.contains(&AuditWarning::InteractiveAccessibilityMissing {
+                node: missing,
+                name: "missing_semantics".to_string(),
+            })
+        );
+        assert!(
             warnings.contains(&AuditWarning::FocusableMissingFromAccessibilityTree {
                 node: hidden,
                 name: "hidden_semantics".to_string(),
             })
         );
         assert!(
+            warnings.contains(&AuditWarning::InteractiveAccessibilityMissing {
+                node: hidden,
+                name: "hidden_semantics".to_string(),
+            })
+        );
+        assert!(
             !warnings.contains(&AuditWarning::FocusableMissingFromAccessibilityTree {
+                node: accessible,
+                name: "accessible".to_string(),
+            })
+        );
+        assert!(
+            !warnings.contains(&AuditWarning::InteractiveAccessibilityMissing {
                 node: accessible,
                 name: "accessible".to_string(),
             })

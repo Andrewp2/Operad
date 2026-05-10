@@ -986,6 +986,26 @@ impl<'a> AuditAssertions<'a> {
         }
     }
 
+    pub fn require_accessibility_metadata_gap(&self, name: &str) -> TestResult<&AuditWarning> {
+        let node = self.node_id(name)?;
+        self.require_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::InteractiveAccessibilityMissing { .. }
+            )
+        })
+    }
+
+    pub fn require_no_accessibility_metadata_gap(&self, name: &str) -> TestResult {
+        let node = self.node_id(name)?;
+        self.require_no_warning_for(name, node, |warning| {
+            matches!(
+                warning,
+                AuditWarning::InteractiveAccessibilityMissing { .. }
+            )
+        })
+    }
+
     pub fn require_accessible_name_gap(&self, name: &str) -> TestResult<&AuditWarning> {
         let node = self.node_id(name)?;
         self.require_warning_for(name, node, |warning| {
@@ -1212,6 +1232,7 @@ fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
     matches!(
         warning,
         AuditWarning::AccessibleNameMissing { .. }
+            | AuditWarning::InteractiveAccessibilityMissing { .. }
             | AuditWarning::AccessibilityActionMissing { .. }
             | AuditWarning::AccessibilityActionIdMissing { .. }
             | AuditWarning::AccessibilityActionLabelMissing { .. }
@@ -1232,6 +1253,7 @@ fn warning_node(warning: &AuditWarning) -> Option<UiNodeId> {
         | AuditWarning::EmptyInteractiveClip { node, .. }
         | AuditWarning::InteractiveTooSmall { node, .. }
         | AuditWarning::FocusableMissingFromAccessibilityTree { node, .. }
+        | AuditWarning::InteractiveAccessibilityMissing { node, .. }
         | AuditWarning::AccessibleNameMissing { node, .. }
         | AuditWarning::AccessibilityActionMissing { node, .. }
         | AuditWarning::AccessibilityActionIdMissing { node, .. }
@@ -4352,6 +4374,11 @@ mod tests {
         let root = document.root;
         document.add_child(
             root,
+            UiNode::container("missing_metadata", fixed_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON),
+        );
+        document.add_child(
+            root,
             UiNode::container("unlabeled", fixed_style(80.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button).focusable()),
@@ -4478,6 +4505,9 @@ mod tests {
         assert!(audit.require_no_warnings().is_err());
         assert!(audit.require_no_accessibility_warnings().is_err());
         audit
+            .require_accessibility_metadata_gap("missing_metadata")
+            .expect("missing metadata");
+        audit
             .require_accessible_name_gap("unlabeled")
             .expect("missing name");
         audit
@@ -4511,6 +4541,9 @@ mod tests {
         audit
             .require_no_accessible_name_gap("complete")
             .expect("complete label");
+        audit
+            .require_no_accessibility_metadata_gap("complete")
+            .expect("complete metadata");
         audit
             .require_no_accessibility_action_gap("complete")
             .expect("complete action");
