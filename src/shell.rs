@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::{accessibility::FocusRestoreTarget, UiPoint};
+use crate::{accessibility::FocusRestoreTarget, UiPoint, UiRect, UiSize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ShellRegion {
@@ -232,6 +232,14 @@ impl ShellPanelState {
         self.placement = DockPlacement::Docked(region);
         self.visible = true;
     }
+
+    pub fn effective_extent(&self) -> f32 {
+        if self.visible {
+            self.extent.current.max(0.0)
+        } else {
+            0.0
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -455,6 +463,327 @@ impl ShellWorkspaceState {
             .map(|group| group.set_offset(source, offset))
             .unwrap_or_default()
     }
+
+    pub fn layout_for_size(&self, size: UiSize) -> ShellLayoutPlan {
+        self.layout(UiRect::new(0.0, 0.0, size.width, size.height))
+    }
+
+    pub fn layout(&self, viewport: UiRect) -> ShellLayoutPlan {
+        ShellLayoutPlan::from_workspace(self, viewport)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellPanelLayout {
+    pub id: String,
+    pub title: String,
+    pub region: ShellRegion,
+    pub rect: UiRect,
+    pub scroll_offset: UiPoint,
+    pub visible: bool,
+    pub collapsed: bool,
+    pub resizable: bool,
+    pub active_tab: Option<String>,
+}
+
+impl ShellPanelLayout {
+    fn from_panel(panel: &ShellPanelState, region: ShellRegion, rect: UiRect) -> Self {
+        Self {
+            id: panel.id.clone(),
+            title: panel.title.clone(),
+            region,
+            rect,
+            scroll_offset: panel.scroll_offset,
+            visible: panel.visible,
+            collapsed: panel.collapsed,
+            resizable: panel.resizable,
+            active_tab: panel.active_tab.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellRegionLayout {
+    pub region: ShellRegion,
+    pub rect: UiRect,
+    pub panel_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellLayoutPlan {
+    pub viewport: UiRect,
+    pub workspace_rect: UiRect,
+    pub regions: Vec<ShellRegionLayout>,
+    pub panels: Vec<ShellPanelLayout>,
+    pub floating_panels: Vec<ShellPanelLayout>,
+    pub hidden_panel_ids: Vec<String>,
+}
+
+impl ShellLayoutPlan {
+    pub fn from_workspace(workspace: &ShellWorkspaceState, viewport: UiRect) -> Self {
+        let viewport = sanitize_rect(viewport);
+        let planner = ShellLayoutPlanner::new(workspace, viewport);
+        planner.plan()
+    }
+
+    pub fn region_rect(&self, region: &ShellRegion) -> Option<UiRect> {
+        self.regions
+            .iter()
+            .find(|layout| &layout.region == region)
+            .map(|layout| layout.rect)
+    }
+
+    pub fn panel_rect(&self, id: &str) -> Option<UiRect> {
+        self.panels
+            .iter()
+            .chain(self.floating_panels.iter())
+            .find(|panel| panel.id == id)
+            .map(|panel| panel.rect)
+    }
+
+    pub fn region_panels<'a>(
+        &'a self,
+        region: &'a ShellRegion,
+    ) -> impl Iterator<Item = &'a ShellPanelLayout> + 'a {
+        self.panels
+            .iter()
+            .filter(move |panel| &panel.region == region)
+    }
+}
+
+struct ShellLayoutPlanner<'a> {
+    workspace: &'a ShellWorkspaceState,
+    viewport: UiRect,
+    remaining: UiRect,
+    regions: Vec<ShellRegionLayout>,
+    panels: Vec<ShellPanelLayout>,
+    floating_panels: Vec<ShellPanelLayout>,
+    hidden_panel_ids: Vec<String>,
+}
+
+impl<'a> ShellLayoutPlanner<'a> {
+    fn new(workspace: &'a ShellWorkspaceState, viewport: UiRect) -> Self {
+        Self {
+            workspace,
+            viewport,
+            remaining: viewport,
+            regions: Vec::new(),
+            panels: Vec::new(),
+            floating_panels: Vec::new(),
+            hidden_panel_ids: Vec::new(),
+        }
+    }
+
+    fn plan(mut self) -> ShellLayoutPlan {
+        self.collect_floating_and_hidden();
+        self.consume_top_region(ShellRegion::MenuBar);
+        self.consume_top_region(ShellRegion::TransportBar);
+        self.consume_top_region(ShellRegion::Toolbar);
+        self.consume_bottom_region(ShellRegion::StatusBar);
+        self.consume_bottom_region(ShellRegion::BottomPanel);
+        self.consume_left_region(ShellRegion::LeftPanel);
+        self.consume_right_region(ShellRegion::RightPanel);
+
+        let workspace_rect = self.remaining;
+        self.push_region(ShellRegion::CenterWorkspace, workspace_rect, Vec::new());
+        self.plan_center_workspace(workspace_rect);
+
+        ShellLayoutPlan {
+            viewport: self.viewport,
+            workspace_rect,
+            regions: self.regions,
+            panels: self.panels,
+            floating_panels: self.floating_panels,
+            hidden_panel_ids: self.hidden_panel_ids,
+        }
+    }
+
+    fn collect_floating_and_hidden(&mut self) {
+        for panel in &self.workspace.panels {
+            match &panel.placement {
+                DockPlacement::Hidden => self.hidden_panel_ids.push(panel.id.clone()),
+                DockPlacement::Floating if panel.visible => {
+                    let extent = panel.effective_extent();
+                    let rect = UiRect::new(self.viewport.x, self.viewport.y, extent, extent);
+                    self.floating_panels.push(ShellPanelLayout::from_panel(
+                        panel,
+                        ShellRegion::CenterWorkspace,
+                        rect,
+                    ));
+                }
+                DockPlacement::Floating => self.hidden_panel_ids.push(panel.id.clone()),
+                DockPlacement::Docked(_) if !panel.visible => {
+                    self.hidden_panel_ids.push(panel.id.clone())
+                }
+                DockPlacement::Docked(_) => {}
+            }
+        }
+    }
+
+    fn consume_top_region(&mut self, region: ShellRegion) {
+        let panels = self.visible_docked_panels(region.clone());
+        let extent = region_extent(&panels);
+        if extent <= f32::EPSILON {
+            return;
+        }
+        let height = extent.min(self.remaining.height);
+        let rect = UiRect::new(
+            self.remaining.x,
+            self.remaining.y,
+            self.remaining.width,
+            height,
+        );
+        self.remaining.y += height;
+        self.remaining.height = (self.remaining.height - height).max(0.0);
+        self.push_panel_region(region, rect, panels);
+    }
+
+    fn consume_bottom_region(&mut self, region: ShellRegion) {
+        let panels = self.visible_docked_panels(region.clone());
+        let extent = region_extent(&panels);
+        if extent <= f32::EPSILON {
+            return;
+        }
+        let height = extent.min(self.remaining.height);
+        let rect = UiRect::new(
+            self.remaining.x,
+            self.remaining.bottom() - height,
+            self.remaining.width,
+            height,
+        );
+        self.remaining.height = (self.remaining.height - height).max(0.0);
+        self.push_panel_region(region, rect, panels);
+    }
+
+    fn consume_left_region(&mut self, region: ShellRegion) {
+        let panels = self.visible_docked_panels(region.clone());
+        let extent = region_extent(&panels);
+        if extent <= f32::EPSILON {
+            return;
+        }
+        let width = extent.min(self.remaining.width);
+        let rect = UiRect::new(
+            self.remaining.x,
+            self.remaining.y,
+            width,
+            self.remaining.height,
+        );
+        self.remaining.x += width;
+        self.remaining.width = (self.remaining.width - width).max(0.0);
+        self.push_panel_region(region, rect, panels);
+    }
+
+    fn consume_right_region(&mut self, region: ShellRegion) {
+        let panels = self.visible_docked_panels(region.clone());
+        let extent = region_extent(&panels);
+        if extent <= f32::EPSILON {
+            return;
+        }
+        let width = extent.min(self.remaining.width);
+        let rect = UiRect::new(
+            self.remaining.right() - width,
+            self.remaining.y,
+            width,
+            self.remaining.height,
+        );
+        self.remaining.width = (self.remaining.width - width).max(0.0);
+        self.push_panel_region(region, rect, panels);
+    }
+
+    fn plan_center_workspace(&mut self, workspace_rect: UiRect) {
+        let mut center = workspace_rect;
+        let editor_panels = self.visible_docked_panels(ShellRegion::Editor);
+        let editor_extent = region_extent(&editor_panels);
+        if editor_extent > f32::EPSILON {
+            let height = editor_extent.min(center.height);
+            let rect = UiRect::new(center.x, center.bottom() - height, center.width, height);
+            center.height = (center.height - height).max(0.0);
+            self.push_panel_region(ShellRegion::Editor, rect, editor_panels);
+        }
+
+        let track_panels = self.visible_docked_panels(ShellRegion::TrackList);
+        let track_extent = region_extent(&track_panels);
+        if track_extent > f32::EPSILON {
+            let width = track_extent.min(center.width);
+            let rect = UiRect::new(center.x, center.y, width, center.height);
+            center.x += width;
+            center.width = (center.width - width).max(0.0);
+            self.push_panel_region(ShellRegion::TrackList, rect, track_panels);
+        }
+
+        let arrangement_panels = self.visible_docked_panels(ShellRegion::Arrangement);
+        if !arrangement_panels.is_empty() || center.width > 0.0 || center.height > 0.0 {
+            self.push_panel_region(ShellRegion::Arrangement, center, arrangement_panels);
+        }
+    }
+
+    fn visible_docked_panels(&self, region: ShellRegion) -> Vec<&'a ShellPanelState> {
+        self.workspace
+            .panels
+            .iter()
+            .filter(move |panel| {
+                panel.visible
+                    && matches!(&panel.placement, DockPlacement::Docked(docked) if *docked == region)
+            })
+            .collect()
+    }
+
+    fn push_panel_region(
+        &mut self,
+        region: ShellRegion,
+        rect: UiRect,
+        panels: Vec<&'a ShellPanelState>,
+    ) {
+        let panel_ids = panels
+            .iter()
+            .map(|panel| panel.id.clone())
+            .collect::<Vec<_>>();
+        for panel in panels {
+            self.panels
+                .push(ShellPanelLayout::from_panel(panel, region.clone(), rect));
+        }
+        self.push_region(region, rect, panel_ids);
+    }
+
+    fn push_region(&mut self, region: ShellRegion, rect: UiRect, panel_ids: Vec<String>) {
+        self.regions.push(ShellRegionLayout {
+            region,
+            rect,
+            panel_ids,
+        });
+    }
+}
+
+fn region_extent(panels: &[&ShellPanelState]) -> f32 {
+    panels
+        .iter()
+        .map(|panel| panel.effective_extent())
+        .fold(0.0_f32, f32::max)
+}
+
+fn sanitize_rect(rect: UiRect) -> UiRect {
+    UiRect::new(
+        finite_or_zero(rect.x),
+        finite_or_zero(rect.y),
+        finite_nonnegative(rect.width),
+        finite_nonnegative(rect.height),
+    )
+}
+
+fn finite_or_zero(value: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn finite_nonnegative(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
@@ -562,5 +891,131 @@ mod tests {
         );
         assert_eq!(workspace.focused_panel.as_deref(), Some("inspector"));
         assert_eq!(workspace.splits["main"].fraction, 0.72);
+    }
+
+    #[test]
+    fn workspace_layout_plan_consumes_shell_edges_and_editor_regions() {
+        let mut workspace = ShellWorkspaceState::new();
+        workspace.upsert_panel(ShellPanelState::new(
+            "menu",
+            "Menu",
+            ShellRegion::MenuBar,
+            24.0,
+        ));
+        workspace.upsert_panel(ShellPanelState::new(
+            "transport",
+            "Transport",
+            ShellRegion::TransportBar,
+            40.0,
+        ));
+        workspace.upsert_panel(ShellPanelState::new(
+            "status",
+            "Status",
+            ShellRegion::StatusBar,
+            20.0,
+        ));
+        workspace.upsert_panel(
+            ShellPanelState::new("browser", "Browser", ShellRegion::LeftPanel, 180.0)
+                .resizable(true),
+        );
+        workspace.upsert_panel(
+            ShellPanelState::new("inspector", "Inspector", ShellRegion::RightPanel, 220.0)
+                .resizable(true)
+                .active_tab("scale-lab"),
+        );
+        workspace.upsert_panel(ShellPanelState::new(
+            "tracks",
+            "Tracks",
+            ShellRegion::TrackList,
+            140.0,
+        ));
+        workspace.upsert_panel(ShellPanelState::new(
+            "arrangement",
+            "Arrangement",
+            ShellRegion::Arrangement,
+            1.0,
+        ));
+        workspace.upsert_panel(ShellPanelState::new(
+            "piano-roll",
+            "Piano Roll",
+            ShellRegion::Editor,
+            160.0,
+        ));
+
+        let plan = workspace.layout_for_size(UiSize::new(1000.0, 700.0));
+
+        assert_eq!(
+            plan.region_rect(&ShellRegion::MenuBar),
+            Some(UiRect::new(0.0, 0.0, 1000.0, 24.0))
+        );
+        assert_eq!(
+            plan.region_rect(&ShellRegion::TransportBar),
+            Some(UiRect::new(0.0, 24.0, 1000.0, 40.0))
+        );
+        assert_eq!(
+            plan.region_rect(&ShellRegion::StatusBar),
+            Some(UiRect::new(0.0, 680.0, 1000.0, 20.0))
+        );
+        assert_eq!(
+            plan.region_rect(&ShellRegion::LeftPanel),
+            Some(UiRect::new(0.0, 64.0, 180.0, 616.0))
+        );
+        assert_eq!(
+            plan.region_rect(&ShellRegion::RightPanel),
+            Some(UiRect::new(780.0, 64.0, 220.0, 616.0))
+        );
+        assert_eq!(plan.workspace_rect, UiRect::new(180.0, 64.0, 600.0, 616.0));
+        assert_eq!(
+            plan.region_rect(&ShellRegion::Editor),
+            Some(UiRect::new(180.0, 520.0, 600.0, 160.0))
+        );
+        assert_eq!(
+            plan.region_rect(&ShellRegion::TrackList),
+            Some(UiRect::new(180.0, 64.0, 140.0, 456.0))
+        );
+        assert_eq!(
+            plan.region_rect(&ShellRegion::Arrangement),
+            Some(UiRect::new(320.0, 64.0, 460.0, 456.0))
+        );
+        assert_eq!(
+            plan.panel_rect("inspector"),
+            Some(UiRect::new(780.0, 64.0, 220.0, 616.0))
+        );
+        assert_eq!(
+            plan.region_panels(&ShellRegion::RightPanel)
+                .next()
+                .and_then(|panel| panel.active_tab.as_deref()),
+            Some("scale-lab")
+        );
+    }
+
+    #[test]
+    fn workspace_layout_tracks_hidden_floating_and_collapsed_panels() {
+        let mut workspace = ShellWorkspaceState::new();
+        let mut left = ShellPanelState::new("left", "Left", ShellRegion::LeftPanel, 240.0);
+        left.collapsed_extent = 32.0;
+        assert!(left.collapse());
+        workspace.upsert_panel(left);
+        workspace.upsert_panel(
+            ShellPanelState::new("hidden", "Hidden", ShellRegion::RightPanel, 180.0).visible(false),
+        );
+        workspace.upsert_panel(ShellPanelState::floating("floating", "Floating", 320.0));
+
+        let plan = workspace.layout(UiRect::new(10.0, 20.0, 800.0, 600.0));
+
+        assert_eq!(
+            plan.region_rect(&ShellRegion::LeftPanel),
+            Some(UiRect::new(10.0, 20.0, 32.0, 600.0))
+        );
+        assert_eq!(plan.panel_rect("hidden"), None);
+        assert_eq!(plan.hidden_panel_ids, vec!["hidden"]);
+        assert_eq!(
+            plan.panel_rect("floating"),
+            Some(UiRect::new(10.0, 20.0, 320.0, 320.0))
+        );
+        assert!(plan
+            .region_panels(&ShellRegion::LeftPanel)
+            .next()
+            .is_some_and(|panel| panel.collapsed));
     }
 }

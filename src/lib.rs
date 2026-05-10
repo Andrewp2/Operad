@@ -78,7 +78,8 @@ pub use renderer::{
 };
 pub use shell::{
     DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup, ScrollSyncMember,
-    ShellExtent, ShellPanelState, ShellRegion, ShellWorkspaceState, SplitPaneSide,
+    ShellExtent, ShellLayoutPlan, ShellPanelLayout, ShellPanelState, ShellRegion,
+    ShellRegionLayout, ShellWorkspaceState, SplitPaneSide,
 };
 pub use testing::{
     diff_rgba8, DirtyFlags, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,

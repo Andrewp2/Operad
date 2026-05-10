@@ -188,6 +188,10 @@ The branch starts from Operad 2.0.0 plus:
   panel visibility, saved extents, collapse/restore, keyboard-resizable split
   state, active tabs, focus restore, and synchronized track/arrangement scroll
   offsets.
+- Shell layout planning in `src/shell.rs` for top/menu/transport/tool/status
+  bars, left/right/bottom dock regions, central workspace, track list,
+  arrangement, editor, hidden panels, floating panels, and persisted panel
+  scroll offsets.
 - Renderer-neutral testing helpers in `src/testing.rs` for event replay, raw
   input conversion checks, platform-output assertions, stable-name layout
   assertions, paint-list assertions, RGBA pixel diffs with tolerances, dirty
