@@ -2477,6 +2477,22 @@ pub enum AuditWarning {
         node: UiNodeId,
         name: String,
     },
+    AccessibleNameMissing {
+        node: UiNodeId,
+        name: String,
+        role: AccessibilityRole,
+    },
+    AccessibilityActionMissing {
+        node: UiNodeId,
+        name: String,
+        role: AccessibilityRole,
+    },
+    AccessibilityRelationTargetMissing {
+        node: UiNodeId,
+        name: String,
+        relation: AccessibilityRelationKind,
+        target: UiNodeId,
+    },
     TextClipped {
         node: UiNodeId,
         name: String,
@@ -2491,6 +2507,15 @@ pub enum AuditWarning {
     PaintItemEmptyClip {
         node: UiNodeId,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibilityRelationKind {
+    LabelledBy,
+    DescribedBy,
+    Controls,
+    Owns,
+    ActiveDescendant,
 }
 
 impl UiDocument {
@@ -2589,9 +2614,16 @@ impl UiDocument {
         let mut warnings = Vec::new();
         let mut names = HashSet::new();
         let root_rect = self.nodes[self.root.0].layout.rect;
-        let focus_order = self
-            .accessibility_focus_order()
-            .into_iter()
+        let accessibility_snapshot = self.accessibility_snapshot();
+        let focus_order = accessibility_snapshot
+            .focus_order
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let accessible_nodes = accessibility_snapshot
+            .nodes
+            .iter()
+            .map(|node| node.id)
             .collect::<HashSet<_>>();
         for (index, node) in self.nodes.iter().enumerate() {
             let id = UiNodeId(index);
@@ -2646,6 +2678,39 @@ impl UiDocument {
                     node: id,
                     name: node.name.clone(),
                 });
+            }
+            if let Some(accessibility) = node
+                .accessibility
+                .as_ref()
+                .filter(|accessibility| !accessibility.hidden)
+            {
+                if accessibility_needs_name(accessibility.role)
+                    && !accessibility_has_name(accessibility)
+                {
+                    warnings.push(AuditWarning::AccessibleNameMissing {
+                        node: id,
+                        name: node.name.clone(),
+                        role: accessibility.role,
+                    });
+                }
+                if accessibility_needs_action(accessibility.role)
+                    && (node.input.pointer || node.input.focusable || accessibility.focusable)
+                    && accessibility.actions.is_empty()
+                    && accessibility.enabled
+                {
+                    warnings.push(AuditWarning::AccessibilityActionMissing {
+                        node: id,
+                        name: node.name.clone(),
+                        role: accessibility.role,
+                    });
+                }
+                push_missing_relation_target_warnings(
+                    &mut warnings,
+                    id,
+                    &node.name,
+                    &accessible_nodes,
+                    &accessibility.relations,
+                );
             }
             if matches!(node.content, UiContent::Text(_))
                 && !node.layout.clip_rect.contains_rect(node.layout.rect)
@@ -2718,6 +2783,154 @@ fn accessibility_focus_order(nodes: &[AccessibilityNode]) -> Vec<UiNodeId> {
         .collect::<Vec<_>>();
     focusable.sort_by_key(|(focus_order, document_order, _)| (*focus_order, *document_order));
     focusable.into_iter().map(|(_, _, id)| id).collect()
+}
+
+fn accessibility_has_name(accessibility: &AccessibilityMeta) -> bool {
+    accessibility
+        .label
+        .as_deref()
+        .is_some_and(|label| !label.trim().is_empty())
+        || !accessibility.relations.labelled_by.is_empty()
+        || accessibility
+            .summary
+            .as_ref()
+            .is_some_and(|summary| !summary.screen_reader_text().trim().is_empty())
+}
+
+fn accessibility_needs_name(role: AccessibilityRole) -> bool {
+    matches!(
+        role,
+        AccessibilityRole::Alert
+            | AccessibilityRole::Button
+            | AccessibilityRole::Checkbox
+            | AccessibilityRole::ComboBox
+            | AccessibilityRole::Dialog
+            | AccessibilityRole::EditorSurface
+            | AccessibilityRole::Grid
+            | AccessibilityRole::Image
+            | AccessibilityRole::Link
+            | AccessibilityRole::List
+            | AccessibilityRole::Menu
+            | AccessibilityRole::MenuBar
+            | AccessibilityRole::MenuItem
+            | AccessibilityRole::Meter
+            | AccessibilityRole::ProgressBar
+            | AccessibilityRole::RadioButton
+            | AccessibilityRole::SearchBox
+            | AccessibilityRole::Slider
+            | AccessibilityRole::SpinButton
+            | AccessibilityRole::Splitter
+            | AccessibilityRole::Status
+            | AccessibilityRole::Switch
+            | AccessibilityRole::Tab
+            | AccessibilityRole::TabList
+            | AccessibilityRole::TabPanel
+            | AccessibilityRole::TextBox
+            | AccessibilityRole::ToggleButton
+            | AccessibilityRole::Toolbar
+            | AccessibilityRole::Tooltip
+            | AccessibilityRole::Tree
+            | AccessibilityRole::TreeItem
+            | AccessibilityRole::Window
+    )
+}
+
+fn accessibility_needs_action(role: AccessibilityRole) -> bool {
+    matches!(
+        role,
+        AccessibilityRole::Button
+            | AccessibilityRole::Checkbox
+            | AccessibilityRole::ComboBox
+            | AccessibilityRole::Link
+            | AccessibilityRole::MenuItem
+            | AccessibilityRole::RadioButton
+            | AccessibilityRole::SearchBox
+            | AccessibilityRole::Slider
+            | AccessibilityRole::SpinButton
+            | AccessibilityRole::Splitter
+            | AccessibilityRole::Switch
+            | AccessibilityRole::Tab
+            | AccessibilityRole::TextBox
+            | AccessibilityRole::ToggleButton
+            | AccessibilityRole::TreeItem
+    )
+}
+
+fn push_missing_relation_target_warnings(
+    warnings: &mut Vec<AuditWarning>,
+    node: UiNodeId,
+    name: &str,
+    accessible_nodes: &HashSet<UiNodeId>,
+    relations: &AccessibilityRelations,
+) {
+    for target in &relations.labelled_by {
+        push_missing_relation_target_warning(
+            warnings,
+            node,
+            name,
+            AccessibilityRelationKind::LabelledBy,
+            *target,
+            accessible_nodes,
+        );
+    }
+    for target in &relations.described_by {
+        push_missing_relation_target_warning(
+            warnings,
+            node,
+            name,
+            AccessibilityRelationKind::DescribedBy,
+            *target,
+            accessible_nodes,
+        );
+    }
+    for target in &relations.controls {
+        push_missing_relation_target_warning(
+            warnings,
+            node,
+            name,
+            AccessibilityRelationKind::Controls,
+            *target,
+            accessible_nodes,
+        );
+    }
+    for target in &relations.owns {
+        push_missing_relation_target_warning(
+            warnings,
+            node,
+            name,
+            AccessibilityRelationKind::Owns,
+            *target,
+            accessible_nodes,
+        );
+    }
+    if let Some(target) = relations.active_descendant {
+        push_missing_relation_target_warning(
+            warnings,
+            node,
+            name,
+            AccessibilityRelationKind::ActiveDescendant,
+            target,
+            accessible_nodes,
+        );
+    }
+}
+
+fn push_missing_relation_target_warning(
+    warnings: &mut Vec<AuditWarning>,
+    node: UiNodeId,
+    name: &str,
+    relation: AccessibilityRelationKind,
+    target: UiNodeId,
+    accessible_nodes: &HashSet<UiNodeId>,
+) {
+    if !accessible_nodes.contains(&target) {
+        warnings.push(AuditWarning::AccessibilityRelationTargetMissing {
+            node,
+            name: name.to_owned(),
+            relation,
+            target,
+        });
+    }
 }
 
 fn rect_is_finite(rect: UiRect) -> bool {
@@ -6297,6 +6510,90 @@ mod tests {
             !warnings.contains(&AuditWarning::FocusableMissingFromAccessibilityTree {
                 node: accessible,
                 name: "accessible".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn audit_layout_reports_accessibility_name_action_and_relation_gaps() {
+        let mut doc = UiDocument::new(root_style(260.0, 120.0));
+        let unlabeled = doc.add_child(
+            doc.root,
+            UiNode::container("unlabeled", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button).focusable()),
+        );
+        let hidden_label = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "hidden_label",
+                "Hidden label",
+                TextStyle::default(),
+                Style {
+                    size: TaffySize {
+                        width: length(80.0),
+                        height: length(20.0),
+                    },
+                    ..Default::default()
+                },
+            ),
+        );
+        let relation_gap = doc.add_child(
+            doc.root,
+            UiNode::container("relation_gap", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .labelled_by(hidden_label)
+                        .action(AccessibilityAction::new("activate", "Activate"))
+                        .focusable(),
+                ),
+        );
+        let complete = doc.add_child(
+            doc.root,
+            UiNode::container("complete", button_style(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Complete")
+                        .action(AccessibilityAction::new("activate", "Activate"))
+                        .focusable(),
+                ),
+        );
+        doc.compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let warnings = doc.audit_layout();
+        assert!(warnings.contains(&AuditWarning::AccessibleNameMissing {
+            node: unlabeled,
+            name: "unlabeled".to_string(),
+            role: AccessibilityRole::Button,
+        }));
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityActionMissing {
+                node: unlabeled,
+                name: "unlabeled".to_string(),
+                role: AccessibilityRole::Button,
+            })
+        );
+        assert!(
+            warnings.contains(&AuditWarning::AccessibilityRelationTargetMissing {
+                node: relation_gap,
+                name: "relation_gap".to_string(),
+                relation: AccessibilityRelationKind::LabelledBy,
+                target: hidden_label,
+            })
+        );
+        assert!(!warnings.contains(&AuditWarning::AccessibleNameMissing {
+            node: complete,
+            name: "complete".to_string(),
+            role: AccessibilityRole::Button,
+        }));
+        assert!(
+            !warnings.contains(&AuditWarning::AccessibilityActionMissing {
+                node: complete,
+                name: "complete".to_string(),
+                role: AccessibilityRole::Button,
             })
         );
     }
