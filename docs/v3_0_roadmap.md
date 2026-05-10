@@ -232,6 +232,9 @@ The branch starts from Operad 2.0.0 plus:
   the shared `RenderFrameOutput` timing surface.
 - Frame timing series helpers aggregate per-frame sections into reusable
   performance samples and section-level budget assertions.
+- Scenario reports expose renderer-neutral timing sections for pre-input layout,
+  input replay, document-frame processing, rendering, and platform request
+  collection.
 - Document keyboard focus traversal now follows accessibility focus ordering and
   modal-scope containment before falling back to input-only document order.
 - Accessibility preference resolution in `src/theme.rs`, `src/renderer.rs`,

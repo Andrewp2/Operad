@@ -276,12 +276,17 @@ pub struct ScenarioFrameReport {
     pub events: EventReplayReport,
     pub document: HostDocumentFrameOutput,
     pub render: RenderFrameOutput,
+    pub timings: FrameTiming,
     pub platform_requests: Vec<PlatformServiceRequest>,
 }
 
 impl ScenarioFrameReport {
     pub fn render_assertions(&self) -> RenderOutputAssertions<'_> {
         RenderOutputAssertions::new(&self.render)
+    }
+
+    pub fn timing_assertions(&self) -> FrameTimingAssertions<'_> {
+        FrameTimingAssertions::new(&self.timings)
     }
 
     pub fn platform_assertions(&self) -> PlatformAssertions<'_> {
@@ -359,6 +364,7 @@ impl ScenarioHarness {
         resolver: &dyn ResourceResolver,
     ) -> TestResult<ScenarioFrameReport> {
         let label = label.into();
+        let pre_input_layout_started = Instant::now();
         document
             .compute_layout(self.viewport, measurer)
             .map_err(|error| {
@@ -366,29 +372,46 @@ impl ScenarioHarness {
                     "scenario `{label}` pre-input layout failed: {error}"
                 ))
             })?;
+        let pre_input_layout_duration = pre_input_layout_started.elapsed();
+
+        let input_started = Instant::now();
         let (host_output, mut events) =
             scenario_host_output_from_replay(&replay, self.state.interaction.clone());
+        let input_duration = input_started.elapsed();
         let request =
             self.state
                 .document_frame_request(self.viewport, self.target.clone(), host_output);
+        let document_started = Instant::now();
         let document_output =
             process_document_frame(document, measurer, request).map_err(|error| {
                 TestFailure::new(format!("scenario `{label}` document frame failed: {error}"))
             })?;
+        let document_duration = document_started.elapsed();
         attach_scenario_input_results(&mut events, &document_output.input_results);
+        let render_started = Instant::now();
         let render_output = renderer
             .render_frame(document_output.render_request.clone(), resolver)
             .map_err(|error| {
                 TestFailure::new(format!("scenario `{label}` render frame failed: {error}"))
             })?;
+        let render_duration = render_started.elapsed();
+        let platform_started = Instant::now();
         let platform_requests =
             document_output.platform_service_requests(&mut self.platform_allocator);
+        let platform_duration = platform_started.elapsed();
+        let timings = FrameTiming::new()
+            .section("pre-input-layout", pre_input_layout_duration)
+            .section("input", input_duration)
+            .section("document-frame", document_duration)
+            .section("render-frame", render_duration)
+            .section("platform-requests", platform_duration);
         self.state.apply_document_frame_output(&document_output);
         Ok(ScenarioFrameReport {
             label,
             events,
             document: document_output,
             render: render_output,
+            timings,
             platform_requests,
         })
     }
@@ -3874,6 +3897,16 @@ mod tests {
             .render_assertions()
             .require_min_painted_items(2)
             .expect("painted items");
+        report
+            .timing_assertions()
+            .require_sections([
+                "pre-input-layout",
+                "input",
+                "document-frame",
+                "render-frame",
+                "platform-requests",
+            ])
+            .expect("scenario timing sections");
         report
             .snapshot_assertions("open-menu")
             .expect("snapshot")
