@@ -11,7 +11,7 @@ use crate::input::{
 };
 use crate::platform::{
     ClipboardRequest, CursorRequest, CursorShape, PlatformRequest, PlatformServiceRequest,
-    RepaintRequest, ResourceDomain, ResourceHandle, ResourceKind,
+    PlatformServiceResponse, RepaintRequest, ResourceDomain, ResourceHandle, ResourceKind,
 };
 use crate::renderer::{PixelRect, ResourceFormat, ResourceUpdate};
 use crate::{FocusDirection, KeyCode, KeyModifiers, UiPoint};
@@ -272,6 +272,13 @@ impl EguiPlatformOutputPlan {
 
     pub fn is_fully_supported(&self) -> bool {
         self.unsupported_requests.is_empty()
+    }
+
+    pub fn unsupported_service_responses(&self) -> Vec<PlatformServiceResponse> {
+        self.unsupported_service_requests
+            .iter()
+            .map(PlatformServiceRequest::unsupported_response)
+            .collect()
     }
 }
 
@@ -960,6 +967,10 @@ mod tests {
         );
         assert_eq!(plan.unsupported_requests, vec![requests[1].request.clone()]);
         assert_eq!(plan.unsupported_service_requests, vec![requests[1].clone()]);
+        assert_eq!(
+            plan.unsupported_service_responses(),
+            vec![requests[1].unsupported_response()]
+        );
     }
 
     #[test]

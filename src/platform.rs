@@ -1057,6 +1057,25 @@ pub enum PlatformResponse {
 }
 
 impl PlatformResponse {
+    pub const fn unsupported(kind: PlatformServiceKind) -> Self {
+        match kind {
+            PlatformServiceKind::Clipboard => Self::Clipboard(ClipboardResponse::Unsupported),
+            PlatformServiceKind::FileDialog => Self::FileDialog(FileDialogResponse::Unsupported),
+            PlatformServiceKind::OpenUrl => Self::OpenUrl(OpenUrlResponse::Unsupported),
+            PlatformServiceKind::Notification => {
+                Self::Notification(NotificationResponse::Unsupported)
+            }
+            PlatformServiceKind::Screenshot => Self::Screenshot(ScreenshotResponse::Unsupported),
+            PlatformServiceKind::AppLifecycle => {
+                Self::AppLifecycle(AppLifecycleResponse::Unsupported)
+            }
+            PlatformServiceKind::TextIme => Self::TextIme(TextImeResponse::Unsupported),
+            PlatformServiceKind::DragDrop => Self::DragDrop(DragDropResponse::Unsupported),
+            PlatformServiceKind::Cursor => Self::Cursor(CursorResponse::Unsupported),
+            PlatformServiceKind::Repaint => Self::Repaint(RepaintResponse::Unsupported),
+        }
+    }
+
     pub const fn kind(&self) -> PlatformServiceKind {
         match self {
             Self::Clipboard(_) => PlatformServiceKind::Clipboard,
@@ -1086,6 +1105,10 @@ impl PlatformServiceRequest {
 
     pub const fn kind(&self) -> PlatformServiceKind {
         self.request.kind()
+    }
+
+    pub fn unsupported_response(&self) -> PlatformServiceResponse {
+        PlatformServiceResponse::new(self.id, PlatformResponse::unsupported(self.kind()))
     }
 }
 
@@ -1442,6 +1465,28 @@ mod tests {
         assert_eq!(request.kind(), PlatformServiceKind::Clipboard);
         assert_eq!(response.kind(), PlatformServiceKind::Clipboard);
         assert!(response.is_for(&request));
+    }
+
+    #[test]
+    fn platform_service_request_builds_correlated_unsupported_response() {
+        let request = PlatformServiceRequest::new(
+            PlatformRequestId::new(44),
+            PlatformRequest::FileDialog(FileDialogRequest::new(FileDialogMode::OpenFile)),
+        );
+
+        let response = request.unsupported_response();
+
+        assert_eq!(response.id, PlatformRequestId::new(44));
+        assert_eq!(response.kind(), PlatformServiceKind::FileDialog);
+        assert!(response.is_for(&request));
+        assert_eq!(
+            response.response,
+            PlatformResponse::FileDialog(FileDialogResponse::Unsupported)
+        );
+        assert_eq!(
+            PlatformResponse::unsupported(PlatformServiceKind::Cursor),
+            PlatformResponse::Cursor(CursorResponse::Unsupported)
+        );
     }
 
     #[test]

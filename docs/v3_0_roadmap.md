@@ -300,7 +300,8 @@ The branch starts from Operad 2.0.0 plus:
   supported Operad clipboard-write, open-URL, cursor, and repaint requests into
   egui-compatible output while reporting unsupported host services explicitly,
   including service-request IDs when consumers pass correlated platform
-  requests through the egui adapter.
+  requests through the egui adapter, and producing correlated unsupported
+  responses for backend services egui cannot handle directly.
 - Feature-gated egui texture-delta plans in `src/egui_host.rs` for converting
   renderer-neutral resource updates into stable egui user texture deltas without
   storing egui texture handles in app-owned UI state.
