@@ -7,8 +7,8 @@ use std::fmt;
 
 use crate::commands::CommandRegistry;
 use crate::host::{
-    HostAdapter, HostAdapterError, HostCommandDispatch, HostFrameOutput, HostFrameRequest,
-    HostInteractionState,
+    HostAdapter, HostAdapterError, HostCommandDispatch, HostDocumentFrameOutput, HostFrameOutput,
+    HostFrameRequest, HostInteractionState,
 };
 use crate::input::{
     PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
@@ -16,9 +16,10 @@ use crate::input::{
 };
 use crate::platform::{
     BackendAdapterKind, BackendCapabilities, ClipboardRequest, CursorRequest, CursorShape,
-    LayerCapabilities, PlatformRequest, PlatformResponse, PlatformServiceCapabilities,
-    PlatformServiceRequest, PlatformServiceResponse, RenderingCapabilities, RepaintRequest,
-    ResourceCapabilities, ResourceDomain, ResourceHandle, ResourceKind,
+    LayerCapabilities, PlatformRequest, PlatformRequestIdAllocator, PlatformResponse,
+    PlatformServiceCapabilities, PlatformServiceRequest, PlatformServiceResponse,
+    RenderingCapabilities, RepaintRequest, ResourceCapabilities, ResourceDomain, ResourceHandle,
+    ResourceKind,
 };
 use crate::renderer::{PixelRect, ResourceFormat, ResourceUpdate};
 use crate::{FocusDirection, KeyCode, KeyModifiers, UiPoint, UiSize};
@@ -352,6 +353,24 @@ impl EguiPlatformOutputPlan {
             plan.push_service_request(request);
         }
         plan
+    }
+
+    pub fn from_document_frame_output(
+        output: &HostDocumentFrameOutput,
+        allocator: &mut PlatformRequestIdAllocator,
+    ) -> Self {
+        let requests = output.platform_service_requests(allocator);
+        Self::from_service_requests(requests.iter())
+    }
+
+    pub fn push_document_frame_output(
+        &mut self,
+        output: &HostDocumentFrameOutput,
+        allocator: &mut PlatformRequestIdAllocator,
+    ) {
+        for request in output.platform_service_requests(allocator) {
+            self.push_service_request(&request);
+        }
     }
 
     pub fn push_service_request(&mut self, request: &PlatformServiceRequest) -> bool {
@@ -726,14 +745,15 @@ mod tests {
     use crate::platform::{
         ClipboardRequest, CursorRequest, CursorShape, FileDialogMode, FileDialogRequest,
         ImageHandle, LogicalPoint, LogicalRect, OpenUrlRequest, PixelSize, PlatformRequest,
-        PlatformRequestId, PlatformResponse, PlatformServiceRequest, PlatformServiceResponse,
-        RepaintRequest, ResourceHandle, TextImeResponse, TextImeSession, TextInputId,
-        TextureHandle,
+        PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceRequest,
+        PlatformServiceResponse, RepaintRequest, ResourceHandle, TextImeResponse, TextImeSession,
+        TextInputId, TextureHandle,
     };
     use crate::renderer::{PixelRect, ResourceDescriptor, ResourceFormat, ResourceUpdate};
     use crate::{
-        ApproxTextMeasurer, InputBehavior, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle,
-        UiSize,
+        process_document_frame, ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy,
+        HostDocumentFrameRequest, HostFrameOutput, InputBehavior, RenderTarget, UiContent,
+        UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiSize,
     };
     use std::time::Duration;
     use taffy::prelude::{Dimension, Display, FlexDirection, Size as TaffySize, Style};
@@ -1190,6 +1210,87 @@ mod tests {
             plan.unsupported_service_responses(),
             vec![requests[1].unsupported_response()]
         );
+    }
+
+    #[test]
+    fn egui_platform_output_plan_maps_document_frame_platform_requests() {
+        let viewport = UiSize::new(320.0, 200.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(320.0, 200.0));
+        let root = document.root;
+        let mut canvas = UiNode::canvas(
+            "native.viewport",
+            "native.viewport",
+            fixed_style(160.0, 96.0).layout,
+        );
+        canvas.content = UiContent::Canvas(
+            CanvasContent::new("native.viewport")
+                .native_viewport()
+                .interaction(CanvasInteractionPolicy::NATIVE_VIEWPORT),
+        );
+        document.add_child(root, canvas);
+        let host_output = HostFrameOutput::new(HostInteractionState::default())
+            .repaint_next_frame(PlatformRequestId::new(7));
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            ),
+        )
+        .expect("document frame");
+
+        let mut allocator = PlatformRequestIdAllocator::new(20);
+        let plan = EguiPlatformOutputPlan::from_document_frame_output(&frame, &mut allocator);
+
+        assert!(plan.is_fully_supported());
+        assert_eq!(plan.repaint_requests, vec![RepaintRequest::NextFrame]);
+        assert_eq!(
+            plan.viewport_commands,
+            vec![
+                egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined),
+                egui::ViewportCommand::CursorVisible(false),
+            ]
+        );
+        assert_eq!(plan.platform_output.cursor_icon, egui::CursorIcon::None);
+        assert_eq!(allocator.next_value(), 22);
+    }
+
+    #[test]
+    fn egui_platform_output_plan_keeps_document_frame_unsupported_service_ids() {
+        let viewport = UiSize::new(240.0, 120.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(240.0, 120.0));
+        let request = PlatformServiceRequest::new(
+            PlatformRequestId::new(44),
+            PlatformRequest::FileDialog(FileDialogRequest::new(FileDialogMode::OpenFile)),
+        );
+        let host_output = HostFrameOutput::new(HostInteractionState::default())
+            .request(request.id, request.request.clone());
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            ),
+        )
+        .expect("document frame");
+
+        let mut allocator = PlatformRequestIdAllocator::new(90);
+        let mut plan = EguiPlatformOutputPlan::new();
+        plan.push_document_frame_output(&frame, &mut allocator);
+
+        assert!(!plan.is_fully_supported());
+        assert_eq!(plan.unsupported_service_requests, vec![request.clone()]);
+        assert_eq!(
+            plan.unsupported_service_responses(),
+            vec![request.unsupported_response()]
+        );
+        assert_eq!(allocator.next_value(), 90);
     }
 
     #[test]
