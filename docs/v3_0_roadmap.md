@@ -74,6 +74,8 @@ surfaces possible without leaking backend types into consumer state:
 - Icon/image registry handles with sizing, tint, and alignment.
 - App-owned image, icon, texture, and thumbnail handles that can be resolved by
   egui, wgpu, a game renderer, or an offscreen snapshot renderer.
+- Canvas/native-viewport embedding and render callbacks for custom GPU/tiled
+  surfaces, wafer maps, charts, sparklines, and domain hit targets.
 - Paths for automation curves, waveforms, and custom editor display lists.
 - Pixel snapping policy for hairlines and grids.
 
@@ -176,7 +178,8 @@ The branch starts from Operad 2.0.0 plus:
   colors, transparency, and text scaling.
 - Existing core widgets and major widget families wired to richer accessibility
   states where the current APIs already expose that information.
-- Orbifold and game-agent v3 wishlist documents preserved under `docs/`.
+- Orbifold, game-agent, and Fabricad/Rust-layout v3 migration notes preserved
+  under `docs/`.
 - Renderer-neutral paint extensions in `src/paint.rs` for gradient brushes,
   stroke alignment, corner radii, shadows/glows/inset shadows, anchored scene
   text with alignment and overflow policy, image placement, and path primitives.
@@ -224,6 +227,8 @@ The branch starts from Operad 2.0.0 plus:
 - Menu and command-palette helpers in `src/widget_ext/menu.rs` for building
   items from the command registry, preserving enabled/disabled command state,
   displaying scoped shortcuts, and returning typed `CommandId` selections.
+- Active-descendant accessibility relationships for select menus, menu lists,
+  menu bars, dropdown popups, and command palette result navigation.
 - Numeric parameter contracts in `src/widget_ext/pickers.rs` for unit
   prefixes/suffixes, normalized linear/logarithmic value mapping, formatted
   parameter accessibility metadata, and parameter-aware commit/cancel text

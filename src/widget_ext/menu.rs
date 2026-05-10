@@ -786,6 +786,11 @@ pub fn select_menu(
         menu_container_node(name.clone(), options.len(), &menu_options),
     );
     let rows = populate_select_menu(document, root, &name, options, state, &menu_options);
+    set_active_descendant(
+        document,
+        root,
+        active_select_row(options, &rows, state.active),
+    );
     SelectMenuNodes { root, rows }
 }
 
@@ -829,6 +834,11 @@ pub fn select_menu_popup(
         },
     );
     let rows = populate_select_menu(document, root, &name, options, state, &menu_options);
+    set_active_descendant(
+        document,
+        root,
+        active_select_row(options, &rows, state.active),
+    );
     SelectMenuNodes { root, rows }
 }
 
@@ -923,11 +933,16 @@ pub fn dropdown_select(
             )
         })
     });
-
-    DropdownSelectNodes {
-        trigger,
-        popup: popup.flatten(),
+    let popup = popup.flatten();
+    if let Some(popup) = &popup {
+        set_active_descendant(
+            document,
+            trigger,
+            active_select_row(options, &popup.rows, state.active),
+        );
     }
+
+    DropdownSelectNodes { trigger, popup }
 }
 
 #[derive(Debug, Clone)]
@@ -1010,6 +1025,7 @@ pub fn menu_list(
         menu_list_container_node(name.clone(), items, &options),
     );
     let rows = populate_menu_list(document, root, &name, items, active, &options);
+    set_active_descendant(document, root, active_menu_row(items, &rows, active));
     MenuListNodes { root, rows }
 }
 
@@ -1052,6 +1068,7 @@ pub fn menu_list_popup(
         },
     );
     let rows = populate_menu_list(document, root, &name, items, active, &options);
+    set_active_descendant(document, root, active_menu_row(items, &rows, active));
     MenuListNodes { root, rows }
 }
 
@@ -1410,6 +1427,14 @@ pub fn menu_bar(
         document.node_mut(button).accessibility = Some(menu_button_accessibility(menu, active));
         buttons.push(button);
     }
+    set_active_descendant(
+        document,
+        root,
+        state
+            .open_menu
+            .filter(|index| menus.get(*index).is_some_and(|menu| menu.enabled))
+            .and_then(|index| buttons.get(index).copied()),
+    );
 
     let popup = state
         .open_menu
@@ -2060,6 +2085,11 @@ pub fn command_palette(
         }
         rows.push(row);
     }
+    let active_row = state
+        .active_match
+        .and_then(|index| rows.get(index).copied());
+    set_active_descendant(document, input, active_row);
+    set_active_descendant(document, list, active_row);
 
     CommandPaletteNodes { root, input, rows }
 }
@@ -2419,6 +2449,16 @@ fn next_select_typeahead_index(
     })
 }
 
+fn active_select_row(
+    options: &[SelectOption],
+    rows: &[UiNodeId],
+    active: Option<usize>,
+) -> Option<UiNodeId> {
+    active
+        .filter(|index| options.get(*index).is_some_and(|option| option.enabled))
+        .and_then(|index| rows.get(index).copied())
+}
+
 fn menu_list_container_node(
     name: impl Into<String>,
     items: &[MenuItem],
@@ -2553,6 +2593,16 @@ fn populate_menu_list(
         rows.push(row);
     }
     rows
+}
+
+fn active_menu_row(
+    items: &[MenuItem],
+    rows: &[UiNodeId],
+    active: Option<usize>,
+) -> Option<UiNodeId> {
+    active
+        .filter(|index| items.get(*index).is_some_and(MenuItem::is_navigable))
+        .and_then(|index| rows.get(index).copied())
 }
 
 fn menu_item_row_node(
@@ -2805,6 +2855,18 @@ fn command_item_accessibility_label(item: &CommandPaletteItem) -> String {
     item.accessibility_label
         .clone()
         .unwrap_or_else(|| item.title.clone())
+}
+
+fn set_active_descendant(
+    document: &mut UiDocument,
+    owner: UiNodeId,
+    active_descendant: Option<UiNodeId>,
+) {
+    if let Some(active_descendant) = active_descendant {
+        if let Some(accessibility) = document.node_mut(owner).accessibility.as_mut() {
+            accessibility.relations.active_descendant = Some(active_descendant);
+        }
+    }
 }
 
 fn command_shortcut_label(
@@ -3327,6 +3389,10 @@ mod tests {
         let root_accessibility = document.node(nodes.root).accessibility.as_ref().unwrap();
         assert_eq!(root_accessibility.role, AccessibilityRole::List);
         assert_eq!(root_accessibility.label.as_deref(), Some("Density choices"));
+        assert_eq!(
+            root_accessibility.relations.active_descendant,
+            Some(nodes.rows[1])
+        );
 
         let first_row = document.node(nodes.rows[0]);
         let first_accessibility = first_row.accessibility.as_ref().unwrap();
@@ -3406,6 +3472,10 @@ mod tests {
         let root_accessibility = document.node(nodes.root).accessibility.as_ref().unwrap();
         assert_eq!(root_accessibility.role, AccessibilityRole::Menu);
         assert_eq!(root_accessibility.label.as_deref(), Some("Context actions"));
+        assert_eq!(
+            root_accessibility.relations.active_descendant,
+            Some(nodes.rows[1])
+        );
 
         let check_accessibility = document.node(nodes.rows[0]).accessibility.as_ref().unwrap();
         assert_eq!(check_accessibility.role, AccessibilityRole::MenuItem);
@@ -3611,6 +3681,10 @@ mod tests {
         let root_accessibility = document.node(nodes.root).accessibility.as_ref().unwrap();
         assert_eq!(root_accessibility.role, AccessibilityRole::MenuBar);
         assert_eq!(root_accessibility.label.as_deref(), Some("main-menu"));
+        assert_eq!(
+            root_accessibility.relations.active_descendant,
+            Some(nodes.buttons[0])
+        );
 
         let file_accessibility = document
             .node(nodes.buttons[0])
@@ -3769,6 +3843,27 @@ mod tests {
                 .role,
             AccessibilityRole::TextBox
         );
+        assert_eq!(
+            document
+                .node(nodes.input)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .relations
+                .active_descendant,
+            Some(nodes.rows[0])
+        );
+        let result_list = document.node(nodes.root).children[1];
+        assert_eq!(
+            document
+                .node(result_list)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .relations
+                .active_descendant,
+            Some(nodes.rows[0])
+        );
 
         let active_row = document.node(nodes.rows[0]);
         let active_accessibility = active_row.accessibility.as_ref().unwrap();
@@ -3816,5 +3911,36 @@ mod tests {
         assert_eq!(accessibility.role, AccessibilityRole::ComboBox);
         assert_eq!(accessibility.value.as_deref(), Some("High"));
         assert!(nodes.popup.is_none());
+
+        let mut open_document = UiDocument::new(root_style(320.0, 160.0));
+        let open_root = open_document.root;
+        let open_state = SelectMenuState {
+            open: true,
+            selected: Some(1),
+            active: Some(0),
+        };
+        let open_nodes = dropdown_select(
+            &mut open_document,
+            open_root,
+            "quality-open",
+            &options,
+            &open_state,
+            Some(AnchoredPopup::new(
+                UiRect::new(10.0, 10.0, 120.0, 30.0),
+                UiRect::new(0.0, 0.0, 320.0, 160.0),
+                PopupPlacement::default(),
+            )),
+            DropdownSelectOptions::default(),
+        );
+        let popup = open_nodes.popup.as_ref().unwrap();
+        let trigger_accessibility = open_document
+            .node(open_nodes.trigger)
+            .accessibility
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            trigger_accessibility.relations.active_descendant,
+            Some(popup.rows[0])
+        );
     }
 }
