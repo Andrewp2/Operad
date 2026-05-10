@@ -335,6 +335,10 @@ The branch starts from Operad 2.0.0 plus:
   routing, applies correlated platform responses, and advertises egui host
   capabilities through the shared backend capability descriptor, including the
   accessibility-adjacent clipboard and text/IME bridge surface egui owns today.
+- Feature-gated egui accessibility output plans in `src/egui_host.rs` split
+  document-frame accessibility adapter requests through the shared capability
+  contract, producing explicit unsupported responses for screen-reader services
+  egui does not implement directly yet.
 - Feature-gated egui platform-output plans in `src/egui_host.rs` for mapping
   supported Operad clipboard-write, open-URL, cursor, and repaint requests into
   egui-compatible output while reporting unsupported host services explicitly,

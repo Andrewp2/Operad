@@ -5,7 +5,10 @@
 
 use std::fmt;
 
-use crate::accessibility::AccessibilityCapabilities;
+use crate::accessibility::{
+    AccessibilityAdapterRequest, AccessibilityAdapterRequestPlan, AccessibilityAdapterResponse,
+    AccessibilityCapabilities,
+};
 use crate::commands::CommandRegistry;
 use crate::host::{
     HostAdapter, HostAdapterError, HostCommandDispatch, HostDocumentFrameOutput, HostFrameOutput,
@@ -173,6 +176,48 @@ pub fn egui_host_capabilities() -> BackendCapabilities {
             text_ime: true,
             ..AccessibilityCapabilities::NONE
         })
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EguiAccessibilityOutputPlan {
+    pub plan: AccessibilityAdapterRequestPlan,
+}
+
+impl EguiAccessibilityOutputPlan {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_requests<'a>(
+        requests: impl IntoIterator<Item = &'a AccessibilityAdapterRequest>,
+    ) -> Self {
+        let mut plan = Self::new();
+        for request in requests {
+            plan.push_request(request);
+        }
+        plan
+    }
+
+    pub fn from_document_frame_output(output: &HostDocumentFrameOutput) -> Self {
+        Self::from_requests(output.accessibility_requests.iter())
+    }
+
+    pub fn push_request(&mut self, request: &AccessibilityAdapterRequest) -> bool {
+        self.plan
+            .push_request(request, egui_host_capabilities().accessibility)
+    }
+
+    pub fn is_fully_supported(&self) -> bool {
+        self.plan.is_fully_supported()
+    }
+
+    pub fn supported_requests(&self) -> &[AccessibilityAdapterRequest] {
+        &self.plan.supported_requests
+    }
+
+    pub fn responses(&self) -> &[AccessibilityAdapterResponse] {
+        &self.plan.unsupported_responses
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -746,7 +791,10 @@ fn ui_point(pos: egui::Pos2) -> UiPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accessibility::AccessibilityRequestKind;
+    use crate::accessibility::{
+        AccessibilityAdapterRequest, AccessibilityAnnouncement, AccessibilityPreferences,
+        AccessibilityRequestKind,
+    };
     use crate::commands::{Command, CommandMeta, CommandScope, Shortcut};
     use crate::input::{WheelDeltaUnit, WheelPhase};
     use crate::platform::{
@@ -757,6 +805,7 @@ mod tests {
         TextInputId, TextureHandle,
     };
     use crate::renderer::{PixelRect, ResourceDescriptor, ResourceFormat, ResourceUpdate};
+    use crate::testing::AccessibilityResponseAssertions;
     use crate::{
         process_document_frame, ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy,
         HostDocumentFrameRequest, HostFrameOutput, InputBehavior, RenderTarget, UiContent,
@@ -853,6 +902,43 @@ mod tests {
         assert!(!capabilities.supports_accessibility(AccessibilityRequestKind::PublishTree));
         assert!(!capabilities.supports_accessibility(AccessibilityRequestKind::SetFocusTrap));
         assert!(!capabilities.accessibility.announcements);
+    }
+
+    #[test]
+    fn egui_accessibility_output_plan_reports_unsupported_adapter_requests() {
+        let mut document = UiDocument::new(fixed_style(120.0, 60.0));
+        let button = document.add_child(
+            document.root,
+            UiNode::container("button", fixed_style(80.0, 32.0)).with_accessibility(
+                crate::AccessibilityMeta::new(crate::AccessibilityRole::Button).label("Button"),
+            ),
+        );
+        document
+            .compute_layout(UiSize::new(120.0, 60.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let tree = document.accessibility_snapshot();
+        let requests = vec![
+            AccessibilityAdapterRequest::PublishTree {
+                tree,
+                focused: Some(button),
+                preferences: AccessibilityPreferences::DEFAULT,
+            },
+            AccessibilityAdapterRequest::Announce(
+                AccessibilityAnnouncement::polite("Ready").source(button),
+            ),
+        ];
+
+        let plan = EguiAccessibilityOutputPlan::from_requests(&requests);
+
+        assert!(!plan.is_fully_supported());
+        assert!(plan.supported_requests().is_empty());
+        assert_eq!(plan.responses().len(), 2);
+        AccessibilityResponseAssertions::new(plan.responses())
+            .require_unsupported(AccessibilityRequestKind::PublishTree)
+            .expect("unsupported publish tree");
+        AccessibilityResponseAssertions::new(plan.responses())
+            .require_unsupported(AccessibilityRequestKind::Announce)
+            .expect("unsupported announce");
     }
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
