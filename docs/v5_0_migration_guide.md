@@ -60,12 +60,12 @@ rounded clipping, masks, opacity, or basic filters. The WGPU backend uses a real
 render-to-texture path for those layers when the `wgpu` feature is enabled, and
 rich-rect shadows use the backend's soft falloff path. Snapshot color management
 is explicitly sRGB-only in v5; treat `ColorManagementLevel` values above sRGB as
-future capability records rather than current CPU/WGPU snapshot output.
+future capability records rather than current WGPU snapshot output.
 `PaintPath` now exposes fill-rule and stroke cap/join options backed by shared
 lyon tessellation; glyphon text supports grayscale glyphs at fractional
 positions, while RGB/LCD component subpixel masks are not a v5 claim. True
 backdrop filters are also explicit future capability records rather than
-current CPU/WGPU snapshot behavior.
+current WGPU snapshot behavior.
 
 7. Move async task and form state through explicit lifecycle records.
 

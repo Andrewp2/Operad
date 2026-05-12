@@ -27,7 +27,7 @@ measurement versus text rendering.
 - The retained `UiDocument` model gives consumers something inspectable,
   testable, and serializable enough for layout snapshots and debugging.
 - The neutral `PaintList` is a good boundary. It lets egui, future GPU renderers,
-  CPU snapshot tests, and custom editor surfaces consume the same display model.
+  paint-list tests, and custom editor surfaces consume the same display model.
 - The `examples/three_consumer_probe.rs` file is useful because it checks that
   the same primitives can represent a game HUD, a Fabricad-style panel, and an
   Orbifold editor shell.

@@ -13,7 +13,7 @@ It owns:
 - Stable node IDs, a retained document tree, and computed layout rectangles.
 - Neutral geometry, colors, text styles, visuals, clipping, opacity, z order,
   scroll state, focus state, hit testing, input routing, and animation state.
-- A backend-neutral paint list so WGPU, CPU snapshot renderers, and tests
+- A backend-neutral paint list so WGPU, app-owned renderers, and tests
   consume the same display boundary; egui painting is kept only as explicit
   migration compatibility.
 - Layout/audit snapshots for debugging panel bounds, clipping, focusability, and

@@ -1,5 +1,21 @@
 # Changelog
 
+## 6.0.0
+
+- Added direct GPU canvas contexts so applications can attach a canvas texture,
+  obtain a WGPU-backed context, and call `render_pass(...)` to run shaders
+  directly into the canvas surface.
+- Added `WgpuCanvasContext` and `WgpuCanvasRenderPass` under the `wgpu` feature,
+  including a fullscreen fragment-shader helper for common canvas effects.
+- Added `CanvasRenderMode::AttachedContext`, `CanvasContent::gpu_context()`, and
+  `UiNode::gpu_canvas(...)` as the customer-facing canvas construction path.
+- Removed the transient WebGL/WebGL2 naming from the new canvas API; the public
+  surface is backend-accurate GPU context terminology.
+- Moved the source tree toward the v6 module organization while preserving
+  common v5 public compatibility paths for downstream consumers.
+- Updated README, migration notes, and release validation guidance so customers
+  can consume `6.0.0` immediately with `features = ["widgets", "wgpu"]`.
+
 ## 5.0.0
 
 - Added Operad-owned public layout primitives for common API use, with conversion

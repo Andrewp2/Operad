@@ -1,7 +1,7 @@
 //! Renderer/backend adapter contracts for Operad paint lists.
 //!
 //! This module sits between `PaintList` and concrete backends such as egui,
-//! wgpu, CPU snapshot renderers, or app-owned renderers. It keeps batching,
+//! wgpu, app-owned renderers, or test adapters. It keeps batching,
 //! resource updates, dirty regions, deterministic snapshots, and adapter
 //! capabilities out of product state.
 
@@ -424,6 +424,10 @@ impl CanvasRenderRequest {
     pub fn host_capture_plan(&self) -> CanvasHostCapturePlan {
         CanvasHostCapturePlan::from_request(self)
     }
+
+    pub fn surface_key(&self) -> &str {
+        self.canvas.surface_key()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -705,6 +709,25 @@ pub struct CanvasRenderContext<'a, B> {
 impl<B> CanvasRenderContext<'_, B> {
     pub fn is_dirty(&self) -> bool {
         self.dirty_regions.is_empty() || self.dirty_regions.covers(self.request.rect)
+    }
+
+    pub fn surface_size(&self) -> PixelSize {
+        let width = (self.request.rect.width * self.scale_factor)
+            .ceil()
+            .max(1.0);
+        let height = (self.request.rect.height * self.scale_factor)
+            .ceil()
+            .max(1.0);
+        PixelSize::new(
+            width.min(u32::MAX as f32) as u32,
+            height.min(u32::MAX as f32) as u32,
+        )
+    }
+
+    pub fn surface_descriptor(&self, format: ResourceFormat) -> ResourceDescriptor {
+        self.request
+            .canvas
+            .surface_descriptor(self.surface_size(), format)
     }
 }
 

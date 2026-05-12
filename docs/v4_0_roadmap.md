@@ -43,8 +43,8 @@ Targets:
 
 ## 3. Renderer-Level Performance Tests
 
-Current v3 performance smoke tests use deterministic CPU snapshots. V4 should
-add renderer/backend conformance and speed tests closer to production.
+Current v3 performance smoke tests rely on deterministic test render output. V4
+should add renderer/backend conformance and speed tests closer to production.
 
 Targets:
 

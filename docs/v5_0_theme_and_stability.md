@@ -108,9 +108,8 @@ host adapter.
 
 Theme tokens are backend-neutral; rendering is not pixel-identical by contract.
 
-- CPU and WGPU backends may differ in antialiasing, grayscale subpixel
-  placement, clipping edge behavior, shader/effect approximation, and texture
-  sampling.
+- Renderer backends may differ in antialiasing, grayscale subpixel placement,
+  clipping edge behavior, shader/effect approximation, and texture sampling.
 - Text metrics and glyph rasterization can vary by text backend and host font
   stack.
 - Effect tokens include fallback strokes so backends that cannot render a

@@ -1,5 +1,6 @@
 #![cfg(feature = "wgpu")]
 
+use std::borrow::Cow;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::mem;
@@ -8,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use glyphon::{
     Attrs as GlyphAttrs, Buffer as GlyphBuffer, Cache as GlyphCache, Color as GlyphColor,
-    Family as GlyphFamily, FontSystem as GlyphFontSystem, Metrics as GlyphMetrics,
-    PrepareError as GlyphPrepareError, RenderError as GlyphRenderError,
+    ColorMode as GlyphColorMode, Family as GlyphFamily, FontSystem as GlyphFontSystem,
+    Metrics as GlyphMetrics, PrepareError as GlyphPrepareError, RenderError as GlyphRenderError,
     Resolution as GlyphResolution, Shaping as GlyphShaping, Stretch as GlyphStretch,
     Style as GlyphFontStyle, SwashCache as GlyphSwashCache, TextArea as GlyphTextArea,
     TextAtlas as GlyphTextAtlas, TextBounds as GlyphTextBounds, TextRenderer as GlyphTextRenderer,
@@ -32,12 +33,34 @@ use crate::{
     PaintCompositorLayer, PaintEffectKind, PaintKind, PaintTransform, PixelRect, RenderError,
     RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage,
     RendererAdapter, ResourceFormat, ResourceResolver, ResourceUpdate, StrokeStyle, TextStyle,
-    TextWrap, UiNodeId, UiPoint, UiRect, UiSize, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
+    TextWrap, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 const OFFSCREEN_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
+const DEFAULT_WGPU_CLEAR_COLOR: ColorRgba = ColorRgba::new(18, 18, 18, 255);
 const GLYPH_TEXT_CHUNK_SIZE: usize = 8;
 const GPU_TIMESTAMP_QUERY_BYTES: u64 = 16;
+
+const WGPU_CANVAS_FULLSCREEN_VERTEX_SHADER: &str = r#"
+struct OperadCanvasVertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn operad_canvas_fullscreen_vertex(@builtin(vertex_index) vertex_index: u32) -> OperadCanvasVertexOutput {
+    let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0)
+    );
+    let position = positions[vertex_index];
+    var output: OperadCanvasVertexOutput;
+    output.clip_position = vec4<f32>(position, 0.0, 1.0);
+    output.uv = position * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    return output;
+}
+"#;
 
 const WGPU_UI_SHADER: &str = r#"
 struct Scene {
@@ -262,9 +285,38 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return input.color;
 }
 
+fn srgb_to_linear_channel(value: f32) -> f32 {
+    if value <= 0.04045 {
+        return value / 12.92;
+    }
+    return pow((value + 0.055) / 1.055, 2.4);
+}
+
+fn srgb_to_linear_rgb(color: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        srgb_to_linear_channel(color.r),
+        srgb_to_linear_channel(color.g),
+        srgb_to_linear_channel(color.b)
+    );
+}
+
+fn srgb_to_linear_rgba(color: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(srgb_to_linear_rgb(color.rgb), color.a);
+}
+
+@fragment
+fn fs_main_srgb(input: VertexOutput) -> @location(0) vec4<f32> {
+    return srgb_to_linear_rgba(input.color);
+}
+
 @fragment
 fn fs_textured(input: TexturedVertexOutput) -> @location(0) vec4<f32> {
     return textureSample(image_texture, image_sampler, input.uv) * input.tint;
+}
+
+@fragment
+fn fs_textured_srgb(input: TexturedVertexOutput) -> @location(0) vec4<f32> {
+    return srgb_to_linear_rgba(textureSample(image_texture, image_sampler, input.uv) * input.tint);
 }
 
 fn rounded_rect_alpha(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
@@ -307,8 +359,7 @@ fn sample_composited_layer(uv: vec2<f32>, texel_size: vec2<f32>, blur_radius: f3
     return color / 12.0;
 }
 
-@fragment
-fn fs_composited(input: CompositedRectOutput) -> @location(0) vec4<f32> {
+fn composited_color(input: CompositedRectOutput) -> vec4<f32> {
     let opacity = input.params.x;
     let clip_enabled = input.params.y;
     let mask_enabled = input.params.z;
@@ -344,7 +395,16 @@ fn fs_composited(input: CompositedRectOutput) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_sdf_rect(input: SdfRectOutput) -> @location(0) vec4<f32> {
+fn fs_composited(input: CompositedRectOutput) -> @location(0) vec4<f32> {
+    return composited_color(input);
+}
+
+@fragment
+fn fs_composited_srgb(input: CompositedRectOutput) -> @location(0) vec4<f32> {
+    return srgb_to_linear_rgba(composited_color(input));
+}
+
+fn sdf_rect_color(input: SdfRectOutput) -> vec4<f32> {
     let radius = clamp(input.radius, 0.0, min(input.size.x, input.size.y) * 0.5);
     let half_size = input.size * 0.5;
     let centered = input.local_position - half_size;
@@ -355,7 +415,16 @@ fn fs_sdf_rect(input: SdfRectOutput) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_shadow_rect(input: ShadowRectOutput) -> @location(0) vec4<f32> {
+fn fs_sdf_rect(input: SdfRectOutput) -> @location(0) vec4<f32> {
+    return sdf_rect_color(input);
+}
+
+@fragment
+fn fs_sdf_rect_srgb(input: SdfRectOutput) -> @location(0) vec4<f32> {
+    return srgb_to_linear_rgba(sdf_rect_color(input));
+}
+
+fn shadow_rect_color(input: ShadowRectOutput) -> vec4<f32> {
     let radius = input.params.x;
     let blur_radius = max(input.params.y, 0.0);
     let distance = rounded_rect_distance(input.world_position, input.shape_rect, radius);
@@ -368,12 +437,236 @@ fn fs_shadow_rect(input: ShadowRectOutput) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(input.color.rgb, alpha);
 }
+
+@fragment
+fn fs_shadow_rect(input: ShadowRectOutput) -> @location(0) vec4<f32> {
+    return shadow_rect_color(input);
+}
+
+@fragment
+fn fs_shadow_rect_srgb(input: ShadowRectOutput) -> @location(0) vec4<f32> {
+    return srgb_to_linear_rgba(shadow_rect_color(input));
+}
 "#;
 
 #[derive(Debug)]
 pub struct WgpuRenderer {
     context: Option<WgpuContext>,
     geometry: RenderGeometry,
+}
+
+#[derive(Debug)]
+pub struct WgpuCanvasContext<'a> {
+    size: PixelSize,
+    format: TextureFormat,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    texture: &'a wgpu::Texture,
+    view: &'a wgpu::TextureView,
+}
+
+#[derive(Debug, Clone)]
+pub struct WgpuCanvasRenderPass<'a> {
+    pub label: Option<&'a str>,
+    pub shader: Cow<'a, str>,
+    pub vertex_entry_point: &'a str,
+    pub fragment_entry_point: &'a str,
+    pub clear_color: Option<ColorRgba>,
+    pub fullscreen_vertex: bool,
+}
+
+impl<'a> WgpuCanvasRenderPass<'a> {
+    pub fn fragment(shader: impl Into<Cow<'a, str>>) -> Self {
+        Self {
+            label: Some("operad-wgpu-canvas-shader-pass"),
+            shader: shader.into(),
+            vertex_entry_point: "operad_canvas_fullscreen_vertex",
+            fragment_entry_point: "fs_main",
+            clear_color: None,
+            fullscreen_vertex: true,
+        }
+    }
+
+    pub fn wgsl(shader: impl Into<Cow<'a, str>>) -> Self {
+        Self {
+            label: Some("operad-wgpu-canvas-render-pass"),
+            shader: shader.into(),
+            vertex_entry_point: "vs_main",
+            fragment_entry_point: "fs_main",
+            clear_color: None,
+            fullscreen_vertex: false,
+        }
+    }
+
+    pub const fn label(mut self, label: Option<&'a str>) -> Self {
+        self.label = label;
+        self
+    }
+
+    pub const fn vertex_entry_point(mut self, entry_point: &'a str) -> Self {
+        self.vertex_entry_point = entry_point;
+        self
+    }
+
+    pub const fn fragment_entry_point(mut self, entry_point: &'a str) -> Self {
+        self.fragment_entry_point = entry_point;
+        self
+    }
+
+    pub const fn clear_color(mut self, clear_color: Option<ColorRgba>) -> Self {
+        self.clear_color = clear_color;
+        self
+    }
+
+    pub const fn fullscreen_vertex(mut self, fullscreen_vertex: bool) -> Self {
+        self.fullscreen_vertex = fullscreen_vertex;
+        self
+    }
+}
+
+impl<'a> WgpuCanvasContext<'a> {
+    pub const fn size(&self) -> PixelSize {
+        self.size
+    }
+
+    pub const fn format(&self) -> TextureFormat {
+        self.format
+    }
+
+    pub const fn device(&self) -> &'a wgpu::Device {
+        self.device
+    }
+
+    pub const fn queue(&self) -> &'a wgpu::Queue {
+        self.queue
+    }
+
+    pub const fn texture(&self) -> &'a wgpu::Texture {
+        self.texture
+    }
+
+    pub const fn view(&self) -> &'a wgpu::TextureView {
+        self.view
+    }
+
+    pub fn create_command_encoder(&self, label: Option<&str>) -> wgpu::CommandEncoder {
+        self.device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label })
+    }
+
+    pub fn begin_render_pass<'pass>(
+        &'pass self,
+        encoder: &'pass mut wgpu::CommandEncoder,
+        clear_color: Option<ColorRgba>,
+    ) -> wgpu::RenderPass<'pass> {
+        let load = clear_color
+            .map(|color| wgpu::LoadOp::Clear(wgpu_color_for_format(color, self.format)))
+            .unwrap_or(wgpu::LoadOp::Load);
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("operad-wgpu-canvas-render-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: self.view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        })
+    }
+
+    pub fn render_pass(&self, descriptor: WgpuCanvasRenderPass<'_>) -> Result<(), RenderError> {
+        let shader_source = if descriptor.fullscreen_vertex {
+            Cow::Owned(format!(
+                "{}\n{}",
+                WGPU_CANVAS_FULLSCREEN_VERTEX_SHADER, descriptor.shader
+            ))
+        } else {
+            descriptor.shader
+        };
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: descriptor.label,
+                source: wgpu::ShaderSource::Wgsl(shader_source),
+            });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: descriptor.label,
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: descriptor.label,
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(descriptor.vertex_entry_point),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(descriptor.fragment_entry_point),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: self.format,
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::SrcAlpha,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        let mut encoder = self.create_command_encoder(descriptor.label);
+        {
+            let mut pass = self.begin_render_pass(&mut encoder, descriptor.clear_color);
+            pass.set_pipeline(&pipeline);
+            pass.draw(0..3, 0..1);
+        }
+        self.submit(encoder);
+        Ok(())
+    }
+
+    pub fn submit(&self, encoder: wgpu::CommandEncoder) {
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn clear(&self, color: ColorRgba) {
+        let mut encoder = self.create_command_encoder(Some("operad-wgpu-canvas-clear"));
+        {
+            let _pass = self.begin_render_pass(&mut encoder, Some(color));
+        }
+        self.submit(encoder);
+    }
 }
 
 struct WgpuContext {
@@ -598,7 +891,7 @@ impl WgpuContext {
             let pipeline = self.create_pipeline(
                 format,
                 "vs_triangle",
-                "fs_main",
+                main_fragment_entry_point(format),
                 &[GpuVertex::layout()],
                 &self.pipeline_layout,
             );
@@ -614,7 +907,7 @@ impl WgpuContext {
             let pipeline = self.create_pipeline(
                 format,
                 "vs_rect",
-                "fs_main",
+                main_fragment_entry_point(format),
                 &[GpuRectInstance::layout()],
                 &self.pipeline_layout,
             );
@@ -630,7 +923,7 @@ impl WgpuContext {
             let pipeline = self.create_pipeline(
                 format,
                 "vs_textured_rect",
-                "fs_textured",
+                textured_fragment_entry_point(format),
                 &[GpuTexturedRectInstance::layout()],
                 &self.texture_pipeline_layout,
             );
@@ -646,7 +939,7 @@ impl WgpuContext {
             let pipeline = self.create_pipeline(
                 format,
                 "vs_composited_rect",
-                "fs_composited",
+                composited_fragment_entry_point(format),
                 &[GpuCompositedRectInstance::layout()],
                 &self.texture_pipeline_layout,
             );
@@ -662,7 +955,7 @@ impl WgpuContext {
             let pipeline = self.create_pipeline(
                 format,
                 "vs_sdf_rect",
-                "fs_sdf_rect",
+                sdf_fragment_entry_point(format),
                 &[GpuSdfRectInstance::layout()],
                 &self.pipeline_layout,
             );
@@ -678,7 +971,7 @@ impl WgpuContext {
             let pipeline = self.create_pipeline(
                 format,
                 "vs_shadow_rect",
-                "fs_shadow_rect",
+                shadow_fragment_entry_point(format),
                 &[GpuShadowRectInstance::layout()],
                 &self.pipeline_layout,
             );
@@ -949,11 +1242,98 @@ impl WgpuContext {
             WgpuTextureResource {
                 size,
                 texture,
-                _view: view,
+                view,
                 bind_group,
+                render_attachment: true,
             },
         );
         key
+    }
+
+    fn canvas_context(
+        &mut self,
+        canvas: &crate::CanvasContent,
+        size: PixelSize,
+    ) -> Result<WgpuCanvasContext<'_>, RenderError> {
+        if !canvas.context.kind.is_texture_backed() {
+            return Err(RenderError::Backend(format!(
+                "canvas {:?} does not have a texture-backed context",
+                canvas.key
+            )));
+        }
+        self.ensure_canvas_texture(canvas.surface_key(), size)?;
+        let texture = self.textures.get(canvas.surface_key()).ok_or_else(|| {
+            RenderError::Backend(format!(
+                "wgpu canvas context target {:?} was not created",
+                canvas.surface_key()
+            ))
+        })?;
+        Ok(WgpuCanvasContext {
+            size,
+            format: OFFSCREEN_FORMAT,
+            device: &self.device,
+            queue: &self.queue,
+            texture: &texture.texture,
+            view: &texture.view,
+        })
+    }
+
+    fn ensure_canvas_texture(&mut self, key: &str, size: PixelSize) -> Result<(), RenderError> {
+        if size.width == 0 || size.height == 0 {
+            return Err(RenderError::Backend(format!(
+                "canvas context {key:?} requires a non-zero size"
+            )));
+        }
+        let recreate = self
+            .textures
+            .get(key)
+            .is_none_or(|texture| texture.size != size || !texture.render_attachment);
+        if !recreate {
+            return Ok(());
+        }
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("operad-wgpu-canvas-texture"),
+            size: Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OFFSCREEN_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("operad-wgpu-canvas-texture-bind-group"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.texture_sampler),
+                },
+            ],
+        });
+        self.textures.insert(
+            key.to_string(),
+            WgpuTextureResource {
+                size,
+                texture,
+                view,
+                bind_group,
+                render_attachment: true,
+            },
+        );
+        Ok(())
     }
 
     fn upload_resource_updates(&mut self, updates: &[ResourceUpdate]) -> Result<(), RenderError> {
@@ -1016,8 +1396,9 @@ impl WgpuContext {
                 WgpuTextureResource {
                     size,
                     texture,
-                    _view: view,
+                    view,
                     bind_group,
+                    render_attachment: false,
                 },
             );
         }
@@ -1347,7 +1728,13 @@ impl WgpuContext {
             return;
         }
 
-        let atlas = GlyphTextAtlas::new(&self.device, &self.queue, &self.glyph_cache, format);
+        let atlas = GlyphTextAtlas::with_color_mode(
+            &self.device,
+            &self.queue,
+            &self.glyph_cache,
+            format,
+            glyph_color_mode(format),
+        );
         self.glyph_atlas = Some(atlas);
         self.glyph_format = Some(format);
         self.glyph_buffer_cache.clear();
@@ -1456,8 +1843,9 @@ struct CachedTarget {
 struct WgpuTextureResource {
     size: PixelSize,
     texture: wgpu::Texture,
-    _view: wgpu::TextureView,
+    view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
+    render_attachment: bool,
 }
 
 #[repr(C)]
@@ -2096,6 +2484,36 @@ impl WgpuRenderer {
         })
     }
 
+    pub fn canvas_context(
+        &mut self,
+        canvas: &crate::CanvasContent,
+        size: PixelSize,
+    ) -> Result<WgpuCanvasContext<'_>, RenderError> {
+        self.ensure_context()?.canvas_context(canvas, size)
+    }
+
+    pub fn get_canvas_context(
+        &mut self,
+        canvas: &crate::CanvasContent,
+        size: PixelSize,
+    ) -> Result<WgpuCanvasContext<'_>, RenderError> {
+        self.canvas_context(canvas, size)
+    }
+
+    pub fn get_gpu_context(
+        &mut self,
+        canvas: &crate::CanvasContent,
+        size: PixelSize,
+    ) -> Result<WgpuCanvasContext<'_>, RenderError> {
+        if !canvas.context.kind.is_gpu_backed() {
+            return Err(RenderError::Backend(format!(
+                "canvas {:?} does not have a GPU context",
+                canvas.key
+            )));
+        }
+        self.canvas_context(canvas, size)
+    }
+
     pub fn warm_up(&mut self) -> Result<(), RenderError> {
         let context = self.ensure_context()?;
         let _ = context.triangle_pipeline(OFFSCREEN_FORMAT);
@@ -2333,6 +2751,30 @@ impl<'window> WgpuSurfaceRenderer<'window> {
             surface,
             surface_config,
         })
+    }
+
+    pub fn canvas_context(
+        &mut self,
+        canvas: &crate::CanvasContent,
+        size: PixelSize,
+    ) -> Result<WgpuCanvasContext<'_>, RenderError> {
+        self.renderer.canvas_context(canvas, size)
+    }
+
+    pub fn get_canvas_context(
+        &mut self,
+        canvas: &crate::CanvasContent,
+        size: PixelSize,
+    ) -> Result<WgpuCanvasContext<'_>, RenderError> {
+        self.renderer.get_canvas_context(canvas, size)
+    }
+
+    pub fn get_gpu_context(
+        &mut self,
+        canvas: &crate::CanvasContent,
+        size: PixelSize,
+    ) -> Result<WgpuCanvasContext<'_>, RenderError> {
+        self.renderer.get_gpu_context(canvas, size)
     }
 
     fn render_to_surface(
@@ -2760,7 +3202,7 @@ fn record_render_pass(
         })
         .collect::<HashMap<_, _>>();
 
-    let clear = wgpu_color(clear_color);
+    let clear = wgpu_color_for_format(clear_color, format);
     let rect_pipeline = context.rect_pipeline(format).clone();
     let triangle_pipeline = context.triangle_pipeline(format).clone();
     let textured_rect_pipeline = context.textured_rect_pipeline(format).clone();
@@ -2934,8 +3376,9 @@ fn build_geometry_into(
                     geometry,
                     transform.transform_rect(item.rect),
                     clip,
-                    &canvas.key,
+                    canvas,
                     item.opacity,
+                    context,
                 );
             }
             PaintKind::Line { from, to, stroke } => {
@@ -3493,7 +3936,47 @@ fn push_text(
     });
 }
 
-fn push_canvas(geometry: &mut RenderGeometry, rect: UiRect, clip: UiRect, key: &str, opacity: f32) {
+fn push_canvas(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    canvas: &crate::CanvasContent,
+    opacity: f32,
+    context: &WgpuContext,
+) {
+    if opacity <= 0.0 {
+        return;
+    }
+    let surface_key = canvas.surface_key();
+    if let Some(texture_size) = context
+        .textures
+        .get(surface_key)
+        .map(|texture| texture.size)
+    {
+        if let Some((rect, uv)) = image_placement(
+            rect,
+            texture_size,
+            ImageFit::Fill,
+            ImageAlignment::Center,
+            ImageAlignment::Center,
+        ) {
+            if rect.width > 0.0 && rect.height > 0.0 && rect.intersection(clip).is_some() {
+                geometry.push_textured_rect(clip, surface_key, rect, uv, image_tint(None, opacity));
+                return;
+            }
+        }
+    }
+
+    push_canvas_placeholder(geometry, rect, clip, &canvas.key, opacity);
+}
+
+fn push_canvas_placeholder(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    key: &str,
+    opacity: f32,
+) {
     let base = snapshot_color_from_key(key, 210);
     push_fill_rect(geometry, rect, clip, base, opacity);
     let accent = ColorRgba::new(
@@ -4067,9 +4550,22 @@ fn glyph_render_error(error: GlyphRenderError) -> RenderError {
 
 fn clear_color_for_request(request: &RenderFrameRequest) -> ColorRgba {
     if request.options.clear_color == ColorRgba::TRANSPARENT {
-        DEFAULT_CPU_SNAPSHOT_BACKGROUND
+        DEFAULT_WGPU_CLEAR_COLOR
     } else {
         request.options.clear_color
+    }
+}
+
+fn wgpu_color_for_format(color: ColorRgba, format: TextureFormat) -> wgpu::Color {
+    if format.is_srgb() {
+        wgpu::Color {
+            r: srgb_channel_to_linear(color.r) as f64,
+            g: srgb_channel_to_linear(color.g) as f64,
+            b: srgb_channel_to_linear(color.b) as f64,
+            a: f64::from(color.a) / 255.0,
+        }
+    } else {
+        wgpu_color(color)
     }
 }
 
@@ -4079,6 +4575,63 @@ fn wgpu_color(color: ColorRgba) -> wgpu::Color {
         g: f64::from(color.g) / 255.0,
         b: f64::from(color.b) / 255.0,
         a: f64::from(color.a) / 255.0,
+    }
+}
+
+fn srgb_channel_to_linear(value: u8) -> f32 {
+    let value = f32::from(value) / 255.0;
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn main_fragment_entry_point(format: TextureFormat) -> &'static str {
+    if format.is_srgb() {
+        "fs_main_srgb"
+    } else {
+        "fs_main"
+    }
+}
+
+fn textured_fragment_entry_point(format: TextureFormat) -> &'static str {
+    if format.is_srgb() {
+        "fs_textured_srgb"
+    } else {
+        "fs_textured"
+    }
+}
+
+fn composited_fragment_entry_point(format: TextureFormat) -> &'static str {
+    if format.is_srgb() {
+        "fs_composited_srgb"
+    } else {
+        "fs_composited"
+    }
+}
+
+fn sdf_fragment_entry_point(format: TextureFormat) -> &'static str {
+    if format.is_srgb() {
+        "fs_sdf_rect_srgb"
+    } else {
+        "fs_sdf_rect"
+    }
+}
+
+fn shadow_fragment_entry_point(format: TextureFormat) -> &'static str {
+    if format.is_srgb() {
+        "fs_shadow_rect_srgb"
+    } else {
+        "fs_shadow_rect"
+    }
+}
+
+fn glyph_color_mode(format: TextureFormat) -> GlyphColorMode {
+    if format.is_srgb() {
+        GlyphColorMode::Accurate
+    } else {
+        GlyphColorMode::Web
     }
 }
 
@@ -4289,6 +4842,101 @@ mod tests {
     }
 
     #[test]
+    fn srgb_render_targets_linearize_clear_color() {
+        let color = ColorRgba::new(18, 18, 18, 255);
+        let gamma_clear = wgpu_color_for_format(color, TextureFormat::Rgba8Unorm);
+        let srgb_clear = wgpu_color_for_format(color, TextureFormat::Rgba8UnormSrgb);
+
+        assert!((gamma_clear.r - 18.0 / 255.0).abs() < 0.0001);
+        assert!(srgb_clear.r < gamma_clear.r);
+        assert!((srgb_clear.r - 0.006_049).abs() < 0.0001);
+        assert_eq!(srgb_clear.a, 1.0);
+    }
+
+    #[test]
+    fn srgb_formats_use_linearized_fragment_and_glyph_paths() {
+        assert_eq!(
+            main_fragment_entry_point(TextureFormat::Bgra8UnormSrgb),
+            "fs_main_srgb"
+        );
+        assert_eq!(
+            textured_fragment_entry_point(TextureFormat::Rgba8UnormSrgb),
+            "fs_textured_srgb"
+        );
+        assert_eq!(
+            glyph_color_mode(TextureFormat::Rgba8UnormSrgb),
+            GlyphColorMode::Accurate
+        );
+        assert_eq!(
+            glyph_color_mode(TextureFormat::Rgba8Unorm),
+            GlyphColorMode::Web
+        );
+    }
+
+    #[test]
+    fn srgb_pipelines_compile_on_wgpu_device() {
+        let mut renderer = WgpuRenderer::default();
+        renderer.warm_up().expect("wgpu renderer warm-up");
+        let context = renderer.context.as_mut().expect("wgpu context");
+
+        let _ = context.rect_pipeline(TextureFormat::Rgba8UnormSrgb);
+        let _ = context.triangle_pipeline(TextureFormat::Rgba8UnormSrgb);
+        let _ = context.textured_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
+        let _ = context.composited_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
+        let _ = context.sdf_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
+        let _ = context.shadow_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
+    }
+
+    #[test]
+    fn canvas_context_render_pass_draws_shader_into_sampled_texture() {
+        let mut renderer = WgpuRenderer::default();
+        let canvas = crate::CanvasContent::new("attached.canvas").gpu_context();
+        {
+            let context = renderer
+                .get_gpu_context(&canvas, PixelSize::new(4, 4))
+                .expect("gpu canvas context");
+            context
+                .render_pass(WgpuCanvasRenderPass::fragment(
+                    r#"
+@fragment
+fn fs_main(input: OperadCanvasVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(input.uv.x * 0.0 + 0.9098039, input.uv.y * 0.0 + 0.07843137, 0.17254902, 1.0);
+}
+"#,
+                ))
+                .expect("canvas shader pass");
+        }
+
+        let viewport = UiSize::new(4.0, 4.0);
+        let output = renderer
+            .render_frame(
+                RenderFrameRequest::new(
+                    RenderTarget::snapshot(PixelSize::new(4, 4)),
+                    viewport,
+                    PaintList {
+                        items: vec![PaintItem {
+                            node: UiNodeId(1),
+                            rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
+                            clip_rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
+                            z_index: 0,
+                            layer_order: LayerOrder::DEFAULT,
+                            opacity: 1.0,
+                            transform: Default::default(),
+                            shader: None,
+                            kind: PaintKind::Canvas(canvas),
+                        }],
+                    },
+                ),
+                &EmptyResourceResolver,
+            )
+            .expect("canvas context render frame");
+        let snapshot = output.snapshot.expect("snapshot");
+
+        assert_eq!(snapshot.size, PixelSize::new(4, 4));
+        assert_eq!(pixel_rgba(&snapshot.pixels, 4, 2, 2), [232, 20, 44, 255]);
+    }
+
+    #[test]
     fn gpu_render_timing_is_reported_when_timestamp_queries_are_available() {
         let mut renderer = WgpuRenderer::default();
         renderer.warm_up().expect("wgpu renderer warm-up");
@@ -4395,5 +5043,10 @@ mod tests {
             viewport,
             PaintList { items },
         )
+    }
+
+    fn pixel_rgba(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
+        let start = (y * width + x) * 4;
+        pixels[start..start + 4].try_into().expect("pixel range")
     }
 }

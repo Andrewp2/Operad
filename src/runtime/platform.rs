@@ -1,7 +1,7 @@
 //! Backend-neutral platform contracts for Operad adapters.
 //!
 //! This module is intentionally data-only. Backends translate these contracts
-//! to egui, wgpu, CPU snapshot rendering, host operating-system APIs, or
+//! to egui, wgpu, host operating-system APIs, test adapters, or
 //! app-owned renderers without leaking backend types into application state.
 
 use std::cmp::Ordering;
@@ -1156,7 +1156,6 @@ impl PlatformServiceResponse {
 pub enum BackendAdapterKind {
     Egui,
     Wgpu,
-    CpuSnapshot,
     AppOwned,
     Test,
     Other,

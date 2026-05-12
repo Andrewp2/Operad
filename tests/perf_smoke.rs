@@ -1,12 +1,9 @@
 #![cfg(feature = "widgets")]
 
-mod common;
-
 use std::hint::black_box;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use common::render_document;
 #[cfg(feature = "wgpu")]
 use operad::platform::{ImageHandle, PixelSize, ResourceHandle};
 use operad::widgets::*;
@@ -20,8 +17,43 @@ const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis
 #[cfg(all(feature = "wgpu", not(debug_assertions)))]
 const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis(1);
 
+fn paint_list_fingerprint(paint: &PaintList) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for item in &paint.items {
+        for value in [
+            item.node.0 as u64,
+            item.rect.x.to_bits() as u64,
+            item.rect.y.to_bits() as u64,
+            item.rect.width.to_bits() as u64,
+            item.rect.height.to_bits() as u64,
+            paint_kind_code(&item.kind),
+        ] {
+            hash ^= value;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+
+fn paint_kind_code(kind: &PaintKind) -> u64 {
+    match kind {
+        PaintKind::Rect { .. } => 1,
+        PaintKind::Text(_) => 2,
+        PaintKind::Canvas(_) => 3,
+        PaintKind::Image { .. } => 4,
+        PaintKind::Line { .. } => 5,
+        PaintKind::Circle { .. } => 6,
+        PaintKind::Polygon { .. } => 7,
+        PaintKind::SceneText(_) => 8,
+        PaintKind::Path(_) => 9,
+        PaintKind::ImagePlacement(_) => 10,
+        PaintKind::RichRect(_) => 11,
+        PaintKind::CompositedLayer(_) => 12,
+    }
+}
+
 #[test]
-fn virtualized_table_layout_and_raster_smoke_stays_under_budget() {
+fn virtualized_table_layout_and_paint_smoke_stays_under_budget() {
     let _perf_guard = perf_test_lock();
     let mut perf = PerformanceSamples::new("virtualized table render smoke");
     let mut combined_hash = 0_u64;
@@ -86,8 +118,11 @@ fn virtualized_table_layout_and_raster_smoke_stays_under_budget() {
             },
         );
 
-        let image = render_document(&mut document, PERF_VIEWPORT);
-        combined_hash ^= image.hash();
+        document
+            .compute_layout(PERF_VIEWPORT, &mut ApproxTextMeasurer)
+            .expect("layout");
+        let paint = document.paint_list();
+        combined_hash ^= paint_list_fingerprint(&paint);
         black_box(document.node_count());
         perf.push(started.elapsed());
     }
@@ -401,7 +436,7 @@ fn retained_display_list_large_scene_reuse_survives_interaction_churn() {
 }
 
 #[test]
-fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
+fn editor_geometry_scene_build_and_paint_smoke_stays_under_budget() {
     let _perf_guard = perf_test_lock();
     let mut perf = PerformanceSamples::new("editor geometry render smoke");
     let mut combined_hash = 0_u64;
@@ -507,9 +542,12 @@ fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
             root,
             UiNode::scene("perf.editor", scene, fixed_style(920.0, 500.0)),
         );
-        let image = render_document(&mut document, PERF_VIEWPORT);
-        combined_hash ^= image.hash();
-        black_box(document.paint_list().items.len());
+        document
+            .compute_layout(PERF_VIEWPORT, &mut ApproxTextMeasurer)
+            .expect("layout");
+        let paint = document.paint_list();
+        combined_hash ^= paint_list_fingerprint(&paint);
+        black_box(paint.items.len());
         perf.push(started.elapsed());
     }
 

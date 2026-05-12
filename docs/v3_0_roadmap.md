@@ -60,17 +60,17 @@ The branch starts from Operad 2.0.0 plus:
   and previous accessibility inputs across host/document frames without
   rebuilding previous-frame plumbing by hand.
 - Renderer-neutral scenario testing now combines input replay, document-frame
-  processing, CPU snapshot rendering, platform request collection, and reusable
+  processing, paint recording, platform request collection, and reusable
   assertions without depending on egui harness types.
-- CPU snapshot render frames now report batch and render timing sections through
-  the shared `RenderFrameOutput` timing surface.
+- Test render frames now report batch and render timing sections through the
+  shared `RenderFrameOutput` timing surface.
 - Frame timing series helpers aggregate per-frame sections into reusable
   performance samples and section-level budget assertions.
 - Scenario reports expose renderer-neutral timing sections for pre-input layout,
   input replay, document-frame processing, rendering, and platform request
   collection.
 - Perf smoke coverage now runs multi-frame scenario harness rendering with
-  timing-series section assertions, percentile budget checks, and CPU snapshot
+  timing-series section assertions, percentile budget checks, and paint-list
   content checks.
 - Display-list reuse series helpers aggregate retained display-list hit/miss
   outcomes across frames and assert reuse rates, eviction absence, and per-key
@@ -138,16 +138,16 @@ The branch starts from Operad 2.0.0 plus:
   display-list reuse/invalidation assertions and multi-frame reuse-series
   budgets, percentile performance budgets, plus render-output snapshot, batch,
   painted-item, and timing assertions.
-- Public CPU snapshot rendering in `src/testing.rs` gives consumers a
-  deterministic renderer adapter and document raster path for E2E screenshots
+- Public renderer-neutral testing helpers in `src/testing.rs` give consumers a
+  deterministic paint-recording adapter and document-frame path for E2E checks
   without depending on egui or Operad's private integration-test harness.
 - E2E snapshot coverage in `tests/e2e_render.rs` now includes a reusable editor
   surface scene built from timeline range-item, lane, ruler, playhead, curve
   point, interpolation path, and resize-handle primitives.
 - Performance smoke coverage in `tests/perf_smoke.rs` now exercises reusable
   editor geometry, hit-target construction, curve segments, scene paint-list
-  generation, retained display-list reuse rates, and deterministic raster
-  snapshots under a fixed budget.
+  generation, retained display-list reuse rates, and deterministic paint
+  fingerprints under a fixed budget.
 - Layout audit checks in `src/lib.rs` now cover duplicate node names,
   non-finite rects, invisible or too-small interactive nodes, text clipping,
   low-contrast text and scene text against effective background fills, nodes

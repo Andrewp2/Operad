@@ -22,7 +22,7 @@ V5 separates reusable UI contracts from backend execution:
 - Operad owns reusable UI-side records for layout, action routing, retained
   widget state, transactions, forms, overlays, accessibility, resources,
   diagnostics, and renderer-neutral frame output.
-- Hosts and renderers own concrete event loops, windows, surfaces, GPU or CPU
+- Hosts and renderers own concrete event loops, windows, surfaces, renderer
   resources, OS clipboard/IME/cursor services, platform accessibility adapters,
   and scheduling integration.
 
@@ -106,11 +106,11 @@ clips, rectangular masks, opacity, basic filters, and glyphon text when
 available. WGPU also has a native soft rich-rect shadow falloff path,
 lyon-backed path fill/stroke tessellation, and glyphon text with fractional
 grayscale placement. Backdrop filters are modeled in the compositor quality
-plan, but current CPU/WGPU snapshot renderers explicitly disable them because
-they do not sample the already-composited framebuffer. Snapshot backends use
-sRGB `ColorRgba` compositing; future wide-gamut support is modeled by
-`ColorManagementLevel` but is not claimed for CPU/WGPU snapshots. Pixel parity
-is not guaranteed across CPU, WGPU, text backends, or host font stacks.
+plan, but current WGPU snapshot rendering explicitly disables them because it
+does not sample the already-composited framebuffer. Snapshot backends use sRGB
+`ColorRgba` compositing; future wide-gamut support is modeled by
+`ColorManagementLevel` but is not claimed for WGPU snapshots. Pixel parity is
+not guaranteed across WGPU, text backends, or host font stacks.
 
 ### Accessibility
 
@@ -183,7 +183,7 @@ Operad should own:
 Hosts and renderers should own:
 
 - Native event loops, windows, surfaces, timers, idle work, and repaint hooks.
-- GPU/CPU resource creation, presentation, adapter support, and fallback policy.
+- Renderer resource creation, presentation, adapter support, and fallback policy.
 - OS clipboard, IME, cursor, drag/drop, accessibility publication, and font
   discovery integration.
 - Backend-specific rendering quality and performance tradeoffs.
@@ -212,15 +212,30 @@ New v5 adoption should be incremental:
 Run the full widget showcase with:
 
 ```bash
-cargo run --locked --features widgets --example operad_showcase
+cargo run --locked --example operad_showcase
 ```
 
-The example writes `target/operad_showcase.ppm` by default, or the path named by
-`OPERAD_SHOWCASE_PPM`. It composes a menu bar, dropdown, command palette,
-context menu, buttons, sliders, editable and selectable text, picker primitives,
-tree/property/table data widgets, scroll surfaces, split panes, tabs, toasts,
-timeline/editor primitives, canvas/image/resource slots, accessibility metadata,
-and shader/compositor metadata in one UI document.
+The default feature set intentionally includes `native-window` so this command
+opens the native WGPU showcase. Library consumers that do not want WGPU, winit,
+or glyphon transitively should use `default-features = false` and opt into only
+the features they need.
+
+For headless CI, run the same document builder without visual rendering:
+
+```bash
+OPERAD_SHOWCASE_HEADLESS=1 cargo run --locked --example operad_showcase
+```
+
+For visual QA without opening a window, capture a PNG through the real WGPU
+snapshot path:
+
+```bash
+OPERAD_SHOWCASE_WGPU_SCREENSHOT=target/operad-showcase/showcase.png OPERAD_SHOWCASE_VIEWPORT=1280x800 cargo run --locked --example operad_showcase
+```
+
+The showcase composes menu, command palette, buttons, slider interaction,
+resource previews, data rows, editor primitives, accessibility metadata, and
+shader/compositor metadata in one UI document.
 
 ## Compatibility Notes
 

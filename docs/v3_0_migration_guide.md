@@ -170,7 +170,7 @@ summaries without Operad owning the domain model.
 Consumers should move UI regression coverage toward the public v3 testing
 surface:
 
-- `CpuSnapshotRenderer` and `SnapshotAssertions` for deterministic screenshots.
+- `SnapshotAssertions` for real renderer snapshot readbacks.
 - `ScenarioHarness` and `EventReplay` for E2E input/render frames.
 - `LayoutAssertions`, `PaintAssertions`, `RenderAssertions`, and
   `AccessibilityAssertions` for stable-name checks.

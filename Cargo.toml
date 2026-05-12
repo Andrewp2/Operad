@@ -1,6 +1,6 @@
 [package]
 name = "operad"
-version = "5.0.0"
+version = "6.0.0"
 edition = "2021"
 license = "MIT"
 description = "Renderer-neutral UI toolkit contracts and rendering primitives."
@@ -15,7 +15,10 @@ name = "operad"
 path = "src/lib.rs"
 
 [features]
-default = []
+# Defaults keep `cargo run --example operad_showcase` opening the native
+# showcase. Library consumers that do not want WGPU/winit/glyphon should opt out
+# with `default-features = false` and enable only the features they need.
+default = ["widgets", "native-window"]
 accesskit-winit = ["dep:accesskit", "dep:accesskit_winit", "dep:winit"]
 egui = ["dep:egui"]
 egui-renderer-compat = ["egui"]

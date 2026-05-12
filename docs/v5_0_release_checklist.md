@@ -57,17 +57,27 @@ the runner has a GPU or software Vulkan adapter.
 - [ ] Examples compile. Runtime probe assertions such as
   `cargo run --locked --example three_consumer_probe` may be run as additional
   adoption evidence after any existing audit-warning expectations are updated.
-- [ ] Showcase snapshot: `cargo run --locked --features widgets --example operad_showcase`
-  writes `target/operad_showcase.ppm` and should report nonzero paint and
-  accessibility node counts.
+- [ ] Showcase window: `cargo run --locked --example operad_showcase`
+  should open the native WGPU showcase.
+- [ ] Default feature policy is intentional: the default set includes
+  `native-window` so the showcase opens with Cargo's default example command.
+  Library consumers that do not want WGPU, winit, or glyphon should use
+  `default-features = false` and opt into only the features they need.
+- [ ] Showcase headless validation:
+  `OPERAD_SHOWCASE_HEADLESS=1 cargo run --locked --example operad_showcase`
+  should report nonzero paint and accessibility node counts without producing a
+  fake screenshot.
+- [ ] Showcase WGPU screenshot:
+  `OPERAD_SHOWCASE_WGPU_SCREENSHOT=target/operad-showcase/showcase.png OPERAD_SHOWCASE_VIEWPORT=1280x800 cargo run --locked --example operad_showcase`
+  should write a PNG produced by the real WGPU snapshot path.
 
 ## Perf Smoke
 
 Run these on a development or release-validation machine. They are not basic CI
 requirements because wall-clock budgets can be noisy on shared runners:
 
-- [ ] CPU/widget smoke: `cargo test --locked --features widgets --test perf_smoke -- --nocapture`
-- [ ] Release CPU/widget smoke: `cargo test --release --locked --features widgets --test perf_smoke -- --nocapture`
+- [ ] Widget paint smoke: `cargo test --locked --features widgets --test perf_smoke -- --nocapture`
+- [ ] Release widget paint smoke: `cargo test --release --locked --features widgets --test perf_smoke -- --nocapture`
 
 Record the machine class and whether any budget changes are intentional.
 

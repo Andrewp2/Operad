@@ -11,12 +11,11 @@ those applications and are not Operad release blockers.
   - Implemented in [Cargo.toml](/home/andrew-peterson/code/operad/Cargo.toml)
   - Implemented in [src/lib.rs](/home/andrew-peterson/code/operad/src/lib.rs)
   - Validated by `cargo check --features wgpu`
-- [x] Add WGPU renderer tests and parity coverage for snapshot output.
+- [x] Add WGPU renderer tests for snapshot output.
   - Implemented in [src/wgpu_renderer.rs](/home/andrew-peterson/code/operad/src/wgpu_renderer.rs)
   - Implemented in [tests/wgpu_snapshot_parity.rs](/home/andrew-peterson/code/operad/tests/wgpu_snapshot_parity.rs)
   - Verified by:
     - `cargo test --features wgpu --test wgpu_snapshot_parity -- --nocapture`
-    - `wgpu_snapshot_matches_cpu_snapshot` passes
 - [x] Add native viewport/path-conformance test beyond snapshot parity.
   - Implemented in [tests/perf_smoke.rs](/home/andrew-peterson/code/operad/tests/perf_smoke.rs)
     - `scenario_harness_multi_frame_render_smoke_stays_under_budget`

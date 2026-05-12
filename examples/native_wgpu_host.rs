@@ -197,10 +197,6 @@ impl NativeWindowApp {
             self.render_samples.push(duration);
         }
         self.presented_frames += 1;
-        println!(
-            "native_wgpu_host: presented {} items into {:?}",
-            output.painted_items, output.target
-        );
         Ok(self
             .frame_limit
             .is_some_and(|frame_limit| self.presented_frames >= frame_limit))

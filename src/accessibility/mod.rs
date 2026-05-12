@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+pub use crate::tooltips;
+
 use crate::{
     AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityNode,
     AccessibilityRole, AccessibilitySummary, AccessibilityTree, UiNodeId, UiRect,

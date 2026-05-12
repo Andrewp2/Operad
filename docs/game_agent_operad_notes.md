@@ -68,8 +68,8 @@ Application crates should own:
 Renderer backends should be adapters, not the foundation. The core should not
 depend on egui, wgpu, winit, or a particular game renderer by default. Optional
 features such as `egui` can provide compatibility painting, and later backends
-can target a custom wgpu renderer or CPU snapshot renderer. The boundary should
-be a paint list plus font/text measurement traits, not direct calls from core UI
+can target a custom WGPU renderer or app-owned renderer. The boundary should be
+a paint list plus font/text measurement traits, not direct calls from core UI
 logic into a rendering framework.
 
 ## Shape I Would Like The Crate To Grow Toward

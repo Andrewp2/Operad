@@ -238,8 +238,7 @@ Targets:
 
 ## 13. Asset, Icon, Font, And Texture Pipeline
 
-V5 should make assets and fonts predictable across CPU snapshots, WGPU, and host
-renderers.
+V5 should make assets and fonts predictable across WGPU and host renderers.
 
 Targets:
 
@@ -265,7 +264,7 @@ Targets:
   required.
 - Add large image/texture upload and partial texture update stress coverage.
 - Add performance instrumentation that separates layout, input, paint build,
-  resource upload, CPU render orchestration, and GPU render pass time.
+  resource upload, renderer orchestration, and GPU render pass time.
 - Keep CI thresholds stable while preserving a local high-confidence performance
   path for GPU-equipped machines.
 
@@ -301,7 +300,7 @@ Targets:
   transformed hit testing.
 - Add opacity groups and offscreen layers for effects that require isolated
   composition.
-- Define clip, mask, and scissor hierarchy semantics shared by CPU and WGPU
+- Define clip, mask, and scissor hierarchy semantics shared by renderer
   backends.
 - Ensure input routing, accessibility bounds, and diagnostics use the same
   effective geometry as the compositor.
@@ -316,7 +315,7 @@ canvas escapes for common effects.
 Targets:
 
 - Add high-quality shadows, elevation treatment, rounded clipping, and
-  anti-aliased borders across CPU and WGPU paths.
+  anti-aliased borders across renderer paths.
 - Improve gradients, strokes, joins, caps, and path rendering enough for
   production controls and charts.
 - Define mask, blur, backdrop, and filter support levels, including explicit
@@ -326,8 +325,8 @@ Targets:
   behavior so scrolling and animation stay visually stable.
 - Decide the color-management policy for sRGB, alpha blending, and future
   wide-gamut support.
-- Add CPU snapshot and WGPU parity coverage for shadows, clipping, transforms,
-  gradients, masks, and text over composited layers.
+- Add WGPU coverage for shadows, clipping, transforms, gradients, masks, and
+  text over composited layers.
 
 ## 18. Visual System And Motion Polish
 
@@ -342,7 +341,7 @@ Targets:
   selected, invalid, warning, pending, active, and loading.
 - Add animation presets for hover, press, open, close, selection, validation,
   loading, and reduced-motion fallback.
-- Clarify shader/effect fallback behavior across CPU snapshots and WGPU.
+- Clarify shader/effect fallback behavior across WGPU and host renderers.
 - Add denser theme variants for operational tools, editor surfaces, and game
   HUDs.
 - Expand visual snapshot coverage for common widget states.
@@ -600,7 +599,7 @@ V5 should ship when these library-owned gates are green:
   hit testing.
 - Compositor-quality rendering covers shadows, rounded clipping, borders,
   gradients, masks, filters, backdrop fallback policy, grayscale subpixel text,
-  and CPU/WGPU parity for composited content.
+  and WGPU coverage for composited content.
 - Diagnostics can explain input routing, widget actions, overlay state,
   accessibility output, and render timing in one debug surface.
 - Theme/design-token APIs and feature stability are documented for v5 consumers.

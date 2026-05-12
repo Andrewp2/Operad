@@ -7,6 +7,8 @@
 
 use std::time::Duration;
 
+pub use crate::{host, platform, windows};
+
 use crate::input::RawInputEvent;
 use crate::platform::{
     PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,

@@ -31,7 +31,6 @@ Use the local workspace path during active development as needed.
      convert legacy layout while keeping existing field-based setup.
 
 5. Choose a renderer path:
-- CPU/default snapshot rendering remains unchanged.
 - For GPU rendering, construct a `WgpuRenderer` for snapshot/offscreen frames or a
   `WgpuSurfaceRenderer` for window/app-owned texture targets.
 - If you pass the renderer back into `ScenarioHarness`/frame helpers, use the
@@ -44,8 +43,8 @@ Use the local workspace path during active development as needed.
 
 ## New behavior to verify
 
-- Enable `wgpu` tests in CI for backend parity checks.
-- Confirm snapshot parity against CPU output where deterministic coverage matters.
+- Enable `wgpu` tests in CI for backend conformance checks.
+- Confirm WGPU snapshot output directly where deterministic coverage matters.
 - Confirm target feature sets (especially `pollster` and `wgpu`) are added only where
   the crate actually compiles GPU paths.
 
@@ -53,7 +52,8 @@ Use the local workspace path during active development as needed.
 
 `wgpu` is feature-gated in `operad`:
 - `features = ["wgpu"]` enables the new module and exported renderer types.
-- Without this feature, default/CPU behavior is unchanged.
+- Without this feature, backend-neutral document, layout, and paint behavior is
+  unchanged.
 - `features = ["text-cosmic"]` enables the `CosmicTextMeasurer`.
 - `features = ["egui-renderer-compat"]` is only for migrations that still need
   the legacy egui painter.

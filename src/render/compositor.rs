@@ -619,7 +619,7 @@ impl RenderFeatureSupport {
         max_backdrop_blur: 128.0,
     };
 
-    pub const CPU_SNAPSHOT_QUALITY: Self = Self {
+    pub const SOFTWARE_BASELINE_QUALITY: Self = Self {
         shadows: FeatureSupportLevel::Basic,
         rounded_clipping: FeatureSupportLevel::Basic,
         borders: FeatureSupportLevel::Basic,
@@ -732,7 +732,7 @@ pub enum CompositorParityExpectation {
     PixelExact,
     ChannelTolerance { max_channel_delta: u8 },
     FallbackActionParity,
-    CpuAuthoritativeFallback,
+    BaselineAuthoritativeFallback,
     Unsupported,
 }
 
@@ -740,9 +740,9 @@ pub enum CompositorParityExpectation {
 pub struct CompositorQualityRecord {
     pub requirement: RenderFeatureRequirement,
     pub feature: RenderFeature,
-    pub cpu_support: FeatureSupportLevel,
+    pub baseline_support: FeatureSupportLevel,
     pub wgpu_support: FeatureSupportLevel,
-    pub cpu_action: FeatureFallbackAction,
+    pub baseline_action: FeatureFallbackAction,
     pub wgpu_action: FeatureFallbackAction,
     pub parity_expectation: CompositorParityExpectation,
 }
@@ -794,23 +794,27 @@ pub fn compositor_quality_requirements() -> Vec<RenderFeatureRequirement> {
 
 pub fn plan_compositor_quality(
     requirements: &[RenderFeatureRequirement],
-    cpu_support: RenderFeatureSupport,
+    baseline_support: RenderFeatureSupport,
     wgpu_support: RenderFeatureSupport,
 ) -> CompositorQualityPlan {
-    let cpu_plan = plan_render_feature_fallbacks(requirements, cpu_support);
+    let baseline_plan = plan_render_feature_fallbacks(requirements, baseline_support);
     let wgpu_plan = plan_render_feature_fallbacks(requirements, wgpu_support);
-    let records = cpu_plan
+    let records = baseline_plan
         .items
         .into_iter()
         .zip(wgpu_plan.items)
-        .map(|(cpu, wgpu)| CompositorQualityRecord {
-            requirement: cpu.requirement,
-            feature: cpu.feature,
-            cpu_support: cpu.support,
+        .map(|(baseline, wgpu)| CompositorQualityRecord {
+            requirement: baseline.requirement,
+            feature: baseline.feature,
+            baseline_support: baseline.support,
             wgpu_support: wgpu.support,
-            cpu_action: cpu.action,
+            baseline_action: baseline.action,
             wgpu_action: wgpu.action,
-            parity_expectation: parity_expectation_for(cpu.feature, cpu.action, wgpu.action),
+            parity_expectation: parity_expectation_for(
+                baseline.feature,
+                baseline.action,
+                wgpu.action,
+            ),
         })
         .collect();
     CompositorQualityPlan { records }
@@ -957,17 +961,19 @@ pub fn plan_render_feature_fallbacks(
 
 fn parity_expectation_for(
     feature: RenderFeature,
-    cpu_action: FeatureFallbackAction,
+    baseline_action: FeatureFallbackAction,
     wgpu_action: FeatureFallbackAction,
 ) -> CompositorParityExpectation {
     if wgpu_action == FeatureFallbackAction::Disable {
         return CompositorParityExpectation::Unsupported;
     }
-    if cpu_action == wgpu_action && wgpu_action != FeatureFallbackAction::Native {
+    if baseline_action == wgpu_action && wgpu_action != FeatureFallbackAction::Native {
         return CompositorParityExpectation::FallbackActionParity;
     }
-    if cpu_action != FeatureFallbackAction::Native || wgpu_action != FeatureFallbackAction::Native {
-        return CompositorParityExpectation::CpuAuthoritativeFallback;
+    if baseline_action != FeatureFallbackAction::Native
+        || wgpu_action != FeatureFallbackAction::Native
+    {
+        return CompositorParityExpectation::BaselineAuthoritativeFallback;
     }
     match feature {
         RenderFeature::Shadows => CompositorParityExpectation::ChannelTolerance {
@@ -1281,7 +1287,7 @@ mod tests {
         let requirements = compositor_quality_requirements();
         let plan = plan_compositor_quality(
             &requirements,
-            RenderFeatureSupport::CPU_SNAPSHOT_QUALITY,
+            RenderFeatureSupport::SOFTWARE_BASELINE_QUALITY,
             RenderFeatureSupport::WGPU_SNAPSHOT_QUALITY,
         );
 
@@ -1309,7 +1315,7 @@ mod tests {
         assert_eq!(gradient.wgpu_action, FeatureFallbackAction::Approximate);
         assert_eq!(
             gradient.parity_expectation,
-            CompositorParityExpectation::CpuAuthoritativeFallback
+            CompositorParityExpectation::BaselineAuthoritativeFallback
         );
 
         let shadow = plan
@@ -1365,7 +1371,7 @@ mod tests {
         assert_eq!(text.wgpu_action, FeatureFallbackAction::Native);
         assert_eq!(
             text.parity_expectation,
-            CompositorParityExpectation::CpuAuthoritativeFallback
+            CompositorParityExpectation::BaselineAuthoritativeFallback
         );
         assert_eq!(plan.wgpu_fallback_records().len(), 2);
     }

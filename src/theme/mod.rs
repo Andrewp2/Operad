@@ -8,6 +8,8 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
+pub use crate::theme_stability as stability;
+
 use crate::{
     accessibility::AccessibilityPreferences, ColorRgba, FontFamily, FontStretch, FontStyle,
     FontWeight, StrokeStyle, TextStyle, TextWrap, UiVisual,
@@ -689,47 +691,47 @@ pub struct ColorTokens {
 impl ColorTokens {
     pub const fn dark() -> Self {
         Self {
-            canvas: ColorRgba::new(9, 12, 16, 255),
-            canvas_subtle: ColorRgba::new(12, 16, 22, 255),
-            surface: ColorRgba::new(18, 23, 31, 255),
-            surface_muted: ColorRgba::new(23, 29, 39, 255),
-            surface_elevated: ColorRgba::new(29, 36, 47, 255),
-            surface_overlay: ColorRgba::new(38, 47, 61, 255),
-            surface_sunken: ColorRgba::new(13, 17, 24, 255),
-            border: ColorRgba::new(63, 75, 92, 255),
-            border_muted: ColorRgba::new(43, 52, 65, 255),
-            border_strong: ColorRgba::new(92, 108, 130, 255),
-            divider: ColorRgba::new(35, 42, 53, 255),
-            text: ColorRgba::new(232, 238, 246, 255),
-            text_muted: ColorRgba::new(180, 190, 203, 255),
-            text_subtle: ColorRgba::new(134, 148, 166, 255),
-            text_disabled: ColorRgba::new(104, 116, 132, 185),
-            text_inverse: ColorRgba::new(8, 12, 16, 255),
-            accent: ColorRgba::new(99, 190, 255, 255),
-            accent_hover: ColorRgba::new(132, 207, 255, 255),
-            accent_pressed: ColorRgba::new(56, 146, 220, 255),
-            accent_muted: ColorRgba::new(28, 67, 95, 255),
-            accent_strong: ColorRgba::new(32, 131, 224, 255),
-            accent_text: ColorRgba::new(225, 246, 255, 255),
+            canvas: ColorRgba::new(18, 18, 18, 255),
+            canvas_subtle: ColorRgba::new(22, 22, 22, 255),
+            surface: ColorRgba::new(31, 31, 31, 255),
+            surface_muted: ColorRgba::new(38, 38, 38, 255),
+            surface_elevated: ColorRgba::new(45, 45, 45, 255),
+            surface_overlay: ColorRgba::new(54, 54, 54, 255),
+            surface_sunken: ColorRgba::new(24, 24, 24, 255),
+            border: ColorRgba::new(76, 76, 76, 255),
+            border_muted: ColorRgba::new(58, 58, 58, 255),
+            border_strong: ColorRgba::new(112, 112, 112, 255),
+            divider: ColorRgba::new(48, 48, 48, 255),
+            text: ColorRgba::new(238, 238, 235, 255),
+            text_muted: ColorRgba::new(194, 194, 188, 255),
+            text_subtle: ColorRgba::new(154, 154, 148, 255),
+            text_disabled: ColorRgba::new(118, 118, 112, 185),
+            text_inverse: ColorRgba::new(16, 16, 16, 255),
+            accent: ColorRgba::new(96, 190, 176, 255),
+            accent_hover: ColorRgba::new(124, 211, 198, 255),
+            accent_pressed: ColorRgba::new(62, 154, 141, 255),
+            accent_muted: ColorRgba::new(28, 72, 66, 255),
+            accent_strong: ColorRgba::new(36, 137, 126, 255),
+            accent_text: ColorRgba::new(226, 250, 246, 255),
             success: ColorRgba::new(83, 201, 147, 255),
             warning: ColorRgba::new(238, 183, 87, 255),
             danger: ColorRgba::new(240, 102, 124, 255),
             info: ColorRgba::new(127, 166, 255, 255),
-            selected: ColorRgba::new(34, 70, 104, 255),
-            selected_hover: ColorRgba::new(42, 84, 122, 255),
-            selected_text: ColorRgba::new(233, 247, 255, 255),
-            focus_ring: ColorRgba::new(124, 213, 255, 255),
-            overlay_scrim: ColorRgba::new(3, 6, 10, 180),
-            editor_background: ColorRgba::new(10, 13, 18, 255),
-            editor_grid_major: ColorRgba::new(55, 66, 82, 255),
-            editor_grid_minor: ColorRgba::new(31, 38, 49, 255),
-            lane_header: ColorRgba::new(25, 31, 41, 255),
-            lane_header_selected: ColorRgba::new(35, 55, 78, 255),
+            selected: ColorRgba::new(38, 82, 76, 255),
+            selected_hover: ColorRgba::new(47, 98, 91, 255),
+            selected_text: ColorRgba::new(236, 252, 249, 255),
+            focus_ring: ColorRgba::new(116, 214, 201, 255),
+            overlay_scrim: ColorRgba::new(0, 0, 0, 180),
+            editor_background: ColorRgba::new(16, 16, 16, 255),
+            editor_grid_major: ColorRgba::new(70, 70, 70, 255),
+            editor_grid_minor: ColorRgba::new(42, 42, 42, 255),
+            lane_header: ColorRgba::new(34, 34, 34, 255),
+            lane_header_selected: ColorRgba::new(42, 72, 68, 255),
             range_item_primary: ColorRgba::new(62, 157, 184, 255),
             range_item_secondary: ColorRgba::new(116, 176, 98, 255),
             range_item_accent: ColorRgba::new(187, 126, 220, 255),
-            editor_lane: ColorRgba::new(17, 22, 30, 255),
-            editor_lane_alternate: ColorRgba::new(14, 18, 25, 255),
+            editor_lane: ColorRgba::new(25, 25, 25, 255),
+            editor_lane_alternate: ColorRgba::new(21, 21, 21, 255),
             transport_active: ColorRgba::new(92, 212, 165, 255),
         }
     }
@@ -2177,9 +2179,9 @@ fn button_tokens(
                 radius.sm,
             )),
             pressed: Some(UiVisual::panel(
-                colors.accent_muted,
-                Some(stroke.selected),
-                radius.sm,
+                colors.surface_sunken,
+                Some(stroke.control),
+                radius.xs,
             )),
             focused: Some(UiVisual::panel(
                 colors.surface_overlay,
@@ -2934,6 +2936,22 @@ mod tests {
         assert_eq!(theme.colors.focus_ring.a, 255);
         assert_ne!(theme.colors.success, theme.colors.warning);
         assert_ne!(theme.colors.warning, theme.colors.danger);
+    }
+
+    #[test]
+    fn dark_theme_defaults_to_neutral_dark_gray_and_near_white_text() {
+        let theme = Theme::dark();
+
+        assert_eq!(theme.colors.canvas, ColorRgba::new(18, 18, 18, 255));
+        assert_eq!(
+            theme.colors.editor_background,
+            ColorRgba::new(16, 16, 16, 255)
+        );
+        assert_eq!(theme.colors.surface, ColorRgba::new(31, 31, 31, 255));
+        assert!(theme.colors.text.r >= 235);
+        assert!(theme.colors.text.g >= 235);
+        assert!(theme.colors.text.b >= 232);
+        assert!(theme.colors.text.contrast_ratio(theme.colors.canvas) >= 12.0);
     }
 
     #[test]

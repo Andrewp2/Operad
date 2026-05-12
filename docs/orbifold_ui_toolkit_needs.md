@@ -252,7 +252,7 @@ The important part is not this exact syntax. The important part is that drawing,
 
 - Should the toolkit be immediate-mode at the API level, retained internally, or retained at both levels?
 - Should layout be custom, Taffy-like, or a small domain-specific pane/grid system first?
-- Should rendering start CPU-backed for correctness and screenshots, then add GPU, or start with wgpu immediately?
+- Should rendering start renderer-neutral with direct WGPU validation, or start with wgpu immediately?
 - How much text editing is needed inside Orbifold soon?
 - Should native menus be supported, or should Orbifold draw all menus itself for portability and screenshot consistency?
 - What is the minimum accessibility target for the first usable version?

@@ -19,49 +19,92 @@ use taffy::prelude::{
 
 pub mod accessibility;
 #[cfg(feature = "accesskit-winit")]
+#[path = "adapters/accesskit_winit_adapter.rs"]
 pub mod accesskit_winit_adapter;
+#[path = "interaction/actions.rs"]
 pub mod actions;
+pub mod adapters;
+#[path = "render/assets.rs"]
 pub mod assets;
+#[path = "domain/charts.rs"]
 pub mod charts;
+#[path = "interaction/commands.rs"]
 pub mod commands;
+#[path = "render/compositor.rs"]
 pub mod compositor;
+pub mod core;
+#[path = "diagnostics/debug.rs"]
 pub mod debug;
 pub mod diagnostics;
+#[path = "render/display.rs"]
 pub mod display;
+pub mod domain;
+#[path = "interaction/drag_drop.rs"]
 pub mod drag_drop;
+#[path = "domain/editor.rs"]
 pub mod editor;
+#[path = "render/effective_geometry.rs"]
 pub mod effective_geometry;
 #[cfg(feature = "egui")]
+#[path = "adapters/egui_host.rs"]
 pub mod egui_host;
+#[path = "diagnostics/errors.rs"]
 pub mod errors;
+#[path = "render/fonts.rs"]
 pub mod fonts;
+#[path = "interaction/forms.rs"]
 pub mod forms;
+#[path = "runtime/host.rs"]
 pub mod host;
+#[path = "core/i18n.rs"]
 pub mod i18n;
+#[path = "interaction/input.rs"]
 pub mod input;
+#[path = "interaction/input_devices.rs"]
 pub mod input_devices;
+pub mod interaction;
+#[path = "core/layout.rs"]
 pub mod layout;
+#[path = "diagnostics/limits.rs"]
 pub mod limits;
+#[path = "interaction/navigation.rs"]
 pub mod navigation;
+#[path = "interaction/overlays.rs"]
 pub mod overlays;
+#[path = "render/paint.rs"]
 pub mod paint;
+#[path = "runtime/platform.rs"]
 pub mod platform;
+pub mod render;
+#[path = "render/renderer.rs"]
 pub mod renderer;
+#[path = "render/resource_cache.rs"]
 pub mod resource_cache;
 pub mod runtime;
+#[path = "render/scrolling.rs"]
 pub mod scrolling;
 pub mod shell;
+#[path = "core/state.rs"]
 pub mod state;
+#[path = "interaction/tasks.rs"]
 pub mod tasks;
+#[path = "diagnostics/testing.rs"]
 pub mod testing;
 pub mod theme;
+#[path = "theme/stability.rs"]
 pub mod theme_stability;
+#[path = "accessibility/tooltips.rs"]
 pub mod tooltips;
+#[path = "interaction/transactions.rs"]
 pub mod transactions;
+#[path = "core/versioning.rs"]
 pub mod versioning;
+#[path = "render/virtualization.rs"]
 pub mod virtualization;
 #[cfg(feature = "wgpu")]
+#[path = "adapters/wgpu_renderer.rs"]
 pub mod wgpu_renderer;
+#[path = "runtime/windows.rs"]
 pub mod windows;
 
 pub use accessibility::{
@@ -216,7 +259,9 @@ pub use overlays::{
     OverlayKind, OverlayStack,
 };
 #[cfg(feature = "wgpu")]
-pub use wgpu_renderer::{WgpuRenderer, WgpuSurfaceRenderer};
+pub use wgpu_renderer::{
+    WgpuCanvasContext, WgpuCanvasRenderPass, WgpuRenderer, WgpuSurfaceRenderer,
+};
 
 pub use paint::{
     AlignedStroke, CornerRadii, GradientStop, ImageAlignment, ImageFit, LinearGradient, PaintBrush,
@@ -281,15 +326,15 @@ pub use tasks::{
 };
 pub use testing::{
     diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, AuditAssertions,
-    CommandReplayReport, CommandReplayStepResult, CpuSnapshotImage, CpuSnapshotRenderer,
-    DirtyFlags, DisplayListInvalidationAssertions, DisplayListReuseAssertions,
-    DisplayListReuseSeries, DisplayListReuseSeriesAssertions, EmptyResourceResolver, EventReplay,
-    EventReplayReport, EventReplayStep, EventReplayStepResult, FrameTiming, FrameTimingAssertions,
-    FrameTimingSection, FrameTimingSeries, FrameTimingSeriesAssertions, LayoutAssertions,
-    PaintAssertions, PaintKindSelector, PerformanceAssertions, PerformanceSamples, PixelDiffReport,
+    CommandReplayReport, CommandReplayStepResult, DirtyFlags, DisplayListInvalidationAssertions,
+    DisplayListReuseAssertions, DisplayListReuseSeries, DisplayListReuseSeriesAssertions,
+    EmptyResourceResolver, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
+    FrameTiming, FrameTimingAssertions, FrameTimingSection, FrameTimingSeries,
+    FrameTimingSeriesAssertions, LayoutAssertions, PaintAssertions, PaintKindSelector,
+    PaintRecorderRenderer, PerformanceAssertions, PerformanceSamples, PixelDiffReport,
     PixelDiffTolerance, PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput,
     RgbaImageView, ScenarioFrameReport, ScenarioHarness, SnapshotAssertions, TestFailure,
-    TestResult, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
+    TestResult,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,
@@ -549,6 +594,79 @@ impl Default for UiVisual {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InteractionVisuals {
+    pub normal: UiVisual,
+    pub hovered: Option<UiVisual>,
+    pub pressed: Option<UiVisual>,
+    pub focused: Option<UiVisual>,
+    pub disabled: Option<UiVisual>,
+}
+
+impl InteractionVisuals {
+    pub const fn new(normal: UiVisual) -> Self {
+        Self {
+            normal,
+            hovered: None,
+            pressed: None,
+            focused: None,
+            disabled: None,
+        }
+    }
+
+    pub const fn hovered(mut self, hovered: UiVisual) -> Self {
+        self.hovered = Some(hovered);
+        self
+    }
+
+    pub const fn pressed(mut self, pressed: UiVisual) -> Self {
+        self.pressed = Some(pressed);
+        self
+    }
+
+    pub const fn focused(mut self, focused: UiVisual) -> Self {
+        self.focused = Some(focused);
+        self
+    }
+
+    pub const fn disabled(mut self, disabled: UiVisual) -> Self {
+        self.disabled = Some(disabled);
+        self
+    }
+
+    pub const fn resolve(
+        self,
+        enabled: bool,
+        hovered: bool,
+        pressed: bool,
+        focused: bool,
+    ) -> UiVisual {
+        if !enabled {
+            match self.disabled {
+                Some(disabled) => disabled,
+                None => self.normal,
+            }
+        } else if pressed {
+            match self.pressed {
+                Some(pressed) => pressed,
+                None => self.normal,
+            }
+        } else if focused {
+            match self.focused {
+                Some(focused) => focused,
+                None => self.normal,
+            }
+        } else if hovered {
+            match self.hovered {
+                Some(hovered) => hovered,
+                None => self.normal,
+            }
+        } else {
+            self.normal
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FontFamily {
     SansSerif,
@@ -696,14 +814,26 @@ impl TextContent {
 pub struct CanvasContent {
     pub key: String,
     pub render_mode: CanvasRenderMode,
+    pub context: CanvasContextDescriptor,
     pub interaction: CanvasInteractionPolicy,
 }
 
 impl CanvasContent {
     pub fn new(key: impl Into<String>) -> Self {
+        let key = key.into();
         Self {
-            key: key.into(),
+            context: CanvasContextDescriptor::gpu_texture(&key),
+            key,
             render_mode: CanvasRenderMode::Callback,
+            interaction: CanvasInteractionPolicy::default(),
+        }
+    }
+
+    pub fn from_context(context: CanvasContextDescriptor) -> Self {
+        Self {
+            key: context.surface.id.key.clone(),
+            context,
+            render_mode: CanvasRenderMode::AttachedContext,
             interaction: CanvasInteractionPolicy::default(),
         }
     }
@@ -723,6 +853,46 @@ impl CanvasContent {
 
     pub fn native_viewport(self) -> Self {
         self.render_mode(CanvasRenderMode::NativeViewport)
+            .context_kind(CanvasContextKind::NativeViewport)
+    }
+
+    pub fn attached_context(self) -> Self {
+        self.render_mode(CanvasRenderMode::AttachedContext)
+    }
+
+    pub fn context(mut self, context: CanvasContextDescriptor) -> Self {
+        self.context = context;
+        self
+    }
+
+    pub fn context_kind(mut self, kind: CanvasContextKind) -> Self {
+        self.context.kind = kind;
+        self
+    }
+
+    pub fn gpu_context(self) -> Self {
+        self.attached_context().context_kind(CanvasContextKind::Gpu)
+    }
+
+    pub fn two_d_context(self) -> Self {
+        self.attached_context()
+            .context_kind(CanvasContextKind::TwoD)
+    }
+
+    pub fn surface_key(&self) -> &str {
+        &self.context.surface.id.key
+    }
+
+    pub fn surface_handle(&self) -> platform::ResourceHandle {
+        platform::ResourceHandle::Texture(self.context.surface.clone())
+    }
+
+    pub fn surface_descriptor(
+        &self,
+        size: platform::PixelSize,
+        format: renderer::ResourceFormat,
+    ) -> renderer::ResourceDescriptor {
+        renderer::ResourceDescriptor::new(self.surface_handle(), size, format)
     }
 
     pub fn interaction(mut self, interaction: CanvasInteractionPolicy) -> Self {
@@ -760,10 +930,86 @@ impl CanvasContent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasContextDescriptor {
+    pub kind: CanvasContextKind,
+    pub surface: platform::TextureHandle,
+    pub alpha: bool,
+    pub antialias: bool,
+    pub preserve_drawing_buffer: bool,
+}
+
+impl CanvasContextDescriptor {
+    pub fn gpu_texture(key: impl Into<String>) -> Self {
+        Self {
+            kind: CanvasContextKind::Gpu,
+            surface: platform::TextureHandle::app(key),
+            alpha: true,
+            antialias: true,
+            preserve_drawing_buffer: true,
+        }
+    }
+
+    pub fn two_d_texture(key: impl Into<String>) -> Self {
+        Self {
+            kind: CanvasContextKind::TwoD,
+            ..Self::gpu_texture(key)
+        }
+    }
+
+    pub fn native_viewport(key: impl Into<String>) -> Self {
+        Self {
+            kind: CanvasContextKind::NativeViewport,
+            surface: platform::TextureHandle::host(key),
+            alpha: true,
+            antialias: true,
+            preserve_drawing_buffer: false,
+        }
+    }
+
+    pub fn surface(mut self, surface: platform::TextureHandle) -> Self {
+        self.surface = surface;
+        self
+    }
+
+    pub const fn alpha(mut self, alpha: bool) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
+    pub const fn antialias(mut self, antialias: bool) -> Self {
+        self.antialias = antialias;
+        self
+    }
+
+    pub const fn preserve_drawing_buffer(mut self, preserve_drawing_buffer: bool) -> Self {
+        self.preserve_drawing_buffer = preserve_drawing_buffer;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CanvasContextKind {
+    TwoD,
+    Gpu,
+    NativeViewport,
+}
+
+impl CanvasContextKind {
+    pub const fn is_texture_backed(self) -> bool {
+        matches!(self, Self::TwoD | Self::Gpu)
+    }
+
+    pub const fn is_gpu_backed(self) -> bool {
+        matches!(self, Self::Gpu)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanvasRenderMode {
     Callback,
     Texture,
+    AttachedContext,
     NativeViewport,
 }
 
@@ -1456,6 +1702,7 @@ pub struct UiNode {
     pub style: UiNodeStyle,
     pub layer: Option<platform::UiLayer>,
     pub visual: UiVisual,
+    pub interaction_visuals: Option<InteractionVisuals>,
     pub content: UiContent,
     pub input: InputBehavior,
     pub scroll: Option<ScrollState>,
@@ -1474,6 +1721,7 @@ impl UiNode {
             style: style.into(),
             layer: None,
             visual: UiVisual::default(),
+            interaction_visuals: None,
             content: UiContent::Empty,
             input: InputBehavior::NONE,
             scroll: None,
@@ -1501,6 +1749,7 @@ impl UiNode {
             },
             layer: None,
             visual: UiVisual::default(),
+            interaction_visuals: None,
             content: UiContent::Text(TextContent::new(text, text_style)),
             input: InputBehavior::NONE,
             scroll: None,
@@ -1529,6 +1778,7 @@ impl UiNode {
             },
             layer: None,
             visual: UiVisual::default(),
+            interaction_visuals: None,
             content: UiContent::Text(
                 TextContent::new(label.fallback.clone(), text_style)
                     .with_dynamic_label(label, policy),
@@ -1559,6 +1809,7 @@ impl UiNode {
             },
             layer: None,
             visual: UiVisual::default(),
+            interaction_visuals: None,
             content: UiContent::Canvas(CanvasContent::new(key)),
             input: InputBehavior {
                 pointer: true,
@@ -1571,6 +1822,24 @@ impl UiNode {
             shader: None,
             layout: ComputedLayout::default(),
         }
+    }
+
+    pub fn canvas_with_context(
+        name: impl Into<String>,
+        context: CanvasContextDescriptor,
+        layout: impl Into<LayoutStyle>,
+    ) -> Self {
+        let mut node = Self::canvas(name, context.surface.id.key.clone(), layout);
+        node.content = UiContent::Canvas(CanvasContent::from_context(context));
+        node
+    }
+
+    pub fn gpu_canvas(
+        name: impl Into<String>,
+        key: impl Into<String>,
+        layout: impl Into<LayoutStyle>,
+    ) -> Self {
+        Self::canvas_with_context(name, CanvasContextDescriptor::gpu_texture(key), layout)
     }
 
     pub fn image(
@@ -1589,6 +1858,7 @@ impl UiNode {
             },
             layer: None,
             visual: UiVisual::default(),
+            interaction_visuals: None,
             content: UiContent::Image(image),
             input: InputBehavior::NONE,
             scroll: None,
@@ -1616,6 +1886,7 @@ impl UiNode {
             },
             layer: None,
             visual: UiVisual::default(),
+            interaction_visuals: None,
             content: UiContent::Scene(primitives),
             input: InputBehavior::NONE,
             scroll: None,
@@ -1638,6 +1909,12 @@ impl UiNode {
 
     pub fn with_visual(mut self, visual: UiVisual) -> Self {
         self.visual = visual;
+        self
+    }
+
+    pub fn with_interaction_visuals(mut self, visuals: InteractionVisuals) -> Self {
+        self.interaction_visuals = Some(visuals);
+        self.visual = visuals.normal;
         self
     }
 
@@ -2106,6 +2383,56 @@ impl UiDocument {
         self.nodes[id.0].visual = visual;
     }
 
+    pub fn set_node_interaction_visuals(&mut self, id: UiNodeId, visuals: InteractionVisuals) {
+        self.nodes[id.0].interaction_visuals = Some(visuals);
+        self.refresh_interaction_visual(id);
+    }
+
+    pub fn clear_node_interaction_visuals(&mut self, id: UiNodeId) {
+        self.nodes[id.0].interaction_visuals = None;
+    }
+
+    fn refresh_interaction_visuals_for(
+        &mut self,
+        previous_hovered: Option<UiNodeId>,
+        previous_pressed: Option<UiNodeId>,
+        previous_focused: Option<UiNodeId>,
+    ) {
+        let ids = [
+            previous_hovered,
+            previous_pressed,
+            previous_focused,
+            self.focus.hovered,
+            self.focus.pressed,
+            self.focus.focused,
+        ];
+        for index in 0..ids.len() {
+            let Some(id) = ids[index] else {
+                continue;
+            };
+            if ids[..index].contains(&Some(id)) {
+                continue;
+            }
+            self.refresh_interaction_visual(id);
+        }
+    }
+
+    fn refresh_interaction_visual(&mut self, id: UiNodeId) {
+        let Some(node) = self.nodes.get_mut(id.0) else {
+            return;
+        };
+        let Some(visuals) = node.interaction_visuals else {
+            return;
+        };
+        let enabled = node.input.pointer || node.input.focusable || node.input.keyboard;
+        node.visual = visuals.resolve(
+            enabled,
+            self.focus.hovered == Some(id),
+            self.focus.pressed == Some(id),
+            self.focus.focused == Some(id),
+        );
+    }
+
     pub fn scroll_state(&self, id: UiNodeId) -> Option<ScrollState> {
         self.nodes.get(id.0).and_then(|node| node.scroll)
     }
@@ -2362,6 +2689,9 @@ impl UiDocument {
     }
 
     pub fn handle_input(&mut self, event: UiInputEvent) -> UiInputResult {
+        let previous_hovered = self.focus.hovered;
+        let previous_pressed = self.focus.pressed;
+        let previous_focused = self.focus.focused;
         let mut scrolled = None;
         let clicked = match event {
             UiInputEvent::PointerMove(point) => {
@@ -2392,6 +2722,7 @@ impl UiDocument {
                 None
             }
         };
+        self.refresh_interaction_visuals_for(previous_hovered, previous_pressed, previous_focused);
         UiInputResult {
             hovered: self.focus.hovered,
             focused: self.focus.focused,
@@ -3845,6 +4176,7 @@ fn rect_is_finite(rect: UiRect) -> bool {
 }
 
 #[cfg(feature = "widgets")]
+#[path = "widgets/ext/mod.rs"]
 mod widget_ext;
 
 #[cfg(feature = "widgets")]
@@ -3861,10 +4193,13 @@ pub mod widgets {
 
     pub use crate::widget_ext::*;
 
+    pub mod button;
+
     #[derive(Debug, Clone)]
     pub struct ButtonOptions {
         pub layout: LayoutStyle,
         pub visual: UiVisual,
+        pub hovered_visual: Option<UiVisual>,
         pub pressed_visual: Option<UiVisual>,
         pub focused_visual: Option<UiVisual>,
         pub disabled_visual: Option<UiVisual>,
@@ -3925,10 +4260,15 @@ pub mod widgets {
                     Some(StrokeStyle::new(ColorRgba::new(74, 85, 104, 255), 1.0)),
                     4.0,
                 ),
-                pressed_visual: Some(UiVisual::panel(
-                    ColorRgba::new(22, 27, 35, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(104, 128, 156, 255), 1.0)),
+                hovered_visual: Some(UiVisual::panel(
+                    ColorRgba::new(50, 61, 74, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(116, 137, 162, 255), 1.0)),
                     4.0,
+                )),
+                pressed_visual: Some(UiVisual::panel(
+                    ColorRgba::new(12, 16, 22, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(42, 52, 66, 255), 1.0)),
+                    3.0,
                 )),
                 focused_visual: Some(UiVisual::panel(
                     ColorRgba::new(40, 49, 61, 255),
@@ -3968,6 +4308,35 @@ pub mod widgets {
                 self.visual
             }
         }
+
+        fn interaction_visuals(&self) -> InteractionVisuals {
+            InteractionVisuals::new(self.resolved_visual())
+                .hovered(self.hovered_visual.unwrap_or(self.visual))
+                .pressed(self.pressed_visual.unwrap_or(self.visual))
+                .focused(self.focused_visual.unwrap_or(self.visual))
+                .disabled(self.disabled_visual.unwrap_or(self.visual))
+        }
+
+        fn resolved_visual_for_interaction(
+            &self,
+            hovered: bool,
+            pressed: bool,
+            focused: bool,
+        ) -> UiVisual {
+            self.interaction_visuals()
+                .resolve(self.enabled, hovered, pressed, focused)
+        }
+    }
+
+    impl ButtonOptions {
+        fn update_document_interaction_visual(&self, document: &mut UiDocument, button: UiNodeId) {
+            document.set_node_interaction_visuals(button, self.interaction_visuals());
+            let hovered = document.focus.hovered == Some(button);
+            let pressed = document.focus.pressed == Some(button) || self.pressed;
+            let focused = document.focus.focused == Some(button) || self.focused;
+            let visual = self.resolved_visual_for_interaction(hovered, pressed, focused);
+            document.set_node_visual(button, visual);
+        }
     }
 
     pub fn button(
@@ -3995,11 +4364,10 @@ pub mod widgets {
         } else {
             accessibility = accessibility.disabled();
         }
-        let visual = options.resolved_visual();
         let mut node = UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout.style,
+                layout: options.layout.style.clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -4009,15 +4377,16 @@ pub mod widgets {
         } else {
             InputBehavior::NONE
         })
-        .with_visual(visual)
+        .with_interaction_visuals(options.interaction_visuals())
         .with_accessibility(accessibility);
-        if let Some(shader) = options.shader {
+        if let Some(shader) = options.shader.clone() {
             node = node.with_shader(shader);
         }
-        if let Some(animation) = options.animation {
+        if let Some(animation) = options.animation.clone() {
             node = node.with_animation(animation);
         }
         let button = document.add_child(parent, node);
+        options.update_document_interaction_visual(document, button);
         if let Some(image) = options.leading_image {
             let mut image_node = UiNode::image(
                 format!("{name}.image"),
@@ -4877,6 +5246,10 @@ pub mod widgets {
 
         pub fn caret_rect(&self, metrics: TextInputLayoutMetrics) -> TextInputCaretRect {
             text_input_caret_rect(&self.text, self.caret, metrics)
+        }
+
+        pub fn normalized_caret(&self) -> usize {
+            clamp_to_char_boundary(&self.text, self.caret)
         }
 
         pub fn position_at_point(
@@ -5954,6 +6327,7 @@ pub mod widgets {
         } else {
             InputBehavior::NONE
         };
+        let show_caret = options.focused && options.interaction_policy().can_move_caret();
         let mut root_node = UiNode::container(
             name.clone(),
             UiNodeStyle {
@@ -5982,21 +6356,112 @@ pub mod widgets {
         } else {
             options.text_style
         };
-        label(
-            document,
+        let text_metrics = TextInputLayoutMetrics::from_style(
+            text_input_scene_text_rect(state, &display_text, &style),
+            &style,
+        );
+        let paint = TextInputPaintOptions {
+            show_caret,
+            ..TextInputPaintOptions::default()
+        };
+        let primitives =
+            text_input_scene_primitives(state, display_text, style, text_metrics, paint);
+        document.add_child(
             root,
-            format!("{name}.text"),
-            display_text,
-            style,
-            LayoutStyle::from_taffy_style(Style {
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
+            UiNode::scene(
+                format!("{name}.text"),
+                primitives,
+                LayoutStyle::from_taffy_style(Style {
+                    size: TaffySize {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                }),
+            ),
         );
         root
+    }
+
+    fn text_input_scene_text_rect(
+        state: &TextInputState,
+        display_text: &str,
+        style: &TextStyle,
+    ) -> UiRect {
+        let line_count = if state.multiline {
+            display_text
+                .chars()
+                .filter(|character| *character == '\n')
+                .count()
+                + 1
+        } else {
+            1
+        };
+        let column_count = display_text
+            .lines()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(state.caret_position().column);
+        let char_width = sanitize_positive_dimension(style.font_size * 0.55, 1.0);
+        let line_height = sanitize_positive_dimension(style.line_height, style.font_size.max(1.0));
+        UiRect::new(
+            0.0,
+            0.0,
+            (column_count as f32 * char_width + char_width).max(1.0),
+            (line_count as f32 * line_height).max(line_height),
+        )
+    }
+
+    fn text_input_scene_primitives(
+        state: &TextInputState,
+        display_text: String,
+        style: TextStyle,
+        metrics: TextInputLayoutMetrics,
+        paint: TextInputPaintOptions,
+    ) -> Vec<ScenePrimitive> {
+        let text = PaintText::new(display_text, metrics.text_rect, style)
+            .multiline(state.multiline)
+            .overflow(TextOverflow::Clip);
+        let mut primitives = state
+            .selection_rects(metrics)
+            .into_iter()
+            .map(|selection| {
+                ScenePrimitive::Rect(
+                    PaintRect::solid(selection.rect, paint.selection_fill)
+                        .corner_radii(CornerRadii::uniform(paint.selection_corner_radius as f32)),
+                )
+            })
+            .collect::<Vec<_>>();
+        primitives.push(ScenePrimitive::Text(text));
+        if paint.show_caret {
+            primitives.push(ScenePrimitive::Rect(PaintRect::solid(
+                state.caret_rect(metrics).rect,
+                paint.caret_fill,
+            )));
+        }
+        primitives
+    }
+
+    fn text_input_layout_metrics_from_document(
+        document: &UiDocument,
+        node: UiNodeId,
+        options: &TextInputOptions,
+    ) -> Option<TextInputLayoutMetrics> {
+        let node = document.nodes.get(node.0)?;
+        let rect = node
+            .children
+            .first()
+            .and_then(|child| document.nodes.get(child.0))
+            .map(|child| child.layout.rect)
+            .unwrap_or(node.layout.rect);
+        if !rect_is_finite(rect) || rect.width <= 0.0 || rect.height <= 0.0 {
+            return None;
+        }
+        Some(TextInputLayoutMetrics::from_style(
+            rect,
+            &options.text_style,
+        ))
     }
 
     pub fn selectable_text(
@@ -6089,6 +6554,8 @@ pub mod widgets {
         let mut platform_requests = Vec::new();
         let mut state_changed = false;
         let mut edit = None;
+        let layout_metrics = layout_metrics
+            .or_else(|| text_input_layout_metrics_from_document(document, node, options));
 
         if focused && text_event {
             let before_text = state.text.clone();
@@ -6580,6 +7047,7 @@ pub mod widgets {
             ButtonOptions {
                 layout: options.layout,
                 visual: options.visual,
+                hovered_visual: None,
                 pressed_visual: options.open_visual,
                 focused_visual: None,
                 disabled_visual: options.disabled_visual,
@@ -7776,6 +8244,24 @@ mod tests {
         assert_eq!(image.style.layout.size, legacy.size);
         assert_eq!(scene.style.layout.size, legacy.size);
         assert_eq!(canvas.style.layout.size, legacy.size);
+    }
+
+    #[test]
+    fn gpu_canvas_factory_attaches_texture_backed_context() {
+        let canvas = CanvasContent::new("viewport").gpu_context();
+        assert_eq!(canvas.context.kind, CanvasContextKind::Gpu);
+        assert_eq!(canvas.render_mode, CanvasRenderMode::AttachedContext);
+        assert!(canvas.context.kind.is_texture_backed());
+        assert!(canvas.context.kind.is_gpu_backed());
+
+        let node = UiNode::gpu_canvas("viewport", "app.viewport", layout::fixed(320.0, 180.0));
+        let UiContent::Canvas(content) = node.content else {
+            panic!("expected canvas content");
+        };
+        assert_eq!(content.key, "app.viewport");
+        assert_eq!(content.surface_key(), "app.viewport");
+        assert_eq!(content.context.kind, CanvasContextKind::Gpu);
+        assert_eq!(content.render_mode, CanvasRenderMode::AttachedContext);
     }
 
     #[test]
@@ -10046,6 +10532,63 @@ mod tests {
 
     #[cfg(feature = "widgets")]
     #[test]
+    fn widget_button_default_visuals_follow_hover_press_and_focus() {
+        let mut doc = UiDocument::new(root_style(200.0, 80.0));
+        let root = doc.root;
+        let button = widgets::button(
+            &mut doc,
+            root,
+            "play",
+            "Play",
+            widgets::ButtonOptions::new(LayoutStyle::from_taffy_style(Style {
+                size: TaffySize {
+                    width: length(80.0),
+                    height: length(32.0),
+                },
+                ..Default::default()
+            })),
+        );
+        doc.compute_layout(UiSize::new(200.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let normal = doc.node(button).visual;
+        assert!(doc.node(button).interaction_visuals.is_some());
+
+        let hovered = doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(20.0, 16.0)));
+        assert_eq!(hovered.hovered, Some(button));
+        let hover_visual = doc.node(button).visual;
+        assert_ne!(hover_visual, normal);
+
+        let down = doc.handle_input(UiInputEvent::PointerDown(UiPoint::new(20.0, 16.0)));
+        assert_eq!(down.pressed, Some(button));
+        let pressed_visual = doc.node(button).visual;
+        assert_ne!(pressed_visual, hover_visual);
+        assert!(
+            pressed_visual.fill.relative_luminance() < hover_visual.fill.relative_luminance(),
+            "pressed button defaults should read as a sunken state"
+        );
+        assert!(
+            pressed_visual.corner_radius < hover_visual.corner_radius,
+            "pressed button defaults should tighten the radius for pushdown feedback"
+        );
+
+        let up = doc.handle_input(UiInputEvent::PointerUp(UiPoint::new(20.0, 16.0)));
+        assert_eq!(up.clicked, Some(button));
+        let focused_visual = doc.node(button).visual;
+        assert_ne!(focused_visual, hover_visual);
+        assert_ne!(focused_visual, normal);
+
+        let away = doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(160.0, 16.0)));
+        assert_eq!(away.hovered, None);
+        assert_eq!(doc.node(button).visual, focused_visual);
+
+        let focused = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
+        assert_eq!(focused.focused, Some(button));
+        assert_eq!(doc.node(button).visual, focused_visual);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
     fn widget_button_options_apply_disabled_accessibility_and_media_hooks() {
         let mut doc = UiDocument::new(root_style(200.0, 80.0));
         let root = doc.root;
@@ -11190,6 +11733,40 @@ mod tests {
 
     #[cfg(feature = "widgets")]
     #[test]
+    fn widget_text_input_default_render_uses_scene_caret_at_text_end() {
+        let mut doc = UiDocument::new(root_style(240.0, 80.0));
+        let root = doc.root;
+        let state = widgets::TextInputState::new("gain");
+        let input = widgets::text_input(
+            &mut doc,
+            root,
+            "gain",
+            &state,
+            widgets::TextInputOptions {
+                focused: true,
+                ..Default::default()
+            },
+        );
+
+        let text_layer = doc.node(input).children[0];
+        let UiContent::Scene(primitives) = &doc.node(text_layer).content else {
+            panic!("text input should render text, selection, and caret through a scene");
+        };
+
+        assert!(matches!(
+            &primitives[0],
+            ScenePrimitive::Text(text) if text.text == "gain"
+        ));
+        assert!(matches!(
+            primitives.last(),
+            Some(ScenePrimitive::Rect(rect))
+                if rect.rect.x == 4.0 * TextStyle::default().font_size * 0.55
+                    && rect.rect.width == 1.0
+        ));
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
     fn widget_text_input_accessibility_summarizes_caret_and_selection() {
         let mut doc = UiDocument::new(root_style(240.0, 80.0));
         let root = doc.root;
@@ -11345,6 +11922,53 @@ mod tests {
             selected.platform_requests.last(),
             Some(platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(update)))
                 if update.selection == platform::TextRange::new(3, 6)
+        ));
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_event_handler_derives_pointer_metrics_from_rendered_text() {
+        let mut doc = UiDocument::new(root_style(320.0, 120.0));
+        let root = doc.root;
+        let mut state = widgets::TextInputState::new("abcdef");
+        state.caret = 0;
+        let input = widgets::text_input(
+            &mut doc,
+            root,
+            "name",
+            &state,
+            widgets::TextInputOptions::default(),
+        );
+        doc.compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let text_rect = doc.node(doc.node(input).children[0]).layout.rect;
+        let char_width = TextStyle::default().font_size * 0.55;
+        let context = widgets::TextInputPlatformContext::for_node(
+            input,
+            widgets::TextInputCaretRect {
+                position: state.caret_position(),
+                rect: UiRect::new(0.0, 0.0, 1.0, TextStyle::default().line_height),
+            },
+        );
+        let focused = widgets::handle_text_input_event(
+            &mut doc,
+            input,
+            &mut state,
+            UiInputEvent::PointerDown(UiPoint::new(
+                text_rect.x + 3.1 * char_width,
+                text_rect.y + 2.0,
+            )),
+            Some(context),
+        );
+
+        assert!(focused.focused);
+        assert_eq!(state.caret, 3);
+        assert!(matches!(
+            focused.platform_requests.last(),
+            Some(platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(update)))
+                if update.selection == platform::TextRange::caret(3)
+                    && update.cursor_rect.origin.x == text_rect.x + 3.0 * char_width
         ));
     }
 

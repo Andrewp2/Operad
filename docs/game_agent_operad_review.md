@@ -106,7 +106,7 @@ should become rigorous rather than just minimally functional.
 ## Paint List Is The Right Boundary, But It Needs To Mature
 
 The renderer-neutral `PaintList` is the right abstraction. It lets egui, wgpu,
-CPU snapshots, tests, and future tooling consume the same UI output.
+tests, and future tooling consume the same UI output.
 
 The current paint list is still very small: rectangles, text, and canvas
 placeholders. That is enough to prove the boundary, but practical consumers will

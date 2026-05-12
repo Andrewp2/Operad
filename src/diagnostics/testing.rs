@@ -7,8 +7,6 @@
 
 use std::borrow::Cow;
 use std::fmt;
-use std::fs;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::accessibility::{
@@ -26,7 +24,7 @@ use crate::host::{
 use crate::platform::{
     AppLifecycleResponse, BackendAdapterKind, BackendCapabilities, ClipboardResponse,
     CursorResponse, DragDropResponse, FileDialogResponse, LayerCapabilities, NotificationResponse,
-    OpenUrlResponse, PixelSize, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
+    OpenUrlResponse, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
     PlatformServiceKind, PlatformServiceRequest, PlatformServiceResponse, RenderingCapabilities,
     RepaintResponse, ResourceCapabilities, ResourceId, ScreenshotResponse, TextImeResponse,
 };
@@ -39,11 +37,9 @@ use crate::renderer::{
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
     AccessibilityStateKind, AccessibilityTree, AccessibilityValueRangeIssue, ApproxTextMeasurer,
-    AuditWarning, CanvasContent, ColorRgba, CompositorClip, CompositorFilterKind, CompositorMask,
-    FocusDirection, KeyCode, KeyModifiers, LinearGradient, MaskMode, PaintBrush,
-    PaintCompositorLayer, PaintEffectKind, PaintItem, PaintKind, PaintList, PaintTransform,
-    RawInputEvent, StrokeStyle, TextContent, TextMeasurer, UiDocument, UiInputEvent, UiInputResult,
-    UiNode, UiNodeId, UiPoint, UiRect, UiSize,
+    AuditWarning, ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem, PaintKind,
+    PaintList, RawInputEvent, TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNode,
+    UiNodeId, UiPoint, UiRect, UiSize,
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestFailure {
@@ -74,6 +70,43 @@ pub struct EmptyResourceResolver;
 impl ResourceResolver for EmptyResourceResolver {
     fn resolve_resource(&self, _id: &ResourceId) -> Option<ResourceDescriptor> {
         None
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PaintRecorderRenderer;
+
+impl RendererAdapter for PaintRecorderRenderer {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new("paint-recorder")
+            .adapter(BackendAdapterKind::Test)
+            .resources(ResourceCapabilities::NONE)
+            .layers(LayerCapabilities::STANDARD)
+            .rendering(RenderingCapabilities {
+                high_dpi: false,
+                offscreen: false,
+                deterministic_snapshots: false,
+                partial_updates: true,
+            })
+    }
+
+    fn render_frame(
+        &mut self,
+        request: RenderFrameRequest,
+        _resolver: &dyn ResourceResolver,
+    ) -> Result<RenderFrameOutput, RenderError> {
+        let batch_started = Instant::now();
+        let batches = request.batches();
+        let batch_duration = batch_started.elapsed();
+        let render_started = Instant::now();
+        let mut output = RenderFrameOutput::new(request.target);
+        output.painted_items = request.paint.items.len();
+        output.batches = batches;
+        output.dirty_regions = request.dirty_regions;
+        output.timings = FrameTiming::new()
+            .section("batch", batch_duration)
+            .section("render", render_started.elapsed());
+        Ok(output)
     }
 }
 
@@ -320,7 +353,7 @@ impl ScenarioHarness {
     pub fn new(viewport: UiSize) -> Self {
         Self {
             viewport,
-            target: RenderTarget::snapshot(pixel_size_for_scenario_viewport(viewport)),
+            target: RenderTarget::window("scenario", viewport),
             state: HostDocumentFrameState::new(),
             platform_allocator: PlatformRequestIdAllocator::new(1),
         }
@@ -347,7 +380,7 @@ impl ScenarioHarness {
         replay: EventReplay,
     ) -> TestResult<ScenarioFrameReport> {
         let mut measurer = ApproxTextMeasurer;
-        let mut renderer = CpuSnapshotRenderer::default();
+        let mut renderer = PaintRecorderRenderer;
         self.run_frame_with_measurer_and_renderer(
             label,
             document,
@@ -450,13 +483,6 @@ fn attach_scenario_input_results(events: &mut EventReplayReport, input_results: 
             step.result = results.next();
         }
     }
-}
-
-fn pixel_size_for_scenario_viewport(viewport: UiSize) -> PixelSize {
-    PixelSize::new(
-        viewport.width.max(0.0).round().min(u32::MAX as f32) as u32,
-        viewport.height.max(0.0).round().min(u32::MAX as f32) as u32,
-    )
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -2728,1213 +2754,6 @@ impl<'a> SnapshotAssertions<'a> {
     }
 }
 
-pub const DEFAULT_CPU_SNAPSHOT_BACKGROUND: ColorRgba = ColorRgba::new(9, 12, 16, 255);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CpuSnapshotImage {
-    pub size: PixelSize,
-    pub pixels: Vec<u8>,
-}
-
-impl CpuSnapshotImage {
-    pub fn new(size: PixelSize, background: ColorRgba) -> Self {
-        let len = usize::try_from(size.width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(size.height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .and_then(|pixels| pixels.checked_mul(4))
-            .unwrap_or(0);
-        let mut pixels = vec![0; len];
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel[0] = background.r;
-            pixel[1] = background.g;
-            pixel[2] = background.b;
-            pixel[3] = background.a;
-        }
-        Self { size, pixels }
-    }
-
-    pub fn width(&self) -> usize {
-        self.size.width as usize
-    }
-
-    pub fn height(&self) -> usize {
-        self.size.height as usize
-    }
-
-    pub fn view(&self) -> TestResult<RgbaImageView<'_>> {
-        RgbaImageView::new(self.width(), self.height(), &self.pixels)
-    }
-
-    pub fn hash(&self) -> u64 {
-        self.view()
-            .expect("CpuSnapshotImage should always contain valid RGBA pixels")
-            .hash()
-    }
-
-    pub fn changed_pixels_from(&self, color: ColorRgba) -> usize {
-        self.view()
-            .expect("CpuSnapshotImage should always contain valid RGBA pixels")
-            .changed_pixels_from(color)
-    }
-
-    pub fn write_ppm(&self, path: impl AsRef<Path>) -> TestResult {
-        let mut data = format!("P6\n{} {}\n255\n", self.size.width, self.size.height).into_bytes();
-        for pixel in self.pixels.chunks_exact(4) {
-            data.extend_from_slice(&pixel[..3]);
-        }
-        fs::write(path, data)
-            .map_err(|error| TestFailure::new(format!("write snapshot ppm: {error}")))
-    }
-
-    pub fn into_rendered_image(self) -> RenderedImage {
-        RenderedImage::new(self.size, ResourceFormat::Rgba8, self.pixels)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CpuSnapshotRenderer {
-    pub background: ColorRgba,
-}
-
-impl CpuSnapshotRenderer {
-    pub const fn new(background: ColorRgba) -> Self {
-        Self { background }
-    }
-
-    pub fn render_document(
-        &self,
-        document: &mut UiDocument,
-        viewport: UiSize,
-    ) -> TestResult<CpuSnapshotImage> {
-        document
-            .compute_layout(viewport, &mut ApproxTextMeasurer)
-            .map_err(|error| TestFailure::new(format!("layout failed: {error:?}")))?;
-        let size = pixel_size_from_viewport(viewport)?;
-        self.render_paint_list(&document.paint_list(), size)
-    }
-
-    pub fn render_paint_list(
-        &self,
-        paint: &PaintList,
-        size: PixelSize,
-    ) -> TestResult<CpuSnapshotImage> {
-        let mut image = CpuSnapshotImage::new(size, self.background);
-        for item in &paint.items {
-            draw_cpu_snapshot_item(&mut image, item);
-        }
-        image.view()?;
-        Ok(image)
-    }
-
-    pub fn render_request(&self, request: &RenderFrameRequest) -> TestResult<CpuSnapshotImage> {
-        let size = render_target_pixel_size(&request.target, request.viewport)?;
-        self.render_paint_list(&request.paint, size)
-    }
-
-    pub fn snapshot_assertions<'a>(
-        &self,
-        name: impl Into<String>,
-        image: &'a CpuSnapshotImage,
-    ) -> TestResult<SnapshotAssertions<'a>> {
-        Ok(SnapshotAssertions::new(name, image.view()?))
-    }
-}
-
-impl Default for CpuSnapshotRenderer {
-    fn default() -> Self {
-        Self::new(DEFAULT_CPU_SNAPSHOT_BACKGROUND)
-    }
-}
-
-impl RendererAdapter for CpuSnapshotRenderer {
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities::new("cpu-snapshot")
-            .adapter(BackendAdapterKind::CpuSnapshot)
-            .resources(ResourceCapabilities {
-                images: true,
-                icons: true,
-                thumbnails: true,
-                tinted_icons: true,
-                ..ResourceCapabilities::NONE
-            })
-            .layers(LayerCapabilities::STANDARD)
-            .rendering(RenderingCapabilities {
-                high_dpi: false,
-                offscreen: true,
-                deterministic_snapshots: true,
-                partial_updates: false,
-            })
-    }
-
-    fn render_frame(
-        &mut self,
-        request: RenderFrameRequest,
-        _resolver: &dyn ResourceResolver,
-    ) -> Result<RenderFrameOutput, RenderError> {
-        let batch_started = Instant::now();
-        let batches = request.batches();
-        let batch_duration = batch_started.elapsed();
-        let painted_items = request.paint.items.len();
-        let dirty_regions = request.dirty_regions.clone();
-        let render_started = Instant::now();
-        let snapshot = self
-            .render_request(&request)
-            .map_err(|failure| RenderError::Backend(failure.message))?
-            .into_rendered_image();
-        let render_duration = render_started.elapsed();
-        let mut output = RenderFrameOutput::new(request.target);
-        output.painted_items = painted_items;
-        output.batches = batches;
-        output.dirty_regions = dirty_regions;
-        output.timings = FrameTiming::new()
-            .section("batch", batch_duration)
-            .section("render", render_duration);
-        output.snapshot = Some(snapshot);
-        Ok(output)
-    }
-}
-
-fn pixel_size_from_viewport(viewport: UiSize) -> TestResult<PixelSize> {
-    if !viewport.width.is_finite() || !viewport.height.is_finite() {
-        return Err(TestFailure::new("snapshot viewport must be finite"));
-    }
-    if viewport.width < 0.0 || viewport.height < 0.0 {
-        return Err(TestFailure::new("snapshot viewport must be non-negative"));
-    }
-    if viewport.width.round() > u32::MAX as f32 || viewport.height.round() > u32::MAX as f32 {
-        return Err(TestFailure::new(
-            "snapshot viewport exceeds u32 pixel dimensions",
-        ));
-    }
-    Ok(PixelSize::new(
-        viewport.width.round() as u32,
-        viewport.height.round() as u32,
-    ))
-}
-
-fn render_target_pixel_size(target: &RenderTarget, viewport: UiSize) -> TestResult<PixelSize> {
-    match target {
-        RenderTarget::Offscreen { size, .. } | RenderTarget::Snapshot { size, .. } => Ok(*size),
-        RenderTarget::Window { size, .. } | RenderTarget::AppOwned { size, .. } => {
-            pixel_size_from_viewport(*size)
-        }
-    }
-    .or_else(|_| pixel_size_from_viewport(viewport))
-}
-
-fn draw_cpu_snapshot_item(image: &mut CpuSnapshotImage, item: &PaintItem) {
-    let clip = item.clip_rect;
-    match &item.kind {
-        PaintKind::Rect {
-            fill,
-            stroke,
-            corner_radius: _,
-        } => {
-            let rect = cpu_snapshot_transform_rect(item.rect, item.transform);
-            cpu_snapshot_fill_rect(image, rect, clip, *fill, item.opacity);
-            if let Some(stroke) = stroke {
-                cpu_snapshot_stroke_rect(image, rect, clip, *stroke, item.opacity);
-            }
-        }
-        PaintKind::RichRect(rect_primitive) => {
-            let rect = cpu_snapshot_transform_rect(rect_primitive.rect, item.transform);
-            let radius = rect_primitive.corner_radii.max_radius() * item.transform.scale.max(0.0);
-            for effect in &rect_primitive.effects {
-                cpu_snapshot_draw_rich_rect_effect(
-                    image,
-                    rect,
-                    clip,
-                    *effect,
-                    item.opacity,
-                    radius,
-                );
-            }
-            cpu_snapshot_fill_brush_rect(
-                image,
-                rect,
-                clip,
-                &rect_primitive.fill,
-                item.opacity,
-                item.transform,
-            );
-            if let Some(stroke) = rect_primitive.stroke {
-                cpu_snapshot_stroke_rect(image, rect, clip, stroke.style, item.opacity);
-            }
-        }
-        PaintKind::Text(text) => cpu_snapshot_draw_text(image, item, text),
-        PaintKind::SceneText(text) => {
-            let text_content = TextContent::new(text.text.clone(), text.style.clone());
-            let item = PaintItem {
-                rect: text.rect,
-                kind: PaintKind::Text(text_content.clone()),
-                ..(*item).clone()
-            };
-            cpu_snapshot_draw_text(image, &item, &text_content);
-        }
-        PaintKind::Canvas(canvas) => cpu_snapshot_draw_canvas(image, item, canvas),
-        PaintKind::Line { from, to, stroke } => {
-            cpu_snapshot_draw_line(
-                image,
-                cpu_snapshot_transform_point(*from, item.transform),
-                cpu_snapshot_transform_point(*to, item.transform),
-                clip,
-                *stroke,
-                item.opacity,
-            );
-        }
-        PaintKind::Circle {
-            center,
-            radius,
-            fill,
-            stroke,
-        } => {
-            let center = cpu_snapshot_transform_point(*center, item.transform);
-            let radius = radius * item.transform.scale.max(0.0);
-            cpu_snapshot_fill_circle(image, center, radius, clip, *fill, item.opacity);
-            if let Some(stroke) = stroke {
-                cpu_snapshot_stroke_circle(image, center, radius, clip, *stroke, item.opacity);
-            }
-        }
-        PaintKind::Polygon {
-            points,
-            fill,
-            stroke,
-        } => {
-            let points = points
-                .iter()
-                .copied()
-                .map(|point| cpu_snapshot_transform_point(point, item.transform))
-                .collect::<Vec<_>>();
-            cpu_snapshot_fill_polygon(image, &points, clip, *fill, item.opacity);
-            if let Some(stroke) = stroke {
-                for segment in points.windows(2) {
-                    cpu_snapshot_draw_line(
-                        image,
-                        segment[0],
-                        segment[1],
-                        clip,
-                        *stroke,
-                        item.opacity,
-                    );
-                }
-                if points.len() > 2 {
-                    cpu_snapshot_draw_line(
-                        image,
-                        *points.last().unwrap(),
-                        points[0],
-                        clip,
-                        *stroke,
-                        item.opacity,
-                    );
-                }
-            }
-        }
-        PaintKind::Image { key, tint } => {
-            cpu_snapshot_draw_image_placeholder(
-                image,
-                cpu_snapshot_transform_rect(item.rect, item.transform),
-                clip,
-                key,
-                *tint,
-            );
-        }
-        PaintKind::CompositedLayer(layer) => {
-            cpu_snapshot_draw_composited_layer(image, item, layer);
-        }
-        PaintKind::Path(path) => {
-            if let Some(fill) = &path.fill {
-                for triangle in path.tessellated_fill(1.0) {
-                    let triangle = triangle
-                        .into_iter()
-                        .map(|point| cpu_snapshot_transform_point(point, item.transform))
-                        .collect::<Vec<_>>();
-                    cpu_snapshot_fill_polygon(
-                        image,
-                        &triangle,
-                        clip,
-                        fill.fallback_color(),
-                        item.opacity,
-                    );
-                }
-            }
-            if let Some(stroke) = path.stroke {
-                for triangle in path.tessellated_stroke(1.0) {
-                    let triangle = triangle
-                        .into_iter()
-                        .map(|point| cpu_snapshot_transform_point(point, item.transform))
-                        .collect::<Vec<_>>();
-                    cpu_snapshot_fill_polygon(
-                        image,
-                        &triangle,
-                        clip,
-                        stroke.style.color,
-                        item.opacity,
-                    );
-                }
-            }
-        }
-        PaintKind::ImagePlacement(image_placement) => {
-            cpu_snapshot_draw_image_placeholder(
-                image,
-                cpu_snapshot_transform_rect(image_placement.rect, item.transform),
-                clip,
-                &image_placement.key,
-                image_placement.tint,
-            );
-        }
-    }
-}
-
-fn cpu_snapshot_draw_composited_layer(
-    image: &mut CpuSnapshotImage,
-    item: &PaintItem,
-    layer: &PaintCompositorLayer,
-) {
-    let opacity = item.opacity * layer.opacity;
-    if opacity <= 0.0 || layer.bounds.width <= 0.0 || layer.bounds.height <= 0.0 {
-        return;
-    }
-
-    let mut layer_image = CpuSnapshotImage::new(image.size, ColorRgba::TRANSPARENT);
-    for child in &layer.paint.items {
-        draw_cpu_snapshot_item(&mut layer_image, child);
-    }
-    if let Some(clip) = &layer.clip {
-        cpu_snapshot_apply_layer_clip(&mut layer_image, clip);
-    }
-    if let Some(mask) = &layer.mask {
-        cpu_snapshot_apply_layer_mask(&mut layer_image, mask);
-    }
-    for filter in &layer.filters {
-        cpu_snapshot_apply_layer_filter(&mut layer_image, filter.kind, filter.amount);
-    }
-
-    let destination_bounds = cpu_snapshot_transform_rect(layer.bounds, item.transform);
-    let Some(composite_bounds) = destination_bounds.intersection(item.clip_rect) else {
-        return;
-    };
-    cpu_snapshot_composite_layer(
-        image,
-        &layer_image,
-        layer.bounds,
-        destination_bounds,
-        composite_bounds,
-        opacity,
-    );
-}
-
-fn cpu_snapshot_apply_layer_clip(image: &mut CpuSnapshotImage, clip: &CompositorClip) {
-    match clip {
-        CompositorClip::Rect(rect) => {
-            cpu_snapshot_multiply_outside_rect_alpha(image, *rect, 0.0);
-        }
-        CompositorClip::RoundedRect { rect, radii } => {
-            let radius = radii.max_radius().max(0.0);
-            for y in 0..image.height() {
-                for x in 0..image.width() {
-                    let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
-                    let alpha = cpu_snapshot_rounded_rect_alpha(point, *rect, radius);
-                    cpu_snapshot_multiply_pixel_alpha(image, x, y, alpha);
-                }
-            }
-        }
-    }
-}
-
-fn cpu_snapshot_apply_layer_mask(image: &mut CpuSnapshotImage, mask: &CompositorMask) {
-    match mask.mode {
-        MaskMode::Alpha | MaskMode::Luminance => {
-            cpu_snapshot_multiply_outside_rect_alpha(image, mask.bounds, 0.0);
-        }
-    }
-}
-
-fn cpu_snapshot_apply_layer_filter(
-    image: &mut CpuSnapshotImage,
-    kind: CompositorFilterKind,
-    amount: f32,
-) {
-    match kind {
-        CompositorFilterKind::Blur => cpu_snapshot_blur_layer(image, amount),
-        CompositorFilterKind::Brightness => {
-            cpu_snapshot_color_filter_layer(image, amount, 1.0, 1.0)
-        }
-        CompositorFilterKind::Contrast => cpu_snapshot_color_filter_layer(image, 1.0, amount, 1.0),
-        CompositorFilterKind::Saturate => cpu_snapshot_color_filter_layer(image, 1.0, 1.0, amount),
-        CompositorFilterKind::Custom => {}
-    }
-}
-
-fn cpu_snapshot_color_filter_layer(
-    image: &mut CpuSnapshotImage,
-    brightness: f32,
-    contrast: f32,
-    saturate: f32,
-) {
-    let brightness = finite_or_default(brightness, 1.0).max(0.0);
-    let contrast = finite_or_default(contrast, 1.0).max(0.0);
-    let saturate = finite_or_default(saturate, 1.0).max(0.0);
-    for pixel in image.pixels.chunks_exact_mut(4) {
-        if pixel[3] == 0 {
-            continue;
-        }
-        let mut rgb = [
-            f32::from(pixel[0]) / 255.0,
-            f32::from(pixel[1]) / 255.0,
-            f32::from(pixel[2]) / 255.0,
-        ];
-        for channel in &mut rgb {
-            *channel = ((*channel * brightness - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
-        }
-        let luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
-        for channel in &mut rgb {
-            *channel = (luma + (*channel - luma) * saturate).clamp(0.0, 1.0);
-        }
-        pixel[0] = (rgb[0] * 255.0).round() as u8;
-        pixel[1] = (rgb[1] * 255.0).round() as u8;
-        pixel[2] = (rgb[2] * 255.0).round() as u8;
-    }
-}
-
-fn cpu_snapshot_blur_layer(image: &mut CpuSnapshotImage, amount: f32) {
-    let radius = finite_or_default(amount, 0.0).round().clamp(0.0, 16.0) as isize;
-    if radius <= 0 {
-        return;
-    }
-    let source = image.pixels.clone();
-    let width = image.width() as isize;
-    let height = image.height() as isize;
-    for y in 0..height {
-        for x in 0..width {
-            let mut rgba = [0_u32; 4];
-            let mut samples = 0_u32;
-            for sample_y in (y - radius)..=(y + radius) {
-                for sample_x in (x - radius)..=(x + radius) {
-                    if sample_x < 0 || sample_y < 0 || sample_x >= width || sample_y >= height {
-                        continue;
-                    }
-                    let index = ((sample_y * width + sample_x) as usize) * 4;
-                    rgba[0] += u32::from(source[index]);
-                    rgba[1] += u32::from(source[index + 1]);
-                    rgba[2] += u32::from(source[index + 2]);
-                    rgba[3] += u32::from(source[index + 3]);
-                    samples += 1;
-                }
-            }
-            if samples == 0 {
-                continue;
-            }
-            let index = ((y * width + x) as usize) * 4;
-            image.pixels[index] = (rgba[0] / samples) as u8;
-            image.pixels[index + 1] = (rgba[1] / samples) as u8;
-            image.pixels[index + 2] = (rgba[2] / samples) as u8;
-            image.pixels[index + 3] = (rgba[3] / samples) as u8;
-        }
-    }
-}
-
-fn cpu_snapshot_composite_layer(
-    image: &mut CpuSnapshotImage,
-    layer: &CpuSnapshotImage,
-    source_bounds: UiRect,
-    destination_bounds: UiRect,
-    composite_bounds: UiRect,
-    opacity: f32,
-) {
-    if source_bounds.width <= 0.0
-        || source_bounds.height <= 0.0
-        || destination_bounds.width <= 0.0
-        || destination_bounds.height <= 0.0
-    {
-        return;
-    }
-    let left = composite_bounds.x.floor().max(0.0) as usize;
-    let top = composite_bounds.y.floor().max(0.0) as usize;
-    let right = composite_bounds.right().ceil().min(image.width() as f32) as usize;
-    let bottom = composite_bounds.bottom().ceil().min(image.height() as f32) as usize;
-    for y in top..bottom {
-        for x in left..right {
-            let u = ((x as f32 + 0.5 - destination_bounds.x) / destination_bounds.width)
-                .clamp(0.0, 1.0);
-            let v = ((y as f32 + 0.5 - destination_bounds.y) / destination_bounds.height)
-                .clamp(0.0, 1.0);
-            let source_x = (source_bounds.x + u * source_bounds.width).floor().max(0.0) as usize;
-            let source_y = (source_bounds.y + v * source_bounds.height)
-                .floor()
-                .max(0.0) as usize;
-            let color = cpu_snapshot_pixel_color(layer, source_x, source_y);
-            if color.a > 0 {
-                cpu_snapshot_blend_pixel(image, x, y, color, opacity);
-            }
-        }
-    }
-}
-
-fn cpu_snapshot_multiply_outside_rect_alpha(
-    image: &mut CpuSnapshotImage,
-    rect: UiRect,
-    outside_alpha: f32,
-) {
-    for y in 0..image.height() {
-        for x in 0..image.width() {
-            let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
-            if !rect.contains_point(point) {
-                cpu_snapshot_multiply_pixel_alpha(image, x, y, outside_alpha);
-            }
-        }
-    }
-}
-
-fn cpu_snapshot_rounded_rect_alpha(point: UiPoint, rect: UiRect, radius: f32) -> f32 {
-    if !rect.contains_point(point) {
-        return 0.0;
-    }
-    let distance = cpu_snapshot_rounded_rect_signed_distance(point, rect, radius);
-    (0.5 - distance).clamp(0.0, 1.0)
-}
-
-fn cpu_snapshot_rounded_rect_signed_distance(point: UiPoint, rect: UiRect, radius: f32) -> f32 {
-    let radius = radius.min(rect.width.min(rect.height) * 0.5).max(0.0);
-    let half_width = rect.width * 0.5;
-    let half_height = rect.height * 0.5;
-    let centered_x = point.x - rect.x - half_width;
-    let centered_y = point.y - rect.y - half_height;
-    let qx = centered_x.abs() - half_width + radius;
-    let qy = centered_y.abs() - half_height + radius;
-    let outside_x = qx.max(0.0);
-    let outside_y = qy.max(0.0);
-    (outside_x * outside_x + outside_y * outside_y).sqrt() + qx.max(qy).min(0.0) - radius
-}
-
-fn cpu_snapshot_multiply_pixel_alpha(
-    image: &mut CpuSnapshotImage,
-    x: usize,
-    y: usize,
-    factor: f32,
-) {
-    if x >= image.width() || y >= image.height() {
-        return;
-    }
-    let index = (y * image.width() + x) * 4;
-    let factor = finite_or_default(factor, 1.0).clamp(0.0, 1.0);
-    if factor <= 0.0 {
-        image.pixels[index..index + 4].copy_from_slice(&[0, 0, 0, 0]);
-        return;
-    }
-    image.pixels[index + 3] = (f32::from(image.pixels[index + 3]) * factor)
-        .round()
-        .clamp(0.0, 255.0) as u8;
-}
-
-fn cpu_snapshot_pixel_color(image: &CpuSnapshotImage, x: usize, y: usize) -> ColorRgba {
-    if x >= image.width() || y >= image.height() {
-        return ColorRgba::TRANSPARENT;
-    }
-    let index = (y * image.width() + x) * 4;
-    ColorRgba::new(
-        image.pixels[index],
-        image.pixels[index + 1],
-        image.pixels[index + 2],
-        image.pixels[index + 3],
-    )
-}
-
-fn cpu_snapshot_draw_rich_rect_effect(
-    image: &mut CpuSnapshotImage,
-    rect: UiRect,
-    clip: UiRect,
-    effect: crate::PaintEffect,
-    opacity: f32,
-    radius: f32,
-) {
-    if effect.color.a == 0 || opacity <= 0.0 {
-        return;
-    }
-    let spread = effect.spread.max(0.0);
-    let blur_radius = effect.blur_radius.max(0.0);
-    match effect.kind {
-        PaintEffectKind::Shadow | PaintEffectKind::Glow => {
-            let shape_rect = UiRect::new(
-                rect.x + effect.offset.x - spread,
-                rect.y + effect.offset.y - spread,
-                rect.width + spread * 2.0,
-                rect.height + spread * 2.0,
-            );
-            let padding = blur_radius.max(1.0);
-            let draw_rect = UiRect::new(
-                shape_rect.x - padding,
-                shape_rect.y - padding,
-                shape_rect.width + padding * 2.0,
-                shape_rect.height + padding * 2.0,
-            );
-            cpu_snapshot_draw_soft_rect_effect(
-                image,
-                draw_rect,
-                shape_rect,
-                clip,
-                effect.color,
-                opacity,
-                radius + spread,
-                blur_radius,
-            );
-        }
-        PaintEffectKind::InsetShadow => {
-            let width = (effect.spread.max(1.0) + effect.blur_radius.max(0.0) * 0.25).max(1.0);
-            cpu_snapshot_stroke_rect(
-                image,
-                rect,
-                clip,
-                StrokeStyle::new(effect.color, width),
-                opacity,
-            );
-        }
-    }
-}
-
-fn cpu_snapshot_draw_soft_rect_effect(
-    image: &mut CpuSnapshotImage,
-    draw_rect: UiRect,
-    shape_rect: UiRect,
-    clip: UiRect,
-    color: ColorRgba,
-    opacity: f32,
-    radius: f32,
-    blur_radius: f32,
-) {
-    let Some(bounds) = draw_rect.intersection(clip) else {
-        return;
-    };
-    let left = bounds.x.floor().max(0.0) as usize;
-    let top = bounds.y.floor().max(0.0) as usize;
-    let right = bounds.right().ceil().min(image.width() as f32) as usize;
-    let bottom = bounds.bottom().ceil().min(image.height() as f32) as usize;
-    for y in top..bottom {
-        for x in left..right {
-            let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
-            let distance = cpu_snapshot_rounded_rect_signed_distance(point, shape_rect, radius);
-            let outside_distance = distance.max(0.0);
-            let alpha = if blur_radius > 0.5 {
-                1.0 - smoothstep(0.0, blur_radius, outside_distance)
-            } else if outside_distance <= 0.75 {
-                1.0
-            } else {
-                0.0
-            };
-            if alpha > 0.0 {
-                cpu_snapshot_blend_pixel(image, x, y, color, opacity * alpha);
-            }
-        }
-    }
-}
-
-fn cpu_snapshot_draw_text(image: &mut CpuSnapshotImage, item: &PaintItem, text: &TextContent) {
-    let rect = cpu_snapshot_transform_rect(item.rect, item.transform);
-    let color = text.style.color;
-    let glyph_width = (text.style.font_size * item.transform.scale * 0.52).max(4.0);
-    let glyph_height = (text.style.line_height * item.transform.scale * 0.70).max(5.0);
-    let baseline_y = rect.y + (text.style.line_height * item.transform.scale * 0.18).max(1.0);
-    let mut x = rect.x;
-    let mut y = baseline_y;
-    for ch in text.text.chars() {
-        if ch == '\n' {
-            x = rect.x;
-            y += text.style.line_height * item.transform.scale;
-            continue;
-        }
-        if !ch.is_whitespace() {
-            let hash = cpu_snapshot_hash_str(&ch.to_string());
-            let inset = (hash % 3) as f32;
-            cpu_snapshot_fill_rect(
-                image,
-                UiRect::new(
-                    x + inset,
-                    y + inset,
-                    (glyph_width - inset).max(1.0),
-                    (glyph_height - inset * 2.0).max(1.0),
-                ),
-                item.clip_rect,
-                color,
-                item.opacity,
-            );
-        }
-        x += glyph_width;
-        if x > rect.right() {
-            break;
-        }
-    }
-}
-
-fn cpu_snapshot_draw_canvas(
-    image: &mut CpuSnapshotImage,
-    item: &PaintItem,
-    canvas: &CanvasContent,
-) {
-    let rect = cpu_snapshot_transform_rect(item.rect, item.transform);
-    let base = cpu_snapshot_color_from_key(&canvas.key, 210);
-    cpu_snapshot_fill_rect(image, rect, item.clip_rect, base, item.opacity);
-    let accent = ColorRgba::new(
-        base.r.saturating_add(34),
-        base.g.saturating_add(24),
-        base.b.saturating_add(18),
-        255,
-    );
-    let step = 12.0;
-    let mut x = rect.x;
-    while x < rect.right() {
-        cpu_snapshot_draw_line(
-            image,
-            UiPoint::new(x, rect.y),
-            UiPoint::new(x + rect.height, rect.bottom()),
-            item.clip_rect,
-            StrokeStyle::new(accent, 1.0),
-            item.opacity,
-        );
-        x += step;
-    }
-}
-
-fn cpu_snapshot_draw_image_placeholder(
-    image: &mut CpuSnapshotImage,
-    rect: UiRect,
-    clip: UiRect,
-    key: &str,
-    tint: Option<ColorRgba>,
-) {
-    let base = tint.unwrap_or_else(|| cpu_snapshot_color_from_key(key, 235));
-    cpu_snapshot_fill_rect(image, rect, clip, base, 1.0);
-    let hash = cpu_snapshot_hash_str(key);
-    let stripe = ColorRgba::new(
-        base.r.saturating_sub(((hash >> 8) & 31) as u8),
-        base.g.saturating_sub(((hash >> 16) & 31) as u8),
-        base.b.saturating_sub(((hash >> 24) & 31) as u8),
-        base.a,
-    );
-    let mut x = rect.x;
-    while x < rect.right() {
-        cpu_snapshot_fill_rect(
-            image,
-            UiRect::new(x, rect.y, 2.0, rect.height),
-            clip,
-            stripe,
-            0.8,
-        );
-        x += 6.0;
-    }
-}
-
-fn cpu_snapshot_fill_rect(
-    image: &mut CpuSnapshotImage,
-    rect: UiRect,
-    clip: UiRect,
-    color: ColorRgba,
-    opacity: f32,
-) {
-    if color.a == 0 || opacity <= 0.0 {
-        return;
-    }
-    let Some(rect) = rect.intersection(clip) else {
-        return;
-    };
-    let left = rect.x.floor().max(0.0) as usize;
-    let top = rect.y.floor().max(0.0) as usize;
-    let right = rect.right().ceil().min(image.width() as f32) as usize;
-    let bottom = rect.bottom().ceil().min(image.height() as f32) as usize;
-    for y in top..bottom {
-        for x in left..right {
-            cpu_snapshot_blend_pixel(image, x, y, color, opacity);
-        }
-    }
-}
-
-fn cpu_snapshot_fill_brush_rect(
-    image: &mut CpuSnapshotImage,
-    rect: UiRect,
-    clip: UiRect,
-    brush: &PaintBrush,
-    opacity: f32,
-    transform: PaintTransform,
-) {
-    match brush {
-        PaintBrush::Solid(color) => cpu_snapshot_fill_rect(image, rect, clip, *color, opacity),
-        PaintBrush::LinearGradient(gradient) => {
-            let gradient = cpu_snapshot_transform_gradient(gradient, transform);
-            cpu_snapshot_fill_linear_gradient_rect(image, rect, clip, &gradient, opacity);
-        }
-    }
-}
-
-fn cpu_snapshot_fill_linear_gradient_rect(
-    image: &mut CpuSnapshotImage,
-    rect: UiRect,
-    clip: UiRect,
-    gradient: &LinearGradient,
-    opacity: f32,
-) {
-    if opacity <= 0.0 {
-        return;
-    }
-    let Some(rect) = rect.intersection(clip) else {
-        return;
-    };
-    let left = rect.x.floor().max(0.0) as usize;
-    let top = rect.y.floor().max(0.0) as usize;
-    let right = rect.right().ceil().min(image.width() as f32) as usize;
-    let bottom = rect.bottom().ceil().min(image.height() as f32) as usize;
-    for y in top..bottom {
-        for x in left..right {
-            let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
-            cpu_snapshot_blend_pixel(
-                image,
-                x,
-                y,
-                sample_linear_gradient(gradient, point),
-                opacity,
-            );
-        }
-    }
-}
-
-fn cpu_snapshot_stroke_rect(
-    image: &mut CpuSnapshotImage,
-    rect: UiRect,
-    clip: UiRect,
-    stroke: StrokeStyle,
-    opacity: f32,
-) {
-    let width = stroke.width.max(1.0);
-    cpu_snapshot_fill_rect(
-        image,
-        UiRect::new(rect.x, rect.y, rect.width, width),
-        clip,
-        stroke.color,
-        opacity,
-    );
-    cpu_snapshot_fill_rect(
-        image,
-        UiRect::new(rect.x, rect.bottom() - width, rect.width, width),
-        clip,
-        stroke.color,
-        opacity,
-    );
-    cpu_snapshot_fill_rect(
-        image,
-        UiRect::new(rect.x, rect.y, width, rect.height),
-        clip,
-        stroke.color,
-        opacity,
-    );
-    cpu_snapshot_fill_rect(
-        image,
-        UiRect::new(rect.right() - width, rect.y, width, rect.height),
-        clip,
-        stroke.color,
-        opacity,
-    );
-}
-
-fn cpu_snapshot_draw_line(
-    image: &mut CpuSnapshotImage,
-    from: UiPoint,
-    to: UiPoint,
-    clip: UiRect,
-    stroke: StrokeStyle,
-    opacity: f32,
-) {
-    let min_x = from.x.min(to.x).floor().max(0.0) as usize;
-    let min_y = from.y.min(to.y).floor().max(0.0) as usize;
-    let max_x = from.x.max(to.x).ceil().min(image.width() as f32 - 1.0) as usize;
-    let max_y = from.y.max(to.y).ceil().min(image.height() as f32 - 1.0) as usize;
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    let length_squared = dx * dx + dy * dy;
-    if length_squared <= f32::EPSILON {
-        cpu_snapshot_fill_rect(
-            image,
-            UiRect::new(from.x, from.y, stroke.width.max(1.0), stroke.width.max(1.0)),
-            clip,
-            stroke.color,
-            opacity,
-        );
-        return;
-    }
-    let radius = stroke.width.max(1.0) * 0.5 + 0.75;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
-            if !clip.contains_point(point) {
-                continue;
-            }
-            let t = (((point.x - from.x) * dx + (point.y - from.y) * dy) / length_squared)
-                .clamp(0.0, 1.0);
-            let closest = UiPoint::new(from.x + dx * t, from.y + dy * t);
-            let distance = ((point.x - closest.x).powi(2) + (point.y - closest.y).powi(2)).sqrt();
-            if distance <= radius {
-                cpu_snapshot_blend_pixel(image, x, y, stroke.color, opacity);
-            }
-        }
-    }
-}
-
-fn cpu_snapshot_fill_circle(
-    image: &mut CpuSnapshotImage,
-    center: UiPoint,
-    radius: f32,
-    clip: UiRect,
-    color: ColorRgba,
-    opacity: f32,
-) {
-    let bounds = UiRect::new(
-        center.x - radius,
-        center.y - radius,
-        radius * 2.0,
-        radius * 2.0,
-    );
-    let Some(bounds) = bounds.intersection(clip) else {
-        return;
-    };
-    let left = bounds.x.floor().max(0.0) as usize;
-    let top = bounds.y.floor().max(0.0) as usize;
-    let right = bounds.right().ceil().min(image.width() as f32) as usize;
-    let bottom = bounds.bottom().ceil().min(image.height() as f32) as usize;
-    let radius_squared = radius * radius;
-    for y in top..bottom {
-        for x in left..right {
-            let dx = x as f32 + 0.5 - center.x;
-            let dy = y as f32 + 0.5 - center.y;
-            if dx * dx + dy * dy <= radius_squared {
-                cpu_snapshot_blend_pixel(image, x, y, color, opacity);
-            }
-        }
-    }
-}
-
-fn cpu_snapshot_stroke_circle(
-    image: &mut CpuSnapshotImage,
-    center: UiPoint,
-    radius: f32,
-    clip: UiRect,
-    stroke: StrokeStyle,
-    opacity: f32,
-) {
-    let bounds = UiRect::new(
-        center.x - radius,
-        center.y - radius,
-        radius * 2.0,
-        radius * 2.0,
-    );
-    let Some(bounds) = bounds.intersection(clip) else {
-        return;
-    };
-    let left = bounds.x.floor().max(0.0) as usize;
-    let top = bounds.y.floor().max(0.0) as usize;
-    let right = bounds.right().ceil().min(image.width() as f32) as usize;
-    let bottom = bounds.bottom().ceil().min(image.height() as f32) as usize;
-    let half = stroke.width.max(1.0) * 0.5;
-    for y in top..bottom {
-        for x in left..right {
-            let dx = x as f32 + 0.5 - center.x;
-            let dy = y as f32 + 0.5 - center.y;
-            let distance = (dx * dx + dy * dy).sqrt();
-            if (radius - half..=radius + half).contains(&distance) {
-                cpu_snapshot_blend_pixel(image, x, y, stroke.color, opacity);
-            }
-        }
-    }
-}
-
-fn cpu_snapshot_fill_polygon(
-    image: &mut CpuSnapshotImage,
-    points: &[UiPoint],
-    clip: UiRect,
-    color: ColorRgba,
-    opacity: f32,
-) {
-    if points.len() < 3 {
-        return;
-    }
-    let mut left = points[0].x;
-    let mut top = points[0].y;
-    let mut right = points[0].x;
-    let mut bottom = points[0].y;
-    for point in points {
-        left = left.min(point.x);
-        top = top.min(point.y);
-        right = right.max(point.x);
-        bottom = bottom.max(point.y);
-    }
-    let Some(bounds) = UiRect::new(left, top, right - left, bottom - top).intersection(clip) else {
-        return;
-    };
-    let left = bounds.x.floor().max(0.0) as usize;
-    let top = bounds.y.floor().max(0.0) as usize;
-    let right = bounds.right().ceil().min(image.width() as f32) as usize;
-    let bottom = bounds.bottom().ceil().min(image.height() as f32) as usize;
-    for y in top..bottom {
-        for x in left..right {
-            if cpu_snapshot_point_in_polygon(UiPoint::new(x as f32 + 0.5, y as f32 + 0.5), points) {
-                cpu_snapshot_blend_pixel(image, x, y, color, opacity);
-            }
-        }
-    }
-}
-
-fn cpu_snapshot_point_in_polygon(point: UiPoint, points: &[UiPoint]) -> bool {
-    let mut inside = false;
-    let mut previous = points.len() - 1;
-    for current in 0..points.len() {
-        let pi = points[current];
-        let pj = points[previous];
-        if ((pi.y > point.y) != (pj.y > point.y))
-            && (point.x < (pj.x - pi.x) * (point.y - pi.y) / (pj.y - pi.y) + pi.x)
-        {
-            inside = !inside;
-        }
-        previous = current;
-    }
-    inside
-}
-
-fn cpu_snapshot_blend_pixel(
-    image: &mut CpuSnapshotImage,
-    x: usize,
-    y: usize,
-    color: ColorRgba,
-    opacity: f32,
-) {
-    if x >= image.width() || y >= image.height() {
-        return;
-    }
-    let index = (y * image.width() + x) * 4;
-    let alpha = (f32::from(color.a) * opacity.clamp(0.0, 1.0))
-        .round()
-        .clamp(0.0, 255.0) as u8;
-    if alpha == 0 {
-        return;
-    }
-    let source = ColorRgba::new(color.r, color.g, color.b, alpha);
-    let destination = ColorRgba::new(
-        image.pixels[index],
-        image.pixels[index + 1],
-        image.pixels[index + 2],
-        image.pixels[index + 3],
-    );
-    let out = source.composite_over(destination);
-    image.pixels[index] = out.r;
-    image.pixels[index + 1] = out.g;
-    image.pixels[index + 2] = out.b;
-    image.pixels[index + 3] = out.a;
-}
-
-fn finite_or_default(value: f32, fallback: f32) -> f32 {
-    if value.is_finite() {
-        value
-    } else {
-        fallback
-    }
-}
-
-fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
-    if (edge1 - edge0).abs() <= f32::EPSILON {
-        return if value < edge0 { 0.0 } else { 1.0 };
-    }
-    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-fn cpu_snapshot_transform_gradient(
-    gradient: &LinearGradient,
-    transform: PaintTransform,
-) -> LinearGradient {
-    let mut gradient = gradient.clone();
-    gradient.start = cpu_snapshot_transform_point(gradient.start, transform);
-    gradient.end = cpu_snapshot_transform_point(gradient.end, transform);
-    gradient
-}
-
-fn sample_linear_gradient(gradient: &LinearGradient, point: UiPoint) -> ColorRgba {
-    if gradient.stops.is_empty() {
-        return gradient.fallback;
-    }
-
-    let dx = gradient.end.x - gradient.start.x;
-    let dy = gradient.end.y - gradient.start.y;
-    let length_squared = dx * dx + dy * dy;
-    if length_squared <= f32::EPSILON {
-        return gradient
-            .stops
-            .last()
-            .map(|stop| stop.color)
-            .unwrap_or(gradient.fallback);
-    }
-
-    let t = (((point.x - gradient.start.x) * dx + (point.y - gradient.start.y) * dy)
-        / length_squared)
-        .clamp(0.0, 1.0);
-    if t <= gradient.stops[0].offset {
-        return gradient.stops[0].color;
-    }
-    for stops in gradient.stops.windows(2) {
-        let left = stops[0];
-        let right = stops[1];
-        if t <= right.offset {
-            let span = (right.offset - left.offset).max(f32::EPSILON);
-            return lerp_color(left.color, right.color, (t - left.offset) / span);
-        }
-    }
-    gradient
-        .stops
-        .last()
-        .map(|stop| stop.color)
-        .unwrap_or(gradient.fallback)
-}
-
-fn lerp_color(left: ColorRgba, right: ColorRgba, t: f32) -> ColorRgba {
-    let t = t.clamp(0.0, 1.0);
-    ColorRgba::new(
-        lerp_channel(left.r, right.r, t),
-        lerp_channel(left.g, right.g, t),
-        lerp_channel(left.b, right.b, t),
-        lerp_channel(left.a, right.a, t),
-    )
-}
-
-fn lerp_channel(left: u8, right: u8, t: f32) -> u8 {
-    (f32::from(left) + (f32::from(right) - f32::from(left)) * t)
-        .round()
-        .clamp(0.0, 255.0) as u8
-}
-
-fn cpu_snapshot_transform_point(point: UiPoint, transform: PaintTransform) -> UiPoint {
-    transform.transform_point(point)
-}
-
-fn cpu_snapshot_transform_rect(rect: UiRect, transform: PaintTransform) -> UiRect {
-    transform.transform_rect(rect)
-}
-
-fn cpu_snapshot_color_from_key(key: &str, alpha: u8) -> ColorRgba {
-    let hash = cpu_snapshot_hash_str(key);
-    ColorRgba::new(
-        48 + (hash & 127) as u8,
-        58 + ((hash >> 8) & 127) as u8,
-        68 + ((hash >> 16) & 127) as u8,
-        alpha,
-    )
-}
-
-fn cpu_snapshot_hash_str(value: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DirtyFlags {
     pub layout: bool,
@@ -4446,10 +3265,10 @@ mod tests {
         CanvasRenderOutput, CanvasRenderRegistry, ClipBehavior, ColorRgba, DirtyRegionSet,
         HostDocumentFrameRequest, HostFrameOutput, HostInteractionState, ImageContent,
         ImageRenderContext, ImageRenderOutput, ImageRenderRegistry, InputBehavior, LayoutStyle,
-        PaintBatch, PaintBatchKey, RawKeyboardEvent, RawWheelEvent, RenderFrameOutput,
-        RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, ResourceFormat,
-        ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent, UiDocument, UiNode,
-        UiNodeStyle, UiPoint, UiVisual,
+        PaintBatch, PaintBatchKey, PaintTransform, RawKeyboardEvent, RawWheelEvent,
+        RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage,
+        ResourceFormat, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent, UiDocument,
+        UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -4716,7 +3535,7 @@ mod tests {
     }
 
     #[test]
-    fn scenario_harness_runs_replay_document_frame_and_cpu_snapshot() {
+    fn scenario_harness_runs_replay_document_frame_and_records_paint() {
         let mut document = UiDocument::new(root_style(180.0, 100.0));
         let root = document.root;
         let button = document.add_child(
@@ -4766,12 +3585,16 @@ mod tests {
             .expect("focused button");
         report
             .render_assertions()
-            .require_target_kind(RenderTargetKind::Snapshot)
-            .expect("snapshot target");
+            .require_target_kind(RenderTargetKind::Window)
+            .expect("window target");
         report
             .render_assertions()
             .require_min_painted_items(2)
             .expect("painted items");
+        report
+            .render_assertions()
+            .require_no_snapshot()
+            .expect("no snapshot");
         report
             .timing_assertions()
             .require_sections([
@@ -4782,11 +3605,6 @@ mod tests {
                 "platform-requests",
             ])
             .expect("scenario timing sections");
-        report
-            .snapshot_assertions("open-menu")
-            .expect("snapshot")
-            .require_min_changed_pixels_from(DEFAULT_CPU_SNAPSHOT_BACKGROUND, 1)
-            .expect("snapshot content");
         report
             .platform_assertions()
             .require_no_error_responses()
@@ -5816,96 +4634,6 @@ mod tests {
                 PixelDiffTolerance::EXACT,
             )
             .is_err());
-    }
-
-    #[test]
-    fn cpu_snapshot_renderer_renders_documents_and_adapter_snapshots() {
-        struct EmptyResolver;
-
-        impl ResourceResolver for EmptyResolver {
-            fn resolve_resource(
-                &self,
-                _id: &crate::platform::ResourceId,
-            ) -> Option<crate::renderer::ResourceDescriptor> {
-                None
-            }
-        }
-
-        let viewport = UiSize::new(96.0, 64.0);
-        let mut document = UiDocument::new(root_style(viewport.width, viewport.height));
-        let root = document.root;
-        let panel = document.add_child(
-            root,
-            UiNode::container("panel", fixed_style(72.0, 44.0)).with_visual(UiVisual::panel(
-                ColorRgba::new(30, 42, 58, 255),
-                Some(StrokeStyle::new(ColorRgba::new(120, 150, 180, 255), 1.0)),
-                3.0,
-            )),
-        );
-        document.add_child(
-            panel,
-            UiNode::text(
-                "panel.label",
-                "CPU",
-                TextStyle::default(),
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
-        document.add_child(
-            panel,
-            UiNode::canvas(
-                "panel.canvas",
-                "snapshot.scope",
-                fixed_style(24.0, 18.0).layout,
-            ),
-        );
-
-        let renderer = CpuSnapshotRenderer::default();
-        let image = renderer
-            .render_document(&mut document, viewport)
-            .expect("document snapshot");
-        assert_eq!(image.size, PixelSize::new(96, 64));
-        let assertions = renderer
-            .snapshot_assertions("cpu-render", &image)
-            .expect("snapshot assertions");
-        assertions
-            .require_min_changed_pixels_from(DEFAULT_CPU_SNAPSHOT_BACKGROUND, 100)
-            .expect("rendered content");
-        let first_hash = assertions.hash();
-
-        let repeated = renderer
-            .render_paint_list(&document.paint_list(), image.size)
-            .expect("repeat snapshot");
-        assert_eq!(repeated.hash(), first_hash);
-
-        let request = RenderFrameRequest::new(
-            RenderTarget::snapshot(image.size),
-            viewport,
-            document.paint_list(),
-        );
-        let mut adapter = CpuSnapshotRenderer::default();
-        let output = adapter
-            .render_frame(request, &EmptyResolver)
-            .expect("adapter render");
-        let snapshot = RenderOutputAssertions::new(&output)
-            .require_snapshot_rgba8("adapter")
-            .expect("adapter snapshot");
-        assert_eq!(snapshot.hash(), first_hash);
-        RenderOutputAssertions::new(&output)
-            .timing_assertions()
-            .require_sections(["batch", "render"])
-            .expect("cpu snapshot timing sections");
-        assert_eq!(
-            adapter.capabilities().adapter,
-            crate::platform::BackendAdapterKind::CpuSnapshot
-        );
-        assert!(adapter.capabilities().rendering.deterministic_snapshots);
     }
 
     #[test]

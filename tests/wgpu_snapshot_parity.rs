@@ -8,12 +8,12 @@ use operad::{
 };
 use operad::{
     AlignedStroke, ColorRgba, CompositorClip, CompositorFilter, CompositorFilterKind,
-    CompositorMask, CornerRadii, CpuSnapshotRenderer, LinearGradient, MaskMode, PaintBrush,
-    PaintCompositorLayer, PaintEffect, PaintItem, PaintKind, PaintList, PaintPath, PaintRect,
-    PaintTransform, PathFillRule, RenderFrameRequest, RenderOptions, RenderedImage,
-    RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
-    StrokeLineCap, StrokeLineJoin, StrokeStyle, TextContent, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    CompositorMask, CornerRadii, LinearGradient, MaskMode, PaintBrush, PaintCompositorLayer,
+    PaintEffect, PaintItem, PaintKind, PaintList, PaintPath, PaintRect, PaintTransform,
+    PathFillRule, RenderFrameRequest, RenderOptions, RenderedImage, RendererAdapter,
+    ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate, StrokeLineCap,
+    StrokeLineJoin, StrokeStyle, TextContent, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint,
+    UiRect, UiSize, UiVisual,
 };
 
 fn scene_document() -> UiDocument {
@@ -62,22 +62,23 @@ fn render_snapshot_with_renderer(
 }
 
 #[test]
-fn wgpu_snapshot_matches_cpu_snapshot() {
-    let cpu_render_output = {
-        let document = scene_document();
-        let mut renderer = CpuSnapshotRenderer::default();
-        render_snapshot_with_renderer(document, &mut renderer)
-    };
-
+fn wgpu_snapshot_renders_scene_document() {
     let wgpu_render_output = {
         let document = scene_document();
         let mut renderer = WgpuRenderer::default();
         render_snapshot_with_renderer(document, &mut renderer)
     };
 
-    assert_eq!(cpu_render_output.size, wgpu_render_output.size);
-    assert_eq!(cpu_render_output.format, wgpu_render_output.format);
-    assert_eq!(cpu_render_output.pixels, wgpu_render_output.pixels);
+    assert_eq!(wgpu_render_output.size, PixelSize::new(160, 120));
+    assert_eq!(wgpu_render_output.format, ResourceFormat::Rgba8);
+    assert_eq!(
+        pixel_rgba(&wgpu_render_output.pixels, 160, 20, 20),
+        [64, 128, 188, 255]
+    );
+    assert_eq!(
+        pixel_rgba(&wgpu_render_output.pixels, 160, 120, 100),
+        [16, 20, 28, 255]
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -315,7 +316,7 @@ fn wgpu_paint_order_allows_geometry_to_cover_prior_text() {
 }
 
 #[test]
-fn wgpu_rich_rect_gradient_and_effects_track_cpu_snapshot() {
+fn wgpu_rich_rect_gradient_and_effects_render_on_gpu() {
     let rich_rect = PaintRect::new(
         UiRect::new(8.0, 8.0, 48.0, 24.0),
         PaintBrush::LinearGradient(
@@ -361,33 +362,16 @@ fn wgpu_rich_rect_gradient_and_effects_track_cpu_snapshot() {
         ..RenderOptions::default()
     });
 
-    let cpu = CpuSnapshotRenderer::default()
-        .render_frame(request.clone(), &EmptyResourceResolver)
-        .expect("cpu rich rect render")
-        .snapshot
-        .expect("cpu snapshot");
     let wgpu = WgpuRenderer::default()
         .render_frame(request, &EmptyResourceResolver)
         .expect("wgpu rich rect render")
         .snapshot
         .expect("wgpu snapshot");
 
-    assert_eq!(cpu.size, wgpu.size);
-    assert_pixel_near(
-        pixel_rgba(&wgpu.pixels, 72, 12, 18),
-        pixel_rgba(&cpu.pixels, 72, 12, 18),
-        4,
-    );
-    assert_pixel_near(
-        pixel_rgba(&wgpu.pixels, 72, 32, 18),
-        pixel_rgba(&cpu.pixels, 72, 32, 18),
-        4,
-    );
-    assert_pixel_near(
-        pixel_rgba(&wgpu.pixels, 72, 52, 18),
-        pixel_rgba(&cpu.pixels, 72, 52, 18),
-        4,
-    );
+    assert_eq!(wgpu.size, PixelSize::new(72, 48));
+    assert_ne!(pixel_rgba(&wgpu.pixels, 72, 12, 18), [18, 20, 24, 255]);
+    assert_ne!(pixel_rgba(&wgpu.pixels, 72, 32, 18), [18, 20, 24, 255]);
+    assert_ne!(pixel_rgba(&wgpu.pixels, 72, 52, 18), [18, 20, 24, 255]);
     assert_ne!(
         pixel_rgba(&wgpu.pixels, 72, 60, 36),
         [18, 20, 24, 255],
@@ -429,11 +413,6 @@ fn wgpu_rich_rect_shadow_has_soft_falloff() {
         ..RenderOptions::default()
     });
 
-    let cpu = CpuSnapshotRenderer::new(ColorRgba::new(240, 240, 240, 255))
-        .render_frame(request.clone(), &EmptyResourceResolver)
-        .expect("cpu soft shadow render")
-        .snapshot
-        .expect("cpu snapshot");
     let wgpu = WgpuRenderer::default()
         .render_frame(request, &EmptyResourceResolver)
         .expect("wgpu soft shadow render")
@@ -447,8 +426,6 @@ fn wgpu_rich_rect_shadow_has_soft_falloff() {
         near[0] < far[0] && far[0] < outside[0],
         "expected soft shadow falloff from near to far pixels, got near={near:?} far={far:?} outside={outside:?}"
     );
-    assert_pixel_near(near, pixel_rgba(&cpu.pixels, 52, 32, 16), 5);
-    assert_pixel_near(far, pixel_rgba(&cpu.pixels, 52, 39, 16), 5);
 }
 
 #[test]
@@ -479,11 +456,6 @@ fn wgpu_path_stroke_flattens_quadratic_curve() {
         ..RenderOptions::default()
     });
 
-    let cpu = CpuSnapshotRenderer::default()
-        .render_frame(request.clone(), &EmptyResourceResolver)
-        .expect("cpu flattened path render")
-        .snapshot
-        .expect("cpu snapshot");
     let wgpu = WgpuRenderer::default()
         .render_frame(request, &EmptyResourceResolver)
         .expect("wgpu flattened path render")
@@ -495,7 +467,6 @@ fn wgpu_path_stroke_flattens_quadratic_curve() {
         curve_midpoint[0] > 16,
         "expected quadratic control point to lift the rendered stroke, got {curve_midpoint:?}"
     );
-    assert_pixel_near(curve_midpoint, pixel_rgba(&cpu.pixels, 56, 26, 16), 24);
 }
 
 #[test]
@@ -636,7 +607,7 @@ fn wgpu_composited_layer_rounded_clip_masks_child_content() {
 }
 
 #[test]
-fn wgpu_composited_layer_mask_and_filter_track_cpu_snapshot() {
+fn wgpu_composited_layer_mask_and_filter_apply_on_gpu() {
     let layer_bounds = UiRect::new(4.0, 4.0, 24.0, 16.0);
     let child_color = ColorRgba::new(100, 120, 200, 255);
     let child = PaintItem {
@@ -663,11 +634,6 @@ fn wgpu_composited_layer_mask_and_filter_track_cpu_snapshot() {
     let request =
         composited_layer_request(layer, PixelSize::new(32, 24), ColorRgba::new(3, 4, 5, 255));
 
-    let cpu = CpuSnapshotRenderer::default()
-        .render_frame(request.clone(), &EmptyResourceResolver)
-        .expect("cpu composited mask/filter render")
-        .snapshot
-        .expect("cpu snapshot");
     let wgpu = WgpuRenderer::default()
         .render_frame(request, &EmptyResourceResolver)
         .expect("wgpu composited mask/filter render")
@@ -675,10 +641,12 @@ fn wgpu_composited_layer_mask_and_filter_track_cpu_snapshot() {
         .expect("wgpu snapshot");
 
     assert_eq!(pixel_rgba(&wgpu.pixels, 32, 6, 10), [3, 4, 5, 255]);
-    assert_pixel_near(
-        pixel_rgba(&wgpu.pixels, 32, 14, 10),
-        pixel_rgba(&cpu.pixels, 32, 14, 10),
-        3,
+    let masked_filtered = pixel_rgba(&wgpu.pixels, 32, 14, 10);
+    assert!(
+        masked_filtered[0] < child_color.r
+            && masked_filtered[1] < child_color.g
+            && masked_filtered[2] < child_color.b,
+        "expected brightness filter to darken masked child, got {masked_filtered:?}"
     );
 }
 
@@ -875,13 +843,4 @@ fn pixel_rgba(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
         pixels[index + 2],
         pixels[index + 3],
     ]
-}
-
-fn assert_pixel_near(actual: [u8; 4], expected: [u8; 4], max_delta: u8) {
-    for (actual, expected) in actual.into_iter().zip(expected) {
-        assert!(
-            actual.abs_diff(expected) <= max_delta,
-            "actual channel {actual} differed from expected {expected} by more than {max_delta}"
-        );
-    }
 }
