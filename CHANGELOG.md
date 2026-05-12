@@ -35,6 +35,9 @@
 - Documented the v5 completion audit, migration posture, release checklist, and
   CI/release gates for fmt, feature-matrix checks, docs, examples, package
   verification, WGPU validation, perf smoke, and semver review.
+- Added a bounded native WGPU window smoke mode to `native_wgpu_host` so release
+  validation can prove OS-surface presentation without snapshot readback while
+  keeping display-dependent execution opt-in.
 
 ## 4.0.0
 
