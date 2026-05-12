@@ -6,6 +6,8 @@
   paths back to `LayoutStyle` and Taffy for migration and advanced cases.
 - Added localization and internationalization policy types for locale identity,
   text direction, bidi behavior, layout mirroring, and dynamic label metadata.
+- Carried localization policy through text content, localized labels, paint
+  output, and accessibility metadata.
 - Added public API stability/versioning marker types so v5 consumers can
   distinguish stable, experimental, backend-specific, and migration-only APIs.
 - Added backend-neutral runtime/frame lifecycle contracts, widget action queues,

@@ -642,6 +642,10 @@ impl Default for TextStyle {
 pub struct TextContent {
     pub text: String,
     pub style: TextStyle,
+    pub locale: Option<LocaleId>,
+    pub direction: ResolvedTextDirection,
+    pub bidi: BidiPolicy,
+    pub dynamic_label: Option<DynamicLabelMeta>,
 }
 
 impl TextContent {
@@ -649,7 +653,34 @@ impl TextContent {
         Self {
             text: text.into(),
             style,
+            locale: None,
+            direction: ResolvedTextDirection::Ltr,
+            bidi: BidiPolicy::default(),
+            dynamic_label: None,
         }
+    }
+
+    pub fn with_localization_policy(mut self, policy: &LocalizationPolicy) -> Self {
+        self.locale = Some(policy.locale.clone());
+        self.direction = policy.resolved_direction();
+        self.bidi = policy.bidi;
+        self
+    }
+
+    pub fn with_dynamic_label(
+        mut self,
+        label: DynamicLabelMeta,
+        policy: Option<&LocalizationPolicy>,
+    ) -> Self {
+        self.text = label.fallback.clone();
+        self.locale = label
+            .locale
+            .clone()
+            .or_else(|| policy.map(|policy| policy.locale.clone()));
+        self.direction = label.resolved_direction(policy);
+        self.bidi = label.bidi;
+        self.dynamic_label = Some(label);
+        self
     }
 }
 
@@ -1472,6 +1503,37 @@ impl UiNode {
         }
     }
 
+    pub fn localized_text(
+        name: impl Into<String>,
+        label: DynamicLabelMeta,
+        policy: Option<&LocalizationPolicy>,
+        text_style: TextStyle,
+        layout: impl Into<LayoutStyle>,
+    ) -> Self {
+        let layout = layout.into();
+        Self {
+            name: name.into(),
+            parent: None,
+            children: Vec::new(),
+            style: UiNodeStyle {
+                layout: layout.style,
+                ..Default::default()
+            },
+            layer: None,
+            visual: UiVisual::default(),
+            content: UiContent::Text(
+                TextContent::new(label.fallback.clone(), text_style)
+                    .with_dynamic_label(label, policy),
+            ),
+            input: InputBehavior::NONE,
+            scroll: None,
+            animation: None,
+            accessibility: None,
+            shader: None,
+            layout: ComputedLayout::default(),
+        }
+    }
+
     pub fn canvas(
         name: impl Into<String>,
         key: impl Into<String>,
@@ -2006,6 +2068,23 @@ impl UiDocument {
 
     pub fn set_node_content(&mut self, id: UiNodeId, content: UiContent) {
         self.nodes[id.0].content = content;
+        self.invalidate_layout();
+    }
+
+    pub fn apply_localization_policy(&mut self, policy: &LocalizationPolicy) {
+        for node in &mut self.nodes {
+            if let UiContent::Text(text) = &mut node.content {
+                if let Some(label) = text.dynamic_label.clone() {
+                    let style = text.style.clone();
+                    *text = TextContent::new(label.fallback.clone(), style)
+                        .with_dynamic_label(label, Some(policy));
+                } else {
+                    text.locale = Some(policy.locale.clone());
+                    text.direction = policy.resolved_direction();
+                    text.bidi = policy.bidi;
+                }
+            }
+        }
         self.invalidate_layout();
     }
 
@@ -4000,6 +4079,23 @@ pub mod widgets {
         document.add_child(
             parent,
             UiNode::text(name, text.clone(), style, layout)
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label(text)),
+        )
+    }
+
+    pub fn localized_label(
+        document: &mut UiDocument,
+        parent: UiNodeId,
+        name: impl Into<String>,
+        label: DynamicLabelMeta,
+        policy: Option<&LocalizationPolicy>,
+        style: TextStyle,
+        layout: impl Into<LayoutStyle>,
+    ) -> UiNodeId {
+        let text = label.fallback.clone();
+        document.add_child(
+            parent,
+            UiNode::localized_text(name, label, policy, style, layout)
                 .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label(text)),
         )
     }
@@ -7422,6 +7518,97 @@ mod tests {
         let rect = doc.node(text).layout.rect;
         assert!(rect.width > 0.0);
         assert!(rect.height > 0.0);
+    }
+
+    #[test]
+    fn document_localization_policy_updates_text_paint_metadata() {
+        let mut doc = UiDocument::new(root_style(300.0, 100.0));
+        let text = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "plain",
+                "Plain",
+                TextStyle::default(),
+                LayoutStyle::from_taffy_style(Style {
+                    size: TaffySize {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                }),
+            ),
+        );
+        let policy = LocalizationPolicy::new(LocaleId::new("ar-EG").expect("locale"))
+            .with_bidi(BidiPolicy::Embed);
+
+        doc.apply_localization_policy(&policy);
+        doc.compute_layout(UiSize::new(300.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let text_item = paint
+            .items
+            .iter()
+            .find(|item| item.node == text)
+            .expect("text paint");
+        let PaintKind::Text(content) = &text_item.kind else {
+            panic!("expected text paint");
+        };
+        assert_eq!(content.locale.as_ref().map(LocaleId::as_str), Some("ar-EG"));
+        assert_eq!(content.direction, ResolvedTextDirection::Rtl);
+        assert_eq!(content.bidi, BidiPolicy::Embed);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_localized_label_exports_direction_to_paint_and_accessibility() {
+        let mut doc = UiDocument::new(root_style(300.0, 100.0));
+        let root = doc.root;
+        let policy = LocalizationPolicy::new(LocaleId::new("he-IL").expect("locale"));
+        let label_meta =
+            DynamicLabelMeta::dynamic("nav.back", "Back", 3).with_bidi(BidiPolicy::Embed);
+        let label = widgets::localized_label(
+            &mut doc,
+            root,
+            "back",
+            label_meta,
+            Some(&policy),
+            TextStyle::default(),
+            LayoutStyle::from_taffy_style(Style {
+                size: TaffySize {
+                    width: Dimension::auto(),
+                    height: Dimension::auto(),
+                },
+                ..Default::default()
+            }),
+        );
+        doc.compute_layout(UiSize::new(300.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let text_item = paint
+            .items
+            .iter()
+            .find(|item| item.node == label)
+            .expect("localized label paint");
+        let PaintKind::Text(content) = &text_item.kind else {
+            panic!("expected text paint");
+        };
+        assert_eq!(content.text, "Back");
+        assert_eq!(content.locale.as_ref().map(LocaleId::as_str), Some("he-IL"));
+        assert_eq!(content.direction, ResolvedTextDirection::Rtl);
+        assert_eq!(content.bidi, BidiPolicy::Embed);
+        assert_eq!(
+            content
+                .dynamic_label
+                .as_ref()
+                .and_then(|label| label.key.as_deref()),
+            Some("nav.back")
+        );
+
+        let tree = doc.accessibility_tree();
+        let accessible = tree.iter().find(|node| node.id == label).unwrap();
+        assert_eq!(accessible.label.as_deref(), Some("Back"));
     }
 
     #[test]
