@@ -42,6 +42,7 @@ pub mod renderer;
 pub mod runtime;
 pub mod scrolling;
 pub mod shell;
+pub mod state;
 pub mod testing;
 pub mod theme;
 pub mod tooltips;
@@ -192,6 +193,14 @@ pub use shell::{
     ShellDocumentNodes, ShellDocumentOptions, ShellExtent, ShellLayoutPlan, ShellNumericReadout,
     ShellPanelDocumentNode, ShellPanelLayout, ShellPanelState, ShellRegion,
     ShellRegionDocumentNode, ShellRegionLayout, ShellWorkspaceState, SplitPaneSide,
+};
+pub use state::{
+    RetainedWidgetStateEntry, RetainedWidgetStateStore, WidgetEditState, WidgetFocusState,
+    WidgetHoverState, WidgetId, WidgetKey, WidgetOverlayState, WidgetPressedState,
+    WidgetStateError, WidgetStateInvalidationSummary, WidgetStateKey, WidgetStateLifecycleItem,
+    WidgetStateLifecycleOutcome, WidgetStateLifecycleReport, WidgetStateRetention,
+    WidgetStateScope, WidgetStateSlotDescriptor, WidgetStateSlotId, WidgetStateSlotKind,
+    WidgetStateUpdateReport, WidgetStateValue,
 };
 pub use testing::{
     diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, AuditAssertions,
