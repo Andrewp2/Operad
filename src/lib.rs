@@ -51,6 +51,7 @@ pub mod state;
 pub mod tasks;
 pub mod testing;
 pub mod theme;
+pub mod theme_stability;
 pub mod tooltips;
 pub mod transactions;
 pub mod versioning;
@@ -273,6 +274,11 @@ pub use theme::{
     IconStyle, LayerEffect, LayerEffectKind, MotionCurve, MotionTokens, OpacityTokens,
     RadiusTokens, ScopedThemeRegistry, SpacingTokens, StrokeTokens, Theme, ThemePatch, ThemeScope,
     ThemeScopeError, ThemeScopeId, ThemeScopeKind, TypographyTokens, OPERAD_DARK_THEME_NAME,
+};
+pub use theme_stability::{
+    stable_theme_token_categories, theme_feature_stability, theme_scope_stability,
+    theme_token_stability, ThemeScopeStability, ThemeStabilityScope, ThemeTokenCategory,
+    ThemeTokenStability, THEME_FEATURE_STABILITY, THEME_SCOPE_STABILITY, THEME_TOKEN_STABILITY,
 };
 pub use tooltips::{
     clamp_context_menu_position, keyboard_context_menu_position, resolve_context_menu_request,
