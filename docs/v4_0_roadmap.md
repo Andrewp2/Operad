@@ -144,3 +144,7 @@ V4 should keep the v3 quality gate and add:
 The status and evidence for each gate is tracked in:
 
 - [v4 release checklist](/home/andrew-peterson/code/operad/docs/v4_0_release_checklist.md)
+
+Follow-up interaction-runtime work is tracked in:
+
+- [v5 roadmap](/home/andrew-peterson/code/operad/docs/v5_0_roadmap.md)
