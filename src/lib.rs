@@ -24,6 +24,7 @@ pub mod charts;
 pub mod commands;
 pub mod compositor;
 pub mod debug;
+pub mod diagnostics;
 pub mod display;
 pub mod drag_drop;
 pub mod editor;
@@ -99,6 +100,14 @@ pub use debug::{
     DebugOverlayContext, DebugOverlayNode, DebugOverlayOptions, DebugOverlaySnapshot,
     DebugPaintDump, DebugPaintItem, DebugPaintKindCount, DebugPaintStats, DebugThemeComponentState,
     DebugThemeScopeInfo, DebugThemeSnapshot, DebugThemeToken, DebugThemeTokenKind,
+};
+pub use diagnostics::{
+    node_label, overlay_label, widget_action_label, AccessibilityOutputDiagnostic,
+    AccessibilityRequestDiagnostic, AccessibilityResponseDiagnostic, DiagnosticCategory,
+    DiagnosticMessage, DiagnosticRecord, DiagnosticReport, DiagnosticSeverity,
+    DiagnosticSummaryRecord, DirtyFlagsDiagnostic, GeometryHitDiagnostic, InputRoutingDiagnostic,
+    OverlayEntryDiagnostic, OverlayRoutingDiagnostic, OverlayStackDiagnostic,
+    RenderTimingDiagnostic, RenderTimingSectionDiagnostic, WidgetActionDiagnostic,
 };
 pub use display::{
     DisplayListId, DisplayListInvalidation, DisplayListInvalidationReport,
