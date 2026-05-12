@@ -27,6 +27,7 @@ pub mod debug;
 pub mod display;
 pub mod drag_drop;
 pub mod editor;
+pub mod effective_geometry;
 #[cfg(feature = "egui")]
 pub mod egui_host;
 pub mod errors;
@@ -98,6 +99,13 @@ pub use editor::{
     EditorTransform, LaneGeometry, LaneTimelineGeometry, LaneValueGeometry, LaneValueRange,
     LaneValueRangeItem, MarqueeSelection, RulerTickConfig, SnapGrid, TimelineGeometry,
     TimelineRangeItem, TimelineRangeItemEdge, TimelineRangeItemGeometry, VisibleLaneRange,
+};
+pub use effective_geometry::{
+    accessibility_bounds, clipped_visible_rect, effective_geometry_records,
+    effective_hit_test_records, topmost_effective_hit, transformed_bounds,
+    EffectiveAccessibilityBounds, EffectiveAccessibilityBoundsSource, EffectiveClip,
+    EffectiveGeometry, EffectiveGeometryRecord, EffectiveHit, EffectiveHitEligibility,
+    EffectiveHitRejection, EffectiveTransform,
 };
 #[cfg(feature = "egui")]
 pub use egui_host::{
