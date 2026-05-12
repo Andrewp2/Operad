@@ -183,8 +183,8 @@ pub use limits::{
 };
 pub use navigation::{
     next_enabled_item, NavigationAction, NavigationBoundaryBehavior, NavigationCollectionKind,
-    NavigationContract, NavigationDirection, NavigationFocusModel, NavigationItem,
-    NavigationItemId, NavigationKeyResult, NavigationOrientation, NavigationState,
+    NavigationContract, NavigationDirection as CompositeNavigationDirection, NavigationFocusModel,
+    NavigationItem, NavigationItemId, NavigationKeyResult, NavigationOrientation, NavigationState,
 };
 pub use overlays::{
     OverlayDismissOutcome, OverlayDismissPolicy, OverlayDismissReason, OverlayEntry,
