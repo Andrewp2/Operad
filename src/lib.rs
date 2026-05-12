@@ -35,6 +35,7 @@ pub mod forms;
 pub mod host;
 pub mod i18n;
 pub mod input;
+pub mod input_devices;
 pub mod layout;
 pub mod limits;
 pub mod paint;
@@ -153,6 +154,14 @@ pub use input::{
     PointerCapture, PointerClick, PointerEventKind, PointerGestureTracker, PointerId, PointerKind,
     RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent,
     WheelDeltaUnit, WheelPhase,
+};
+pub use input_devices::{
+    classify_touch_gesture, map_gamepad_navigation, route_cancel_for_capture,
+    route_stylus_metadata, CancelCaptureRouteReport, GamepadAxis, GamepadButton, GamepadDeviceId,
+    GamepadInput, GamepadNavigationAction, GamepadNavigationPolicy, GamepadNavigationReport,
+    PointerCaptureInteraction, StylusButton, StylusContactPhase, StylusMetadata,
+    StylusMetadataField, StylusMetadataSupport, StylusRouteReport, TouchGestureClassification,
+    TouchGestureKind, TouchGesturePolicy, TouchGestureSample,
 };
 pub use layout::{
     Layout, LayoutAlignment, LayoutDimension, LayoutDisplay, LayoutFlexDirection, LayoutGap,
