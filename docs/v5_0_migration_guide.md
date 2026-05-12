@@ -33,6 +33,9 @@ should treat these as explicit contracts to wire through product UI state.
 `operad::versioning` classifies APIs as stable, experimental,
 backend-specific, or migration-only. Prefer stable APIs for product-facing code
 and quarantine experimental/backend-specific calls behind local adapters.
+Theme and design-token stability policy is recorded in
+`docs/v5_0_theme_and_stability.md` and mirrored by
+`operad::theme_stability`.
 
 5. Keep feature gates intentional.
 
