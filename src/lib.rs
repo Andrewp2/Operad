@@ -4404,6 +4404,8 @@ pub mod widgets {
         pub selection_anchor: Option<usize>,
         pub multiline: bool,
         pub composing: Option<String>,
+        pub history: TextEditHistory,
+        pub history_sequence: u64,
     }
 
     impl TextInputState {
@@ -4415,6 +4417,8 @@ pub mod widgets {
                 selection_anchor: None,
                 multiline: false,
                 composing: None,
+                history: TextEditHistory::new(),
+                history_sequence: 0,
             }
         }
 
@@ -4530,6 +4534,14 @@ pub mod widgets {
         }
 
         pub fn apply_ime_response(&mut self, response: &TextImeResponse) -> TextInputOutcome {
+            self.apply_ime_response_for_target(response, TransactionTarget::none())
+        }
+
+        pub fn apply_ime_response_for_target(
+            &mut self,
+            response: &TextImeResponse,
+            target: TransactionTarget,
+        ) -> TextInputOutcome {
             let before = self.text.clone();
             let mut phase = EditPhase::Preview;
             match response {
@@ -4557,7 +4569,11 @@ pub mod widgets {
                 | TextImeResponse::Unsupported
                 | TextImeResponse::Error(_) => {}
             }
-            TextInputOutcome::new(phase, before != self.text, None)
+            let changed = before != self.text;
+            let transaction = (phase == EditPhase::UpdateEdit)
+                .then(|| self.record_text_history(before, target))
+                .flatten();
+            TextInputOutcome::new(phase, changed, None).with_transaction(transaction)
         }
 
         pub fn apply_ime_response_for_input(
@@ -4568,6 +4584,17 @@ pub mod widgets {
             response
                 .is_for_input(input)
                 .then(|| self.apply_ime_response(response))
+        }
+
+        pub fn apply_ime_response_for_input_and_target(
+            &mut self,
+            input: &TextInputId,
+            response: &TextImeResponse,
+            target: TransactionTarget,
+        ) -> Option<TextInputOutcome> {
+            response
+                .is_for_input(input)
+                .then(|| self.apply_ime_response_for_target(response, target))
         }
 
         pub fn select_all(&mut self) {
@@ -4601,9 +4628,19 @@ pub mod widgets {
         }
 
         pub fn paste_text_with_outcome(&mut self, text: &str) -> TextInputOutcome {
+            self.paste_text_with_outcome_for_target(text, TransactionTarget::none())
+        }
+
+        pub fn paste_text_with_outcome_for_target(
+            &mut self,
+            text: &str,
+            target: TransactionTarget,
+        ) -> TextInputOutcome {
             let before = self.text.clone();
             self.paste_text(text);
+            let transaction = self.record_text_history(before.clone(), target);
             TextInputOutcome::new(EditPhase::UpdateEdit, before != self.text, None)
+                .with_transaction(transaction)
         }
 
         pub fn replace_selection(&mut self, text: &str) {
@@ -4666,9 +4703,18 @@ pub mod widgets {
         }
 
         pub fn handle_event(&mut self, event: &UiInputEvent) -> TextInputOutcome {
+            self.handle_event_for_target(event, TransactionTarget::none())
+        }
+
+        pub fn handle_event_for_target(
+            &mut self,
+            event: &UiInputEvent,
+            target: TransactionTarget,
+        ) -> TextInputOutcome {
             let before = self.text.clone();
             let mut phase = EditPhase::Preview;
             let mut clipboard = None;
+            let mut history_apply = None;
             match event {
                 UiInputEvent::TextInput(text) => {
                     self.insert_text(text);
@@ -4690,6 +4736,24 @@ pub mod widgets {
                             }
                             'v' => {
                                 clipboard = Some(TextInputClipboardAction::Paste);
+                            }
+                            'y' => {
+                                history_apply = self.redo_text_edit();
+                                if history_apply.is_some() {
+                                    phase = EditPhase::UpdateEdit;
+                                }
+                            }
+                            'z' if modifiers.shift => {
+                                history_apply = self.redo_text_edit();
+                                if history_apply.is_some() {
+                                    phase = EditPhase::UpdateEdit;
+                                }
+                            }
+                            'z' => {
+                                history_apply = self.undo_text_edit();
+                                if history_apply.is_some() {
+                                    phase = EditPhase::UpdateEdit;
+                                }
                             }
                             _ => {}
                         }
@@ -4742,7 +4806,24 @@ pub mod widgets {
                 },
                 _ => {}
             }
+            let transaction = (phase == EditPhase::UpdateEdit && history_apply.is_none())
+                .then(|| self.record_text_history(before.clone(), target))
+                .flatten();
             TextInputOutcome::new(phase, before != self.text, clipboard)
+                .with_transaction(transaction)
+                .with_history_apply(history_apply)
+        }
+
+        pub fn undo_text_edit(&mut self) -> Option<TextEditHistoryApply> {
+            let apply = self.history.undo()?;
+            self.apply_history_text(apply.text.clone());
+            Some(apply)
+        }
+
+        pub fn redo_text_edit(&mut self) -> Option<TextEditHistoryApply> {
+            let apply = self.history.redo()?;
+            self.apply_history_text(apply.text.clone());
+            Some(apply)
         }
 
         fn platform_selection_range(&self) -> TextRange {
@@ -4781,6 +4862,30 @@ pub mod widgets {
             self.selection_anchor = self
                 .selection_anchor
                 .map(|anchor| clamp_to_char_boundary(&self.text, anchor));
+        }
+
+        fn apply_history_text(&mut self, text: String) {
+            self.text = text;
+            self.caret = self.text.len();
+            self.selection_anchor = None;
+            self.composing = None;
+        }
+
+        fn record_text_history(
+            &mut self,
+            before: String,
+            target: TransactionTarget,
+        ) -> Option<EditTransaction<TextEditChange>> {
+            if before == self.text {
+                return None;
+            }
+            let id = TransactionId::new(format!("text-input:{}", self.history_sequence));
+            self.history_sequence = self.history_sequence.wrapping_add(1);
+            self.history
+                .record_committed(
+                    TextEditTransaction::new(id, before, self.text.clone()).target(target),
+                )
+                .ok()
         }
     }
 
@@ -5024,6 +5129,8 @@ pub mod widgets {
         pub committed: bool,
         pub canceled: bool,
         pub clipboard: Option<TextInputClipboardAction>,
+        pub transaction: Option<EditTransaction<TextEditChange>>,
+        pub history_apply: Option<TextEditHistoryApply>,
     }
 
     impl TextInputOutcome {
@@ -5038,6 +5145,8 @@ pub mod widgets {
                 committed: phase == EditPhase::CommitEdit,
                 canceled: phase == EditPhase::CancelEdit,
                 clipboard,
+                transaction: None,
+                history_apply: None,
             }
         }
 
@@ -5045,6 +5154,19 @@ pub mod widgets {
             self.clipboard
                 .as_ref()
                 .map(TextInputClipboardAction::clipboard_request)
+        }
+
+        fn with_transaction(
+            mut self,
+            transaction: Option<EditTransaction<TextEditChange>>,
+        ) -> Self {
+            self.transaction = transaction;
+            self
+        }
+
+        fn with_history_apply(mut self, history_apply: Option<TextEditHistoryApply>) -> Self {
+            self.history_apply = history_apply;
+            self
         }
     }
 
@@ -5275,7 +5397,7 @@ pub mod widgets {
             let before_caret = state.caret;
             let before_selection = state.selection_anchor;
             let before_composing = state.composing.clone();
-            let outcome = state.handle_event(&event);
+            let outcome = state.handle_event_for_target(&event, TransactionTarget::node(node));
             if let Some(request) = outcome.clipboard_request() {
                 platform_requests.push(PlatformRequest::Clipboard(request));
             }
@@ -9202,12 +9324,70 @@ mod tests {
         state.move_caret(widgets::CaretMovement::End, false);
         let outcome = state.handle_event(&UiInputEvent::TextInput("!".to_string()));
         assert!(outcome.changed);
+        assert_eq!(state.history.undo_len(), 1);
+        assert_eq!(
+            outcome
+                .transaction
+                .as_ref()
+                .map(|transaction| transaction.phase),
+            Some(EditTransactionPhase::Commit)
+        );
         assert_eq!(state.text, "gain!");
         let outcome = state.handle_event(&UiInputEvent::Key {
             key: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
         });
         assert!(outcome.committed);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_records_history_and_keyboard_undo_redo() {
+        let mut state = widgets::TextInputState::new("mix");
+        let typed = state.handle_event_for_target(
+            &UiInputEvent::TextInput("er".to_string()),
+            TransactionTarget::widget("preset-name"),
+        );
+
+        assert_eq!(state.text, "mixer");
+        assert_eq!(state.history.undo_len(), 1);
+        let transaction = typed.transaction.as_ref().expect("text transaction");
+        assert_eq!(transaction.payload.before, "mix");
+        assert_eq!(transaction.payload.after, "mixer");
+        assert_eq!(transaction.target, TransactionTarget::widget("preset-name"));
+
+        let undo = state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::Character('z'),
+            modifiers: KeyModifiers {
+                ctrl: true,
+                ..KeyModifiers::NONE
+            },
+        });
+        assert!(undo.changed);
+        assert_eq!(state.text, "mix");
+        assert_eq!(
+            undo.history_apply.as_ref().map(|apply| apply.direction),
+            Some(TextEditHistoryDirection::Undo)
+        );
+        assert_eq!(state.history.undo_len(), 0);
+        assert_eq!(state.history.redo_len(), 1);
+
+        let redo = state.handle_event(&UiInputEvent::Key {
+            key: KeyCode::Character('z'),
+            modifiers: KeyModifiers {
+                ctrl: true,
+                shift: true,
+                ..KeyModifiers::NONE
+            },
+        });
+        assert!(redo.changed);
+        assert_eq!(state.text, "mixer");
+        assert_eq!(
+            redo.history_apply.as_ref().map(|apply| apply.direction),
+            Some(TextEditHistoryDirection::Redo)
+        );
+        assert_eq!(state.history.undo_len(), 1);
+        assert_eq!(state.history.redo_len(), 0);
     }
 
     #[cfg(feature = "widgets")]
