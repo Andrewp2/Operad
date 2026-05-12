@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 description = "Renderer-neutral UI toolkit contracts and rendering primitives."
 repository = "https://github.com/Andrewp2/Operad"
+readme = "README.md"
 
 [lib]
 name = "operad"

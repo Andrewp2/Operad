@@ -39,6 +39,8 @@ the runner has a GPU or software Vulkan adapter.
 - [ ] Core concepts reference covers the v5 contract model, lifecycle,
   ownership boundaries, migration path, and how backend-neutral contracts fit
   together.
+- [ ] Root README summarizes the crate, feature flags, examples, docs, and
+  baseline release-validation commands.
 - [ ] Migration guide covers the v4-to-v5 dependency update, new public layout
   facade, i18n policy types, API stability markers, state/action/runtime
   contracts, async task/form validation contracts, effective geometry/resource
