@@ -76,14 +76,16 @@ Record the machine class and whether any budget changes are intentional.
 Run these only where a WGPU-compatible adapter is available, such as a developer
 workstation, GPU runner, or runner configured with a known-good software adapter:
 
-- [ ] Snapshot parity: `cargo test --locked --features wgpu --test wgpu_snapshot_parity -- --nocapture`
+- [ ] Snapshot parity: `cargo test --locked --features wgpu --test wgpu_snapshot_parity -- --nocapture --test-threads=1`
 - [ ] WGPU perf smoke: `cargo test --locked --features widgets,wgpu --test perf_smoke -- --nocapture`
 - [ ] Release WGPU perf smoke: `cargo test --release --locked --features widgets,wgpu --test perf_smoke -- --nocapture`
 - [ ] Native window smoke: `OPERAD_RUN_WGPU_EXAMPLE_WINDOW=1 OPERAD_WGPU_EXAMPLE_WINDOW_FRAMES=3 timeout 30s cargo run --locked --features native-window --example native_wgpu_host`
 - [ ] Native window smoke with AccessKit compile gate: `cargo check --locked --features "native-window accesskit-winit" --example native_wgpu_host`
 
-Do not make these commands required for the baseline GitHub-hosted CI job unless
-the runner image is explicitly provisioned for WGPU.
+WGPU snapshot parity is serialized because some adapters or drivers can become
+unstable when many independent WGPU devices are created in parallel. Do not make
+these commands required for the baseline GitHub-hosted CI job unless the runner
+image is explicitly provisioned for WGPU.
 
 For the native window smoke, record the display/session details (`DISPLAY`,
 `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`) and GPU device visibility, such as
