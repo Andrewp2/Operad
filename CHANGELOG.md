@@ -8,6 +8,14 @@
   text direction, bidi behavior, layout mirroring, and dynamic label metadata.
 - Added public API stability/versioning marker types so v5 consumers can
   distinguish stable, experimental, backend-specific, and migration-only APIs.
+- Added backend-neutral runtime/frame lifecycle contracts, widget action queues,
+  retained widget state lifecycle, edit transactions, and selection/history
+  helpers for interaction-oriented hosts.
+- Added shared effective-geometry, advanced scrolling, compositor feature, and
+  resource cache lifecycle contracts for renderer and host integration.
+- Added headless accessibility adapter contracts, accessibility target
+  publication records, error classification, resource/input limits, and release
+  guardrails for adapter and renderer failures.
 - Updated consumer-style probes and render tests to use the new public
   conversion helpers where direct backend layout fields are not required.
 - Documented the v5 completion audit, migration posture, release checklist, and

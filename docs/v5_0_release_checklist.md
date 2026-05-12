@@ -37,7 +37,9 @@ the runner has a GPU or software Vulkan adapter.
 - [ ] Changelog has a `5.0.0` entry that summarizes landed v5 roadmap work and
   calls out release-gate automation.
 - [ ] Migration guide covers the v4-to-v5 dependency update, new public layout
-  facade, i18n policy types, API stability markers, and unchanged feature gates.
+  facade, i18n policy types, API stability markers, state/action/runtime
+  contracts, effective geometry/resource cache contracts, accessibility adapter
+  contracts, and unchanged feature gates.
 - [ ] Completion audit is current and does not mark partial roadmap areas as
   complete.
 - [ ] Semver/API stability review is recorded:

@@ -42,6 +42,21 @@ and quarantine experimental/backend-specific calls behind local adapters.
 - `egui-renderer-compat` remains the legacy egui painter compatibility path.
 - `text-cosmic` enables the optional Cosmic Text measurer.
 
+6. Move shared host and renderer bookkeeping toward v5 contracts.
+
+Use `RuntimeLoopState`, `WidgetActionQueue`, `RetainedWidgetStateStore`,
+`TextEditHistory`, `EffectiveGeometry`, `ResourceCache`, and the scrolling and
+compositor policy modules for new integration work. These are backend-neutral
+contracts; some existing widget and renderer paths still need incremental
+rewiring, so prefer thin local adapters while migrating downstream code.
+
+7. Treat accessibility adapters as explicit host state.
+
+`HeadlessAccessibilityAdapter` is available for tests and non-platform
+integration. Platform adapters should consume the same request/report types and
+can publish canvas/editor target summaries through
+`AccessibilityAdapterTargetSummary`.
+
 ## Validation
 
 Run the required gates in `docs/v5_0_release_checklist.md`. Basic CI compiles
