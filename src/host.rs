@@ -13,7 +13,10 @@ use crate::accessibility::{
     AccessibilityPreferences, FocusRestoreTarget,
 };
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
-use crate::input::{GestureEvent, GesturePhase, PointerCapture, RawInputEvent};
+use crate::input::{
+    GestureEvent, GesturePhase, PointerCapture, PointerEventKind, PointerGestureTracker,
+    RawInputEvent,
+};
 use crate::platform::{
     BackendCapabilities, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
     PlatformResponse, PlatformServiceRequest, PlatformServiceResponse, RepaintRequest,
@@ -79,6 +82,7 @@ pub struct HostInteractionState {
     pub pressed: Option<UiNodeId>,
     pub focused: Option<UiNodeId>,
     pub drag_capture: Option<PointerCapture>,
+    pub gesture_tracker: PointerGestureTracker,
     pub text_ime: Option<TextImeSession>,
     pub text_target: Option<UiNodeId>,
     pub wheel_target: Option<UiNodeId>,
@@ -110,8 +114,18 @@ impl HostInteractionState {
             GestureEvent::Hover { target, .. } => {
                 self.hovered = *target;
             }
-            GestureEvent::Press { target, .. } => {
+            GestureEvent::Press {
+                target,
+                pointer_id,
+                position,
+                modifiers,
+                ..
+            } => {
+                self.hovered = *target;
                 self.pressed = *target;
+                self.drag_capture = (*target).map(|target| {
+                    PointerCapture::new(*pointer_id, target, *position, 0.0, *modifiers)
+                });
             }
             GestureEvent::Drag(gesture) => {
                 self.hovered = Some(gesture.target);
@@ -135,6 +149,7 @@ impl HostInteractionState {
             GestureEvent::Click(click) => {
                 self.hovered = Some(click.target);
                 self.pressed = None;
+                self.clear_drag_capture(click.pointer_id);
             }
             GestureEvent::WheelTargeted { target, .. } => {
                 self.wheel_target = *target;
@@ -334,6 +349,136 @@ impl HostFrameOutput {
         self.platform_responses
             .push(PlatformServiceResponse::new(id, response));
         self
+    }
+}
+
+pub fn process_host_frame_input(request: HostFrameRequest) -> HostFrameOutput {
+    process_host_frame_input_with_target_resolver(request, default_host_frame_target)
+}
+
+pub fn process_host_frame_input_with_target_resolver(
+    request: HostFrameRequest,
+    resolve_target: impl FnMut(&RawInputEvent, &HostInteractionState) -> Option<UiNodeId>,
+) -> HostFrameOutput {
+    process_host_frame_input_with_wheel_scale_and_target_resolver(request, 16.0, resolve_target)
+}
+
+pub fn process_host_frame_input_with_wheel_scale_and_target_resolver(
+    request: HostFrameRequest,
+    wheel_line_size: f32,
+    mut resolve_target: impl FnMut(&RawInputEvent, &HostInteractionState) -> Option<UiNodeId>,
+) -> HostFrameOutput {
+    let HostFrameRequest {
+        viewport,
+        mut state,
+        raw_input,
+        platform_responses,
+    } = request;
+    let mut output = HostFrameOutput::new(state.clone());
+    output.platform_responses = platform_responses;
+
+    for event in raw_input {
+        if let Some(ui_event) = event.to_ui_input_event_with_wheel_scale(wheel_line_size, viewport)
+        {
+            output.ui_events.push(ui_event);
+        }
+
+        let target = match event {
+            RawInputEvent::Pointer(_) | RawInputEvent::Wheel(_) => resolve_target(&event, &state),
+            RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
+        };
+        if let Some(gesture) = host_frame_gesture_for_event(&mut state, &event, target) {
+            apply_host_frame_gesture(&mut state, &gesture);
+            output.gestures.push(gesture);
+        } else {
+            clear_host_frame_capture_after_terminal_event(&mut state, &event);
+        }
+    }
+
+    output.state = state;
+    output
+}
+
+fn default_host_frame_target(
+    event: &RawInputEvent,
+    state: &HostInteractionState,
+) -> Option<UiNodeId> {
+    match event {
+        RawInputEvent::Pointer(pointer) => state
+            .drag_capture
+            .filter(|capture| {
+                capture.pointer_id == pointer.pointer_id
+                    && matches!(
+                        pointer.kind,
+                        PointerEventKind::Move | PointerEventKind::Cancel
+                    )
+            })
+            .map(|capture| capture.target)
+            .or(state.hovered),
+        RawInputEvent::Wheel(_) => state.wheel_target.or(state.hovered),
+        RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
+    }
+}
+
+fn host_frame_gesture_for_event(
+    state: &mut HostInteractionState,
+    event: &RawInputEvent,
+    target: Option<UiNodeId>,
+) -> Option<GestureEvent> {
+    match event {
+        RawInputEvent::Pointer(pointer) => match pointer.kind {
+            PointerEventKind::Down(_) => Some(state.gesture_tracker.pointer_down(target, *pointer)),
+            PointerEventKind::Move => state.gesture_tracker.pointer_move(target, *pointer),
+            PointerEventKind::Up(_) => state.gesture_tracker.pointer_up(target, *pointer),
+            PointerEventKind::Cancel => state
+                .gesture_tracker
+                .pointer_cancel(pointer.pointer_id, pointer.position),
+        },
+        RawInputEvent::Wheel(wheel) => Some(PointerGestureTracker::wheel(target, *wheel)),
+        RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
+    }
+}
+
+fn apply_host_frame_gesture(state: &mut HostInteractionState, gesture: &GestureEvent) {
+    state.apply_gesture(gesture);
+    match gesture {
+        GestureEvent::Press { pointer_id, .. } => {
+            sync_host_frame_capture_from_tracker(state, *pointer_id);
+        }
+        GestureEvent::Drag(drag)
+            if matches!(
+                drag.phase,
+                GesturePhase::Preview | GesturePhase::Begin | GesturePhase::Update
+            ) =>
+        {
+            sync_host_frame_capture_from_tracker(state, drag.pointer_id);
+        }
+        _ => {}
+    }
+}
+
+fn sync_host_frame_capture_from_tracker(
+    state: &mut HostInteractionState,
+    pointer_id: crate::PointerId,
+) {
+    if let Some(capture) = state.gesture_tracker.active_capture(pointer_id) {
+        state.drag_capture = Some(capture);
+    }
+}
+
+fn clear_host_frame_capture_after_terminal_event(
+    state: &mut HostInteractionState,
+    event: &RawInputEvent,
+) {
+    let RawInputEvent::Pointer(pointer) = event else {
+        return;
+    };
+    if matches!(
+        pointer.kind,
+        PointerEventKind::Up(_) | PointerEventKind::Cancel
+    ) && state.clear_drag_capture(pointer.pointer_id)
+    {
+        state.pressed = None;
     }
 }
 
@@ -862,7 +1007,8 @@ mod tests {
     };
     use crate::commands::{Command, CommandMeta};
     use crate::input::{
-        DragGesture, PointerButton, PointerId, RawKeyboardEvent, RawWheelEvent, WheelPhase,
+        DragGesture, PointerButton, PointerEventKind, PointerId, RawKeyboardEvent, RawPointerEvent,
+        RawTextInputEvent, RawWheelEvent, WheelPhase,
     };
     use crate::platform::{
         BackendAdapterKind, CursorRequest, LogicalRect, PlatformRequestId,
@@ -904,6 +1050,10 @@ mod tests {
             captured: true,
             timestamp_millis: 16,
         })
+    }
+
+    fn raw_pointer(kind: PointerEventKind, x: f32, y: f32, timestamp: u64) -> RawInputEvent {
+        RawInputEvent::Pointer(RawPointerEvent::new(kind, UiPoint::new(x, y), timestamp))
     }
 
     #[derive(Debug, Default)]
@@ -1012,6 +1162,242 @@ mod tests {
         state.apply_gesture(&drag(dragged, GesturePhase::Commit));
         assert!(!state.node_state(dragged).drag_captured);
         assert!(state.drag_capture.is_none());
+    }
+
+    #[test]
+    fn host_frame_gesture_tracker_respects_drag_threshold_across_frames() {
+        let viewport = UiSize::new(200.0, 120.0);
+        let target = UiNodeId(7);
+        let outside = UiNodeId(8);
+        let first = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, HostInteractionState::default()).raw_event(
+                raw_pointer(
+                    PointerEventKind::Down(PointerButton::Primary),
+                    10.0,
+                    10.0,
+                    1,
+                ),
+            ),
+            |_, _| Some(target),
+        );
+
+        assert_eq!(
+            first.ui_events,
+            vec![UiInputEvent::PointerDown(UiPoint::new(10.0, 10.0))]
+        );
+        assert!(matches!(
+            &first.gestures[..],
+            [GestureEvent::Press {
+                target: Some(actual),
+                ..
+            }] if *actual == target
+        ));
+        assert_eq!(first.state.drag_capture.unwrap().target, target);
+
+        let under_threshold = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, first.state).raw_event(raw_pointer(
+                PointerEventKind::Move,
+                12.0,
+                13.0,
+                2,
+            )),
+            |_, _| Some(outside),
+        );
+        assert!(under_threshold.gestures.is_empty());
+        assert_eq!(
+            under_threshold.ui_events,
+            vec![UiInputEvent::PointerMove(UiPoint::new(12.0, 13.0))]
+        );
+        assert_eq!(under_threshold.state.drag_capture.unwrap().target, target);
+
+        let drag_begin = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, under_threshold.state).raw_event(raw_pointer(
+                PointerEventKind::Move,
+                20.0,
+                14.0,
+                3,
+            )),
+            |_, _| Some(outside),
+        );
+        let [GestureEvent::Drag(begin)] = &drag_begin.gestures[..] else {
+            panic!("expected one drag begin gesture");
+        };
+        assert_eq!(begin.target, target);
+        assert_eq!(begin.phase, GesturePhase::Begin);
+        assert_eq!(begin.total_delta, UiPoint::new(10.0, 4.0));
+    }
+
+    #[test]
+    fn host_frame_preserves_capture_across_outside_move_and_up() {
+        let viewport = UiSize::new(200.0, 120.0);
+        let target = UiNodeId(3);
+        let outside = UiNodeId(4);
+        let pressed = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, HostInteractionState::default()).raw_event(
+                raw_pointer(PointerEventKind::Down(PointerButton::Primary), 4.0, 4.0, 1),
+            ),
+            |_, _| Some(target),
+        );
+        let dragging = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, pressed.state).raw_event(raw_pointer(
+                PointerEventKind::Move,
+                24.0,
+                6.0,
+                2,
+            )),
+            |_, _| Some(outside),
+        );
+        let [GestureEvent::Drag(begin)] = &dragging.gestures[..] else {
+            panic!("expected drag begin");
+        };
+        assert_eq!(begin.target, target);
+        assert_eq!(begin.phase, GesturePhase::Begin);
+        assert_eq!(dragging.state.drag_capture.unwrap().target, target);
+
+        let committed = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, dragging.state).raw_event(raw_pointer(
+                PointerEventKind::Up(PointerButton::Primary),
+                40.0,
+                10.0,
+                3,
+            )),
+            |_, _| Some(outside),
+        );
+        let [GestureEvent::Drag(commit)] = &committed.gestures[..] else {
+            panic!("expected drag commit");
+        };
+        assert_eq!(commit.target, target);
+        assert_eq!(commit.phase, GesturePhase::Commit);
+        assert!(committed.state.drag_capture.is_none());
+        assert!(committed.state.pressed.is_none());
+        assert_eq!(
+            committed
+                .state
+                .gesture_tracker
+                .active_capture(PointerId::MOUSE),
+            None
+        );
+    }
+
+    #[test]
+    fn host_frame_cancel_clears_capture() {
+        let viewport = UiSize::new(200.0, 120.0);
+        let target = UiNodeId(5);
+        let pressed = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, HostInteractionState::default()).raw_event(
+                raw_pointer(
+                    PointerEventKind::Down(PointerButton::Primary),
+                    10.0,
+                    10.0,
+                    1,
+                ),
+            ),
+            |_, _| Some(target),
+        );
+        let dragging = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, pressed.state).raw_event(raw_pointer(
+                PointerEventKind::Move,
+                20.0,
+                10.0,
+                2,
+            )),
+            |_, _| Some(target),
+        );
+
+        let cancelled = process_host_frame_input_with_target_resolver(
+            HostFrameRequest::new(viewport, dragging.state).raw_event(raw_pointer(
+                PointerEventKind::Cancel,
+                20.0,
+                10.0,
+                3,
+            )),
+            |_, _| Some(target),
+        );
+        let [GestureEvent::Drag(cancel)] = &cancelled.gestures[..] else {
+            panic!("expected drag cancel");
+        };
+        assert_eq!(cancel.target, target);
+        assert_eq!(cancel.phase, GesturePhase::Cancel);
+        assert!(cancelled.state.drag_capture.is_none());
+        assert!(cancelled.state.pressed.is_none());
+        assert_eq!(
+            cancelled
+                .state
+                .gesture_tracker
+                .active_capture(PointerId::MOUSE),
+            None
+        );
+    }
+
+    #[test]
+    fn host_frame_wheel_emits_targeted_gesture_and_legacy_event() {
+        let viewport = UiSize::new(200.0, 120.0);
+        let target = UiNodeId(9);
+        let wheel = RawWheelEvent::pixels(UiPoint::new(18.0, 12.0), UiPoint::new(0.0, -4.0), 10)
+            .phase(WheelPhase::Moved);
+        let state = HostInteractionState {
+            hovered: Some(target),
+            ..HostInteractionState::default()
+        };
+        let output = process_host_frame_input(
+            HostFrameRequest::new(viewport, state).raw_event(RawInputEvent::Wheel(wheel)),
+        );
+
+        assert_eq!(output.ui_events.len(), 1);
+        assert!(matches!(
+            &output.gestures[..],
+            [GestureEvent::WheelTargeted {
+                target: Some(actual),
+                event
+            }] if *actual == target && *event == wheel
+        ));
+        assert_eq!(output.state.wheel_target, Some(target));
+    }
+
+    #[test]
+    fn host_frame_preserves_legacy_ui_event_conversion() {
+        let viewport = UiSize::new(320.0, 180.0);
+        let target = UiNodeId(1);
+        let raw_events = vec![
+            raw_pointer(PointerEventKind::Down(PointerButton::Primary), 6.0, 8.0, 1),
+            RawInputEvent::Wheel(
+                RawWheelEvent::lines(UiPoint::new(12.0, 10.0), UiPoint::new(0.0, -2.0), 2)
+                    .phase(WheelPhase::Started),
+            ),
+            RawInputEvent::Keyboard(RawKeyboardEvent::press(
+                KeyCode::Character('A'),
+                KeyModifiers::NONE,
+                3,
+            )),
+            RawInputEvent::Text(RawTextInputEvent::new("a", 4)),
+            RawInputEvent::Focus(crate::FocusDirection::Next),
+        ];
+        let expected_ui_events: Vec<_> = raw_events
+            .iter()
+            .filter_map(|event| event.to_ui_input_event_with_wheel_scale(20.0, viewport))
+            .collect();
+        let mut request = HostFrameRequest::new(viewport, HostInteractionState::default());
+        for event in raw_events {
+            request = request.raw_event(event);
+        }
+
+        let output = process_host_frame_input_with_wheel_scale_and_target_resolver(
+            request,
+            20.0,
+            |event, _| match event {
+                RawInputEvent::Pointer(_) | RawInputEvent::Wheel(_) => Some(target),
+                _ => None,
+            },
+        );
+
+        assert_eq!(output.ui_events, expected_ui_events);
+        assert!(matches!(
+            output.gestures.first(),
+            Some(GestureEvent::Press {
+                target: Some(actual),
+                ..
+            }) if *actual == target
+        ));
     }
 
     #[test]
