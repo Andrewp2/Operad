@@ -40,6 +40,7 @@ pub mod shell;
 pub mod testing;
 pub mod theme;
 pub mod tooltips;
+pub mod transactions;
 #[cfg(feature = "wgpu")]
 pub mod wgpu_renderer;
 
@@ -179,6 +180,12 @@ pub use theme::{
 pub use tooltips::{
     CommandTooltip, CommandTooltipResolver, ShortcutDisplayPlatform, ShortcutFormatter,
     TooltipAnchor, TooltipContent, TooltipPlacement, TooltipRequest,
+};
+pub use transactions::{
+    EditTransaction, EditTransactionPhase, SelectionMode, SelectionModel, SelectionMovement,
+    TextEditChange, TextEditHistory, TextEditHistoryApply, TextEditHistoryDirection,
+    TextEditRecord, TextEditTransaction, TransactionError, TransactionId, TransactionTarget,
+    TransactionWidgetId, UndoRedoCommandDescriptors,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
