@@ -51,6 +51,7 @@ pub mod theme;
 pub mod tooltips;
 pub mod transactions;
 pub mod versioning;
+pub mod virtualization;
 #[cfg(feature = "wgpu")]
 pub mod wgpu_renderer;
 
@@ -264,6 +265,14 @@ pub use transactions::{
 pub use versioning::{
     ApiStability, ApiStabilityMarker, ApiStatus, BackendSpecific, Experimental, FeatureStability,
     MigrationOnly, StabilityNote, Stable,
+};
+pub use virtualization::{
+    plan_virtualized_range, virtual_offset_for_index, virtual_scroll_anchor_adjustment,
+    VirtualAccessibilityRecord, VirtualAxis, VirtualCollectionKind, VirtualExtent,
+    VirtualFocusPreservation, VirtualItemKey, VirtualItemPlan, VirtualMeasuredExtent,
+    VirtualOverscan, VirtualPlan, VirtualPlanRequest, VirtualScrollAnchor,
+    VirtualScrollAnchorAdjustment, VirtualSelectionPreservation, VirtualStickyEdge,
+    VirtualStickyRegion,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
