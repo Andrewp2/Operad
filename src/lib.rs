@@ -4273,6 +4273,71 @@ pub mod widgets {
         root
     }
 
+    pub fn checkbox_actions_from_input_result(
+        document: &UiDocument,
+        checkbox: UiNodeId,
+        checked: bool,
+        options: &CheckboxOptions,
+        result: &UiInputResult,
+    ) -> WidgetActionQueue {
+        let mut queue = WidgetActionQueue::new();
+        push_checkbox_input_result_actions(
+            &mut queue, document, checkbox, checked, options, result,
+        );
+        queue
+    }
+
+    pub fn push_checkbox_input_result_actions<'a>(
+        queue: &'a mut WidgetActionQueue,
+        document: &UiDocument,
+        checkbox: UiNodeId,
+        checked: bool,
+        options: &CheckboxOptions,
+        result: &UiInputResult,
+    ) -> &'a mut WidgetActionQueue {
+        if result.clicked != Some(checkbox) || !action_target_enabled(document, checkbox) {
+            return queue;
+        }
+        if let Some(binding) = options.action.clone() {
+            queue.select(checkbox, binding, !checked);
+        }
+        queue
+    }
+
+    pub fn checkbox_actions_from_key_event(
+        document: &UiDocument,
+        checkbox: UiNodeId,
+        checked: bool,
+        options: &CheckboxOptions,
+        event: &UiInputEvent,
+    ) -> WidgetActionQueue {
+        let mut queue = WidgetActionQueue::new();
+        push_checkbox_key_event_actions(&mut queue, document, checkbox, checked, options, event);
+        queue
+    }
+
+    pub fn push_checkbox_key_event_actions<'a>(
+        queue: &'a mut WidgetActionQueue,
+        document: &UiDocument,
+        checkbox: UiNodeId,
+        checked: bool,
+        options: &CheckboxOptions,
+        event: &UiInputEvent,
+    ) -> &'a mut WidgetActionQueue {
+        let UiInputEvent::Key { key, modifiers } = event else {
+            return queue;
+        };
+        if document.focus.focused != Some(checkbox) || !action_target_enabled(document, checkbox) {
+            return queue;
+        }
+        if let Some(binding) = options.action.clone() {
+            if keyboard_activation_key(*key, *modifiers) {
+                queue.select(checkbox, binding, !checked);
+            }
+        }
+        queue
+    }
+
     #[derive(Debug, Clone)]
     pub struct SliderOptions {
         pub layout: LayoutStyle,
@@ -9513,6 +9578,52 @@ mod tests {
         assert_eq!(
             actions.as_slice()[0].binding.command_id(),
             Some(&CommandId::from("file.save"))
+        );
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_checkbox_action_helpers_toggle_selection_from_pointer_and_keyboard() {
+        let mut doc = UiDocument::new(root_style(240.0, 80.0));
+        let root = doc.root;
+        let options =
+            widgets::CheckboxOptions::default().with_action(WidgetActionBinding::action("sync"));
+        let checkbox = widgets::checkbox(&mut doc, root, "sync", "Sync", false, options.clone());
+        doc.focus.focused = Some(checkbox);
+
+        let pointer = widgets::checkbox_actions_from_input_result(
+            &doc,
+            checkbox,
+            false,
+            &options,
+            &UiInputResult {
+                clicked: Some(checkbox),
+                ..Default::default()
+            },
+        );
+        assert_eq!(pointer.len(), 1);
+        assert_eq!(
+            pointer.as_slice()[0].kind,
+            WidgetActionKind::Selection(WidgetSelection {
+                selected: Some(true)
+            })
+        );
+
+        let keyboard = widgets::checkbox_actions_from_key_event(
+            &doc,
+            checkbox,
+            true,
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Character(' '),
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(
+            keyboard.as_slice()[0].kind,
+            WidgetActionKind::Selection(WidgetSelection {
+                selected: Some(false)
+            })
         );
     }
 
