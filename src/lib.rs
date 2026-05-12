@@ -54,6 +54,7 @@ pub mod transactions;
 pub mod versioning;
 #[cfg(feature = "wgpu")]
 pub mod wgpu_renderer;
+pub mod windows;
 
 pub use accessibility::{
     AccessibilityAdapter, AccessibilityAdapterApplyReport, AccessibilityAdapterRequest,
@@ -273,6 +274,11 @@ pub use transactions::{
 pub use versioning::{
     ApiStability, ApiStabilityMarker, ApiStatus, BackendSpecific, Experimental, FeatureStability,
     MigrationOnly, StabilityNote, Stable,
+};
+pub use windows::{
+    DocumentId, OverlayId, OverlayOwner, RenderSurfaceOwner, RoutedRenderTarget, RoutedWindowEvent,
+    SurfaceId, WindowDocumentTarget, WindowId, WindowRouteEventKind, WindowRouteRejection,
+    WindowRouter, WindowRoutingState, WindowRoutingSummary,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
