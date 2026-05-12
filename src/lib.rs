@@ -32,6 +32,7 @@ pub mod input;
 pub mod paint;
 pub mod platform;
 pub mod renderer;
+pub mod runtime;
 pub mod shell;
 pub mod testing;
 pub mod theme;
@@ -113,6 +114,12 @@ pub use renderer::{
     PaintBatchKey, PaintBatchKind, PaintBatcher, PixelRect, RenderError, RenderFrameOutput,
     RenderFrameRequest, RenderOptions, RenderTarget, RenderTargetKind, RenderedImage,
     RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
+};
+pub use runtime::{
+    coalesce_repaint_requests, collect_repaint_requests, completed_platform_response,
+    RuntimeFrameClock, RuntimeFramePhase, RuntimeFramePlan, RuntimeInvalidation,
+    RuntimeInvalidationReason, RuntimeLoopGuard, RuntimeLoopState, RuntimePhaseTrace,
+    RuntimeRepaintScheduler, RuntimeSurfaceId, RuntimeWindowEvent, RuntimeWindowId,
 };
 pub use shell::{
     build_shell_document, DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup,
