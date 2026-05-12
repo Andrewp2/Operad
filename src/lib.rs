@@ -22,6 +22,7 @@ pub mod actions;
 pub mod assets;
 pub mod charts;
 pub mod commands;
+pub mod compositor;
 pub mod debug;
 pub mod display;
 pub mod drag_drop;
@@ -34,6 +35,7 @@ pub mod paint;
 pub mod platform;
 pub mod renderer;
 pub mod runtime;
+pub mod scrolling;
 pub mod shell;
 pub mod testing;
 pub mod theme;
@@ -58,6 +60,14 @@ pub use charts::{
 pub use commands::{
     Command, CommandEffect, CommandEffectInvocation, CommandId, CommandMeta, CommandRegistry,
     CommandRegistryError, CommandScope, Shortcut, ShortcutBinding, ShortcutConflict,
+};
+pub use compositor::{
+    plan_render_feature_fallbacks, sort_layers_for_paint, topmost_layer_at, AffineTransform,
+    BlendMode, ColorManagementLevel, CompositorClip, CompositorFilter, CompositorFilterKind,
+    CompositorLayer, CompositorLayerId, CompositorMask, CompositorScene, FeatureFallbackAction,
+    FeatureSupportLevel, MaskMode, OffscreenIsolation, OffscreenReason, RenderFeature,
+    RenderFeaturePlan, RenderFeaturePlanItem, RenderFeatureRequirement, RenderFeatureSupport,
+    StackingContext, StackingContextId, SubpixelTextPolicy,
 };
 pub use debug::{
     layout_snapshot_dump, DebugGestureKind, DebugGestureState, DebugHitCandidate, DebugHitTrace,
@@ -126,6 +136,17 @@ pub use runtime::{
     RuntimeFrameClock, RuntimeFramePhase, RuntimeFramePlan, RuntimeInvalidation,
     RuntimeInvalidationReason, RuntimeLoopGuard, RuntimeLoopState, RuntimePhaseTrace,
     RuntimeRepaintScheduler, RuntimeSurfaceId, RuntimeWindowEvent, RuntimeWindowId,
+};
+pub use scrolling::{
+    apply_scroll_anchor, arbitrate_nested_scroll, content_viewport_rect, resolve_scroll_attachment,
+    resolve_scroll_delta, resolve_sticky_rect, reveal_rect_into_view, scrollbar_thumb_rect,
+    step_kinetic_scroll, synchronize_scroll_surfaces, FixedConstraints, KineticScrollConfig,
+    KineticScrollState, KineticScrollStep, NestedScrollCandidate, NestedScrollPlan,
+    NestedScrollStep, OverscrollBehavior, OverscrollPolicy, ProgrammaticScrollBehavior,
+    RevealAlignment, RevealOptions, RevealScrollPlan, ScrollAnchorAdjustment,
+    ScrollAnchorCandidate, ScrollAttachment, ScrollAttachmentMode, ScrollAttachmentResolution,
+    ScrollAxis, ScrollInsets, ScrollSyncMode, ScrollSyncPlan, ScrollSyncSurface, ScrollSyncUpdate,
+    ScrollbarPolicy, ScrollbarVisibility, StickyConstraints, StickyEdges,
 };
 pub use shell::{
     build_shell_document, DockPlacement, PersistentSplitState, ScrollSyncAxes, ScrollSyncGroup,
