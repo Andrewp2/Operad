@@ -24,7 +24,9 @@ fn core_controls_snapshot() {
                         layout::percent(1.0),
                     )),
                     16.0,
-                ),
+                )
+                .as_taffy_style()
+                .clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -48,7 +50,9 @@ fn core_controls_snapshot() {
                         16.0,
                     ),
                     12.0,
-                ),
+                )
+                .as_taffy_style()
+                .clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -275,7 +279,9 @@ fn pickers_snapshot() {
                 layout: layout::with_padding_all(
                     layout::with_size(layout::row(), layout::percent(1.0), layout::percent(1.0)),
                     16.0,
-                ),
+                )
+                .as_taffy_style()
+                .clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -306,7 +312,9 @@ fn pickers_snapshot() {
             UiNode::container(
                 format!("pickers.calendar.week.{week_index}"),
                 UiNodeStyle {
-                    layout: layout::with_size(layout::row(), layout::px(280.0), layout::px(32.0)),
+                    layout: layout::with_size(layout::row(), layout::px(280.0), layout::px(32.0))
+                        .as_taffy_style()
+                        .clone(),
                     ..Default::default()
                 },
             ),
@@ -347,7 +355,9 @@ fn pickers_snapshot() {
                 layout: layout::with_margin_left(
                     layout::with_size(layout::column(), layout::px(292.0), layout::px(328.0)),
                     16.0,
-                ),
+                )
+                .as_taffy_style()
+                .clone(),
                 ..Default::default()
             },
         ),
@@ -364,7 +374,9 @@ fn pickers_snapshot() {
         UiNode::container(
             "pickers.swatches",
             UiNodeStyle {
-                layout: layout::with_size(layout::row(), layout::px(260.0), layout::px(42.0)),
+                layout: layout::with_size(layout::row(), layout::px(260.0), layout::px(42.0))
+                    .as_taffy_style()
+                    .clone(),
                 ..Default::default()
             },
         ),
@@ -375,7 +387,9 @@ fn pickers_snapshot() {
             UiNode::container(
                 format!("pickers.swatch.{index}"),
                 UiNodeStyle {
-                    layout: layout::with_margin_right(layout::fixed(40.0, 34.0), 8.0),
+                    layout: layout::with_margin_right(layout::fixed(40.0, 34.0), 8.0)
+                        .as_taffy_style()
+                        .clone(),
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -433,7 +447,9 @@ fn data_widgets_snapshot() {
                 layout: layout::with_padding_all(
                     layout::with_size(layout::row(), layout::percent(1.0), layout::percent(1.0)),
                     14.0,
-                ),
+                )
+                .as_taffy_style()
+                .clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -484,7 +500,9 @@ fn data_widgets_snapshot() {
                 layout: layout::with_margin_left(
                     layout::with_size(layout::column(), layout::px(354.0), layout::px(332.0)),
                     12.0,
-                ),
+                )
+                .as_taffy_style()
+                .clone(),
                 ..Default::default()
             },
         ),
@@ -665,7 +683,9 @@ fn editor_primitives_snapshot() {
         UiNode::container(
             "editor.panel",
             UiNodeStyle {
-                layout: absolute_style(16.0, 16.0, 608.0, 328.0),
+                layout: absolute_style(16.0, 16.0, 608.0, 328.0)
+                    .as_taffy_style()
+                    .clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -881,7 +901,9 @@ fn absolute_style(x: f32, y: f32, width: f32, height: f32) -> LayoutStyle {
 
 fn column_style(width: f32, height: f32) -> UiNodeStyle {
     UiNodeStyle {
-        layout: layout::with_size(layout::column(), layout::px(width), layout::px(height)),
+        layout: layout::with_size(layout::column(), layout::px(width), layout::px(height))
+            .as_taffy_style()
+            .clone(),
         clip: ClipBehavior::Clip,
         ..Default::default()
     }

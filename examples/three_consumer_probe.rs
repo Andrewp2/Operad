@@ -41,7 +41,9 @@ fn build_game_hud() -> UiDocument {
                         layout::px(64.0),
                     )),
                     18.0,
-                ),
+                )
+                .as_taffy_style()
+                .clone(),
                 clip: ClipBehavior::Clip,
                 z_index: 10,
                 ..Default::default()
@@ -60,7 +62,9 @@ fn build_game_hud() -> UiDocument {
             UiNode::container(
                 format!("game.hotbar.slot.{slot}"),
                 UiNodeStyle {
-                    layout: layout::with_margin_all(layout::fixed(36.0, 36.0), 4.0),
+                    layout: layout::with_margin_all(layout::fixed(36.0, 36.0), 4.0)
+                        .as_taffy_style()
+                        .clone(),
                     ..Default::default()
                 },
             )
@@ -83,7 +87,9 @@ fn build_fabricad_panel() -> UiDocument {
         UiNode::container(
             "fabricad.sidebar.modules",
             UiNodeStyle {
-                layout: layout::with_size(layout::column(), layout::px(260.0), layout::px(220.0)),
+                layout: layout::with_size(layout::column(), layout::px(260.0), layout::px(220.0))
+                    .as_taffy_style()
+                    .clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -128,7 +134,9 @@ fn build_orbifold_editor() -> UiDocument {
                     layout::column(),
                     layout::percent(1.0),
                     layout::percent(1.0),
-                ),
+                )
+                .as_taffy_style()
+                .clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
