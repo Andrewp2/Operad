@@ -3,6 +3,8 @@ name = "operad"
 version = "5.0.0"
 edition = "2021"
 license = "MIT"
+description = "Renderer-neutral UI toolkit contracts and rendering primitives."
+repository = "https://github.com/Andrewp2/Operad"
 
 [lib]
 name = "operad"

@@ -3,12 +3,12 @@ use std::error::Error;
 use operad::platform::PixelSize;
 use operad::{
     layout, process_document_frame, root_style, ApproxTextMeasurer, ColorRgba,
-    EmptyResourceResolver, HostDocumentFrameRequest, HostFrameOutput, HostInteractionState,
-    InputBehavior, RenderTarget, StrokeStyle, TextStyle, UiDocument, UiNode, UiSize, UiVisual,
+    HostDocumentFrameRequest, HostFrameOutput, HostInteractionState, InputBehavior, RenderTarget,
+    StrokeStyle, TextStyle, UiDocument, UiNode, UiSize, UiVisual,
 };
 
 #[cfg(feature = "wgpu")]
-use operad::{RendererAdapter, WgpuRenderer};
+use operad::{EmptyResourceResolver, RendererAdapter, WgpuRenderer};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let viewport = UiSize::new(640.0, 360.0);
