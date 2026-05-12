@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.0.0
+
+- Added Operad-owned public layout primitives for common API use, with conversion
+  paths back to `LayoutStyle` and Taffy for migration and advanced cases.
+- Added localization and internationalization policy types for locale identity,
+  text direction, bidi behavior, layout mirroring, and dynamic label metadata.
+- Added public API stability/versioning marker types so v5 consumers can
+  distinguish stable, experimental, backend-specific, and migration-only APIs.
+- Updated consumer-style probes and render tests to use the new public
+  conversion helpers where direct backend layout fields are not required.
+- Documented the v5 completion audit, migration posture, release checklist, and
+  CI/release gates for fmt, feature-matrix checks, docs, examples, package
+  verification, WGPU validation, perf smoke, and semver review.
+
 ## 4.0.0
 
 - Added optional `wgpu` rendering support behind the `wgpu` feature.
