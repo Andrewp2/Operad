@@ -4,8 +4,11 @@ version = "5.0.0"
 edition = "2021"
 license = "MIT"
 description = "Renderer-neutral UI toolkit contracts and rendering primitives."
+homepage = "https://github.com/Andrewp2/Operad"
 repository = "https://github.com/Andrewp2/Operad"
 readme = "README.md"
+keywords = ["ui", "widgets", "rendering", "wgpu", "accessibility"]
+categories = ["gui", "rendering", "development-tools::testing"]
 
 [lib]
 name = "operad"
