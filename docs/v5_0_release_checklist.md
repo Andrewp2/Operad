@@ -36,12 +36,15 @@ the runner has a GPU or software Vulkan adapter.
 
 - [ ] Changelog has a `5.0.0` entry that summarizes landed v5 roadmap work and
   calls out release-gate automation.
+- [ ] Core concepts reference covers the v5 contract model, lifecycle,
+  ownership boundaries, migration path, and how backend-neutral contracts fit
+  together.
 - [ ] Migration guide covers the v4-to-v5 dependency update, new public layout
   facade, i18n policy types, API stability markers, state/action/runtime
   contracts, async task/form validation contracts, effective geometry/resource
   cache contracts, font lifecycle contracts, accessibility adapter contracts,
   tooltip/help/context menu policy, unified diagnostics, theme/design-token
-  stability docs, and unchanged feature gates.
+  stability docs, core concepts reference, and unchanged feature gates.
 - [ ] Completion audit is current and does not mark partial roadmap areas as
   complete.
 - [ ] Semver/API stability review is recorded:

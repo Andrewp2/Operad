@@ -52,7 +52,7 @@ Status key:
 | Scheduler/frame lifecycle behavior is deterministic in tests and prevents unbounded repaint loops. | Partial | `src/runtime.rs`, host frame request/output, repaint scheduler contracts, and testing harness timing. | Timers and idle-work adapters are still app/host-owned. |
 | Error boundaries, resource limits, and malformed input handling are documented and tested. | Done | `src/errors.rs` and `src/limits.rs` classify errors, fallback decisions, resource/input limits, cache budgets, malformed input, and validation reports. | Widget-specific local error boundaries can still be layered on top. |
 | CI/release automation covers feature matrix, docs, semver review, and package dry runs. | Done | `.github/workflows/ci.yml` and `docs/v5_0_release_checklist.md` cover format, feature-matrix checks, tests, docs, examples, package dry run, WGPU/perf manual gates, and semver review notes. | `cargo semver-checks` remains optional/manual unless installed. |
-| API docs explain core concepts, lifecycle, ownership, and migration path. | Partial | Existing roadmap and migration docs plus this audit. | Concept reference docs still need to be written and linked. |
+| API docs explain core concepts, lifecycle, ownership, and migration path. | Done | `docs/v5_0_core_concepts.md` explains the v5 contract model, core concepts, lifecycle, ownership boundaries, migration path, compatibility notes, and how backend-neutral contracts fit together. | Keep this reference current as runtime/widget adoption changes. |
 
 ## Audit Notes
 
@@ -66,3 +66,6 @@ Status key:
   focused regression tests. Remaining partial areas are primarily deep backend
   rendering parity, native window runtime integration, and incremental adoption
   of the shared contracts by older widget helpers.
+- `docs/v5_0_core_concepts.md` is the concise concept/reference entry point for
+  the backend-neutral v5 contracts and should be updated when ownership or
+  lifecycle rules change.
