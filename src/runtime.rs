@@ -202,6 +202,249 @@ impl Default for RuntimeLoopGuard {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeTimerId(pub u64);
+
+impl RuntimeTimerId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeIdleWorkId(pub u64);
+
+impl RuntimeIdleWorkId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTimerDeadline {
+    pub id: RuntimeTimerId,
+    pub deadline: Duration,
+    pub invalidation: RuntimeInvalidation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTimerCompletion {
+    pub id: RuntimeTimerId,
+    pub deadline: Duration,
+    pub fired_at: Duration,
+    pub invalidation: RuntimeInvalidation,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTimerCancellation {
+    pub id: RuntimeTimerId,
+    pub deadline: Option<Duration>,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeIdleBudgetRequest {
+    pub id: RuntimeIdleWorkId,
+    pub min_budget: Duration,
+    pub requested_at: Duration,
+    pub detail: Option<String>,
+}
+
+impl RuntimeIdleBudgetRequest {
+    pub fn new(
+        id: RuntimeIdleWorkId,
+        min_budget: Duration,
+        requested_at: Duration,
+        detail: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            min_budget,
+            requested_at,
+            detail,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeIdleCompletion {
+    pub id: RuntimeIdleWorkId,
+    pub requested_at: Option<Duration>,
+    pub budget_used: Duration,
+    pub completed_at: Duration,
+    pub invalidation: Option<RuntimeInvalidation>,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeIdleCancellation {
+    pub id: RuntimeIdleWorkId,
+    pub requested_at: Option<Duration>,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeTimerScheduler {
+    next_id: u64,
+    deadlines: Vec<RuntimeTimerDeadline>,
+}
+
+impl RuntimeTimerScheduler {
+    fn new() -> Self {
+        Self {
+            next_id: 1,
+            deadlines: Vec::new(),
+        }
+    }
+
+    fn schedule(
+        &mut self,
+        now: Duration,
+        delay: Duration,
+        invalidation: RuntimeInvalidation,
+    ) -> RuntimeTimerDeadline {
+        let deadline = RuntimeTimerDeadline {
+            id: RuntimeTimerId::new(self.next_id),
+            deadline: now.saturating_add(delay),
+            invalidation,
+        };
+        self.next_id = self.next_id.wrapping_add(1);
+        self.deadlines.push(deadline.clone());
+        self.deadlines.sort_by_key(|deadline| deadline.deadline);
+        deadline
+    }
+
+    fn cancel(&mut self, id: RuntimeTimerId) -> RuntimeTimerCancellation {
+        if let Some(index) = self.deadlines.iter().position(|deadline| deadline.id == id) {
+            let deadline = self.deadlines.remove(index);
+            RuntimeTimerCancellation {
+                id,
+                deadline: Some(deadline.deadline),
+                stale: false,
+            }
+        } else {
+            RuntimeTimerCancellation {
+                id,
+                deadline: None,
+                stale: true,
+            }
+        }
+    }
+
+    fn complete(&mut self, id: RuntimeTimerId, fired_at: Duration) -> RuntimeTimerCompletion {
+        if let Some(index) = self.deadlines.iter().position(|deadline| deadline.id == id) {
+            let deadline = self.deadlines.remove(index);
+            RuntimeTimerCompletion {
+                id,
+                deadline: deadline.deadline,
+                fired_at,
+                invalidation: deadline.invalidation,
+                stale: false,
+            }
+        } else {
+            RuntimeTimerCompletion {
+                id,
+                deadline: fired_at,
+                fired_at,
+                invalidation: RuntimeInvalidation::new(RuntimeInvalidationReason::Explicit)
+                    .detail("stale timer"),
+                stale: true,
+            }
+        }
+    }
+}
+
+impl Default for RuntimeTimerScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeIdleScheduler {
+    next_id: u64,
+    requests: Vec<RuntimeIdleBudgetRequest>,
+}
+
+impl RuntimeIdleScheduler {
+    fn new() -> Self {
+        Self {
+            next_id: 1,
+            requests: Vec::new(),
+        }
+    }
+
+    fn request(
+        &mut self,
+        requested_at: Duration,
+        min_budget: Duration,
+        detail: Option<String>,
+    ) -> RuntimeIdleBudgetRequest {
+        let request = RuntimeIdleBudgetRequest::new(
+            RuntimeIdleWorkId::new(self.next_id),
+            min_budget,
+            requested_at,
+            detail,
+        );
+        self.next_id = self.next_id.wrapping_add(1);
+        self.requests.push(request.clone());
+        request
+    }
+
+    fn cancel(&mut self, id: RuntimeIdleWorkId) -> RuntimeIdleCancellation {
+        if let Some(index) = self.requests.iter().position(|request| request.id == id) {
+            let request = self.requests.remove(index);
+            RuntimeIdleCancellation {
+                id,
+                requested_at: Some(request.requested_at),
+                stale: false,
+            }
+        } else {
+            RuntimeIdleCancellation {
+                id,
+                requested_at: None,
+                stale: true,
+            }
+        }
+    }
+
+    fn complete(
+        &mut self,
+        id: RuntimeIdleWorkId,
+        budget_used: Duration,
+        completed_at: Duration,
+        invalidation: Option<RuntimeInvalidation>,
+    ) -> RuntimeIdleCompletion {
+        if let Some(index) = self.requests.iter().position(|request| request.id == id) {
+            let request = self.requests.remove(index);
+            RuntimeIdleCompletion {
+                id,
+                requested_at: Some(request.requested_at),
+                budget_used,
+                completed_at,
+                invalidation,
+                stale: false,
+            }
+        } else {
+            RuntimeIdleCompletion {
+                id,
+                requested_at: None,
+                budget_used,
+                completed_at,
+                invalidation: None,
+                stale: true,
+            }
+        }
+    }
+}
+
+impl Default for RuntimeIdleScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeRepaintScheduler {
     next_frame: bool,
@@ -318,6 +561,15 @@ pub enum RuntimeWindowEvent {
     PlatformResponse(PlatformServiceResponse),
     RequestRepaint(RepaintRequest),
     Invalidate(RuntimeInvalidation),
+    TimerFired {
+        id: RuntimeTimerId,
+        fired_at: Duration,
+    },
+    IdleWorkCompleted {
+        id: RuntimeIdleWorkId,
+        budget_used: Duration,
+        invalidation: Option<RuntimeInvalidation>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -327,6 +579,12 @@ pub struct RuntimeFramePlan {
     pub raw_input: Vec<RawInputEvent>,
     pub platform_responses: Vec<PlatformServiceResponse>,
     pub platform_requests: Vec<PlatformServiceRequest>,
+    pub timer_deadlines: Vec<RuntimeTimerDeadline>,
+    pub timer_completions: Vec<RuntimeTimerCompletion>,
+    pub timer_cancellations: Vec<RuntimeTimerCancellation>,
+    pub idle_budget_requests: Vec<RuntimeIdleBudgetRequest>,
+    pub idle_completions: Vec<RuntimeIdleCompletion>,
+    pub idle_cancellations: Vec<RuntimeIdleCancellation>,
     pub dirty_flags: DirtyFlags,
     pub invalidations: Vec<RuntimeInvalidation>,
     pub trace: RuntimePhaseTrace,
@@ -346,6 +604,12 @@ pub struct RuntimeLoopState {
     pending_input: Vec<RawInputEvent>,
     pending_platform_responses: Vec<PlatformServiceResponse>,
     pending_platform_requests: Vec<PlatformServiceRequest>,
+    pending_timer_completions: Vec<RuntimeTimerCompletion>,
+    pending_timer_cancellations: Vec<RuntimeTimerCancellation>,
+    pending_idle_completions: Vec<RuntimeIdleCompletion>,
+    pending_idle_cancellations: Vec<RuntimeIdleCancellation>,
+    timers: RuntimeTimerScheduler,
+    idle: RuntimeIdleScheduler,
     repaint: RuntimeRepaintScheduler,
     request_ids: PlatformRequestIdAllocator,
 }
@@ -363,6 +627,12 @@ impl RuntimeLoopState {
             pending_input: Vec::new(),
             pending_platform_responses: Vec::new(),
             pending_platform_requests: Vec::new(),
+            pending_timer_completions: Vec::new(),
+            pending_timer_cancellations: Vec::new(),
+            pending_idle_completions: Vec::new(),
+            pending_idle_cancellations: Vec::new(),
+            timers: RuntimeTimerScheduler::default(),
+            idle: RuntimeIdleScheduler::default(),
             repaint: RuntimeRepaintScheduler::default(),
             request_ids: PlatformRequestIdAllocator::default(),
         }
@@ -379,6 +649,46 @@ impl RuntimeLoopState {
 
     pub const fn repaint_scheduler(&self) -> &RuntimeRepaintScheduler {
         &self.repaint
+    }
+
+    pub fn timer_deadlines(&self) -> &[RuntimeTimerDeadline] {
+        &self.timers.deadlines
+    }
+
+    pub fn idle_budget_requests(&self) -> &[RuntimeIdleBudgetRequest] {
+        &self.idle.requests
+    }
+
+    pub fn schedule_timer(
+        &mut self,
+        delay: Duration,
+        invalidation: RuntimeInvalidation,
+    ) -> RuntimeTimerDeadline {
+        let deadline = self
+            .timers
+            .schedule(self.clock.elapsed, delay, invalidation);
+        self.repaint.request(RepaintRequest::After(delay));
+        deadline
+    }
+
+    pub fn cancel_timer(&mut self, id: RuntimeTimerId) -> RuntimeTimerCancellation {
+        let cancellation = self.timers.cancel(id);
+        self.pending_timer_cancellations.push(cancellation.clone());
+        cancellation
+    }
+
+    pub fn request_idle_work(
+        &mut self,
+        min_budget: Duration,
+        detail: Option<String>,
+    ) -> RuntimeIdleBudgetRequest {
+        self.idle.request(self.clock.elapsed, min_budget, detail)
+    }
+
+    pub fn cancel_idle_work(&mut self, id: RuntimeIdleWorkId) -> RuntimeIdleCancellation {
+        let cancellation = self.idle.cancel(id);
+        self.pending_idle_cancellations.push(cancellation.clone());
+        cancellation
     }
 
     pub fn push_platform_request(&mut self, request: PlatformRequest) -> PlatformRequestId {
@@ -458,12 +768,33 @@ impl RuntimeLoopState {
             RuntimeWindowEvent::Invalidate(invalidation) => {
                 self.repaint.invalidate(invalidation);
             }
+            RuntimeWindowEvent::TimerFired { id, fired_at } => {
+                let completion = self.timers.complete(id, fired_at);
+                if !completion.stale {
+                    self.repaint.invalidate(completion.invalidation.clone());
+                }
+                self.pending_timer_completions.push(completion);
+            }
+            RuntimeWindowEvent::IdleWorkCompleted {
+                id,
+                budget_used,
+                invalidation,
+            } => {
+                let completion =
+                    self.idle
+                        .complete(id, budget_used, self.clock.elapsed, invalidation);
+                if let Some(invalidation) = completion.invalidation.clone() {
+                    self.repaint.invalidate(invalidation);
+                }
+                self.pending_idle_completions.push(completion);
+            }
         }
     }
 
     pub fn next_frame_plan(&mut self, delta: Duration) -> RuntimeFramePlan {
         self.clock = self.clock.next(delta);
-        let should_render = self.repaint.frame_due();
+        let mut loop_guard_tripped = self.repaint.tripped_guard();
+        let should_render = self.repaint.frame_due() && !loop_guard_tripped;
         let mut trace = RuntimePhaseTrace::new();
         trace.push(RuntimeFramePhase::CollectPlatformEvents);
         if !self.pending_input.is_empty() {
@@ -477,13 +808,19 @@ impl RuntimeLoopState {
             trace.push(RuntimeFramePhase::Render);
             trace.push(RuntimeFramePhase::Present);
         }
-        if !self.pending_platform_requests.is_empty() || !self.pending_platform_responses.is_empty()
+        if !self.pending_platform_requests.is_empty()
+            || !self.pending_platform_responses.is_empty()
+            || !self.pending_timer_completions.is_empty()
+            || !self.pending_timer_cancellations.is_empty()
+            || !self.pending_idle_completions.is_empty()
+            || !self.pending_idle_cancellations.is_empty()
         {
             trace.push(RuntimeFramePhase::ServicePlatformRequests);
         }
         if !should_render {
             trace.push(RuntimeFramePhase::Idle);
             self.repaint.mark_idle();
+            loop_guard_tripped = loop_guard_tripped || self.repaint.tripped_guard();
         }
 
         let plan = RuntimeFramePlan {
@@ -492,11 +829,21 @@ impl RuntimeLoopState {
             raw_input: std::mem::take(&mut self.pending_input),
             platform_responses: std::mem::take(&mut self.pending_platform_responses),
             platform_requests: std::mem::take(&mut self.pending_platform_requests),
+            timer_deadlines: self.timers.deadlines.clone(),
+            timer_completions: std::mem::take(&mut self.pending_timer_completions),
+            timer_cancellations: std::mem::take(&mut self.pending_timer_cancellations),
+            idle_budget_requests: if should_render {
+                Vec::new()
+            } else {
+                self.idle.requests.clone()
+            },
+            idle_completions: std::mem::take(&mut self.pending_idle_completions),
+            idle_cancellations: std::mem::take(&mut self.pending_idle_cancellations),
             dirty_flags: self.repaint.dirty_flags(),
             invalidations: self.repaint.invalidations().to_vec(),
             trace,
             should_render,
-            loop_guard_tripped: self.repaint.tripped_guard(),
+            loop_guard_tripped,
         };
         self.repaint.finish_frame(should_render);
         plan
@@ -679,26 +1026,20 @@ mod tests {
             RepaintRequest::Continuous { active: true },
         ));
 
-        assert!(
-            !runtime
-                .next_frame_plan(Duration::from_millis(1))
-                .loop_guard_tripped
-        );
-        assert!(
-            !runtime
-                .next_frame_plan(Duration::from_millis(1))
-                .loop_guard_tripped
-        );
-        assert!(
-            !runtime
-                .next_frame_plan(Duration::from_millis(1))
-                .loop_guard_tripped
-        );
-        assert!(
-            runtime
-                .next_frame_plan(Duration::from_millis(1))
-                .loop_guard_tripped
-        );
+        let first = runtime.next_frame_plan(Duration::from_millis(1));
+        let second = runtime.next_frame_plan(Duration::from_millis(1));
+        let third = runtime.next_frame_plan(Duration::from_millis(1));
+        let guarded = runtime.next_frame_plan(Duration::from_millis(1));
+
+        assert!(first.should_render);
+        assert!(second.should_render);
+        assert!(third.should_render);
+        assert!(!first.loop_guard_tripped);
+        assert!(!second.loop_guard_tripped);
+        assert!(!third.loop_guard_tripped);
+        assert!(guarded.loop_guard_tripped);
+        assert!(!guarded.should_render);
+        assert!(guarded.trace.phases().contains(&RuntimeFramePhase::Idle));
     }
 
     #[test]
@@ -752,5 +1093,181 @@ mod tests {
         assert_eq!(trace.phases(), &[RuntimeFramePhase::Render]);
 
         let _ = UiRect::new(0.0, 0.0, 1.0, 1.0);
+    }
+
+    #[test]
+    fn timers_expose_deadlines_and_fire_repaint_invalidations() {
+        let mut runtime = runtime();
+        let deadline = runtime.schedule_timer(
+            Duration::from_millis(50),
+            RuntimeInvalidation::new(RuntimeInvalidationReason::Animation).detail("blink"),
+        );
+
+        assert_eq!(deadline.id, RuntimeTimerId::new(1));
+        assert_eq!(deadline.deadline, Duration::from_millis(50));
+        assert_eq!(runtime.timer_deadlines(), &[deadline.clone()]);
+        assert_eq!(
+            runtime.repaint_scheduler().delay(),
+            Some(Duration::from_millis(50))
+        );
+
+        let idle_plan = runtime.next_frame_plan(Duration::from_millis(10));
+        assert!(!idle_plan.should_render);
+        assert_eq!(idle_plan.timer_deadlines, vec![deadline.clone()]);
+
+        runtime.handle_event(RuntimeWindowEvent::TimerFired {
+            id: deadline.id,
+            fired_at: Duration::from_millis(50),
+        });
+        let render_plan = runtime.next_frame_plan(Duration::from_millis(40));
+
+        assert!(render_plan.should_render);
+        assert_eq!(render_plan.timer_deadlines, Vec::new());
+        assert_eq!(render_plan.timer_completions.len(), 1);
+        assert!(!render_plan.timer_completions[0].stale);
+        assert_eq!(
+            render_plan.timer_completions[0].deadline,
+            Duration::from_millis(50)
+        );
+        assert_eq!(
+            render_plan.invalidations[0].detail.as_deref(),
+            Some("blink")
+        );
+        assert!(render_plan.dirty_flags.paint);
+    }
+
+    #[test]
+    fn timer_cancellation_and_stale_completion_are_recorded() {
+        let mut runtime = runtime();
+        let deadline = runtime.schedule_timer(
+            Duration::from_millis(25),
+            RuntimeInvalidation::new(RuntimeInvalidationReason::Explicit),
+        );
+
+        let cancellation = runtime.cancel_timer(deadline.id);
+        assert!(!cancellation.stale);
+        assert_eq!(cancellation.deadline, Some(Duration::from_millis(25)));
+
+        runtime.handle_event(RuntimeWindowEvent::TimerFired {
+            id: deadline.id,
+            fired_at: Duration::from_millis(25),
+        });
+        let plan = runtime.next_frame_plan(Duration::from_millis(25));
+
+        assert!(!plan.should_render);
+        assert_eq!(plan.timer_deadlines, Vec::new());
+        assert_eq!(plan.timer_cancellations, vec![cancellation]);
+        assert_eq!(plan.timer_completions.len(), 1);
+        assert!(plan.timer_completions[0].stale);
+        assert_eq!(plan.invalidations, Vec::new());
+    }
+
+    #[test]
+    fn timer_deadlines_coalesce_with_existing_repaint_delay() {
+        let mut runtime = runtime();
+        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(RepaintRequest::After(
+            Duration::from_millis(80),
+        )));
+        runtime.schedule_timer(
+            Duration::from_millis(30),
+            RuntimeInvalidation::new(RuntimeInvalidationReason::Animation),
+        );
+        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(RepaintRequest::After(
+            Duration::from_millis(10),
+        )));
+
+        assert_eq!(
+            runtime.repaint_scheduler().delay(),
+            Some(Duration::from_millis(10))
+        );
+        let plan = runtime.next_frame_plan(Duration::ZERO);
+        assert_eq!(plan.timer_deadlines.len(), 1);
+        assert_eq!(plan.timer_deadlines[0].deadline, Duration::from_millis(30));
+    }
+
+    #[test]
+    fn idle_work_requests_complete_with_optional_invalidation() {
+        let mut runtime = runtime();
+        let request =
+            runtime.request_idle_work(Duration::from_millis(4), Some("precompute".to_string()));
+
+        let idle_plan = runtime.next_frame_plan(Duration::from_millis(1));
+        assert!(!idle_plan.should_render);
+        assert_eq!(idle_plan.idle_budget_requests, vec![request.clone()]);
+        assert!(idle_plan.trace.phases().contains(&RuntimeFramePhase::Idle));
+
+        runtime.handle_event(RuntimeWindowEvent::IdleWorkCompleted {
+            id: request.id,
+            budget_used: Duration::from_millis(3),
+            invalidation: Some(
+                RuntimeInvalidation::new(RuntimeInvalidationReason::AsyncTask).detail("prefetch"),
+            ),
+        });
+        let render_plan = runtime.next_frame_plan(Duration::from_millis(3));
+
+        assert!(render_plan.should_render);
+        assert_eq!(render_plan.idle_completions.len(), 1);
+        assert!(!render_plan.idle_completions[0].stale);
+        assert_eq!(
+            render_plan.idle_completions[0].budget_used,
+            Duration::from_millis(3)
+        );
+        assert_eq!(
+            render_plan.invalidations[0].detail.as_deref(),
+            Some("prefetch")
+        );
+        assert!(render_plan.dirty_flags.layout);
+    }
+
+    #[test]
+    fn idle_cancellation_and_stale_ids_are_recorded_without_repaint() {
+        let mut runtime = runtime();
+        let request = runtime.request_idle_work(Duration::from_millis(8), None);
+
+        let cancellation = runtime.cancel_idle_work(request.id);
+        let stale_cancellation = runtime.cancel_idle_work(RuntimeIdleWorkId::new(99));
+        runtime.handle_event(RuntimeWindowEvent::IdleWorkCompleted {
+            id: request.id,
+            budget_used: Duration::from_millis(1),
+            invalidation: Some(RuntimeInvalidation::new(
+                RuntimeInvalidationReason::Explicit,
+            )),
+        });
+        let plan = runtime.next_frame_plan(Duration::from_millis(1));
+
+        assert!(!plan.should_render);
+        assert_eq!(plan.idle_budget_requests, Vec::new());
+        assert_eq!(
+            plan.idle_cancellations,
+            vec![cancellation, stale_cancellation]
+        );
+        assert!(!plan.idle_cancellations[0].stale);
+        assert!(plan.idle_cancellations[1].stale);
+        assert_eq!(plan.idle_completions.len(), 1);
+        assert!(plan.idle_completions[0].stale);
+        assert_eq!(plan.invalidations, Vec::new());
+    }
+
+    #[test]
+    fn loop_guard_prevents_unbounded_repaint_loops() {
+        let mut runtime = runtime().with_loop_guard(RuntimeLoopGuard::new(0));
+        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(
+            RepaintRequest::Continuous { active: true },
+        ));
+
+        let rendered = runtime.next_frame_plan(Duration::from_millis(1));
+        let guarded = runtime.next_frame_plan(Duration::from_millis(1));
+
+        assert!(rendered.should_render);
+        assert!(!rendered.loop_guard_tripped);
+        assert!(!guarded.should_render);
+        assert!(guarded.loop_guard_tripped);
+        assert_eq!(
+            guarded.trace.phases(),
+            &[
+                RuntimeFramePhase::CollectPlatformEvents,
+                RuntimeFramePhase::Idle,
+            ]
+        );
     }
 }
