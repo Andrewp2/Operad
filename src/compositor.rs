@@ -557,6 +557,7 @@ pub enum ColorManagementLevel {
 pub enum RenderFeature {
     Shadows,
     RoundedClipping,
+    Borders,
     Gradients,
     Masks,
     Filters,
@@ -568,12 +569,14 @@ pub enum RenderFeature {
 pub struct RenderFeatureSupport {
     pub shadows: FeatureSupportLevel,
     pub rounded_clipping: FeatureSupportLevel,
+    pub borders: FeatureSupportLevel,
     pub gradients: FeatureSupportLevel,
     pub masks: FeatureSupportLevel,
     pub filters: FeatureSupportLevel,
     pub subpixel_text: SubpixelTextPolicy,
     pub color_management: ColorManagementLevel,
     pub max_shadow_blur: f32,
+    pub max_border_width: f32,
     pub max_gradient_stops: usize,
 }
 
@@ -581,25 +584,45 @@ impl RenderFeatureSupport {
     pub const NONE: Self = Self {
         shadows: FeatureSupportLevel::Unsupported,
         rounded_clipping: FeatureSupportLevel::Unsupported,
+        borders: FeatureSupportLevel::Unsupported,
         gradients: FeatureSupportLevel::Unsupported,
         masks: FeatureSupportLevel::Unsupported,
         filters: FeatureSupportLevel::Unsupported,
         subpixel_text: SubpixelTextPolicy::Disabled,
         color_management: ColorManagementLevel::SrgbOnly,
         max_shadow_blur: 0.0,
+        max_border_width: 0.0,
         max_gradient_stops: 0,
     };
 
     pub const STANDARD: Self = Self {
         shadows: FeatureSupportLevel::Full,
         rounded_clipping: FeatureSupportLevel::Full,
+        borders: FeatureSupportLevel::Full,
         gradients: FeatureSupportLevel::Full,
         masks: FeatureSupportLevel::Full,
         filters: FeatureSupportLevel::Full,
         subpixel_text: SubpixelTextPolicy::Subpixel,
         color_management: ColorManagementLevel::DisplayP3,
         max_shadow_blur: 256.0,
+        max_border_width: 256.0,
         max_gradient_stops: 16,
+    };
+
+    pub const CPU_SNAPSHOT_QUALITY: Self = Self::STANDARD;
+
+    pub const WGPU_SNAPSHOT_QUALITY: Self = Self {
+        shadows: FeatureSupportLevel::Unsupported,
+        rounded_clipping: FeatureSupportLevel::Full,
+        borders: FeatureSupportLevel::Full,
+        gradients: FeatureSupportLevel::Unsupported,
+        masks: FeatureSupportLevel::Unsupported,
+        filters: FeatureSupportLevel::Unsupported,
+        subpixel_text: SubpixelTextPolicy::Grayscale,
+        color_management: ColorManagementLevel::SrgbOnly,
+        max_shadow_blur: 0.0,
+        max_border_width: 64.0,
+        max_gradient_stops: 0,
     };
 }
 
@@ -613,6 +636,7 @@ impl Default for RenderFeatureSupport {
 pub enum RenderFeatureRequirement {
     Shadow { blur_radius: f32 },
     RoundedClip { radii: CornerRadii },
+    Border { width: f32 },
     Gradient { stops: usize, fallback: ColorRgba },
     Mask,
     Filter { kind: CompositorFilterKind },
@@ -625,6 +649,7 @@ impl RenderFeatureRequirement {
         match self {
             Self::Shadow { .. } => RenderFeature::Shadows,
             Self::RoundedClip { .. } => RenderFeature::RoundedClipping,
+            Self::Border { .. } => RenderFeature::Borders,
             Self::Gradient { .. } => RenderFeature::Gradients,
             Self::Mask => RenderFeature::Masks,
             Self::Filter { .. } => RenderFeature::Filters,
@@ -674,6 +699,89 @@ impl RenderFeaturePlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompositorParityExpectation {
+    PixelExact,
+    ChannelTolerance { max_channel_delta: u8 },
+    FallbackActionParity,
+    CpuAuthoritativeFallback,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositorQualityRecord {
+    pub requirement: RenderFeatureRequirement,
+    pub feature: RenderFeature,
+    pub cpu_support: FeatureSupportLevel,
+    pub wgpu_support: FeatureSupportLevel,
+    pub cpu_action: FeatureFallbackAction,
+    pub wgpu_action: FeatureFallbackAction,
+    pub parity_expectation: CompositorParityExpectation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositorQualityPlan {
+    pub records: Vec<CompositorQualityRecord>,
+}
+
+impl CompositorQualityPlan {
+    pub fn record_for(&self, feature: RenderFeature) -> Option<&CompositorQualityRecord> {
+        self.records.iter().find(|record| record.feature == feature)
+    }
+
+    pub fn wgpu_fallback_records(&self) -> Vec<&CompositorQualityRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.wgpu_action != FeatureFallbackAction::Native)
+            .collect()
+    }
+}
+
+pub fn compositor_quality_requirements() -> Vec<RenderFeatureRequirement> {
+    vec![
+        RenderFeatureRequirement::Shadow { blur_radius: 16.0 },
+        RenderFeatureRequirement::RoundedClip {
+            radii: CornerRadii::uniform(8.0),
+        },
+        RenderFeatureRequirement::Border { width: 2.0 },
+        RenderFeatureRequirement::Gradient {
+            stops: 4,
+            fallback: ColorRgba::BLACK,
+        },
+        RenderFeatureRequirement::Mask,
+        RenderFeatureRequirement::Filter {
+            kind: CompositorFilterKind::Blur,
+        },
+        RenderFeatureRequirement::SubpixelText {
+            policy: SubpixelTextPolicy::Subpixel,
+        },
+    ]
+}
+
+pub fn plan_compositor_quality(
+    requirements: &[RenderFeatureRequirement],
+    cpu_support: RenderFeatureSupport,
+    wgpu_support: RenderFeatureSupport,
+) -> CompositorQualityPlan {
+    let cpu_plan = plan_render_feature_fallbacks(requirements, cpu_support);
+    let wgpu_plan = plan_render_feature_fallbacks(requirements, wgpu_support);
+    let records = cpu_plan
+        .items
+        .into_iter()
+        .zip(wgpu_plan.items)
+        .map(|(cpu, wgpu)| CompositorQualityRecord {
+            requirement: cpu.requirement,
+            feature: cpu.feature,
+            cpu_support: cpu.support,
+            wgpu_support: wgpu.support,
+            cpu_action: cpu.action,
+            wgpu_action: wgpu.action,
+            parity_expectation: parity_expectation_for(cpu.feature, cpu.action, wgpu.action),
+        })
+        .collect();
+    CompositorQualityPlan { records }
+}
+
 pub fn plan_render_feature_fallbacks(
     requirements: &[RenderFeatureRequirement],
     support: RenderFeatureSupport,
@@ -713,6 +821,27 @@ pub fn plan_render_feature_fallbacks(
                         FeatureFallbackAction::RasterizeOffscreen,
                     ),
                 ),
+                RenderFeatureRequirement::Border { width } => {
+                    let action = match support.borders {
+                        FeatureSupportLevel::Full => {
+                            if *width <= support.max_border_width {
+                                FeatureFallbackAction::Native
+                            } else {
+                                FeatureFallbackAction::RasterizeOffscreen
+                            }
+                        }
+                        FeatureSupportLevel::Basic => {
+                            if *width <= support.max_border_width {
+                                FeatureFallbackAction::Native
+                            } else {
+                                FeatureFallbackAction::Approximate
+                            }
+                        }
+                        FeatureSupportLevel::Fallback => FeatureFallbackAction::RasterizeOffscreen,
+                        FeatureSupportLevel::Unsupported => FeatureFallbackAction::Disable,
+                    };
+                    (support.borders, action)
+                }
                 RenderFeatureRequirement::Gradient { stops, .. } => {
                     let action = match support.gradients {
                         FeatureSupportLevel::Full => FeatureFallbackAction::Native,
@@ -773,6 +902,28 @@ pub fn plan_render_feature_fallbacks(
         })
         .collect();
     RenderFeaturePlan { items }
+}
+
+fn parity_expectation_for(
+    feature: RenderFeature,
+    cpu_action: FeatureFallbackAction,
+    wgpu_action: FeatureFallbackAction,
+) -> CompositorParityExpectation {
+    if wgpu_action == FeatureFallbackAction::Disable {
+        return CompositorParityExpectation::Unsupported;
+    }
+    if cpu_action == wgpu_action && wgpu_action != FeatureFallbackAction::Native {
+        return CompositorParityExpectation::FallbackActionParity;
+    }
+    if cpu_action != FeatureFallbackAction::Native || wgpu_action != FeatureFallbackAction::Native {
+        return CompositorParityExpectation::CpuAuthoritativeFallback;
+    }
+    match feature {
+        RenderFeature::SubpixelText => CompositorParityExpectation::ChannelTolerance {
+            max_channel_delta: 2,
+        },
+        _ => CompositorParityExpectation::PixelExact,
+    }
 }
 
 fn action_for_level(
@@ -978,19 +1129,25 @@ mod tests {
         let support = RenderFeatureSupport {
             shadows: FeatureSupportLevel::Basic,
             rounded_clipping: FeatureSupportLevel::Full,
+            borders: FeatureSupportLevel::Full,
             gradients: FeatureSupportLevel::Basic,
             masks: FeatureSupportLevel::Unsupported,
             filters: FeatureSupportLevel::Fallback,
             subpixel_text: SubpixelTextPolicy::Grayscale,
             color_management: ColorManagementLevel::SrgbOnly,
             max_shadow_blur: 4.0,
+            max_border_width: 8.0,
             max_gradient_stops: 2,
         };
         let requirements = vec![
             RenderFeatureRequirement::Shadow { blur_radius: 12.0 },
+            RenderFeatureRequirement::Border { width: 2.0 },
             RenderFeatureRequirement::Gradient {
                 stops: 4,
                 fallback: ColorRgba::BLACK,
+            },
+            RenderFeatureRequirement::Filter {
+                kind: CompositorFilterKind::Blur,
             },
             RenderFeatureRequirement::Mask,
             RenderFeatureRequirement::SubpixelText {
@@ -1012,6 +1169,14 @@ mod tests {
             Some(FeatureFallbackAction::Approximate)
         );
         assert_eq!(
+            plan.action_for(RenderFeature::Borders),
+            Some(FeatureFallbackAction::Native)
+        );
+        assert_eq!(
+            plan.action_for(RenderFeature::Filters),
+            Some(FeatureFallbackAction::RasterizeOffscreen)
+        );
+        assert_eq!(
             plan.action_for(RenderFeature::Masks),
             Some(FeatureFallbackAction::Disable)
         );
@@ -1023,6 +1188,114 @@ mod tests {
             plan.action_for(RenderFeature::ColorManagement),
             Some(FeatureFallbackAction::ConvertToSrgb)
         );
-        assert_eq!(plan.fallback_items().len(), 5);
+        assert_eq!(plan.fallback_items().len(), 6);
+    }
+
+    #[test]
+    fn compositor_quality_requirements_cover_release_gate_features() {
+        let features = compositor_quality_requirements()
+            .into_iter()
+            .map(|requirement| requirement.feature())
+            .collect::<Vec<_>>();
+
+        assert!(features.contains(&RenderFeature::Shadows));
+        assert!(features.contains(&RenderFeature::RoundedClipping));
+        assert!(features.contains(&RenderFeature::Borders));
+        assert!(features.contains(&RenderFeature::Gradients));
+        assert!(features.contains(&RenderFeature::Masks));
+        assert!(features.contains(&RenderFeature::Filters));
+        assert!(features.contains(&RenderFeature::SubpixelText));
+        assert_eq!(features.len(), 7);
+    }
+
+    #[test]
+    fn compositor_quality_plan_records_current_wgpu_fallback_expectations() {
+        let requirements = compositor_quality_requirements();
+        let plan = plan_compositor_quality(
+            &requirements,
+            RenderFeatureSupport::CPU_SNAPSHOT_QUALITY,
+            RenderFeatureSupport::WGPU_SNAPSHOT_QUALITY,
+        );
+
+        let rounded = plan
+            .record_for(RenderFeature::RoundedClipping)
+            .expect("rounded clipping record");
+        assert_eq!(rounded.wgpu_action, FeatureFallbackAction::Native);
+        assert_eq!(
+            rounded.parity_expectation,
+            CompositorParityExpectation::PixelExact
+        );
+
+        let border = plan
+            .record_for(RenderFeature::Borders)
+            .expect("border record");
+        assert_eq!(border.wgpu_action, FeatureFallbackAction::Native);
+        assert_eq!(
+            border.parity_expectation,
+            CompositorParityExpectation::PixelExact
+        );
+
+        let gradient = plan
+            .record_for(RenderFeature::Gradients)
+            .expect("gradient record");
+        assert_eq!(
+            gradient.wgpu_action,
+            FeatureFallbackAction::FlattenToSolidColor
+        );
+        assert_eq!(
+            gradient.parity_expectation,
+            CompositorParityExpectation::CpuAuthoritativeFallback
+        );
+
+        let shadow = plan
+            .record_for(RenderFeature::Shadows)
+            .expect("shadow record");
+        assert_eq!(shadow.wgpu_action, FeatureFallbackAction::Disable);
+        assert_eq!(
+            shadow.parity_expectation,
+            CompositorParityExpectation::Unsupported
+        );
+
+        let mask = plan.record_for(RenderFeature::Masks).expect("mask record");
+        assert_eq!(mask.wgpu_action, FeatureFallbackAction::Disable);
+        assert_eq!(
+            mask.parity_expectation,
+            CompositorParityExpectation::Unsupported
+        );
+
+        let filter = plan
+            .record_for(RenderFeature::Filters)
+            .expect("filter record");
+        assert_eq!(filter.wgpu_action, FeatureFallbackAction::Disable);
+        assert_eq!(
+            filter.parity_expectation,
+            CompositorParityExpectation::Unsupported
+        );
+
+        let text = plan
+            .record_for(RenderFeature::SubpixelText)
+            .expect("subpixel text record");
+        assert_eq!(text.wgpu_action, FeatureFallbackAction::UseGrayscaleText);
+        assert_eq!(
+            text.parity_expectation,
+            CompositorParityExpectation::CpuAuthoritativeFallback
+        );
+        assert_eq!(plan.wgpu_fallback_records().len(), 5);
+    }
+
+    #[test]
+    fn border_fallback_planning_tracks_native_limits() {
+        let support = RenderFeatureSupport {
+            borders: FeatureSupportLevel::Basic,
+            max_border_width: 1.0,
+            ..RenderFeatureSupport::NONE
+        };
+        let requirements = vec![RenderFeatureRequirement::Border { width: 4.0 }];
+        let plan = plan_render_feature_fallbacks(&requirements, support);
+
+        assert_eq!(
+            plan.action_for(RenderFeature::Borders),
+            Some(FeatureFallbackAction::Approximate)
+        );
     }
 }
