@@ -31,6 +31,7 @@ pub mod effective_geometry;
 #[cfg(feature = "egui")]
 pub mod egui_host;
 pub mod errors;
+pub mod forms;
 pub mod host;
 pub mod i18n;
 pub mod input;
@@ -44,6 +45,7 @@ pub mod runtime;
 pub mod scrolling;
 pub mod shell;
 pub mod state;
+pub mod tasks;
 pub mod testing;
 pub mod theme;
 pub mod tooltips;
@@ -128,6 +130,12 @@ pub use errors::{
     classify_platform_error, classify_render_error, ErrorContext, ErrorDomain, ErrorKind,
     ErrorReport, ErrorSeverity, FallbackAction, FallbackDecision, FallbackScope, PlatformErrorKind,
     RendererErrorKind, ResourceErrorKind, RuntimeErrorKind, UiErrorKind,
+};
+pub use forms::{
+    AccessibleErrorSummaryRecord, FieldId, FieldState, FieldValidationRequest,
+    FieldValidationResult, FormId, FormPhase, FormState, FormValidationRequest,
+    FormValidationResult, ValidationApplyDisposition, ValidationGeneration, ValidationMessage,
+    ValidationSeverity,
 };
 pub use host::{
     process_document_frame, process_shell_frame, text_input_id_for_node, HostAccessibilityState,
@@ -218,6 +226,10 @@ pub use state::{
     WidgetStateLifecycleOutcome, WidgetStateLifecycleReport, WidgetStateRetention,
     WidgetStateScope, WidgetStateSlotDescriptor, WidgetStateSlotId, WidgetStateSlotKind,
     WidgetStateUpdateReport, WidgetStateValue,
+};
+pub use tasks::{
+    TaskError, TaskGeneration, TaskHandle, TaskId, TaskInvalidationSummary, TaskLifecycleReport,
+    TaskProgress, TaskRegistry, TaskResultDisposition, TaskState, TaskStatus,
 };
 pub use testing::{
     diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, AuditAssertions,
