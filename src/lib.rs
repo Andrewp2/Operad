@@ -170,11 +170,11 @@ pub use renderer::{
     RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
 };
 pub use resource_cache::{
-    resource_descriptor_byte_len, validate_resource_update,
-    validate_resource_update_with_descriptor, CachedResource, ResourceCache, ResourceCachePolicy,
-    ResourceEvictionCandidate, ResourceEvictionPlan, ResourceEvictionReason,
-    ResourceEvictionReport, ResourceLifecycleOutcome, ResourceUpdateIssue, ResourceUpdateKind,
-    ResourceUpdateReport, ResourceUpdateValidation,
+    resource_descriptor_byte_len, validate_resource_update as validate_resource_cache_update,
+    validate_resource_update_with_descriptor as validate_resource_cache_update_with_descriptor,
+    CachedResource, ResourceCache, ResourceCachePolicy, ResourceEvictionCandidate,
+    ResourceEvictionPlan, ResourceEvictionReason, ResourceEvictionReport, ResourceLifecycleOutcome,
+    ResourceUpdateIssue, ResourceUpdateKind, ResourceUpdateReport, ResourceUpdateValidation,
 };
 pub use runtime::{
     coalesce_repaint_requests, collect_repaint_requests, completed_platform_response,
