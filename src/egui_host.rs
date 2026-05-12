@@ -942,16 +942,13 @@ mod tests {
     }
 
     fn fixed_style(width: f32, height: f32) -> UiNodeStyle {
-        UiNodeStyle {
-            layout: LayoutStyle::from_taffy_style(Style {
-                size: TaffySize {
-                    width: Dimension::length(width),
-                    height: Dimension::length(height),
-                },
-                ..Default::default()
-            }),
+        UiNodeStyle::from(LayoutStyle::from_taffy_style(Style {
+            size: TaffySize {
+                width: Dimension::length(width),
+                height: Dimension::length(height),
+            },
             ..Default::default()
-        }
+        }))
     }
 
     #[test]
@@ -1174,8 +1171,8 @@ mod tests {
 
     #[test]
     fn translated_egui_events_feed_document_focus_routing() {
-        let mut document = UiDocument::new(UiNodeStyle {
-            layout: LayoutStyle::from_taffy_style(Style {
+        let mut document =
+            UiDocument::new(UiNodeStyle::from(LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
                 size: TaffySize {
@@ -1183,9 +1180,7 @@ mod tests {
                     height: Dimension::length(80.0),
                 },
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            })));
         let first = document.add_child(
             document.root,
             UiNode::container("first", fixed_style(80.0, 40.0)).with_input(InputBehavior::BUTTON),

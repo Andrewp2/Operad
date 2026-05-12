@@ -392,9 +392,10 @@ impl ScenarioHarness {
             })?;
         let document_duration = document_started.elapsed();
         attach_scenario_input_results(&mut events, &document_output.input_results);
+        let render_request = document_output.render_request.clone();
         let render_started = Instant::now();
         let render_output = renderer
-            .render_frame(document_output.render_request.clone(), resolver)
+            .render_frame(render_request, resolver)
             .map_err(|error| {
                 TestFailure::new(format!("scenario `{label}` render frame failed: {error}"))
             })?;
@@ -3986,7 +3987,8 @@ mod tests {
                     height: length(height),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             ..Default::default()
         }
     }
@@ -4042,7 +4044,8 @@ mod tests {
                             height: length(48.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },

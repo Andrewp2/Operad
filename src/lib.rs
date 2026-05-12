@@ -36,6 +36,8 @@ pub mod shell;
 pub mod testing;
 pub mod theme;
 pub mod tooltips;
+#[cfg(feature = "wgpu")]
+pub mod wgpu_renderer;
 
 pub use assets::{
     AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
@@ -93,6 +95,8 @@ pub use input::{
     RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent,
     WheelDeltaUnit, WheelPhase,
 };
+#[cfg(feature = "wgpu")]
+pub use wgpu_renderer::{WgpuRenderer, WgpuSurfaceRenderer};
 
 pub use paint::{
     AlignedStroke, CornerRadii, GradientStop, ImageAlignment, ImageFit, LinearGradient, PaintBrush,
@@ -1157,20 +1161,26 @@ impl LayoutStyle {
         }
     }
 
-    pub(crate) fn from_taffy_style(style: Style) -> Self {
+    pub fn from_taffy_style(style: Style) -> Self {
         Self { style }
     }
 
-    pub(crate) fn as_taffy_style(&self) -> &Style {
+    pub fn as_taffy_style(&self) -> &Style {
         &self.style
     }
 
-    pub(crate) fn as_taffy_style_mut(&mut self) -> &mut Style {
+    pub fn as_taffy_style_mut(&mut self) -> &mut Style {
         &mut self.style
     }
 
     pub fn is_absolute(&self) -> bool {
         self.style.position == taffy::prelude::Position::Absolute
+    }
+}
+
+impl From<Style> for LayoutStyle {
+    fn from(style: Style) -> Self {
+        Self::from_taffy_style(style)
     }
 }
 
@@ -1182,21 +1192,37 @@ impl Default for LayoutStyle {
 
 #[derive(Debug, Clone)]
 pub struct UiNodeStyle {
-    pub layout: LayoutStyle,
+    pub layout: Style,
     pub clip: ClipBehavior,
     pub opacity: f32,
     pub z_index: i16,
-    pub layer: Option<platform::UiLayer>,
+}
+
+impl From<LayoutStyle> for UiNodeStyle {
+    fn from(layout: LayoutStyle) -> Self {
+        Self {
+            layout: layout.style,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<Style> for UiNodeStyle {
+    fn from(style: Style) -> Self {
+        Self {
+            layout: style,
+            ..Default::default()
+        }
+    }
 }
 
 impl Default for UiNodeStyle {
     fn default() -> Self {
         Self {
-            layout: LayoutStyle::default(),
+            layout: Style::default(),
             clip: ClipBehavior::None,
             opacity: 1.0,
             z_index: 0,
-            layer: None,
         }
     }
 }
@@ -1207,6 +1233,7 @@ pub struct UiNode {
     pub parent: Option<UiNodeId>,
     pub children: Vec<UiNodeId>,
     pub style: UiNodeStyle,
+    pub layer: Option<platform::UiLayer>,
     pub visual: UiVisual,
     pub content: UiContent,
     pub input: InputBehavior,
@@ -1218,12 +1245,13 @@ pub struct UiNode {
 }
 
 impl UiNode {
-    pub fn container(name: impl Into<String>, style: UiNodeStyle) -> Self {
+    pub fn container(name: impl Into<String>, style: impl Into<UiNodeStyle>) -> Self {
         Self {
             name: name.into(),
             parent: None,
             children: Vec::new(),
-            style,
+            style: style.into(),
+            layer: None,
             visual: UiVisual::default(),
             content: UiContent::Empty,
             input: InputBehavior::NONE,
@@ -1239,16 +1267,18 @@ impl UiNode {
         name: impl Into<String>,
         text: impl Into<String>,
         text_style: TextStyle,
-        layout: LayoutStyle,
+        layout: impl Into<LayoutStyle>,
     ) -> Self {
+        let layout = layout.into();
         Self {
             name: name.into(),
             parent: None,
             children: Vec::new(),
             style: UiNodeStyle {
-                layout,
+                layout: layout.style,
                 ..Default::default()
             },
+            layer: None,
             visual: UiVisual::default(),
             content: UiContent::Text(TextContent::new(text, text_style)),
             input: InputBehavior::NONE,
@@ -1260,16 +1290,22 @@ impl UiNode {
         }
     }
 
-    pub fn canvas(name: impl Into<String>, key: impl Into<String>, layout: LayoutStyle) -> Self {
+    pub fn canvas(
+        name: impl Into<String>,
+        key: impl Into<String>,
+        layout: impl Into<LayoutStyle>,
+    ) -> Self {
+        let layout = layout.into();
         Self {
             name: name.into(),
             parent: None,
             children: Vec::new(),
             style: UiNodeStyle {
-                layout,
+                layout: layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
+            layer: None,
             visual: UiVisual::default(),
             content: UiContent::Canvas(CanvasContent::new(key)),
             input: InputBehavior {
@@ -1285,15 +1321,21 @@ impl UiNode {
         }
     }
 
-    pub fn image(name: impl Into<String>, image: ImageContent, layout: LayoutStyle) -> Self {
+    pub fn image(
+        name: impl Into<String>,
+        image: ImageContent,
+        layout: impl Into<LayoutStyle>,
+    ) -> Self {
+        let layout = layout.into();
         Self {
             name: name.into(),
             parent: None,
             children: Vec::new(),
             style: UiNodeStyle {
-                layout,
+                layout: layout.style,
                 ..Default::default()
             },
+            layer: None,
             visual: UiVisual::default(),
             content: UiContent::Image(image),
             input: InputBehavior::NONE,
@@ -1308,17 +1350,19 @@ impl UiNode {
     pub fn scene(
         name: impl Into<String>,
         primitives: Vec<ScenePrimitive>,
-        layout: LayoutStyle,
+        layout: impl Into<LayoutStyle>,
     ) -> Self {
+        let layout = layout.into();
         Self {
             name: name.into(),
             parent: None,
             children: Vec::new(),
             style: UiNodeStyle {
-                layout,
+                layout: layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
+            layer: None,
             visual: UiVisual::default(),
             content: UiContent::Scene(primitives),
             input: InputBehavior::NONE,
@@ -1332,6 +1376,11 @@ impl UiNode {
 
     pub fn with_input(mut self, input: InputBehavior) -> Self {
         self.input = input;
+        self
+    }
+
+    pub fn with_layer(mut self, layer: platform::UiLayer) -> Self {
+        self.layer = Some(layer);
         self
     }
 
@@ -1725,7 +1774,8 @@ pub struct UiDocument {
 }
 
 impl UiDocument {
-    pub fn new(root_style: UiNodeStyle) -> Self {
+    pub fn new(root_style: impl Into<UiNodeStyle>) -> Self {
+        let root_style = root_style.into();
         let root = UiNodeId(0);
         Self {
             root,
@@ -1767,8 +1817,8 @@ impl UiDocument {
         self.invalidate_layout();
     }
 
-    pub fn set_node_style(&mut self, id: UiNodeId, style: UiNodeStyle) {
-        self.nodes[id.0].style = style;
+    pub fn set_node_style(&mut self, id: UiNodeId, style: impl Into<UiNodeStyle>) {
+        self.nodes[id.0].style = style.into();
         self.invalidate_layout();
     }
 
@@ -1919,15 +1969,13 @@ impl UiDocument {
         let taffy_node = if node.children.is_empty() {
             match &node.content {
                 UiContent::Text(text) => taffy.new_leaf_with_context(
-                    node.style.layout.as_taffy_style().clone(),
+                    node.style.layout.clone(),
                     MeasureContext::Text(text.clone()),
                 )?,
                 UiContent::Empty
                 | UiContent::Canvas(_)
                 | UiContent::Image(_)
-                | UiContent::Scene(_) => {
-                    taffy.new_leaf(node.style.layout.as_taffy_style().clone())?
-                }
+                | UiContent::Scene(_) => taffy.new_leaf(node.style.layout.clone())?,
             }
         } else {
             let children = node
@@ -1935,7 +1983,7 @@ impl UiDocument {
                 .iter()
                 .map(|child| self.build_taffy_subtree(*child, taffy, mapping))
                 .collect::<Result<Vec<_>, _>>()?;
-            taffy.new_with_children(node.style.layout.as_taffy_style().clone(), &children)?
+            taffy.new_with_children(node.style.layout.clone(), &children)?
         };
         mapping.insert(id, taffy_node);
         Ok(taffy_node)
@@ -2332,7 +2380,6 @@ impl UiDocument {
                 node.style.z_index
             };
             let layer = node
-                .style
                 .layer
                 .or_else(|| node.parent.map(|parent| orders[parent.0].layer))
                 .unwrap_or(platform::UiLayer::AppContent);
@@ -3486,11 +3533,17 @@ pub mod widgets {
     }
 
     impl ButtonOptions {
-        pub fn new(layout: LayoutStyle) -> Self {
+        pub fn new(layout: impl Into<LayoutStyle>) -> Self {
+            let layout = layout.into();
             Self {
                 layout,
                 ..Default::default()
             }
+        }
+
+        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+            self.layout = layout.into();
+            self
         }
     }
 
@@ -3585,7 +3638,7 @@ pub mod widgets {
         let mut node = UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout,
+                layout: options.layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3652,8 +3705,9 @@ pub mod widgets {
         name: impl Into<String>,
         text: impl Into<String>,
         style: TextStyle,
-        layout: LayoutStyle,
+        layout: impl Into<LayoutStyle>,
     ) -> UiNodeId {
+        let layout = layout.into();
         let text = text.into();
         document.add_child(
             parent,
@@ -3667,15 +3721,16 @@ pub mod widgets {
         parent: UiNodeId,
         name: impl Into<String>,
         axes: ScrollAxes,
-        layout: LayoutStyle,
+        layout: impl Into<LayoutStyle>,
     ) -> UiNodeId {
         let name = name.into();
+        let layout = layout.into();
         document.add_child(
             parent,
             UiNode::container(
                 name.clone(),
                 UiNodeStyle {
-                    layout,
+                    layout: layout.style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3768,6 +3823,13 @@ pub mod widgets {
         }
     }
 
+    impl CheckboxOptions {
+        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+            self.layout = layout.into();
+            self
+        }
+    }
+
     pub fn checkbox(
         document: &mut UiDocument,
         parent: UiNodeId,
@@ -3799,7 +3861,7 @@ pub mod widgets {
         let mut root_node = UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout,
+                layout: options.layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3841,7 +3903,8 @@ pub mod widgets {
                             bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     ..Default::default()
                 },
             )
@@ -3974,6 +4037,13 @@ pub mod widgets {
         }
     }
 
+    impl SliderOptions {
+        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+            self.layout = layout.into();
+            self
+        }
+    }
+
     pub fn slider(
         document: &mut UiDocument,
         parent: UiNodeId,
@@ -4014,7 +4084,7 @@ pub mod widgets {
         let mut root_node = UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout,
+                layout: options.layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -4060,7 +4130,8 @@ pub mod widgets {
                         height: length(6.0),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -4079,7 +4150,8 @@ pub mod widgets {
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 ..Default::default()
             },
         )
@@ -4103,7 +4175,8 @@ pub mod widgets {
                         bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 z_index: 1,
                 ..Default::default()
             },
@@ -4867,6 +4940,13 @@ pub mod widgets {
         }
     }
 
+    impl TextInputOptions {
+        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+            self.layout = layout.into();
+            self
+        }
+    }
+
     pub fn text_input(
         document: &mut UiDocument,
         parent: UiNodeId,
@@ -4918,7 +4998,7 @@ pub mod widgets {
         let mut root_node = UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout,
+                layout: options.layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -5385,6 +5465,13 @@ pub mod widgets {
         }
     }
 
+    impl ComboBoxOptions {
+        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+            self.layout = layout.into();
+            self
+        }
+    }
+
     pub fn combo_box(
         document: &mut UiDocument,
         parent: UiNodeId,
@@ -5535,7 +5622,8 @@ pub mod widgets {
                     },
                     flex_shrink: 0.0,
                     ..Default::default()
-                }),
+                })
+                .style,
                 ..Default::default()
             },
         )
@@ -5568,7 +5656,8 @@ pub mod widgets {
                             height: length(28.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -5971,7 +6060,8 @@ pub fn root_style(width: f32, height: f32) -> UiNodeStyle {
                 height: Dimension::length(height),
             },
             ..Default::default()
-        }),
+        })
+        .style,
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -6176,23 +6266,25 @@ pub mod layout {
         style
     }
 
-    pub fn node_style(layout: LayoutStyle) -> UiNodeStyle {
+    pub fn node_style(layout: impl Into<LayoutStyle>) -> UiNodeStyle {
+        let layout = layout.into();
         UiNodeStyle {
-            layout,
+            layout: layout.style,
             ..Default::default()
         }
     }
 
-    pub fn clipped_node_style(layout: LayoutStyle) -> UiNodeStyle {
+    pub fn clipped_node_style(layout: impl Into<LayoutStyle>) -> UiNodeStyle {
+        let layout = layout.into();
         UiNodeStyle {
-            layout,
+            layout: layout.style,
             clip: ClipBehavior::Clip,
             ..Default::default()
         }
     }
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 pub fn egui_rect(rect: UiRect) -> egui::Rect {
     egui::Rect::from_min_size(
         egui::Pos2::new(rect.x, rect.y),
@@ -6200,7 +6292,7 @@ pub fn egui_rect(rect: UiRect) -> egui::Rect {
     )
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 pub fn egui_color(color: ColorRgba, opacity: f32) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(
         color.r,
@@ -6210,12 +6302,12 @@ pub fn egui_color(color: ColorRgba, opacity: f32) -> egui::Color32 {
     )
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 pub fn paint_document_egui(document: &UiDocument, ctx: &egui::Context, layer: egui::LayerId) {
     paint_document_egui_impl(document, ctx, layer, None, None, None);
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 pub fn paint_document_egui_clipped(
     document: &UiDocument,
     ctx: &egui::Context,
@@ -6225,7 +6317,7 @@ pub fn paint_document_egui_clipped(
     paint_document_egui_impl(document, ctx, layer, Some(clip_rect), None, None);
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 pub fn paint_document_egui_with_canvas(
     document: &UiDocument,
     ctx: &egui::Context,
@@ -6235,7 +6327,7 @@ pub fn paint_document_egui_with_canvas(
     paint_document_egui_impl(document, ctx, layer, None, None, Some(&mut paint_canvas));
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 pub fn paint_document_egui_with_images(
     document: &UiDocument,
     ctx: &egui::Context,
@@ -6245,7 +6337,7 @@ pub fn paint_document_egui_with_images(
     paint_document_egui_impl(document, ctx, layer, None, Some(&mut paint_image), None);
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 pub fn paint_document_egui_with_callbacks(
     document: &UiDocument,
     ctx: &egui::Context,
@@ -6263,13 +6355,13 @@ pub fn paint_document_egui_with_callbacks(
     );
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 type EguiImageCallback<'a> = dyn FnMut(&PaintImage, &PaintItem, &egui::Painter) + 'a;
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 type EguiCanvasCallback<'a> = dyn FnMut(&CanvasContent, &PaintItem, &egui::Painter) + 'a;
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn paint_document_egui_impl(
     document: &UiDocument,
     ctx: &egui::Context,
@@ -6456,7 +6548,7 @@ fn paint_document_egui_impl(
     simple_rect_batch.flush(&painter, outer_clip);
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn paint_rich_rect_egui(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -6499,7 +6591,7 @@ fn paint_rich_rect_egui(
     }
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn egui_stroke_kind(alignment: StrokeAlignment) -> egui::StrokeKind {
     match alignment {
         StrokeAlignment::Inside => egui::StrokeKind::Inside,
@@ -6508,7 +6600,7 @@ fn egui_stroke_kind(alignment: StrokeAlignment) -> egui::StrokeKind {
     }
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn scene_text_pos(rect: egui::Rect, text: &PaintText) -> egui::Pos2 {
     let x = match text.horizontal_align {
         TextHorizontalAlign::Start => rect.min.x,
@@ -6523,7 +6615,7 @@ fn scene_text_pos(rect: egui::Rect, text: &PaintText) -> egui::Pos2 {
     egui::Pos2::new(x, y)
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn scene_text_align(text: &PaintText) -> egui::Align2 {
     match (text.horizontal_align, text.vertical_align) {
         (TextHorizontalAlign::Start, TextVerticalAlign::Top | TextVerticalAlign::Baseline) => {
@@ -6544,7 +6636,7 @@ fn scene_text_align(text: &PaintText) -> egui::Align2 {
     }
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn scene_text_content(text: &PaintText) -> &str {
     if text.multiline {
         &text.text
@@ -6553,7 +6645,7 @@ fn scene_text_content(text: &PaintText) -> &str {
     }
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn paint_path_points(path: &PaintPath) -> Vec<UiPoint> {
     path.verbs
         .iter()
@@ -6565,22 +6657,22 @@ fn paint_path_points(path: &PaintPath) -> Vec<UiPoint> {
         .collect()
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn egui_pos(point: UiPoint) -> egui::Pos2 {
     egui::Pos2::new(point.x, point.y)
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn transform_point(point: UiPoint, transform: PaintTransform) -> UiPoint {
     transform.transform_point(point)
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn transform_rect(rect: UiRect, transform: PaintTransform) -> UiRect {
     transform.transform_rect(rect)
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn egui_font_id(style: &TextStyle, scale: f32) -> egui::FontId {
     let size = style.font_size * scale.max(0.0);
     match style.family {
@@ -6591,13 +6683,13 @@ fn egui_font_id(style: &TextStyle, scale: f32) -> egui::FontId {
     }
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 #[derive(Default)]
 struct SimpleRectBatch {
     mesh: egui::epaint::Mesh,
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 impl SimpleRectBatch {
     fn try_push(&mut self, item: &PaintItem, rect: egui::Rect, clip_rect: egui::Rect) -> bool {
         let PaintKind::Rect {
@@ -6649,7 +6741,7 @@ impl SimpleRectBatch {
     }
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn rect_is_inside_clip(rect: egui::Rect, clip_rect: egui::Rect) -> bool {
     rect.min.x >= clip_rect.min.x
         && rect.min.y >= clip_rect.min.y
@@ -6657,7 +6749,7 @@ fn rect_is_inside_clip(rect: egui::Rect, clip_rect: egui::Rect) -> bool {
         && rect.max.y <= clip_rect.max.y
 }
 
-#[cfg(feature = "egui")]
+#[cfg(feature = "egui-renderer-compat")]
 fn add_inner_rect_stroke(
     mesh: &mut egui::epaint::Mesh,
     rect: egui::Rect,
@@ -6715,7 +6807,8 @@ mod tests {
                     height: length(height),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             ..Default::default()
         }
     }
@@ -6762,7 +6855,7 @@ mod tests {
 
         let node_style = layout::clipped_node_style(absolute);
         assert_eq!(node_style.clip, ClipBehavior::Clip);
-        assert!(node_style.layout.is_absolute());
+        assert_eq!(node_style.layout.position, Position::Absolute);
     }
 
     #[test]
@@ -6781,6 +6874,117 @@ mod tests {
             dark.highest_contrast_against(ColorRgba::WHITE, ColorRgba::BLACK),
             ColorRgba::WHITE
         );
+    }
+
+    #[test]
+    fn ui_node_factories_accept_legacy_taffy_styles() {
+        let legacy = Style {
+            size: TaffySize {
+                width: length(200.0),
+                height: length(40.0),
+            },
+            ..Default::default()
+        };
+        let container = UiNode::container("legacy-container", legacy.clone());
+        let text = UiNode::text("legacy-text", "label", TextStyle::default(), legacy.clone());
+        let image = UiNode::image(
+            "legacy-image",
+            ImageContent::new("icons.render"),
+            legacy.clone(),
+        );
+        let scene = UiNode::scene("legacy-scene", Vec::new(), legacy.clone());
+        let canvas = UiNode::canvas("legacy-canvas", "canvas_key", legacy.clone());
+
+        assert_eq!(container.style.layout.size, legacy.size);
+        assert_eq!(text.style.layout.size, legacy.size);
+        assert_eq!(image.style.layout.size, legacy.size);
+        assert_eq!(scene.style.layout.size, legacy.size);
+        assert_eq!(canvas.style.layout.size, legacy.size);
+    }
+
+    #[test]
+    fn document_accepts_legacy_taffy_root_and_style_updates() {
+        let legacy = Style {
+            size: TaffySize {
+                width: length(800.0),
+                height: length(600.0),
+            },
+            ..Default::default()
+        };
+        let mut doc = UiDocument::new(legacy.clone());
+        let child = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "child",
+                UiNodeStyle {
+                    layout: LayoutStyle::from_taffy_style(Style {
+                        size: TaffySize {
+                            width: length(120.0),
+                            height: length(24.0),
+                        },
+                        ..Default::default()
+                    })
+                    .style,
+                    ..Default::default()
+                },
+            ),
+        );
+        let updated = Style {
+            size: TaffySize {
+                width: length(180.0),
+                height: length(36.0),
+            },
+            ..Default::default()
+        };
+        doc.set_node_style(child, updated.clone());
+        let child_style = &doc.node(child).style.layout;
+        assert_eq!(child_style.size, updated.size);
+        assert_eq!(doc.node(doc.root).style.layout.size, legacy.size);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_apis_accept_legacy_taffy_layout_inputs() {
+        let root_style = root_style(280.0, 120.0);
+        let mut doc = UiDocument::new(root_style);
+        let root = doc.root;
+        let legacy = Style {
+            size: TaffySize {
+                width: length(120.0),
+                height: length(24.0),
+            },
+            ..Default::default()
+        };
+        let label = widgets::label(
+            &mut doc,
+            root,
+            "label",
+            "Legacy Label",
+            TextStyle::default(),
+            legacy.clone(),
+        );
+        let scroll = widgets::scroll_area(
+            &mut doc,
+            root,
+            "scroll",
+            ScrollAxes::HORIZONTAL,
+            legacy.clone(),
+        );
+
+        let button_options =
+            widgets::ButtonOptions::new(legacy.clone()).with_layout(legacy.clone());
+        let checkbox_options = widgets::CheckboxOptions::default().with_layout(legacy.clone());
+        let slider_options = widgets::SliderOptions::default().with_layout(legacy.clone());
+        let text_input_options = widgets::TextInputOptions::default().with_layout(legacy.clone());
+        let combo_box_options = widgets::ComboBoxOptions::default().with_layout(legacy.clone());
+
+        assert_eq!(doc.node(label).style.layout.size, legacy.size);
+        assert_eq!(doc.node(scroll).style.layout.size, legacy.size);
+        assert_eq!(button_options.layout.as_taffy_style().size, legacy.size);
+        assert_eq!(checkbox_options.layout.as_taffy_style().size, legacy.size);
+        assert_eq!(slider_options.layout.as_taffy_style().size, legacy.size);
+        assert_eq!(text_input_options.layout.as_taffy_style().size, legacy.size);
+        assert_eq!(combo_box_options.layout.as_taffy_style().size, legacy.size);
     }
 
     #[test]
@@ -6803,7 +7007,8 @@ mod tests {
                             bottom: LengthPercentageAuto::length(18.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -6839,7 +7044,8 @@ mod tests {
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
             ),
         );
         doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
@@ -6860,12 +7066,7 @@ mod tests {
             .expect("layout");
         assert_eq!(doc.node(child).layout.rect.width, 80.0);
 
-        doc.node_mut(child)
-            .style
-            .layout
-            .as_taffy_style_mut()
-            .size
-            .width = length(120.0);
+        doc.node_mut(child).style.layout.size.width = length(120.0);
         doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
@@ -6915,7 +7116,8 @@ mod tests {
                             height: length(100.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -6932,7 +7134,8 @@ mod tests {
                             height: length(80.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     ..Default::default()
                 },
             )
@@ -6988,7 +7191,8 @@ mod tests {
                             height: length(100.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     z_index: 5,
                     ..Default::default()
                 },
@@ -7010,7 +7214,8 @@ mod tests {
                             ..Rect::length(0.0)
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     z_index: 10,
                     ..Default::default()
                 },
@@ -7048,12 +7253,13 @@ mod tests {
                             height: length(100.0),
                         },
                         ..Default::default()
-                    }),
-                    layer: Some(platform::UiLayer::AppOverlay),
+                    })
+                    .style,
                     z_index: platform::LAYER_LOCAL_Z_MAX,
                     ..Default::default()
                 },
             )
+            .with_layer(platform::UiLayer::AppOverlay)
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
@@ -7074,12 +7280,13 @@ mod tests {
                             height: length(100.0),
                         },
                         ..Default::default()
-                    }),
-                    layer: Some(platform::UiLayer::DebugOverlay),
+                    })
+                    .style,
                     z_index: platform::LAYER_LOCAL_Z_MIN,
                     ..Default::default()
                 },
             )
+            .with_layer(platform::UiLayer::DebugOverlay)
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
@@ -7118,7 +7325,8 @@ mod tests {
                             height: length(60.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7162,7 +7370,8 @@ mod tests {
                             height: length(60.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7199,7 +7408,8 @@ mod tests {
                             height: length(60.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7258,7 +7468,8 @@ mod tests {
                             height: length(50.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7302,7 +7513,8 @@ mod tests {
                             height: length(50.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7318,7 +7530,7 @@ mod tests {
             UiNode::container(
                 "content_extent",
                 UiNodeStyle {
-                    layout: layout::absolute(230.0, 170.0, 10.0, 10.0),
+                    layout: layout::absolute(230.0, 170.0, 10.0, 10.0).style,
                     ..Default::default()
                 },
             ),
@@ -7353,7 +7565,8 @@ mod tests {
                             height: length(50.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -7369,7 +7582,7 @@ mod tests {
             UiNode::container(
                 "target",
                 UiNodeStyle {
-                    layout: layout::absolute(160.0, 130.0, 20.0, 20.0),
+                    layout: layout::absolute(160.0, 130.0, 20.0, 20.0).style,
                     ..Default::default()
                 },
             ),
@@ -8005,7 +8218,8 @@ mod tests {
                             height: length(60.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -8307,7 +8521,7 @@ mod tests {
         assert_eq!(item.shader.unwrap().key, "ui.glow");
     }
 
-    #[cfg(feature = "egui")]
+    #[cfg(feature = "egui-renderer-compat")]
     #[test]
     fn egui_paint_callbacks_receive_image_and_canvas_items() {
         let mut doc = UiDocument::new(root_style(160.0, 120.0));
@@ -8701,7 +8915,8 @@ mod tests {
                             height: length(80.0),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     ..Default::default()
                 },
             )

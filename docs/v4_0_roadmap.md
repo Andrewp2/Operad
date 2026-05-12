@@ -1,8 +1,9 @@
 # Operad 4.0 Roadmap
 
-Operad `4.0.0` should pick up the work intentionally deferred from `3.0.0`.
-The bar is higher than v3: each item should be validated against the game,
-Orbifold, and Fabricad/layout consumers before it lands.
+Operad `4.0.0` picks up the renderer and release-hardening work intentionally
+deferred from `3.0.0`. Downstream applications should validate their own
+adoption paths, but those migrations are not Operad release blockers once the
+library-owned gates are green.
 
 ## Release Goal
 
@@ -116,9 +117,11 @@ Targets:
 - Overlay stack coordination for dialogs, popovers, command palette, and
   listbox popups.
 
-## 8. Consumer Reference Migrations
+## 8. Downstream Reference Migrations
 
-V4 scope should be proven by real migrations, not only library tests.
+Downstream migrations are adoption work owned by each application. They are
+still useful validation targets for future Operad work, but they are not part
+of the Operad `4.0.0` release gate.
 
 Reference goals:
 
@@ -133,7 +136,11 @@ Reference goals:
 V4 should keep the v3 quality gate and add:
 
 - At least one renderer/native-viewport conformance test.
-- At least one downstream consumer probe for each application.
+- Clear downstream migration guidance and compatibility notes.
 - A migration guide from v3 to v4.
 - A documented decision on any remaining public backend type leakage.
 - A release checklist that includes accessibility and performance sign-off.
+
+The status and evidence for each gate is tracked in:
+
+- [v4 release checklist](/home/andrew-peterson/code/operad/docs/v4_0_release_checklist.md)

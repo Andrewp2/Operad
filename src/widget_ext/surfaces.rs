@@ -390,7 +390,7 @@ pub fn progress_indicator(
     let mut root = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout: options.layout,
+            layout: options.layout.style,
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -415,7 +415,8 @@ pub fn progress_indicator(
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             ..Default::default()
         },
     )
@@ -452,7 +453,7 @@ pub fn split_pane(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout,
+                layout: layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -529,7 +530,7 @@ fn split_pane_child_style(axis: SplitAxis, grow: f32, min_extent: f32) -> UiNode
         layout.min_size.height = length(min_extent.max(0.0));
     }
     UiNodeStyle {
-        layout: LayoutStyle::from_taffy_style(layout),
+        layout: LayoutStyle::from_taffy_style(layout).style,
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -573,7 +574,8 @@ fn split_pane_handle_style(axis: SplitAxis, thickness: f32) -> UiNodeStyle {
             flex_shrink: 0.0,
             size,
             ..Default::default()
-        }),
+        })
+        .style,
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -785,7 +787,7 @@ pub fn dock_workspace(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout.clone(),
+                layout: options.layout.style.clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -821,7 +823,8 @@ pub fn dock_workspace(
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -912,7 +915,8 @@ fn add_dock_panel(
                         padding: Rect::length(4.0),
                         flex_shrink: 0.0,
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     ..Default::default()
                 },
             ),
@@ -982,7 +986,8 @@ fn add_dock_panel(
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -1037,7 +1042,7 @@ fn dock_panel_style(panel: &DockPanelDescriptor) -> UiNodeStyle {
         }
     }
     UiNodeStyle {
-        layout: LayoutStyle::from_taffy_style(layout),
+        layout: LayoutStyle::from_taffy_style(layout).style,
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -1095,7 +1100,8 @@ fn add_dock_resize_handle(
                     inset,
                     size,
                     ..Default::default()
-                }),
+                })
+                .style,
                 z_index: 1,
                 ..Default::default()
             },
@@ -2064,7 +2070,7 @@ pub fn toast_stack(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout.clone(),
+                layout: options.layout.style.clone(),
                 z_index: 60,
                 ..Default::default()
             },
@@ -2112,7 +2118,8 @@ fn add_toast_node(
                     ..Rect::length(0.0)
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -2142,7 +2149,8 @@ fn add_toast_node(
                             height: Dimension::auto(),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     ..Default::default()
                 },
             ),
@@ -2227,7 +2235,8 @@ fn add_toast_node(
                             ..Rect::length(0.0)
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     ..Default::default()
                 },
             ),
@@ -2250,7 +2259,8 @@ fn add_toast_node(
                                 ..Rect::length(0.0)
                             },
                             ..Default::default()
-                        }),
+                        })
+                        .style,
                         clip: ClipBehavior::Clip,
                         ..Default::default()
                     },
@@ -2524,7 +2534,7 @@ pub fn timeline_ruler(
     let mut root_node = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout,
+            layout: layout.style,
             clip: ClipBehavior::Clip,
             ..Default::default()
         },

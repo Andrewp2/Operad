@@ -261,6 +261,7 @@ pub struct RenderOptions {
     pub scale_factor: f32,
     pub deterministic: bool,
     pub allow_partial_updates: bool,
+    pub collect_gpu_timing: bool,
     pub clear_color: ColorRgba,
     pub accessibility_preferences: AccessibilityPreferences,
 }
@@ -271,6 +272,7 @@ impl Default for RenderOptions {
             scale_factor: 1.0,
             deterministic: false,
             allow_partial_updates: true,
+            collect_gpu_timing: false,
             clear_color: ColorRgba::TRANSPARENT,
             accessibility_preferences: AccessibilityPreferences::DEFAULT,
         }

@@ -830,7 +830,8 @@ mod tests {
                     height: length(height),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             ..Default::default()
         }
     }
@@ -914,7 +915,8 @@ mod tests {
                             height: Dimension::auto(),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     ..Default::default()
                 },
             ),

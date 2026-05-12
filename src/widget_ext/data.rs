@@ -941,7 +941,7 @@ pub fn property_inspector_grid(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout.clone(),
+                layout: options.layout.style.clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -975,7 +975,8 @@ pub fn property_inspector_grid(
                             height: px(options.row_height),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -2502,7 +2503,7 @@ pub fn virtualized_data_table(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout.clone(),
+                layout: options.layout.style.clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -2538,7 +2539,8 @@ pub fn virtualized_data_table(
                         height: px(spec.viewport_height),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -2579,7 +2581,8 @@ pub fn virtualized_data_table(
                         },
                         flex_shrink: 0.0,
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -2610,7 +2613,8 @@ pub fn virtualized_data_table(
                         padding: taffy::prelude::Rect::length(6.0),
                         flex_shrink: 0.0,
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3226,7 +3230,7 @@ pub fn tree_view(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout.clone(),
+                layout: options.layout.style.clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3269,7 +3273,8 @@ pub fn tree_view(
                             height: px(options.row_height),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3309,7 +3314,8 @@ pub fn tree_view(
                             },
                             flex_shrink: 0.0,
                             ..Default::default()
-                        }),
+                        })
+                        .style,
                         ..Default::default()
                     },
                 ),
@@ -3576,7 +3582,7 @@ pub fn tab_group(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout.clone(),
+                layout: options.layout.style.clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3598,7 +3604,8 @@ pub fn tab_group(
                         height: px(options.tab_strip_height),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3640,7 +3647,8 @@ pub fn tab_group(
                         padding: taffy::prelude::Rect::length(6.0),
                         flex_shrink: 0.0,
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3741,7 +3749,8 @@ pub fn tab_group(
                         height: Dimension::percent(1.0),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3780,7 +3789,8 @@ fn data_table_header(
                         height: px(options.header_height),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3811,7 +3821,8 @@ fn data_table_header(
                         padding: taffy::prelude::Rect::length(6.0),
                         flex_shrink: 0.0,
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3865,7 +3876,8 @@ fn vertical_spacer(name: impl Into<String>, width: f32, height: f32) -> UiNode {
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            }),
+            })
+            .style,
             ..Default::default()
         },
     )

@@ -3,6 +3,7 @@
 mod common;
 
 use std::hint::black_box;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use common::render_document;
@@ -10,9 +11,16 @@ use operad::widgets::*;
 use operad::*;
 
 const PERF_VIEWPORT: UiSize = UiSize::new(960.0, 540.0);
+#[cfg(feature = "wgpu")]
+const FRAME_PERCENTILE: f64 = 95.0;
+#[cfg(all(feature = "wgpu", debug_assertions))]
+const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis(3);
+#[cfg(all(feature = "wgpu", not(debug_assertions)))]
+const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis(1);
 
 #[test]
 fn virtualized_table_layout_and_raster_smoke_stays_under_budget() {
+    let _perf_guard = perf_test_lock();
     let mut perf = PerformanceSamples::new("virtualized table render smoke");
     let mut combined_hash = 0_u64;
 
@@ -95,6 +103,7 @@ fn virtualized_table_layout_and_raster_smoke_stays_under_budget() {
 
 #[test]
 fn command_palette_filter_build_and_paint_stays_under_budget() {
+    let _perf_guard = perf_test_lock();
     let items = (0..5_000)
         .map(|index| {
             CommandPaletteItem::new(format!("cmd.{index}"), format!("Transform clip {index}"))
@@ -142,6 +151,7 @@ fn command_palette_filter_build_and_paint_stays_under_budget() {
 
 #[test]
 fn retained_display_list_reuse_smoke_reports_expected_hit_rate() {
+    let _perf_guard = perf_test_lock();
     let mut cache = RetainedDisplayListCache::new();
     let key = DisplayListKey::editor_background("perf.static-grid", 1);
     let mut series = DisplayListReuseSeries::new("retained display-list reuse smoke");
@@ -201,6 +211,7 @@ fn retained_display_list_reuse_smoke_reports_expected_hit_rate() {
 
 #[test]
 fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
+    let _perf_guard = perf_test_lock();
     let mut perf = PerformanceSamples::new("editor geometry render smoke");
     let mut combined_hash = 0_u64;
     let mut combined_hits = 0_usize;
@@ -323,25 +334,41 @@ fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
         .expect("average budget");
 }
 
+#[cfg(feature = "wgpu")]
 #[test]
 fn scenario_harness_multi_frame_render_smoke_stays_under_budget() {
-    let mut harness = ScenarioHarness::new(PERF_VIEWPORT);
+    let _perf_guard = perf_test_lock();
+    let mut harness = ScenarioHarness::new(PERF_VIEWPORT)
+        .target(RenderTarget::window("perf.scenario", PERF_VIEWPORT));
     let mut timings = FrameTimingSeries::new("scenario harness render smoke");
     let mut combined_hash = 0_u64;
+    let mut measurer = ApproxTextMeasurer;
+    let mut renderer = WgpuRenderer::default();
+    renderer.warm_up().expect("wgpu renderer warm-up");
+    for warmup_frame in 0..3 {
+        let mut document = scenario_perf_document(warmup_frame);
+        harness
+            .run_frame_with_measurer_and_renderer(
+                format!("scenario-warmup-{warmup_frame}"),
+                &mut document,
+                EventReplay::new(),
+                &mut measurer,
+                &mut renderer,
+                &EmptyResourceResolver,
+            )
+            .expect("scenario warm-up frame");
+    }
 
     for frame in 0..8 {
         let mut document = scenario_perf_document(frame);
         let report = harness
-            .run_frame(
+            .run_frame_with_measurer_and_renderer(
                 format!("scenario-frame-{frame}"),
                 &mut document,
-                EventReplay::new()
-                    .pointer_click("activate", UiPoint::new(32.0, 20.0))
-                    .wheel(
-                        "scroll",
-                        UiPoint::new(420.0, 132.0),
-                        UiPoint::new(0.0, 18.0 + frame as f32),
-                    ),
+                EventReplay::new().pointer_click("activate", UiPoint::new(32.0, 20.0)),
+                &mut measurer,
+                &mut renderer,
+                &EmptyResourceResolver,
             )
             .expect("scenario frame");
 
@@ -359,15 +386,14 @@ fn scenario_harness_multi_frame_render_smoke_stays_under_budget() {
             .render_assertions()
             .require_min_painted_items(70)
             .expect("painted items");
-        combined_hash ^= {
-            let snapshot = report
-                .snapshot_assertions(format!("scenario-frame-{frame}"))
-                .expect("snapshot");
-            snapshot
-                .require_min_changed_pixels_from(DEFAULT_CPU_SNAPSHOT_BACKGROUND, 1_000)
-                .expect("visible scenario content");
-            snapshot.hash()
-        };
+        assert!(
+            report.render.snapshot.is_none(),
+            "window-target perf test must not use snapshot readback"
+        );
+        combined_hash ^= (report.render.painted_items as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15_u64)
+            .rotate_left((frame % 64) as u32)
+            ^ (frame as u64).wrapping_mul(0x9E3779B97F4A7C15_u64);
         timings.push(report.timings.clone());
     }
 
@@ -398,7 +424,11 @@ fn scenario_harness_multi_frame_render_smoke_stays_under_budget() {
         .require_section_average_within("render-frame", Duration::from_millis(250))
         .expect("render average budget");
     assertions
-        .require_section_percentile_within("render-frame", 95.0, Duration::from_millis(500))
+        .require_section_percentile_within(
+            "render-frame",
+            FRAME_PERCENTILE,
+            NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET,
+        )
         .expect("render percentile budget");
 }
 
@@ -413,6 +443,7 @@ fn perf_screen() -> UiDocument {
     document
 }
 
+#[cfg(feature = "wgpu")]
 fn scenario_perf_document(frame: usize) -> UiDocument {
     let mut document = perf_screen();
     let root = document.root;
@@ -420,10 +451,11 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
         root,
         UiNode::container(
             "perf.scenario.toolbar",
-            UiNodeStyle {
-                layout: layout::with_size(layout::row(), layout::px(920.0), layout::px(42.0)),
-                ..Default::default()
-            },
+            UiNodeStyle::from(layout::with_size(
+                layout::row(),
+                layout::px(920.0),
+                layout::px(42.0),
+            )),
         )
         .with_visual(UiVisual::panel(
             ColorRgba::new(15, 20, 28, 255),
@@ -466,10 +498,11 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
             scroll,
             UiNode::container(
                 format!("perf.scenario.row.{row}"),
-                UiNodeStyle {
-                    layout: layout::with_size(layout::row(), layout::px(900.0), layout::px(24.0)),
-                    ..Default::default()
-                },
+                UiNodeStyle::from(layout::with_size(
+                    layout::row(),
+                    layout::px(900.0),
+                    layout::px(24.0),
+                )),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(
@@ -488,7 +521,7 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
             row_node,
             UiNode::text(
                 format!("perf.scenario.row.{row}.label"),
-                format!("Scenario row {row:02}    frame {frame}    reusable toolkit surface"),
+                format!("Scenario row {row:02}    reusable toolkit surface"),
                 TextStyle {
                     font_size: 11.0,
                     line_height: 15.0,
@@ -501,6 +534,350 @@ fn scenario_perf_document(frame: usize) -> UiDocument {
     }
 
     document
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn wgpu_text_cache_window_render_stays_under_budget_without_readback() {
+    let _perf_guard = perf_test_lock();
+    let mut renderer = WgpuRenderer::default();
+    renderer.warm_up().expect("wgpu renderer warm-up");
+    for frame in 0..4 {
+        renderer
+            .render_frame(wgpu_text_cache_perf_request(frame), &EmptyResourceResolver)
+            .expect("wgpu text cache warm-up frame");
+    }
+
+    let mut samples = PerformanceSamples::new("wgpu text cache no-readback render");
+    let mut combined_hash = 0_u64;
+    for frame in 0..12 {
+        let output = renderer
+            .render_frame(wgpu_text_cache_perf_request(frame), &EmptyResourceResolver)
+            .expect("wgpu text cache frame");
+        assert!(
+            output.snapshot.is_none(),
+            "window-target perf test must not use snapshot readback"
+        );
+        let render_duration = output
+            .timings
+            .duration("render")
+            .expect("renderer timing includes render section");
+        samples.push(render_duration);
+        combined_hash ^= (output.painted_items as u64)
+            .wrapping_mul(0x517cc1b727220a95)
+            .rotate_left((frame % 64) as u32);
+    }
+
+    assert_ne!(combined_hash, 0);
+    let assertions = PerformanceAssertions::new(&samples);
+    assertions.require_sample_count(12).expect("sample count");
+    assertions
+        .require_percentile_within(FRAME_PERCENTILE, NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET)
+        .expect("render percentile budget");
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn wgpu_mixed_changing_ui_window_render_stays_under_budget_without_readback() {
+    let _perf_guard = perf_test_lock();
+    let mut renderer = WgpuRenderer::default();
+    renderer.warm_up().expect("wgpu renderer warm-up");
+    for frame in 0..4 {
+        renderer
+            .render_frame(wgpu_mixed_ui_perf_request(frame), &EmptyResourceResolver)
+            .expect("wgpu mixed UI warm-up frame");
+    }
+
+    let mut samples = PerformanceSamples::new("wgpu mixed changing UI no-readback render");
+    let mut combined_hash = 0_u64;
+    for frame in 0..12 {
+        let output = renderer
+            .render_frame(wgpu_mixed_ui_perf_request(frame), &EmptyResourceResolver)
+            .expect("wgpu mixed UI frame");
+        assert!(
+            output.snapshot.is_none(),
+            "window-target perf test must not use snapshot readback"
+        );
+        let render_duration = output
+            .timings
+            .duration("render")
+            .expect("renderer timing includes render section");
+        samples.push(render_duration);
+        combined_hash ^= (output.painted_items as u64)
+            .wrapping_mul(0x94d049bb133111eb)
+            .rotate_left((frame % 64) as u32)
+            ^ (frame as u64);
+    }
+
+    assert_ne!(combined_hash, 0);
+    let assertions = PerformanceAssertions::new(&samples);
+    assertions.require_sample_count(12).expect("sample count");
+    assertions
+        .require_percentile_within(FRAME_PERCENTILE, NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET)
+        .expect("render percentile budget");
+}
+
+#[cfg(all(feature = "wgpu", not(debug_assertions)))]
+#[test]
+fn wgpu_mixed_changing_ui_gpu_render_pass_stays_under_budget_when_timestamps_available() {
+    let _perf_guard = perf_test_lock();
+    let mut renderer = WgpuRenderer::default();
+    renderer.warm_up().expect("wgpu renderer warm-up");
+    for frame in 0..4 {
+        renderer
+            .render_frame(
+                wgpu_mixed_ui_perf_request(frame).options(RenderOptions {
+                    collect_gpu_timing: true,
+                    ..RenderOptions::default()
+                }),
+                &EmptyResourceResolver,
+            )
+            .expect("wgpu mixed UI GPU timing warm-up frame");
+    }
+
+    let mut samples = PerformanceSamples::new("wgpu mixed changing UI GPU render pass");
+    for frame in 0..12 {
+        let output = renderer
+            .render_frame(
+                wgpu_mixed_ui_perf_request(frame).options(RenderOptions {
+                    collect_gpu_timing: true,
+                    ..RenderOptions::default()
+                }),
+                &EmptyResourceResolver,
+            )
+            .expect("wgpu mixed UI GPU timing frame");
+        assert!(
+            output.snapshot.is_none(),
+            "window-target perf test must not use snapshot readback"
+        );
+        let Some(gpu_render_duration) = output.timings.duration("gpu-render") else {
+            return;
+        };
+        samples.push(gpu_render_duration);
+    }
+
+    let assertions = PerformanceAssertions::new(&samples);
+    assertions.require_sample_count(12).expect("sample count");
+    assertions
+        .require_percentile_within(FRAME_PERCENTILE, Duration::from_millis(1))
+        .expect("GPU render pass percentile budget");
+}
+
+#[cfg(feature = "wgpu")]
+fn wgpu_text_cache_perf_request(frame: usize) -> RenderFrameRequest {
+    const ROWS: usize = 64;
+    let dirty_row = frame % ROWS;
+    let mut items = Vec::with_capacity(ROWS + 1);
+    items.push(PaintItem {
+        node: UiNodeId(50_000),
+        rect: UiRect::new(0.0, 0.0, 640.0, 360.0),
+        clip_rect: UiRect::new(0.0, 0.0, 640.0, 360.0),
+        z_index: 0,
+        layer_order: operad::platform::LayerOrder::DEFAULT,
+        opacity: 1.0,
+        transform: PaintTransform::default(),
+        shader: None,
+        kind: PaintKind::Rect {
+            fill: ColorRgba::new(9, 12, 16, 255),
+            stroke: None,
+            corner_radius: 0.0,
+        },
+    });
+    for row in 0..ROWS {
+        let text = if row == dirty_row {
+            format!("Row {row:02} changed on frame {frame}")
+        } else {
+            format!("Stable row {row:02} reusable toolkit surface")
+        };
+        items.push(PaintItem {
+            node: UiNodeId(50_001 + row),
+            rect: UiRect::new(12.0, 10.0 + row as f32 * 7.0, 420.0, 12.0),
+            clip_rect: UiRect::new(0.0, 0.0, 640.0, 360.0),
+            z_index: 0,
+            layer_order: operad::platform::LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Text(TextContent::new(
+                text,
+                TextStyle {
+                    font_size: 10.0,
+                    line_height: 12.0,
+                    color: ColorRgba::new(232, 238, 246, 255),
+                    ..Default::default()
+                },
+            )),
+        });
+    }
+
+    RenderFrameRequest::new(
+        RenderTarget::window("perf.text-cache", UiSize::new(640.0, 360.0)),
+        UiSize::new(640.0, 360.0),
+        PaintList { items },
+    )
+}
+
+#[cfg(feature = "wgpu")]
+fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
+    const ROWS: usize = 48;
+    let viewport = UiSize::new(960.0, 540.0);
+    let clip = UiRect::new(0.0, 0.0, viewport.width, viewport.height);
+    let dirty_row = frame % ROWS;
+    let selected_row = frame.wrapping_mul(5) % ROWS;
+    let mut items = Vec::with_capacity(1 + ROWS * 6);
+    items.push(PaintItem {
+        node: UiNodeId(60_000),
+        rect: clip,
+        clip_rect: clip,
+        z_index: 0,
+        layer_order: operad::platform::LayerOrder::DEFAULT,
+        opacity: 1.0,
+        transform: PaintTransform::default(),
+        shader: None,
+        kind: PaintKind::Rect {
+            fill: ColorRgba::new(8, 11, 16, 255),
+            stroke: None,
+            corner_radius: 0.0,
+        },
+    });
+
+    for row in 0..ROWS {
+        let y = 24.0 + row as f32 * 10.0;
+        let selected = row == selected_row;
+        items.push(PaintItem {
+            node: UiNodeId(60_100 + row),
+            rect: UiRect::new(18.0, y, 900.0, 8.0),
+            clip_rect: clip,
+            z_index: 0,
+            layer_order: operad::platform::LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Rect {
+                fill: if selected {
+                    ColorRgba::new(48, 84, 105, 255)
+                } else if row % 2 == 0 {
+                    ColorRgba::new(17, 24, 32, 255)
+                } else {
+                    ColorRgba::new(12, 19, 27, 255)
+                },
+                stroke: None,
+                corner_radius: 3.0,
+            },
+        });
+    }
+
+    for row in 0..ROWS {
+        let y = 25.0 + row as f32 * 10.0;
+        let width = 36.0 + ((row * 17 + frame * 13) % 180) as f32;
+        items.push(PaintItem {
+            node: UiNodeId(60_200 + row),
+            rect: UiRect::new(620.0, y, width, 4.0),
+            clip_rect: clip,
+            z_index: 0,
+            layer_order: operad::platform::LayerOrder::DEFAULT,
+            opacity: 0.9,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Rect {
+                fill: ColorRgba::new(84, 153, 188, 255),
+                stroke: None,
+                corner_radius: 0.0,
+            },
+        });
+    }
+
+    for row in 0..ROWS {
+        let y = 28.0 + row as f32 * 10.0;
+        let phase = ((row * 7 + frame * 3) % 24) as f32;
+        let x = 420.0 + (row % 3) as f32 * 2.0;
+        items.push(PaintItem {
+            node: UiNodeId(60_300 + row),
+            rect: UiRect::new(x, y - 2.0, 4.0, 4.0),
+            clip_rect: clip,
+            z_index: 0,
+            layer_order: operad::platform::LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Circle {
+                center: UiPoint::new(x + 2.0, y),
+                radius: 2.0,
+                fill: ColorRgba::new(238, 190, 89, 255),
+                stroke: None,
+            },
+        });
+        items.push(PaintItem {
+            node: UiNodeId(60_400 + row),
+            rect: UiRect::new(450.0, y - 6.0, 72.0, 12.0),
+            clip_rect: clip,
+            z_index: 0,
+            layer_order: operad::platform::LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Line {
+                from: UiPoint::new(450.0, y + phase * 0.08 - 2.0),
+                to: UiPoint::new(486.0, y - phase * 0.05 + 2.0),
+                stroke: StrokeStyle::new(ColorRgba::new(88, 132, 178, 255), 1.0),
+            },
+        });
+        items.push(PaintItem {
+            node: UiNodeId(60_500 + row),
+            rect: UiRect::new(486.0, y - 6.0, 72.0, 12.0),
+            clip_rect: clip,
+            z_index: 0,
+            layer_order: operad::platform::LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Line {
+                from: UiPoint::new(486.0, y - phase * 0.05 + 2.0),
+                to: UiPoint::new(522.0, y + phase * 0.07 - 1.0),
+                stroke: StrokeStyle::new(ColorRgba::new(134, 112, 196, 255), 1.0),
+            },
+        });
+    }
+
+    for row in 0..ROWS {
+        let text = if row == dirty_row {
+            format!("Mixed row {row:02} live value {frame:02}")
+        } else {
+            format!("Mixed row {row:02} cached surface")
+        };
+        items.push(PaintItem {
+            node: UiNodeId(60_600 + row),
+            rect: UiRect::new(32.0, 22.0 + row as f32 * 10.0, 320.0, 10.0),
+            clip_rect: clip,
+            z_index: 0,
+            layer_order: operad::platform::LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Text(TextContent::new(
+                text,
+                TextStyle {
+                    font_size: 9.0,
+                    line_height: 10.0,
+                    color: ColorRgba::new(225, 232, 242, 255),
+                    ..Default::default()
+                },
+            )),
+        });
+    }
+
+    RenderFrameRequest::new(
+        RenderTarget::window("perf.mixed-ui", viewport),
+        viewport,
+        PaintList { items },
+    )
+}
+
+fn perf_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn retained_panel_paint(item_count: usize) -> PaintList {

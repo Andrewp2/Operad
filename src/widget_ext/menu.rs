@@ -208,7 +208,7 @@ pub fn popup_panel(
     let mut node = UiNode::container(
         name,
         UiNodeStyle {
-            layout: absolute_rect_style(rect),
+            layout: absolute_rect_style(rect).style,
             clip,
             z_index,
             ..Default::default()
@@ -2589,7 +2589,7 @@ pub fn menu_bar(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout,
+                layout: options.layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3160,7 +3160,8 @@ pub fn command_palette(
                     },
                     padding: TaffyRect::length(4.0),
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 z_index: options.z_index,
                 ..Default::default()
@@ -3194,7 +3195,8 @@ pub fn command_palette(
                     },
                     padding: TaffyRect::length(8.0),
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -3237,7 +3239,8 @@ pub fn command_palette(
                     height: length(visible_rows as f32 * options.row_height),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -3302,7 +3305,8 @@ pub fn command_palette(
                             height: Dimension::auto(),
                         },
                         ..Default::default()
-                    }),
+                    })
+                    .style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -3398,7 +3402,8 @@ fn command_palette_row_node(
                 padding: TaffyRect::length(6.0),
                 flex_shrink: 0.0,
                 ..Default::default()
-            }),
+            })
+            .style,
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -3543,7 +3548,8 @@ fn menu_container_node(
                     height: length(height.max(0.0)),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             clip: ClipBehavior::Clip,
             z_index: options.z_index,
             ..Default::default()
@@ -3843,7 +3849,8 @@ fn menu_list_container_node(
                     height: length(height.max(0.0)),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             clip: ClipBehavior::Clip,
             z_index: options.z_index,
             ..Default::default()
@@ -4039,7 +4046,8 @@ fn separator_row(
                         bottom: length_percentage(0.0),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -4056,7 +4064,8 @@ fn separator_row(
                         height: length(1.0),
                     },
                     ..Default::default()
-                }),
+                })
+                .style,
                 ..Default::default()
             },
         )
@@ -4165,7 +4174,8 @@ fn row_style(height: f32) -> UiNodeStyle {
             padding: TaffyRect::length(6.0),
             flex_shrink: 0.0,
             ..Default::default()
-        }),
+        })
+        .style,
         clip: ClipBehavior::Clip,
         ..Default::default()
     }
@@ -4340,7 +4350,7 @@ fn button_like_with_input(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout,
+                layout: layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -4614,7 +4624,7 @@ mod tests {
         );
 
         let node = document.node(popup);
-        assert!(node.style.layout.is_absolute());
+        assert_eq!(node.style.layout.position, Position::Absolute);
         assert_eq!(node.style.z_index, 100);
         assert!(node.scroll.is_some());
     }

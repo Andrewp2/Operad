@@ -1501,7 +1501,8 @@ fn shell_node_style(rect: UiRect, origin: UiPoint) -> UiNodeStyle {
                 height: Dimension::length(height),
             },
             ..Default::default()
-        }),
+        })
+        .style,
         clip: ClipBehavior::Clip,
         ..Default::default()
     }

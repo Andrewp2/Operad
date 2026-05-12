@@ -1213,17 +1213,13 @@ mod tests {
                     height: length(height),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             ..Default::default()
         }
     }
 
-    fn layered_absolute_style(
-        layer: UiLayer,
-        z_index: i16,
-        width: f32,
-        height: f32,
-    ) -> UiNodeStyle {
+    fn layered_absolute_style(z_index: i16, width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
             layout: LayoutStyle::from_taffy_style(Style {
                 position: Position::Absolute,
@@ -1237,8 +1233,8 @@ mod tests {
                     height: length(height),
                 },
                 ..Default::default()
-            }),
-            layer: Some(layer),
+            })
+            .style,
             z_index,
             ..Default::default()
         }
@@ -1369,11 +1365,11 @@ mod tests {
             UiNode::container(
                 "debug_overlay",
                 UiNodeStyle {
-                    layer: Some(UiLayer::DebugOverlay),
                     z_index: -10,
                     ..fixed_style(80.0, 40.0)
                 },
             )
+            .with_layer(UiLayer::DebugOverlay)
             .with_visual(UiVisual::panel(ColorRgba::new(20, 30, 40, 255), None, 4.0)),
         );
         doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
@@ -1471,13 +1467,9 @@ mod tests {
             doc.root,
             UiNode::container(
                 "app_overlay",
-                layered_absolute_style(
-                    UiLayer::AppOverlay,
-                    crate::platform::LAYER_LOCAL_Z_MAX,
-                    80.0,
-                    40.0,
-                ),
+                layered_absolute_style(crate::platform::LAYER_LOCAL_Z_MAX, 80.0, 40.0),
             )
+            .with_layer(UiLayer::AppOverlay)
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
@@ -1485,13 +1477,9 @@ mod tests {
             doc.root,
             UiNode::container(
                 "debug_overlay",
-                layered_absolute_style(
-                    UiLayer::DebugOverlay,
-                    crate::platform::LAYER_LOCAL_Z_MIN,
-                    80.0,
-                    40.0,
-                ),
+                layered_absolute_style(crate::platform::LAYER_LOCAL_Z_MIN, 80.0, 40.0),
             )
+            .with_layer(UiLayer::DebugOverlay)
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );

@@ -13,8 +13,9 @@ It owns:
 - Stable node IDs, a retained document tree, and computed layout rectangles.
 - Neutral geometry, colors, text styles, visuals, clipping, opacity, z order,
   scroll state, focus state, hit testing, input routing, and animation state.
-- A backend-neutral paint list so egui, wgpu, CPU snapshot renderers, and tests
-  consume the same display boundary.
+- A backend-neutral paint list so WGPU, CPU snapshot renderers, and tests
+  consume the same display boundary; egui painting is kept only as explicit
+  migration compatibility.
 - Layout/audit snapshots for debugging panel bounds, clipping, focusability, and
   unreachable interactive controls.
 
@@ -26,9 +27,9 @@ currently just `taffy` plus its small layout dependencies.
 
 - `text-cosmic`: provides `CosmicTextMeasurer` for real text shaping and
   measurement while keeping public text styles backend-neutral.
-- `egui`: paints the neutral `PaintList` through egui for incremental migration
-  inside existing apps, including a callback boundary for app-owned canvas
-  surfaces.
+- `egui`: provides host/input/platform compatibility for existing egui apps.
+- `egui-renderer-compat`: keeps the legacy egui `PaintList` painter available
+  for migrations that still need it; new renderer validation should use WGPU.
 - `widgets`: provides domain-neutral builders and helpers for buttons, labels,
   checkboxes, sliders, text inputs, combo boxes, scroll areas, scrollbar thumb
   geometry, virtual lists, and table headers.

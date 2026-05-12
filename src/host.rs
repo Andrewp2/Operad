@@ -855,7 +855,11 @@ pub fn process_document_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accessibility::AccessibilityRequestKind;
+    use crate::accessibility::{
+        AccessibilityAdapter, AccessibilityAdapterRequest, AccessibilityAdapterResponse,
+        AccessibilityAnnouncement, AccessibilityCapabilities, AccessibilityPreferences,
+        AccessibilityRequestKind, FocusRestoreTarget, FocusTrap,
+    };
     use crate::commands::{Command, CommandMeta};
     use crate::input::{
         DragGesture, PointerButton, PointerId, RawKeyboardEvent, RawWheelEvent, WheelPhase,
@@ -879,7 +883,8 @@ mod tests {
                     height: length(height),
                 },
                 ..Default::default()
-            }),
+            })
+            .style,
             ..Default::default()
         }
     }
@@ -899,6 +904,85 @@ mod tests {
             captured: true,
             timestamp_millis: 16,
         })
+    }
+
+    #[derive(Debug, Default)]
+    struct TestHostAccessibilityAdapter {
+        capabilities: AccessibilityCapabilities,
+        handled: Vec<AccessibilityAdapterRequest>,
+        published_focus: Option<UiNodeId>,
+        preferences: Option<AccessibilityPreferences>,
+        trap: Option<FocusTrap>,
+        announced: Vec<AccessibilityAnnouncement>,
+        focused: Option<UiNodeId>,
+    }
+
+    impl TestHostAccessibilityAdapter {
+        fn new(capabilities: AccessibilityCapabilities) -> Self {
+            Self {
+                capabilities,
+                ..Self::default()
+            }
+        }
+    }
+
+    impl AccessibilityAdapter for TestHostAccessibilityAdapter {
+        fn accessibility_capabilities(&self) -> AccessibilityCapabilities {
+            self.capabilities
+        }
+
+        fn handle_accessibility_request(
+            &mut self,
+            request: AccessibilityAdapterRequest,
+        ) -> AccessibilityAdapterResponse {
+            if !self.capabilities.supports(request.kind()) {
+                return AccessibilityAdapterResponse::Unsupported(request.kind());
+            }
+
+            self.handled.push(request.clone());
+            match request {
+                AccessibilityAdapterRequest::PublishTree {
+                    focused,
+                    preferences,
+                    ..
+                } => {
+                    self.published_focus = focused;
+                    self.preferences = Some(preferences);
+                    AccessibilityAdapterResponse::Applied
+                }
+                AccessibilityAdapterRequest::MoveFocus { target, .. } => {
+                    self.focused = Some(target);
+                    AccessibilityAdapterResponse::FocusChanged(Some(target))
+                }
+                AccessibilityAdapterRequest::SetFocusTrap(trap) => {
+                    self.trap = Some(trap);
+                    AccessibilityAdapterResponse::Applied
+                }
+                AccessibilityAdapterRequest::ClearFocusTrap { restore } => {
+                    self.trap = None;
+                    AccessibilityAdapterResponse::FocusChanged(match restore {
+                        FocusRestoreTarget::Node(node) => Some(node),
+                        FocusRestoreTarget::Previous => self.focused,
+                        FocusRestoreTarget::None => None,
+                    })
+                }
+                AccessibilityAdapterRequest::RestoreFocus(restore) => {
+                    AccessibilityAdapterResponse::FocusChanged(match restore {
+                        FocusRestoreTarget::Node(node) => Some(node),
+                        FocusRestoreTarget::Previous => self.focused,
+                        FocusRestoreTarget::None => None,
+                    })
+                }
+                AccessibilityAdapterRequest::Announce(announcement) => {
+                    self.announced.push(announcement);
+                    AccessibilityAdapterResponse::Applied
+                }
+                AccessibilityAdapterRequest::ApplyPreferences(preferences) => {
+                    self.preferences = Some(preferences);
+                    AccessibilityAdapterResponse::PreferencesChanged(preferences)
+                }
+            }
+        }
     }
 
     #[test]
@@ -1120,6 +1204,104 @@ mod tests {
             frame.accessibility_requests[2],
             AccessibilityAdapterRequest::Announce(_)
         ));
+    }
+
+    #[test]
+    fn host_accessibility_requests_round_trip_all_supported_kinds_with_focus_trap() {
+        let viewport = UiSize::new(240.0, 120.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(240.0, 120.0));
+        let root = document.root;
+        let play = document.add_child(
+            root,
+            UiNode::container("play", fixed_style(80.0, 28.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Play")
+                        .focusable(),
+                ),
+        );
+        let status = document.add_child(
+            root,
+            UiNode::container("status", fixed_style(140.0, 24.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Status)
+                    .label("Status")
+                    .value("Ready")
+                    .live_region(AccessibilityLiveRegion::Polite),
+            ),
+        );
+        document
+            .compute_layout(viewport, &mut measurer)
+            .expect("initial layout");
+
+        let previous_live_regions =
+            AccessibilityLiveRegionSnapshot::from_tree(&document.accessibility_snapshot());
+        document
+            .node_mut(status)
+            .accessibility
+            .as_mut()
+            .expect("status accessibility")
+            .value = Some("Running".to_string());
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            )
+            .previous_live_regions(previous_live_regions)
+            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER)
+            .accessibility_preferences(AccessibilityPreferences::DEFAULT.high_contrast(true)),
+        )
+        .expect("document frame");
+
+        let focus_trap = FocusTrap::new(root).restore_focus(FocusRestoreTarget::Node(play));
+        let mut requests = frame.accessibility_requests;
+        requests.extend([
+            AccessibilityAdapterRequest::SetFocusTrap(focus_trap),
+            AccessibilityAdapterRequest::MoveFocus {
+                target: play,
+                restore: FocusRestoreTarget::Previous,
+            },
+            AccessibilityAdapterRequest::RestoreFocus(FocusRestoreTarget::Node(status)),
+            AccessibilityAdapterRequest::ClearFocusTrap {
+                restore: FocusRestoreTarget::Node(play),
+            },
+        ]);
+
+        let mut adapter =
+            TestHostAccessibilityAdapter::new(AccessibilityCapabilities::SCREEN_READER);
+        let mut responses = Vec::with_capacity(requests.len());
+        for request in requests {
+            responses.push(adapter.handle_accessibility_request(request));
+        }
+
+        assert_eq!(
+            responses,
+            vec![
+                AccessibilityAdapterResponse::Applied,
+                AccessibilityAdapterResponse::PreferencesChanged(
+                    AccessibilityPreferences::DEFAULT.high_contrast(true),
+                ),
+                AccessibilityAdapterResponse::Applied,
+                AccessibilityAdapterResponse::Applied,
+                AccessibilityAdapterResponse::FocusChanged(Some(play)),
+                AccessibilityAdapterResponse::FocusChanged(Some(status)),
+                AccessibilityAdapterResponse::FocusChanged(Some(play)),
+            ]
+        );
+        assert_eq!(adapter.announced.len(), 1);
+        assert_eq!(adapter.announced[0].message, "Status: Running");
+        assert_eq!(adapter.published_focus, None);
+        assert_eq!(
+            adapter.preferences,
+            Some(AccessibilityPreferences::DEFAULT.high_contrast(true))
+        );
+        assert_eq!(adapter.trap, None);
+        assert_eq!(adapter.focused, Some(play));
     }
 
     #[test]
