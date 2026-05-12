@@ -7,6 +7,10 @@ first-class, predictable, and easy to wire into applications.
 Downstream applications still own product semantics. Operad should own the
 reusable interaction, host, accessibility, rendering, and testing substrate.
 
+The release-readiness status for each gate is tracked in
+`docs/v5_0_completion_audit.md`; this roadmap remains the product/engineering
+target list rather than the source of truth for what has landed.
+
 ## Release Goal
 
 V5 should make Operad feel like a usable app UI toolkit rather than a document

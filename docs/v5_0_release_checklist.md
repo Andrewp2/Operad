@@ -39,8 +39,9 @@ the runner has a GPU or software Vulkan adapter.
 - [ ] Migration guide covers the v4-to-v5 dependency update, new public layout
   facade, i18n policy types, API stability markers, state/action/runtime
   contracts, async task/form validation contracts, effective geometry/resource
-  cache contracts, accessibility adapter contracts, theme/design-token stability
-  docs, and unchanged feature gates.
+  cache contracts, font lifecycle contracts, accessibility adapter contracts,
+  tooltip/help/context menu policy, unified diagnostics, theme/design-token
+  stability docs, and unchanged feature gates.
 - [ ] Completion audit is current and does not mark partial roadmap areas as
   complete.
 - [ ] Semver/API stability review is recorded:

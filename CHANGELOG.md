@@ -16,9 +16,14 @@
   workflows, and accessible error summaries.
 - Added shared effective-geometry, advanced scrolling, compositor feature, and
   resource cache lifecycle contracts for renderer and host integration.
+- Added font lifecycle contracts for fallback stacks, loaded/missing/failed
+  states, generation checks, cache byte accounting, and eviction planning.
 - Added headless accessibility adapter contracts, accessibility target
   publication records, error classification, resource/input limits, and release
   guardrails for adapter and renderer failures.
+- Added touch/stylus/gamepad routing, multi-window routing, navigation/overlay
+  contracts, virtualization planning, tooltip/help/context menu policy, unified
+  diagnostics, and theme/design-token stability documentation.
 - Updated consumer-style probes and render tests to use the new public
   conversion helpers where direct backend layout fields are not required.
 - Documented the v5 completion audit, migration posture, release checklist, and

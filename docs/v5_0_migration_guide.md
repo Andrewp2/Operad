@@ -48,10 +48,11 @@ Theme and design-token stability policy is recorded in
 6. Move shared host and renderer bookkeeping toward v5 contracts.
 
 Use `RuntimeLoopState`, `WidgetActionQueue`, `RetainedWidgetStateStore`,
-`TextEditHistory`, `EffectiveGeometry`, `ResourceCache`, and the scrolling and
-compositor policy modules for new integration work. These are backend-neutral
-contracts; some existing widget and renderer paths still need incremental
-rewiring, so prefer thin local adapters while migrating downstream code.
+`TextEditHistory`, `EffectiveGeometry`, `ResourceCache`, `FontRegistry`, and the
+scrolling and compositor policy modules for new integration work. These are
+backend-neutral contracts; some existing widget and renderer paths still need
+incremental rewiring, so prefer thin local adapters while migrating downstream
+code.
 
 7. Move async task and form state through explicit lifecycle records.
 
@@ -66,6 +67,14 @@ own their executor and product validators; Operad owns the UI-side contracts.
 integration. Platform adapters should consume the same request/report types and
 can publish canvas/editor target summaries through
 `AccessibilityAdapterTargetSummary`.
+
+9. Centralize help, context menu, and diagnostic output.
+
+Use `CommandTooltipResolver`, `TooltipRequest`, `ContextMenuRequest`, and
+`HelpOverlayRecord` for tooltip and context menu policy. Use
+`DiagnosticReport` when tests, hosts, or devtools need one surface for input
+routing, widget actions, overlays, accessibility output, effective geometry,
+dirty flags, warnings, errors, and render timing.
 
 ## Validation
 
