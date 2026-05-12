@@ -49,6 +49,15 @@ pub mod versioning;
 #[cfg(feature = "wgpu")]
 pub mod wgpu_renderer;
 
+pub use accessibility::{
+    AccessibilityAdapter, AccessibilityAdapterApplyReport, AccessibilityAdapterRequest,
+    AccessibilityAdapterRequestPlan, AccessibilityAdapterResponse, AccessibilityAdapterState,
+    AccessibilityAdapterTargetKind, AccessibilityAdapterTargetSummary, AccessibilityAnnouncement,
+    AccessibilityCapabilities, AccessibilityFocusTrapState, AccessibilityLiveRegionEntry,
+    AccessibilityLiveRegionSnapshot, AccessibilityNavigableItem, AccessibilityNavigableItemSource,
+    AccessibilityPreferences, AccessibilityRequestKind, FocusNavigationDirection,
+    FocusRestoreTarget, FocusTrap, HeadlessAccessibilityAdapter,
+};
 pub use actions::{
     action_target_enabled, keyboard_activation_key, WidgetAction, WidgetActionBinding,
     WidgetActionId, WidgetActionKind, WidgetActionQueue, WidgetActionTrigger, WidgetActivation,
