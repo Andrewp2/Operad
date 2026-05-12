@@ -28,10 +28,10 @@ use crate::platform::{
 };
 use crate::{
     ColorRgba, FontFamily, FontStretch, FontStyle, FrameTiming, ImageAlignment, ImageFit,
-    PaintKind, PathVerb, PixelRect, RenderError, RenderFrameOutput, RenderFrameRequest,
-    RenderTarget, RenderTargetKind, RenderedImage, RendererAdapter, ResourceFormat,
-    ResourceResolver, ResourceUpdate, StrokeStyle, TextStyle, TextWrap, UiNodeId, UiPoint, UiRect,
-    UiSize, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
+    LinearGradient, PaintBrush, PaintKind, PathVerb, PixelRect, RenderError, RenderFrameOutput,
+    RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, RendererAdapter,
+    ResourceFormat, ResourceResolver, ResourceUpdate, StrokeStyle, TextStyle, TextWrap, UiNodeId,
+    UiPoint, UiRect, UiSize, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
 };
 
 const OFFSCREEN_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
@@ -1502,12 +1502,21 @@ impl RenderGeometry {
     }
 
     fn push_quad(&mut self, clip: UiRect, points: [UiPoint; 4], color: [f32; 4]) {
+        self.push_gradient_quad(clip, points, [color; 4]);
+    }
+
+    fn push_gradient_quad(&mut self, clip: UiRect, points: [UiPoint; 4], colors: [[f32; 4]; 4]) {
         let Ok(vertex_start) = u32::try_from(self.vertices.len()) else {
             return;
         };
         self.vertices.reserve(6);
-        for point in [
-            points[0], points[1], points[2], points[0], points[2], points[3],
+        for (point, color) in [
+            (points[0], colors[0]),
+            (points[1], colors[1]),
+            (points[2], colors[2]),
+            (points[0], colors[0]),
+            (points[2], colors[2]),
+            (points[3], colors[3]),
         ] {
             self.vertices.push(GpuVertex::new(point, color));
         }
@@ -2444,13 +2453,16 @@ fn build_geometry_into(
                     );
                     push_fill_rect(geometry, effect_rect, clip, effect.color, item.opacity);
                 }
-                push_fill_rect_with_radius(
+                let radius =
+                    rect_primitive.corner_radii.max_radius() * item.transform.scale.max(0.0);
+                push_fill_brush_rect_with_radius(
                     geometry,
                     rect,
                     clip,
-                    rect_primitive.fill.fallback_color(),
+                    &rect_primitive.fill,
                     item.opacity,
-                    rect_primitive.corner_radii.max_radius() * item.transform.scale.max(0.0),
+                    radius,
+                    item.transform,
                 );
                 if let Some(stroke) = rect_primitive.stroke {
                     push_stroke_rect(geometry, rect, clip, stroke.style, item.opacity);
@@ -2534,6 +2546,90 @@ fn push_fill_rect_with_radius(
         return;
     }
     geometry.push_sdf_rect(clip, rect, color_as_vertex(color, opacity), radius);
+}
+
+fn push_fill_brush_rect_with_radius(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    brush: &PaintBrush,
+    opacity: f32,
+    radius: f32,
+    transform: crate::PaintTransform,
+) {
+    match brush {
+        PaintBrush::Solid(color) => {
+            push_fill_rect_with_radius(geometry, rect, clip, *color, opacity, radius);
+        }
+        PaintBrush::LinearGradient(gradient) if radius <= f32::EPSILON => {
+            let gradient = transform_linear_gradient(gradient, transform);
+            push_linear_gradient_rect(geometry, rect, clip, &gradient, opacity);
+        }
+        PaintBrush::LinearGradient(_) => {
+            push_fill_rect_with_radius(
+                geometry,
+                rect,
+                clip,
+                brush.fallback_color(),
+                opacity,
+                radius,
+            );
+        }
+    }
+}
+
+fn push_linear_gradient_rect(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    gradient: &LinearGradient,
+    opacity: f32,
+) {
+    if opacity <= 0.0 {
+        return;
+    }
+    let Some(rect) = snapped_intersection(rect, clip) else {
+        return;
+    };
+    if gradient.stops.is_empty() {
+        push_fill_rect_with_color(
+            geometry,
+            rect,
+            clip,
+            color_as_vertex(gradient.fallback, opacity),
+        );
+        return;
+    }
+
+    let dx = (gradient.end.x - gradient.start.x).abs();
+    let dy = (gradient.end.y - gradient.start.y).abs();
+    let segments = gradient_rect_segments(rect, gradient);
+    for index in 0..segments {
+        let start = index as f32 / segments as f32;
+        let end = (index + 1) as f32 / segments as f32;
+        let points = if dx >= dy {
+            let x0 = rect.x + rect.width * start;
+            let x1 = rect.x + rect.width * end;
+            [
+                UiPoint::new(x0, rect.y),
+                UiPoint::new(x1, rect.y),
+                UiPoint::new(x1, rect.bottom()),
+                UiPoint::new(x0, rect.bottom()),
+            ]
+        } else {
+            let y0 = rect.y + rect.height * start;
+            let y1 = rect.y + rect.height * end;
+            [
+                UiPoint::new(rect.x, y0),
+                UiPoint::new(rect.right(), y0),
+                UiPoint::new(rect.right(), y1),
+                UiPoint::new(rect.x, y1),
+            ]
+        };
+        let colors =
+            points.map(|point| color_as_vertex(sample_linear_gradient(gradient, point), opacity));
+        geometry.push_gradient_quad(clip, points, colors);
+    }
 }
 
 fn push_fill_rect_with_color(
@@ -2999,6 +3095,75 @@ fn color_as_vertex(color: ColorRgba, opacity: f32) -> [f32; 4] {
         f32::from(color.b) / 255.0,
         (f32::from(color.a) / 255.0 * opacity.clamp(0.0, 1.0)).clamp(0.0, 1.0),
     ]
+}
+
+fn transform_linear_gradient(
+    gradient: &LinearGradient,
+    transform: crate::PaintTransform,
+) -> LinearGradient {
+    let mut gradient = gradient.clone();
+    gradient.start = transform.transform_point(gradient.start);
+    gradient.end = transform.transform_point(gradient.end);
+    gradient
+}
+
+fn gradient_rect_segments(rect: UiRect, gradient: &LinearGradient) -> usize {
+    let longest_axis = rect.width.abs().max(rect.height.abs()).ceil() as usize;
+    let stop_segments = gradient.stops.len().saturating_sub(1).max(1) * 8;
+    longest_axis.clamp(1, 64).max(stop_segments.min(64))
+}
+
+fn sample_linear_gradient(gradient: &LinearGradient, point: UiPoint) -> ColorRgba {
+    if gradient.stops.is_empty() {
+        return gradient.fallback;
+    }
+
+    let dx = gradient.end.x - gradient.start.x;
+    let dy = gradient.end.y - gradient.start.y;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= f32::EPSILON {
+        return gradient
+            .stops
+            .last()
+            .map(|stop| stop.color)
+            .unwrap_or(gradient.fallback);
+    }
+
+    let t = (((point.x - gradient.start.x) * dx + (point.y - gradient.start.y) * dy)
+        / length_squared)
+        .clamp(0.0, 1.0);
+    if t <= gradient.stops[0].offset {
+        return gradient.stops[0].color;
+    }
+    for stops in gradient.stops.windows(2) {
+        let left = stops[0];
+        let right = stops[1];
+        if t <= right.offset {
+            let span = (right.offset - left.offset).max(f32::EPSILON);
+            return lerp_color(left.color, right.color, (t - left.offset) / span);
+        }
+    }
+    gradient
+        .stops
+        .last()
+        .map(|stop| stop.color)
+        .unwrap_or(gradient.fallback)
+}
+
+fn lerp_color(left: ColorRgba, right: ColorRgba, t: f32) -> ColorRgba {
+    let t = t.clamp(0.0, 1.0);
+    ColorRgba::new(
+        lerp_channel(left.r, right.r, t),
+        lerp_channel(left.g, right.g, t),
+        lerp_channel(left.b, right.b, t),
+        lerp_channel(left.a, right.a, t),
+    )
+}
+
+fn lerp_channel(left: u8, right: u8, t: f32) -> u8 {
+    (f32::from(left) + (f32::from(right) - f32::from(left)) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 fn sync_glyph_buffer(

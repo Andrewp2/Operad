@@ -39,10 +39,10 @@ use crate::renderer::{
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
     AccessibilityStateKind, AccessibilityTree, AccessibilityValueRangeIssue, ApproxTextMeasurer,
-    AuditWarning, CanvasContent, ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem,
-    PaintKind, PaintList, PaintTransform, PathVerb, RawInputEvent, StrokeStyle, TextContent,
-    TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId, UiPoint, UiRect,
-    UiSize,
+    AuditWarning, CanvasContent, ColorRgba, FocusDirection, KeyCode, KeyModifiers, LinearGradient,
+    PaintBrush, PaintItem, PaintKind, PaintList, PaintTransform, PathVerb, RawInputEvent,
+    StrokeStyle, TextContent, TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNode,
+    UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2952,12 +2952,13 @@ fn draw_cpu_snapshot_item(image: &mut CpuSnapshotImage, item: &PaintItem) {
                 );
                 cpu_snapshot_fill_rect(image, effect_rect, clip, effect.color, item.opacity);
             }
-            cpu_snapshot_fill_rect(
+            cpu_snapshot_fill_brush_rect(
                 image,
                 rect,
                 clip,
-                rect_primitive.fill.fallback_color(),
+                &rect_primitive.fill,
                 item.opacity,
+                item.transform,
             );
             if let Some(stroke) = rect_primitive.stroke {
                 cpu_snapshot_stroke_rect(image, rect, clip, stroke.style, item.opacity);
@@ -3207,6 +3208,54 @@ fn cpu_snapshot_fill_rect(
     }
 }
 
+fn cpu_snapshot_fill_brush_rect(
+    image: &mut CpuSnapshotImage,
+    rect: UiRect,
+    clip: UiRect,
+    brush: &PaintBrush,
+    opacity: f32,
+    transform: PaintTransform,
+) {
+    match brush {
+        PaintBrush::Solid(color) => cpu_snapshot_fill_rect(image, rect, clip, *color, opacity),
+        PaintBrush::LinearGradient(gradient) => {
+            let gradient = cpu_snapshot_transform_gradient(gradient, transform);
+            cpu_snapshot_fill_linear_gradient_rect(image, rect, clip, &gradient, opacity);
+        }
+    }
+}
+
+fn cpu_snapshot_fill_linear_gradient_rect(
+    image: &mut CpuSnapshotImage,
+    rect: UiRect,
+    clip: UiRect,
+    gradient: &LinearGradient,
+    opacity: f32,
+) {
+    if opacity <= 0.0 {
+        return;
+    }
+    let Some(rect) = rect.intersection(clip) else {
+        return;
+    };
+    let left = rect.x.floor().max(0.0) as usize;
+    let top = rect.y.floor().max(0.0) as usize;
+    let right = rect.right().ceil().min(image.width() as f32) as usize;
+    let bottom = rect.bottom().ceil().min(image.height() as f32) as usize;
+    for y in top..bottom {
+        for x in left..right {
+            let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
+            cpu_snapshot_blend_pixel(
+                image,
+                x,
+                y,
+                sample_linear_gradient(gradient, point),
+                opacity,
+            );
+        }
+    }
+}
+
 fn cpu_snapshot_stroke_rect(
     image: &mut CpuSnapshotImage,
     rect: UiRect,
@@ -3432,6 +3481,69 @@ fn cpu_snapshot_blend_pixel(
         .round()
         .clamp(0.0, 255.0) as u8;
     image.pixels[index + 3] = 255;
+}
+
+fn cpu_snapshot_transform_gradient(
+    gradient: &LinearGradient,
+    transform: PaintTransform,
+) -> LinearGradient {
+    let mut gradient = gradient.clone();
+    gradient.start = cpu_snapshot_transform_point(gradient.start, transform);
+    gradient.end = cpu_snapshot_transform_point(gradient.end, transform);
+    gradient
+}
+
+fn sample_linear_gradient(gradient: &LinearGradient, point: UiPoint) -> ColorRgba {
+    if gradient.stops.is_empty() {
+        return gradient.fallback;
+    }
+
+    let dx = gradient.end.x - gradient.start.x;
+    let dy = gradient.end.y - gradient.start.y;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= f32::EPSILON {
+        return gradient
+            .stops
+            .last()
+            .map(|stop| stop.color)
+            .unwrap_or(gradient.fallback);
+    }
+
+    let t = (((point.x - gradient.start.x) * dx + (point.y - gradient.start.y) * dy)
+        / length_squared)
+        .clamp(0.0, 1.0);
+    if t <= gradient.stops[0].offset {
+        return gradient.stops[0].color;
+    }
+    for stops in gradient.stops.windows(2) {
+        let left = stops[0];
+        let right = stops[1];
+        if t <= right.offset {
+            let span = (right.offset - left.offset).max(f32::EPSILON);
+            return lerp_color(left.color, right.color, (t - left.offset) / span);
+        }
+    }
+    gradient
+        .stops
+        .last()
+        .map(|stop| stop.color)
+        .unwrap_or(gradient.fallback)
+}
+
+fn lerp_color(left: ColorRgba, right: ColorRgba, t: f32) -> ColorRgba {
+    let t = t.clamp(0.0, 1.0);
+    ColorRgba::new(
+        lerp_channel(left.r, right.r, t),
+        lerp_channel(left.g, right.g, t),
+        lerp_channel(left.b, right.b, t),
+        lerp_channel(left.a, right.a, t),
+    )
+}
+
+fn lerp_channel(left: u8, right: u8, t: f32) -> u8 {
+    (f32::from(left) + (f32::from(right) - f32::from(left)) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 fn cpu_snapshot_transform_point(point: UiPoint, transform: PaintTransform) -> UiPoint {
