@@ -443,7 +443,7 @@ impl Default for GestureSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PointerGestureTracker {
     settings: GestureSettings,
     active: HashMap<PointerId, ActivePointer>,
