@@ -11,6 +11,9 @@
 - Added backend-neutral runtime/frame lifecycle contracts, widget action queues,
   retained widget state lifecycle, edit transactions, and selection/history
   helpers for interaction-oriented hosts.
+- Added async task lifecycle and form validation contracts for progress,
+  cancellation, stale async results, dirty/pending state, submit/apply/cancel
+  workflows, and accessible error summaries.
 - Added shared effective-geometry, advanced scrolling, compositor feature, and
   resource cache lifecycle contracts for renderer and host integration.
 - Added headless accessibility adapter contracts, accessibility target

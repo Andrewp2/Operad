@@ -50,7 +50,14 @@ compositor policy modules for new integration work. These are backend-neutral
 contracts; some existing widget and renderer paths still need incremental
 rewiring, so prefer thin local adapters while migrating downstream code.
 
-7. Treat accessibility adapters as explicit host state.
+7. Move async task and form state through explicit lifecycle records.
+
+`TaskRegistry` and `FormState` provide deterministic state transitions for
+progress, cancellation, stale result rejection, validation generations,
+apply/submit/cancel/reset phases, and accessible error summaries. Hosts still
+own their executor and product validators; Operad owns the UI-side contracts.
+
+8. Treat accessibility adapters as explicit host state.
 
 `HeadlessAccessibilityAdapter` is available for tests and non-platform
 integration. Platform adapters should consume the same request/report types and
