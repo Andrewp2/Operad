@@ -34,6 +34,7 @@ pub mod input;
 pub mod paint;
 pub mod platform;
 pub mod renderer;
+pub mod resource_cache;
 pub mod runtime;
 pub mod scrolling;
 pub mod shell;
@@ -131,6 +132,13 @@ pub use renderer::{
     PaintBatchKey, PaintBatchKind, PaintBatcher, PixelRect, RenderError, RenderFrameOutput,
     RenderFrameRequest, RenderOptions, RenderTarget, RenderTargetKind, RenderedImage,
     RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
+};
+pub use resource_cache::{
+    resource_descriptor_byte_len, validate_resource_update,
+    validate_resource_update_with_descriptor, CachedResource, ResourceCache, ResourceCachePolicy,
+    ResourceEvictionCandidate, ResourceEvictionPlan, ResourceEvictionReason,
+    ResourceEvictionReport, ResourceLifecycleOutcome, ResourceUpdateIssue, ResourceUpdateKind,
+    ResourceUpdateReport, ResourceUpdateValidation,
 };
 pub use runtime::{
     coalesce_repaint_requests, collect_repaint_requests, completed_platform_response,
