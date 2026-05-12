@@ -11,6 +11,8 @@
 - Added backend-neutral runtime/frame lifecycle contracts, widget action queues,
   retained widget state lifecycle, edit transactions, and selection/history
   helpers for interaction-oriented hosts.
+- Wired widget text input edits into `TextEditHistory`, including committed
+  transactions and keyboard undo/redo for text input state.
 - Added async task lifecycle and form validation contracts for progress,
   cancellation, stale async results, dirty/pending state, submit/apply/cancel
   workflows, and accessible error summaries.
