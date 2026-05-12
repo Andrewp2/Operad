@@ -27,6 +27,9 @@
 - Added headless accessibility adapter contracts, accessibility target
   publication records, error classification, resource/input limits, and release
   guardrails for adapter and renderer failures.
+- Added an optional `accesskit-winit` adapter that converts Operad
+  `AccessibilityTree` output into AccessKit tree updates and publishes it
+  through winit hosts.
 - Added touch/stylus/gamepad routing, multi-window routing, navigation/overlay
   contracts, virtualization planning, tooltip/help/context menu policy, unified
   diagnostics, and theme/design-token stability documentation.
@@ -40,6 +43,21 @@
   keeping display-dependent execution opt-in.
 - Added CPU/WGPU rich-rect gradient rendering coverage and corrected compositor
   quality profiles so fallback and unsupported effects are not overclaimed.
+- Added explicit composited paint layers with CPU snapshot reference rendering
+  and WGPU render-to-texture composition for rounded clips, rectangular masks,
+  opacity, and basic brightness/contrast/saturate/blur filters.
+- Added CPU/WGPU soft rich-rect shadow falloff coverage and compositor quality
+  planning for basic native shadow blur limits.
+- Added WGPU parity coverage for glyphon text inside composited paint layers
+  and release-gated the sRGB-only snapshot color-management policy.
+- Added explicit compositor quality fallback records for backdrop filters, which
+  remain disabled until a backend samples the already-composited framebuffer.
+- Added lyon-backed path fill/stroke tessellation with even-odd holes, curved
+  concave fills, configurable stroke caps/joins, and WGPU parity coverage.
+- Added WGPU parity coverage for fractional grayscale glyph positioning without
+  claiming RGB/LCD component subpixel masks for v5.
+- Expanded the native WGPU host example document to include buttons, text input,
+  popup/menu items, a drag-handle target, and a canvas viewport.
 
 ## 4.0.0
 

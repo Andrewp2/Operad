@@ -5,7 +5,7 @@
 //! combined with paint transforms, clipping, and layer ordering.
 
 use crate::platform::{LayerOrder, UiLayer};
-use crate::{PaintItem, PaintTransform, UiNodeId, UiPoint, UiRect};
+use crate::{PaintItem, PaintKind, PaintTransform, UiNodeId, UiPoint, UiRect};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EffectiveTransform {
@@ -145,6 +145,7 @@ impl EffectiveGeometry {
             .clip(EffectiveClip::new(item.clip_rect))
             .layer_order(item.layer_order)
             .order(order)
+            .hit_testable(paint_item_default_hit_testable(item))
     }
 
     pub const fn transform(mut self, transform: EffectiveTransform) -> Self {
@@ -303,6 +304,16 @@ impl EffectiveGeometry {
             point_rejections,
         }
     }
+}
+
+fn paint_item_default_hit_testable(item: &PaintItem) -> bool {
+    !matches!(
+        item.kind,
+        PaintKind::Text(_)
+            | PaintKind::SceneText(_)
+            | PaintKind::Image { .. }
+            | PaintKind::ImagePlacement(_)
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -485,6 +496,9 @@ fn bounds_from_points(points: &[UiPoint; 4]) -> UiRect {
 mod tests {
     use super::*;
     use crate::platform::UiLayer;
+    use crate::{
+        ColorRgba, PaintItem, PaintKind, PaintTransform, StrokeStyle, TextContent, TextStyle,
+    };
 
     fn assert_rect_near(actual: UiRect, expected: UiRect) {
         let epsilon = 0.001;
@@ -497,6 +511,20 @@ mod tests {
             expected,
             actual
         );
+    }
+
+    fn paint_item(node: UiNodeId, kind: PaintKind) -> PaintItem {
+        PaintItem {
+            node,
+            rect: UiRect::new(0.0, 0.0, 80.0, 24.0),
+            clip_rect: UiRect::new(0.0, 0.0, 120.0, 40.0),
+            z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind,
+        }
     }
 
     #[test]
@@ -555,6 +583,38 @@ mod tests {
         let hit =
             topmost_effective_hit(&[base, higher_local_z, overlay], point).expect("overlay hit");
         assert_eq!(hit.node, UiNodeId(3));
+    }
+
+    #[test]
+    fn paint_item_effective_geometry_keeps_label_paint_from_stealing_hits() {
+        let button_background = EffectiveGeometry::from_paint_item(
+            &paint_item(
+                UiNodeId(1),
+                PaintKind::Rect {
+                    fill: ColorRgba::WHITE,
+                    stroke: Some(StrokeStyle::new(ColorRgba::BLACK, 1.0)),
+                    corner_radius: 4.0,
+                },
+            ),
+            0,
+        );
+        let button_label = EffectiveGeometry::from_paint_item(
+            &paint_item(
+                UiNodeId(2),
+                PaintKind::Text(TextContent::new("Play", TextStyle::default())),
+            ),
+            1,
+        );
+
+        assert!(!button_label.hit_testable);
+        assert_eq!(
+            topmost_effective_hit(
+                &[button_background.clone(), button_label],
+                UiPoint::new(20.0, 12.0)
+            )
+            .map(|hit| hit.node),
+            Some(button_background.node)
+        );
     }
 
     #[test]

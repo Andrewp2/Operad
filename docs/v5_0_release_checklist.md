@@ -44,7 +44,7 @@ the runner has a GPU or software Vulkan adapter.
   contracts, async task/form validation contracts, effective geometry/resource
   cache contracts, font lifecycle contracts, accessibility adapter contracts,
   tooltip/help/context menu policy, unified diagnostics, theme/design-token
-  stability docs, core concepts reference, and unchanged feature gates.
+  stability docs, core concepts reference, and v5 feature gates.
 - [ ] Completion audit is current and does not mark partial roadmap areas as
   complete.
 - [ ] Semver/API stability review is recorded:
@@ -55,6 +55,9 @@ the runner has a GPU or software Vulkan adapter.
 - [ ] Examples compile. Runtime probe assertions such as
   `cargo run --locked --example three_consumer_probe` may be run as additional
   adoption evidence after any existing audit-warning expectations are updated.
+- [ ] Showcase snapshot: `cargo run --locked --features widgets --example operad_showcase`
+  writes `target/operad_showcase.ppm` and should report nonzero paint and
+  accessibility node counts.
 
 ## Perf Smoke
 
@@ -75,6 +78,7 @@ workstation, GPU runner, or runner configured with a known-good software adapter
 - [ ] WGPU perf smoke: `cargo test --locked --features widgets,wgpu --test perf_smoke -- --nocapture`
 - [ ] Release WGPU perf smoke: `cargo test --release --locked --features widgets,wgpu --test perf_smoke -- --nocapture`
 - [ ] Native window smoke: `OPERAD_RUN_WGPU_EXAMPLE_WINDOW=1 OPERAD_WGPU_EXAMPLE_WINDOW_FRAMES=3 timeout 30s cargo run --locked --features native-window --example native_wgpu_host`
+- [ ] Native window smoke with AccessKit compile gate: `cargo check --locked --features "native-window accesskit-winit" --example native_wgpu_host`
 
 Do not make these commands required for the baseline GitHub-hosted CI job unless
 the runner image is explicitly provisioned for WGPU.

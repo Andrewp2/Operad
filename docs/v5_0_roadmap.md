@@ -320,9 +320,10 @@ Targets:
 - Improve gradients, strokes, joins, caps, and path rendering enough for
   production controls and charts.
 - Define mask, blur, backdrop, and filter support levels, including explicit
-  fallbacks where a backend cannot support an effect efficiently.
-- Tighten pixel snapping, subpixel text positioning, and glyph cache behavior so
-  scrolling and animation stay visually stable.
+  fallbacks where a backend cannot support an effect efficiently; v5 disables
+  true backdrop filters until a backend can sample the composited framebuffer.
+- Tighten pixel snapping, grayscale subpixel text positioning, and glyph cache
+  behavior so scrolling and animation stay visually stable.
 - Decide the color-management policy for sRGB, alpha blending, and future
   wide-gamut support.
 - Add CPU snapshot and WGPU parity coverage for shadows, clipping, transforms,
@@ -523,7 +524,8 @@ V5 should make releases reproducible rather than manually assembled.
 Targets:
 
 - Add CI coverage for no-default, all-features, widgets, wgpu, egui compat,
-  docs, formatting, clippy where appropriate, and release perf smoke tests.
+  accesskit-winit, docs, formatting, clippy where appropriate, and release perf
+  smoke tests.
 - Automate changelog, migration guide, release checklist, and semver review
   checks where possible.
 - Add docs generation and example build checks.
@@ -597,8 +599,8 @@ V5 should ship when these library-owned gates are green:
   transforms, opacity groups, offscreen layers, clipping, masks, and transformed
   hit testing.
 - Compositor-quality rendering covers shadows, rounded clipping, borders,
-  gradients, masks, filters, subpixel text, and CPU/WGPU parity for composited
-  content.
+  gradients, masks, filters, backdrop fallback policy, grayscale subpixel text,
+  and CPU/WGPU parity for composited content.
 - Diagnostics can explain input routing, widget actions, overlay state,
   accessibility output, and render timing in one debug surface.
 - Theme/design-token APIs and feature stability are documented for v5 consumers.

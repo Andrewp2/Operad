@@ -18,6 +18,8 @@ use taffy::prelude::{
 };
 
 pub mod accessibility;
+#[cfg(feature = "accesskit-winit")]
+pub mod accesskit_winit_adapter;
 pub mod actions;
 pub mod assets;
 pub mod charts;
@@ -70,6 +72,11 @@ pub use accessibility::{
     AccessibilityLiveRegionSnapshot, AccessibilityNavigableItem, AccessibilityNavigableItemSource,
     AccessibilityPreferences, AccessibilityRequestKind, FocusNavigationDirection,
     FocusRestoreTarget, FocusTrap, HeadlessAccessibilityAdapter,
+};
+#[cfg(feature = "accesskit-winit")]
+pub use accesskit_winit_adapter::{
+    accesskit_node_id, accesskit_tree_update, operad_node_id, AccessKitTreeOptions,
+    AccessKitWinitAdapter, ACCESSKIT_ROOT_NODE_ID, ACCESSKIT_WINIT_CAPABILITIES,
 };
 pub use actions::{
     action_target_enabled, keyboard_activation_key, WidgetAction, WidgetActionBinding,
@@ -213,8 +220,9 @@ pub use wgpu_renderer::{WgpuRenderer, WgpuSurfaceRenderer};
 
 pub use paint::{
     AlignedStroke, CornerRadii, GradientStop, ImageAlignment, ImageFit, LinearGradient, PaintBrush,
-    PaintEffect, PaintEffectKind, PaintImage, PaintPath, PaintRect, PaintText, PathVerb,
-    PixelSnapPolicy, StrokeAlignment, TextHorizontalAlign, TextOverflow, TextVerticalAlign,
+    PaintEffect, PaintEffectKind, PaintImage, PaintPath, PaintRect, PaintText, PathFillRule,
+    PathStrokeOptions, PathVerb, PixelSnapPolicy, StrokeAlignment, StrokeLineCap, StrokeLineJoin,
+    TextHorizontalAlign, TextOverflow, TextVerticalAlign,
 };
 pub use renderer::{
     CanvasHitCollection, CanvasHitTarget, CanvasHostCaptureChange, CanvasHostCaptureChangeKind,
@@ -297,13 +305,13 @@ pub use theme_stability::{
     ThemeTokenStability, THEME_FEATURE_STABILITY, THEME_SCOPE_STABILITY, THEME_TOKEN_STABILITY,
 };
 pub use tooltips::{
-    clamp_context_menu_position, keyboard_context_menu_position, resolve_context_menu_request,
-    resolve_tooltip_dismissal, resolve_tooltip_request, AccessibleHelpText, CommandTooltip,
-    CommandTooltipResolver, ContextMenuRequest, ContextMenuResolution, ContextMenuSuppressedReason,
-    ContextMenuTrigger, HelpDismissReason, HelpItemState, HelpOverlayRecord, HelpTimingPolicy,
-    ShortcutDisplayPlatform, ShortcutFormatter, TooltipAnchor, TooltipContent,
-    TooltipInvocationKind, TooltipPlacement, TooltipRequest, TooltipResolution, TooltipVisibility,
-    ValidationHelp, ValidationHelpSeverity,
+    clamp_context_menu_position, keyboard_context_menu_key, keyboard_context_menu_position,
+    resolve_context_menu_request, resolve_tooltip_dismissal, resolve_tooltip_request,
+    AccessibleHelpText, CommandTooltip, CommandTooltipResolver, ContextMenuRequest,
+    ContextMenuResolution, ContextMenuSuppressedReason, ContextMenuTrigger, HelpDismissReason,
+    HelpItemState, HelpOverlayRecord, HelpTimingPolicy, ShortcutDisplayPlatform, ShortcutFormatter,
+    TooltipAnchor, TooltipContent, TooltipInvocationKind, TooltipPlacement, TooltipRequest,
+    TooltipResolution, TooltipVisibility, ValidationHelp, ValidationHelpSeverity,
 };
 pub use transactions::{
     EditTransaction, EditTransactionPhase, SelectionMode, SelectionModel, SelectionMovement,
@@ -1974,6 +1982,8 @@ pub enum KeyCode {
     Enter,
     Escape,
     Tab,
+    F10,
+    ContextMenu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2477,7 +2487,7 @@ impl UiDocument {
                 .is_some_and(|accessibility| accessibility.focusable)
     }
 
-    fn node_is_descendant_or_self(&self, ancestor: UiNodeId, node: UiNodeId) -> bool {
+    pub(crate) fn node_is_descendant_or_self(&self, ancestor: UiNodeId, node: UiNodeId) -> bool {
         if ancestor == node {
             return self.nodes.get(node.0).is_some();
         }
@@ -2879,6 +2889,75 @@ pub struct PaintItem {
     pub kind: PaintKind,
 }
 
+/// A nested paint list that should be rendered as an isolated compositor layer.
+///
+/// `bounds`, `clip`, and `mask` use the same paint-space coordinates as the
+/// child paint list. Backends can render the child list into an offscreen target
+/// and composite it back with opacity, clipping, masks, and filters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintCompositorLayer {
+    pub bounds: UiRect,
+    pub paint: PaintList,
+    pub clip: Option<CompositorClip>,
+    pub mask: Option<CompositorMask>,
+    pub filters: Vec<CompositorFilter>,
+    pub opacity: f32,
+    pub blend_mode: BlendMode,
+    pub isolation: OffscreenIsolation,
+    pub subpixel_text: SubpixelTextPolicy,
+}
+
+impl PaintCompositorLayer {
+    pub fn new(bounds: UiRect, paint: PaintList) -> Self {
+        Self {
+            bounds,
+            paint,
+            clip: None,
+            mask: None,
+            filters: Vec::new(),
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+            isolation: OffscreenIsolation::Auto,
+            subpixel_text: SubpixelTextPolicy::Grayscale,
+        }
+    }
+
+    pub fn clip(mut self, clip: CompositorClip) -> Self {
+        self.clip = Some(clip);
+        self
+    }
+
+    pub fn mask(mut self, mask: CompositorMask) -> Self {
+        self.mask = Some(mask);
+        self
+    }
+
+    pub fn filter(mut self, filter: CompositorFilter) -> Self {
+        self.filters.push(filter);
+        self
+    }
+
+    pub const fn opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
+    }
+
+    pub const fn blend_mode(mut self, blend_mode: BlendMode) -> Self {
+        self.blend_mode = blend_mode;
+        self
+    }
+
+    pub const fn isolation(mut self, isolation: OffscreenIsolation) -> Self {
+        self.isolation = isolation;
+        self
+    }
+
+    pub const fn subpixel_text(mut self, policy: SubpixelTextPolicy) -> Self {
+        self.subpixel_text = policy;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaintTransform {
     pub translation: UiPoint,
@@ -2942,6 +3021,7 @@ pub enum PaintKind {
         key: String,
         tint: Option<ColorRgba>,
     },
+    CompositedLayer(PaintCompositorLayer),
     RichRect(PaintRect),
     SceneText(PaintText),
     Path(PaintPath),
@@ -3998,9 +4078,18 @@ pub mod widgets {
         options: &ButtonOptions,
         result: &UiInputResult,
     ) -> &'a mut WidgetActionQueue {
-        queue.push_input_result_for_document(document, result, |target| {
-            widget_option_binding(document, button, target, &options.action)
-        })
+        let Some(clicked) = result.clicked else {
+            return queue;
+        };
+        if !document.node_is_descendant_or_self(button, clicked)
+            || !action_target_enabled(document, button)
+        {
+            return queue;
+        }
+        if let Some(binding) = options.action.clone() {
+            queue.push(WidgetAction::pointer_activate(button, binding, 1));
+        }
+        queue
     }
 
     pub fn button_actions_from_key_event(
@@ -4054,7 +4143,9 @@ pub mod widgets {
         let GestureEvent::Click(click) = event else {
             return queue;
         };
-        if click.target != button || click.button != PointerButton::Primary {
+        if click.button != PointerButton::Primary
+            || !document.node_is_descendant_or_self(button, click.target)
+        {
             return queue;
         }
         if !action_target_enabled(document, button) {
@@ -4391,7 +4482,11 @@ pub mod widgets {
         options: &CheckboxOptions,
         result: &UiInputResult,
     ) -> &'a mut WidgetActionQueue {
-        if result.clicked != Some(checkbox) || !action_target_enabled(document, checkbox) {
+        if !result
+            .clicked
+            .is_some_and(|target| document.node_is_descendant_or_self(checkbox, target))
+            || !action_target_enabled(document, checkbox)
+        {
             return queue;
         }
         if let Some(binding) = options.action.clone() {
@@ -4703,16 +4798,20 @@ pub mod widgets {
         let GestureEvent::Drag(gesture) = event else {
             return queue;
         };
-        if gesture.target != slider || !action_target_enabled(document, slider) {
+        if !document.node_is_descendant_or_self(slider, gesture.target)
+            || !action_target_enabled(document, slider)
+        {
             return queue;
         }
+        let mut gesture = *gesture;
+        gesture.target = slider;
         if let Some(binding) = options.drag_action.clone() {
-            if let Some(action) = WidgetAction::drag_from_gesture(gesture, binding) {
+            if let Some(action) = WidgetAction::drag_from_gesture(&gesture, binding) {
                 queue.push(action);
             }
         }
         if let Some(binding) = options.value_edit_action.clone() {
-            queue.push(WidgetAction::value_edit_from_drag(gesture, binding));
+            queue.push(WidgetAction::value_edit_from_drag(&gesture, binding));
         }
         queue
     }
@@ -4857,11 +4956,42 @@ pub mod widgets {
             self.apply_ime_response_for_target(response, TransactionTarget::none())
         }
 
+        pub fn apply_ime_response_with_policy(
+            &mut self,
+            response: &TextImeResponse,
+            policy: TextInputInteractionPolicy,
+        ) -> TextInputOutcome {
+            self.apply_ime_response_for_target_with_policy(
+                response,
+                TransactionTarget::none(),
+                policy,
+            )
+        }
+
         pub fn apply_ime_response_for_target(
             &mut self,
             response: &TextImeResponse,
             target: TransactionTarget,
         ) -> TextInputOutcome {
+            self.apply_ime_response_for_target_with_policy(
+                response,
+                target,
+                TextInputInteractionPolicy::default(),
+            )
+        }
+
+        pub fn apply_ime_response_for_target_with_policy(
+            &mut self,
+            response: &TextImeResponse,
+            target: TransactionTarget,
+            policy: TextInputInteractionPolicy,
+        ) -> TextInputOutcome {
+            if !policy.can_edit() {
+                if matches!(response, TextImeResponse::Deactivated { .. }) {
+                    self.composing = None;
+                }
+                return TextInputOutcome::new(EditPhase::Preview, false, None);
+            }
             let before = self.text.clone();
             let mut phase = EditPhase::Preview;
             match response {
@@ -4906,6 +5036,17 @@ pub mod widgets {
                 .then(|| self.apply_ime_response(response))
         }
 
+        pub fn apply_ime_response_for_input_with_policy(
+            &mut self,
+            input: &TextInputId,
+            response: &TextImeResponse,
+            policy: TextInputInteractionPolicy,
+        ) -> Option<TextInputOutcome> {
+            response
+                .is_for_input(input)
+                .then(|| self.apply_ime_response_with_policy(response, policy))
+        }
+
         pub fn apply_ime_response_for_input_and_target(
             &mut self,
             input: &TextInputId,
@@ -4915,6 +5056,18 @@ pub mod widgets {
             response
                 .is_for_input(input)
                 .then(|| self.apply_ime_response_for_target(response, target))
+        }
+
+        pub fn apply_ime_response_for_input_and_target_with_policy(
+            &mut self,
+            input: &TextInputId,
+            response: &TextImeResponse,
+            target: TransactionTarget,
+            policy: TextInputInteractionPolicy,
+        ) -> Option<TextInputOutcome> {
+            response
+                .is_for_input(input)
+                .then(|| self.apply_ime_response_for_target_with_policy(response, target, policy))
         }
 
         pub fn select_all(&mut self) {
@@ -5026,50 +5179,82 @@ pub mod widgets {
             self.handle_event_for_target(event, TransactionTarget::none())
         }
 
+        pub fn handle_event_with_policy(
+            &mut self,
+            event: &UiInputEvent,
+            policy: TextInputInteractionPolicy,
+        ) -> TextInputOutcome {
+            self.handle_event_for_target_with_policy(event, TransactionTarget::none(), policy)
+        }
+
         pub fn handle_event_for_target(
             &mut self,
             event: &UiInputEvent,
             target: TransactionTarget,
         ) -> TextInputOutcome {
+            self.handle_event_for_target_with_policy(
+                event,
+                target,
+                TextInputInteractionPolicy::default(),
+            )
+        }
+
+        pub fn handle_event_for_target_with_policy(
+            &mut self,
+            event: &UiInputEvent,
+            target: TransactionTarget,
+            policy: TextInputInteractionPolicy,
+        ) -> TextInputOutcome {
+            if !policy.enabled {
+                return TextInputOutcome::new(EditPhase::Preview, false, None);
+            }
+            if !policy.selectable {
+                self.clear_selection();
+            }
             let before = self.text.clone();
             let mut phase = EditPhase::Preview;
             let mut clipboard = None;
             let mut history_apply = None;
             match event {
-                UiInputEvent::TextInput(text) => {
+                UiInputEvent::TextInput(text) if policy.can_edit() => {
                     self.insert_text(text);
                     phase = EditPhase::UpdateEdit;
                 }
                 UiInputEvent::Key { key, modifiers } => match key {
                     KeyCode::Character(character) if modifiers.ctrl || modifiers.meta => {
                         match character.to_ascii_lowercase() {
-                            'a' => self.select_all(),
+                            'a' if policy.can_select() => self.select_all(),
                             'c' => {
-                                clipboard =
-                                    self.copy_selection().map(TextInputClipboardAction::Copy);
+                                if policy.can_copy() {
+                                    clipboard =
+                                        self.copy_selection().map(TextInputClipboardAction::Copy);
+                                }
                             }
-                            'x' => {
-                                clipboard = self.cut_selection().map(TextInputClipboardAction::Cut);
+                            'x' if policy.can_edit() => {
+                                if policy.can_copy() {
+                                    clipboard =
+                                        self.cut_selection().map(TextInputClipboardAction::Cut);
+                                }
                                 if clipboard.is_some() {
                                     phase = EditPhase::UpdateEdit;
                                 }
                             }
-                            'v' => {
+                            'v' if policy.can_edit() => {
                                 clipboard = Some(TextInputClipboardAction::Paste);
                             }
-                            'y' => {
+                            'y' if policy.can_edit() => {
                                 history_apply = self.redo_text_edit();
                                 if history_apply.is_some() {
                                     phase = EditPhase::UpdateEdit;
                                 }
                             }
-                            'z' if modifiers.shift => {
+                            'z' if modifiers.shift && policy.can_edit() => {
                                 history_apply = self.redo_text_edit();
                                 if history_apply.is_some() {
                                     phase = EditPhase::UpdateEdit;
                                 }
                             }
-                            'z' => {
+                            'z' if policy.can_edit() => {
                                 history_apply = self.undo_text_edit();
                                 if history_apply.is_some() {
                                     phase = EditPhase::UpdateEdit;
@@ -5078,45 +5263,54 @@ pub mod widgets {
                             _ => {}
                         }
                     }
-                    KeyCode::Backspace => {
+                    KeyCode::Backspace if policy.can_edit() => {
                         if self.backspace() {
                             phase = EditPhase::UpdateEdit;
                         }
                     }
-                    KeyCode::Delete => {
+                    KeyCode::Delete if policy.can_edit() => {
                         if self.delete() {
                             phase = EditPhase::UpdateEdit;
                         }
                     }
-                    KeyCode::ArrowLeft => {
-                        self.move_caret(CaretMovement::Left, modifiers.shift);
+                    KeyCode::ArrowLeft if policy.can_move_caret() => {
+                        self.move_caret(
+                            CaretMovement::Left,
+                            modifiers.shift && policy.can_select(),
+                        );
                     }
-                    KeyCode::ArrowRight => {
-                        self.move_caret(CaretMovement::Right, modifiers.shift);
+                    KeyCode::ArrowRight if policy.can_move_caret() => {
+                        self.move_caret(
+                            CaretMovement::Right,
+                            modifiers.shift && policy.can_select(),
+                        );
                     }
-                    KeyCode::ArrowUp if self.multiline => {
-                        self.move_caret(CaretMovement::Up, modifiers.shift);
+                    KeyCode::ArrowUp if self.multiline && policy.can_move_caret() => {
+                        self.move_caret(CaretMovement::Up, modifiers.shift && policy.can_select());
                     }
-                    KeyCode::ArrowDown if self.multiline => {
-                        self.move_caret(CaretMovement::Down, modifiers.shift);
+                    KeyCode::ArrowDown if self.multiline && policy.can_move_caret() => {
+                        self.move_caret(
+                            CaretMovement::Down,
+                            modifiers.shift && policy.can_select(),
+                        );
                     }
-                    KeyCode::Home => {
+                    KeyCode::Home if policy.can_move_caret() => {
                         let movement = if self.multiline {
                             CaretMovement::LineStart
                         } else {
                             CaretMovement::Start
                         };
-                        self.move_caret(movement, modifiers.shift);
+                        self.move_caret(movement, modifiers.shift && policy.can_select());
                     }
-                    KeyCode::End => {
+                    KeyCode::End if policy.can_move_caret() => {
                         let movement = if self.multiline {
                             CaretMovement::LineEnd
                         } else {
                             CaretMovement::End
                         };
-                        self.move_caret(movement, modifiers.shift);
+                        self.move_caret(movement, modifiers.shift && policy.can_select());
                     }
-                    KeyCode::Enter if self.multiline => {
+                    KeyCode::Enter if self.multiline && policy.can_edit() => {
                         self.insert_text("\n");
                         phase = EditPhase::UpdateEdit;
                     }
@@ -5426,6 +5620,67 @@ pub mod widgets {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TextInputInteractionPolicy {
+        pub enabled: bool,
+        pub read_only: bool,
+        pub selectable: bool,
+        pub allow_copy: bool,
+    }
+
+    impl TextInputInteractionPolicy {
+        pub const EDITABLE: Self = Self {
+            enabled: true,
+            read_only: false,
+            selectable: true,
+            allow_copy: true,
+        };
+
+        pub const fn disabled() -> Self {
+            Self {
+                enabled: false,
+                read_only: false,
+                selectable: false,
+                allow_copy: false,
+            }
+        }
+
+        pub const fn read_only() -> Self {
+            Self {
+                enabled: true,
+                read_only: true,
+                selectable: true,
+                allow_copy: true,
+            }
+        }
+
+        pub const fn can_edit(self) -> bool {
+            self.enabled && !self.read_only
+        }
+
+        pub const fn can_select(self) -> bool {
+            self.enabled && self.selectable
+        }
+
+        pub const fn can_copy(self) -> bool {
+            self.can_select() && self.allow_copy
+        }
+
+        pub const fn can_move_caret(self) -> bool {
+            self.can_edit() || self.can_select()
+        }
+
+        pub const fn can_receive_focus(self) -> bool {
+            self.can_edit() || self.can_select()
+        }
+    }
+
+    impl Default for TextInputInteractionPolicy {
+        fn default() -> Self {
+            Self::EDITABLE
+        }
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum TextInputClipboardAction {
         Copy(String),
@@ -5524,6 +5779,9 @@ pub mod widgets {
         pub shader: Option<ShaderEffect>,
         pub animation: Option<AnimationMachine>,
         pub enabled: bool,
+        pub read_only: bool,
+        pub selectable: bool,
+        pub allow_copy: bool,
         pub focused: bool,
         pub edit_action: Option<WidgetActionBinding>,
         pub accessibility_label: Option<String>,
@@ -5566,6 +5824,9 @@ pub mod widgets {
                 shader: None,
                 animation: None,
                 enabled: true,
+                read_only: false,
+                selectable: true,
+                allow_copy: true,
                 focused: false,
                 edit_action: None,
                 accessibility_label: None,
@@ -5583,6 +5844,46 @@ pub mod widgets {
         pub fn with_edit_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
             self.edit_action = Some(action.into());
             self
+        }
+
+        pub const fn read_only(mut self) -> Self {
+            self.read_only = true;
+            self
+        }
+
+        pub const fn selectable(mut self, selectable: bool) -> Self {
+            self.selectable = selectable;
+            self
+        }
+
+        pub const fn allow_copy(mut self, allow_copy: bool) -> Self {
+            self.allow_copy = allow_copy;
+            self
+        }
+
+        pub const fn interaction_policy(&self) -> TextInputInteractionPolicy {
+            TextInputInteractionPolicy {
+                enabled: self.enabled,
+                read_only: self.read_only,
+                selectable: self.selectable,
+                allow_copy: self.allow_copy,
+            }
+        }
+
+        pub const fn can_edit(&self) -> bool {
+            self.interaction_policy().can_edit()
+        }
+
+        pub const fn can_select(&self) -> bool {
+            self.interaction_policy().can_select()
+        }
+
+        pub const fn can_copy(&self) -> bool {
+            self.interaction_policy().can_copy()
+        }
+
+        pub const fn can_receive_focus(&self) -> bool {
+            self.interaction_policy().can_receive_focus()
         }
     }
 
@@ -5602,19 +5903,28 @@ pub mod widgets {
                     .unwrap_or_else(|| name.clone()),
             )
             .value(state.text.clone())
-            .shortcut("Ctrl+A")
-            .shortcut("Ctrl+C")
-            .shortcut("Ctrl+X")
-            .shortcut("Ctrl+V")
-            .action(AccessibilityAction::new("select_all", "Select all").shortcut("Ctrl+A"))
-            .action(AccessibilityAction::new("copy", "Copy").shortcut("Ctrl+C"))
-            .action(AccessibilityAction::new("cut", "Cut").shortcut("Ctrl+X"))
-            .action(AccessibilityAction::new("paste", "Paste").shortcut("Ctrl+V"))
             .summary(
                 state
                     .caret_info()
                     .accessibility_summary(format!("{name} caret")),
             );
+        if options.can_select() {
+            accessibility = accessibility
+                .shortcut("Ctrl+A")
+                .action(AccessibilityAction::new("select_all", "Select all").shortcut("Ctrl+A"));
+        }
+        if options.can_copy() {
+            accessibility = accessibility
+                .shortcut("Ctrl+C")
+                .action(AccessibilityAction::new("copy", "Copy").shortcut("Ctrl+C"));
+        }
+        if options.can_edit() {
+            accessibility = accessibility
+                .shortcut("Ctrl+X")
+                .shortcut("Ctrl+V")
+                .action(AccessibilityAction::new("cut", "Cut").shortcut("Ctrl+X"))
+                .action(AccessibilityAction::new("paste", "Paste").shortcut("Ctrl+V"));
+        }
         let hint = options
             .accessibility_hint
             .clone()
@@ -5622,8 +5932,13 @@ pub mod widgets {
         if let Some(hint) = hint {
             accessibility = accessibility.hint(hint);
         }
+        if options.read_only {
+            accessibility = accessibility.read_only();
+        }
         if options.enabled {
-            accessibility = accessibility.focusable();
+            if options.can_receive_focus() {
+                accessibility = accessibility.focusable();
+            }
         } else {
             accessibility = accessibility.disabled();
         }
@@ -5634,6 +5949,11 @@ pub mod widgets {
         } else {
             options.visual
         };
+        let input_behavior = if options.can_receive_focus() {
+            InputBehavior::BUTTON
+        } else {
+            InputBehavior::NONE
+        };
         let mut root_node = UiNode::container(
             name.clone(),
             UiNodeStyle {
@@ -5642,11 +5962,7 @@ pub mod widgets {
                 ..Default::default()
             },
         )
-        .with_input(if options.enabled {
-            InputBehavior::BUTTON
-        } else {
-            InputBehavior::NONE
-        })
+        .with_input(input_behavior)
         .with_visual(visual)
         .with_accessibility(accessibility);
         if let Some(shader) = options.shader {
@@ -5683,6 +5999,20 @@ pub mod widgets {
         root
     }
 
+    pub fn selectable_text(
+        document: &mut UiDocument,
+        parent: UiNodeId,
+        name: impl Into<String>,
+        state: &TextInputState,
+        mut options: TextInputOptions,
+    ) -> UiNodeId {
+        options.read_only = true;
+        options.selectable = true;
+        options.allow_copy = true;
+        options.edit_action = None;
+        text_input(document, parent, name, state, options)
+    }
+
     pub fn handle_text_input_event(
         document: &mut UiDocument,
         node: UiNodeId,
@@ -5693,6 +6023,25 @@ pub mod widgets {
         handle_text_input_event_with_metrics(document, node, state, event, platform_context, None)
     }
 
+    pub fn handle_text_input_event_with_options(
+        document: &mut UiDocument,
+        node: UiNodeId,
+        state: &mut TextInputState,
+        options: &TextInputOptions,
+        event: UiInputEvent,
+        platform_context: Option<TextInputPlatformContext>,
+    ) -> TextInputEventOutcome {
+        handle_text_input_event_with_metrics_and_options(
+            document,
+            node,
+            state,
+            options,
+            event,
+            platform_context,
+            None,
+        )
+    }
+
     pub fn handle_text_input_event_with_metrics(
         document: &mut UiDocument,
         node: UiNodeId,
@@ -5701,6 +6050,28 @@ pub mod widgets {
         platform_context: Option<TextInputPlatformContext>,
         layout_metrics: Option<TextInputLayoutMetrics>,
     ) -> TextInputEventOutcome {
+        let options = TextInputOptions::default();
+        handle_text_input_event_with_metrics_and_options(
+            document,
+            node,
+            state,
+            &options,
+            event,
+            platform_context,
+            layout_metrics,
+        )
+    }
+
+    pub fn handle_text_input_event_with_metrics_and_options(
+        document: &mut UiDocument,
+        node: UiNodeId,
+        state: &mut TextInputState,
+        options: &TextInputOptions,
+        event: UiInputEvent,
+        platform_context: Option<TextInputPlatformContext>,
+        layout_metrics: Option<TextInputLayoutMetrics>,
+    ) -> TextInputEventOutcome {
+        let policy = options.interaction_policy();
         let was_focused = document.focus.focused == Some(node);
         let text_event = matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. });
         let input = if text_event {
@@ -5724,7 +6095,11 @@ pub mod widgets {
             let before_caret = state.caret;
             let before_selection = state.selection_anchor;
             let before_composing = state.composing.clone();
-            let outcome = state.handle_event_for_target(&event, TransactionTarget::node(node));
+            let outcome = state.handle_event_for_target_with_policy(
+                &event,
+                TransactionTarget::node(node),
+                policy,
+            );
             if let Some(request) = outcome.clipboard_request() {
                 platform_requests.push(PlatformRequest::Clipboard(request));
             }
@@ -5733,9 +6108,9 @@ pub mod widgets {
                 || before_selection != state.selection_anchor
                 || before_composing != state.composing;
             edit = Some(outcome);
-        } else if focused {
+        } else if focused && policy.can_move_caret() {
             if let Some((point, selecting)) =
-                text_input_pointer_edit(&event, input.pressed == Some(node))
+                text_input_pointer_edit(&event, input.pressed == Some(node) && policy.can_select())
             {
                 if let Some(metrics) = layout_metrics {
                     let before_caret = state.caret;
@@ -5756,7 +6131,7 @@ pub mod widgets {
             }
         });
 
-        if !was_focused && focused {
+        if !was_focused && focused && policy.can_edit() {
             if let Some(context) = platform_context.clone() {
                 platform_requests.push(PlatformRequest::TextIme(
                     state.activate_ime_request(context.clone()),
@@ -5765,7 +6140,7 @@ pub mod widgets {
                     TextInputState::show_keyboard_request(context.input),
                 ));
             }
-        } else if was_focused && !focused {
+        } else if was_focused && !focused && policy.can_edit() {
             if let Some(context) = platform_context.clone() {
                 platform_requests.push(PlatformRequest::TextIme(
                     TextInputState::hide_keyboard_request(context.input.clone()),
@@ -5776,7 +6151,7 @@ pub mod widgets {
             }
         }
 
-        if focused {
+        if focused && policy.can_edit() {
             if let (Some(context), Some(outcome)) = (platform_context, edit.as_ref()) {
                 if outcome.committed || outcome.canceled {
                     platform_requests.push(PlatformRequest::TextIme(
@@ -5800,6 +6175,50 @@ pub mod widgets {
         }
     }
 
+    pub fn handle_selectable_text_event(
+        document: &mut UiDocument,
+        node: UiNodeId,
+        state: &mut TextInputState,
+        options: &TextInputOptions,
+        event: UiInputEvent,
+        platform_context: Option<TextInputPlatformContext>,
+    ) -> TextInputEventOutcome {
+        handle_selectable_text_event_with_metrics(
+            document,
+            node,
+            state,
+            options,
+            event,
+            platform_context,
+            None,
+        )
+    }
+
+    pub fn handle_selectable_text_event_with_metrics(
+        document: &mut UiDocument,
+        node: UiNodeId,
+        state: &mut TextInputState,
+        options: &TextInputOptions,
+        event: UiInputEvent,
+        platform_context: Option<TextInputPlatformContext>,
+        layout_metrics: Option<TextInputLayoutMetrics>,
+    ) -> TextInputEventOutcome {
+        let mut options = options.clone();
+        options.read_only = true;
+        options.selectable = true;
+        options.allow_copy = true;
+        options.edit_action = None;
+        handle_text_input_event_with_metrics_and_options(
+            document,
+            node,
+            state,
+            &options,
+            event,
+            platform_context,
+            layout_metrics,
+        )
+    }
+
     pub fn text_input_actions_from_outcome(
         document: &UiDocument,
         input: UiNodeId,
@@ -5818,7 +6237,7 @@ pub mod widgets {
         options: &TextInputOptions,
         outcome: &TextInputOutcome,
     ) -> &'a mut WidgetActionQueue {
-        if !action_target_enabled(document, input) {
+        if !options.can_edit() || !action_target_enabled(document, input) {
             return queue;
         }
         if let Some(binding) = options.edit_action.clone() {
@@ -5833,17 +6252,6 @@ pub mod widgets {
             UiInputEvent::PointerMove(point) if pressed => Some((*point, true)),
             _ => None,
         }
-    }
-
-    fn widget_option_binding(
-        document: &UiDocument,
-        node: UiNodeId,
-        target: UiNodeId,
-        binding: &Option<WidgetActionBinding>,
-    ) -> Option<WidgetActionBinding> {
-        (target == node && action_target_enabled(document, node))
-            .then(|| binding.clone())
-            .flatten()
     }
 
     fn filter_text_input(text: &str, multiline: bool) -> String {
@@ -6972,6 +7380,9 @@ fn paint_document_egui_impl(
                     image.tint = *tint;
                     callback(&image, &item, &painter.with_clip_rect(clip_rect));
                 }
+            }
+            PaintKind::CompositedLayer(_) => {
+                simple_rect_batch.flush(&painter, outer_clip);
             }
             PaintKind::Path(path) => {
                 simple_rect_batch.flush(&painter, outer_clip);
@@ -9711,6 +10122,46 @@ mod tests {
             WidgetActionKind::Activate(WidgetActivation::pointer(1))
         );
 
+        let label = doc.node(button).children[0];
+        doc.node_mut(label).input = InputBehavior {
+            pointer: true,
+            focusable: false,
+            keyboard: false,
+        };
+        let label_rect = doc.node(label).layout.rect;
+        let label_point = UiPoint::new(
+            label_rect.x + label_rect.width * 0.5,
+            label_rect.y + label_rect.height * 0.5,
+        );
+        doc.handle_input(UiInputEvent::PointerDown(label_point));
+        let label_result = doc.handle_input(UiInputEvent::PointerUp(label_point));
+        assert_eq!(label_result.clicked, Some(label));
+        let label_actions =
+            widgets::button_actions_from_input_result(&doc, button, &options, &label_result);
+        assert_eq!(label_actions.len(), 1);
+        assert_eq!(label_actions.as_slice()[0].target, button);
+
+        let gesture_actions = widgets::button_actions_from_gesture_event(
+            &doc,
+            button,
+            &options,
+            &GestureEvent::Click(PointerClick {
+                pointer_id: PointerId::MOUSE,
+                target: label,
+                position: label_point,
+                button: PointerButton::Primary,
+                count: 2,
+                modifiers: KeyModifiers::NONE,
+                timestamp_millis: 16,
+            }),
+        );
+        assert_eq!(gesture_actions.len(), 1);
+        assert_eq!(gesture_actions.as_slice()[0].target, button);
+        assert_eq!(
+            gesture_actions.as_slice()[0].kind,
+            WidgetActionKind::Activate(WidgetActivation::pointer(2))
+        );
+
         let key_actions = widgets::button_actions_from_key_event(
             &doc,
             button,
@@ -9796,6 +10247,20 @@ mod tests {
             })
         );
 
+        let label = doc.node(checkbox).children[1];
+        let label_pointer = widgets::checkbox_actions_from_input_result(
+            &doc,
+            checkbox,
+            false,
+            &options,
+            &UiInputResult {
+                clicked: Some(label),
+                ..Default::default()
+            },
+        );
+        assert_eq!(label_pointer.len(), 1);
+        assert_eq!(label_pointer.as_slice()[0].target, checkbox);
+
         let keyboard = widgets::checkbox_actions_from_key_event(
             &doc,
             checkbox,
@@ -9838,9 +10303,10 @@ mod tests {
             clicked: Some(apply),
             ..Default::default()
         };
+        let thumb = doc.node(slider).children[1];
         let drag = GestureEvent::Drag(DragGesture {
             pointer_id: PointerId::MOUSE,
-            target: slider,
+            target: thumb,
             phase: GesturePhase::Update,
             origin: UiPoint::new(10.0, 10.0),
             current: UiPoint::new(60.0, 10.0),
@@ -9864,6 +10330,8 @@ mod tests {
 
         assert_eq!(queue.len(), 3);
         assert_eq!(queue.as_slice()[0].target, apply);
+        assert_eq!(queue.as_slice()[1].target, slider);
+        assert_eq!(queue.as_slice()[2].target, slider);
         assert_eq!(
             queue.as_slice()[1].kind,
             WidgetActionKind::Drag(WidgetDrag {
@@ -10122,6 +10590,90 @@ mod tests {
 
     #[cfg(feature = "widgets")]
     #[test]
+    fn widget_text_input_policy_supports_read_only_and_non_selectable_text() {
+        let mut state = widgets::TextInputState::new("locked");
+        state.select_all();
+        let policy = widgets::TextInputInteractionPolicy::read_only();
+
+        let copy = state.handle_event_with_policy(
+            &UiInputEvent::Key {
+                key: KeyCode::Character('c'),
+                modifiers: KeyModifiers {
+                    ctrl: true,
+                    ..KeyModifiers::NONE
+                },
+            },
+            policy,
+        );
+        assert_eq!(
+            copy.clipboard,
+            Some(widgets::TextInputClipboardAction::Copy(
+                "locked".to_string()
+            ))
+        );
+
+        let cut = state.handle_event_with_policy(
+            &UiInputEvent::Key {
+                key: KeyCode::Character('x'),
+                modifiers: KeyModifiers {
+                    ctrl: true,
+                    ..KeyModifiers::NONE
+                },
+            },
+            policy,
+        );
+        assert_eq!(cut.clipboard, None);
+        assert_eq!(state.text, "locked");
+
+        let typed =
+            state.handle_event_with_policy(&UiInputEvent::TextInput("!".to_string()), policy);
+        assert!(!typed.changed);
+        assert_eq!(state.text, "locked");
+
+        let ime = state.apply_ime_response_with_policy(
+            &platform::TextImeResponse::Commit {
+                input: platform::TextInputId::new("field"),
+                text: "!".to_string(),
+            },
+            policy,
+        );
+        assert!(!ime.changed);
+        assert_eq!(state.text, "locked");
+
+        state.caret = 0;
+        state.clear_selection();
+        state.handle_event_with_policy(
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowRight,
+                modifiers: KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::NONE
+                },
+            },
+            policy,
+        );
+        assert_eq!(state.selected_text(), Some("l"));
+
+        let non_selectable = widgets::TextInputInteractionPolicy {
+            selectable: false,
+            ..policy
+        };
+        let copy = state.handle_event_with_policy(
+            &UiInputEvent::Key {
+                key: KeyCode::Character('c'),
+                modifiers: KeyModifiers {
+                    ctrl: true,
+                    ..KeyModifiers::NONE
+                },
+            },
+            non_selectable,
+        );
+        assert_eq!(copy.clipboard, None);
+        assert_eq!(state.selected_range(), None);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
     fn widget_text_input_maps_clipboard_and_ime_platform_contracts() {
         let mut state = widgets::TextInputState::new("scale").multiline(true);
         state.caret = 2;
@@ -10298,6 +10850,192 @@ mod tests {
                 platform::PlatformRequest::TextIme(platform::TextImeRequest::Deactivate { input: deactivated_input }),
             ] if *keyboard_input == context.input && *deactivated_input == context.input
         ));
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_text_input_options_enforce_read_only_selection_and_clipboard() {
+        let mut doc = UiDocument::new(root_style(320.0, 120.0));
+        let root = doc.root;
+        let mut state = widgets::TextInputState::new("AB");
+        let options = widgets::TextInputOptions::default()
+            .read_only()
+            .with_edit_action(WidgetActionBinding::action("input.edit"));
+        let input = widgets::text_input(&mut doc, root, "serial", &state, options.clone());
+        doc.compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let context = widgets::TextInputPlatformContext::for_node(
+            input,
+            state.caret_rect(widgets::TextInputLayoutMetrics::new(
+                UiRect::new(0.0, 0.0, 180.0, 30.0),
+                8.0,
+                18.0,
+            )),
+        );
+
+        let accessibility = doc.node(input).accessibility.as_ref().unwrap();
+        assert!(accessibility.read_only);
+        assert!(accessibility.focusable);
+        assert!(accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "copy"));
+        assert!(!accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "cut"));
+        assert!(!accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "paste"));
+
+        let focus = widgets::handle_text_input_event_with_options(
+            &mut doc,
+            input,
+            &mut state,
+            &options,
+            UiInputEvent::PointerDown(UiPoint::new(10.0, 10.0)),
+            Some(context.clone()),
+        );
+        assert!(focus.focused);
+        assert!(focus.platform_requests.is_empty());
+
+        let typed = widgets::handle_text_input_event_with_options(
+            &mut doc,
+            input,
+            &mut state,
+            &options,
+            UiInputEvent::TextInput("!".to_string()),
+            Some(context.clone()),
+        );
+        assert_eq!(state.text, "AB");
+        assert!(!typed.did_edit());
+        assert_eq!(
+            widgets::text_input_actions_from_outcome(
+                &doc,
+                input,
+                &options,
+                typed.edit.as_ref().unwrap()
+            )
+            .len(),
+            0
+        );
+
+        state.select_all();
+        let copy = widgets::handle_text_input_event_with_options(
+            &mut doc,
+            input,
+            &mut state,
+            &options,
+            UiInputEvent::Key {
+                key: KeyCode::Character('c'),
+                modifiers: KeyModifiers {
+                    ctrl: true,
+                    ..KeyModifiers::NONE
+                },
+            },
+            Some(context),
+        );
+        assert_eq!(
+            copy.platform_requests,
+            vec![platform::PlatformRequest::Clipboard(
+                platform::ClipboardRequest::WriteText("AB".to_string())
+            )]
+        );
+
+        let mut non_selectable_doc = UiDocument::new(root_style(320.0, 120.0));
+        let non_selectable_root = non_selectable_doc.root;
+        let locked = widgets::text_input(
+            &mut non_selectable_doc,
+            non_selectable_root,
+            "locked",
+            &state,
+            options.clone().selectable(false),
+        );
+        let locked_node = non_selectable_doc.node(locked);
+        assert!(!locked_node.input.pointer);
+        assert!(!locked_node.input.focusable);
+        let locked_accessibility = locked_node.accessibility.as_ref().unwrap();
+        assert!(locked_accessibility.read_only);
+        assert!(!locked_accessibility.focusable);
+        assert!(!locked_accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "copy"));
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_selectable_text_wraps_read_only_copyable_input() {
+        let mut doc = UiDocument::new(root_style(320.0, 120.0));
+        let root = doc.root;
+        let mut state = widgets::TextInputState::new("Reference");
+        let options = widgets::TextInputOptions::default()
+            .with_edit_action(WidgetActionBinding::action("should.not.emit"));
+
+        let selectable =
+            widgets::selectable_text(&mut doc, root, "reference", &state, options.clone());
+        doc.compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let accessibility = doc.node(selectable).accessibility.as_ref().unwrap();
+        assert!(accessibility.read_only);
+        assert!(accessibility.focusable);
+        assert!(accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "copy"));
+        assert!(!accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "cut"));
+        assert!(!accessibility
+            .actions
+            .iter()
+            .any(|action| action.id == "paste"));
+
+        let focus = widgets::handle_selectable_text_event(
+            &mut doc,
+            selectable,
+            &mut state,
+            &options,
+            UiInputEvent::PointerDown(UiPoint::new(10.0, 10.0)),
+            None,
+        );
+        assert!(focus.focused);
+        assert!(focus.platform_requests.is_empty());
+
+        let typed = widgets::handle_selectable_text_event(
+            &mut doc,
+            selectable,
+            &mut state,
+            &options,
+            UiInputEvent::TextInput("!".to_string()),
+            None,
+        );
+        assert_eq!(state.text, "Reference");
+        assert!(!typed.did_edit());
+
+        state.select_all();
+        let copy = widgets::handle_selectable_text_event(
+            &mut doc,
+            selectable,
+            &mut state,
+            &options,
+            UiInputEvent::Key {
+                key: KeyCode::Character('c'),
+                modifiers: KeyModifiers {
+                    ctrl: true,
+                    ..KeyModifiers::NONE
+                },
+            },
+            None,
+        );
+        assert_eq!(
+            copy.platform_requests,
+            vec![platform::PlatformRequest::Clipboard(
+                platform::ClipboardRequest::WriteText("Reference".to_string())
+            )]
+        );
     }
 
     #[cfg(feature = "widgets")]

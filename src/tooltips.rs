@@ -7,8 +7,8 @@
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{PointerButton, PointerEventKind, RawPointerEvent};
 use crate::{
-    KeyCode, OverlayDismissPolicy, OverlayEntry, OverlayFocusRestoreTarget, OverlayId, OverlayKind,
-    UiNodeId, UiPoint, UiRect,
+    KeyCode, KeyModifiers, OverlayDismissPolicy, OverlayEntry, OverlayFocusRestoreTarget,
+    OverlayId, OverlayKind, UiNodeId, UiPoint, UiRect,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -570,9 +570,26 @@ impl ContextMenuRequest {
         }
     }
 
+    pub fn from_key_event(
+        target: UiNodeId,
+        anchor_rect: UiRect,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<Self> {
+        keyboard_context_menu_key(key, modifiers).then(|| Self::keyboard(target, anchor_rect))
+    }
+
     pub const fn item_state(mut self, item_state: HelpItemState) -> Self {
         self.item_state = item_state;
         self
+    }
+}
+
+pub const fn keyboard_context_menu_key(key: KeyCode, modifiers: KeyModifiers) -> bool {
+    match key {
+        KeyCode::ContextMenu => !modifiers.ctrl && !modifiers.alt && !modifiers.meta,
+        KeyCode::F10 => modifiers.shift && !modifiers.ctrl && !modifiers.alt && !modifiers.meta,
+        _ => false,
     }
 }
 
@@ -775,6 +792,8 @@ fn format_key(key: KeyCode) -> String {
         KeyCode::Enter => "Enter".to_string(),
         KeyCode::Escape => "Esc".to_string(),
         KeyCode::Tab => "Tab".to_string(),
+        KeyCode::F10 => "F10".to_string(),
+        KeyCode::ContextMenu => "Context Menu".to_string(),
     }
 }
 
@@ -859,6 +878,21 @@ mod tests {
                 .separator(" ")
                 .format(shortcut),
             "Shift Super S"
+        );
+        assert_eq!(
+            ShortcutFormatter::default().format(Shortcut::new(
+                KeyCode::F10,
+                KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::NONE
+                }
+            )),
+            "Shift+F10"
+        );
+        assert_eq!(
+            ShortcutFormatter::default()
+                .format(Shortcut::new(KeyCode::ContextMenu, KeyModifiers::NONE)),
+            "Context Menu"
         );
     }
 
@@ -1029,6 +1063,32 @@ mod tests {
         assert_eq!(pointer_request.position, UiPoint::new(40.0, 50.0));
         assert_eq!(keyboard_request.trigger, ContextMenuTrigger::Keyboard);
         assert_eq!(keyboard_request.position, UiPoint::new(20.0, 54.0));
+        let menu_key = ContextMenuRequest::from_key_event(
+            UiNodeId(3),
+            anchor,
+            KeyCode::ContextMenu,
+            KeyModifiers::NONE,
+        )
+        .expect("menu key context menu");
+        let shift_f10 = ContextMenuRequest::from_key_event(
+            UiNodeId(3),
+            anchor,
+            KeyCode::F10,
+            KeyModifiers {
+                shift: true,
+                ..KeyModifiers::NONE
+            },
+        )
+        .expect("shift f10 context menu");
+        assert_eq!(menu_key.trigger, ContextMenuTrigger::Keyboard);
+        assert_eq!(shift_f10.position, keyboard_context_menu_position(anchor));
+        assert!(ContextMenuRequest::from_key_event(
+            UiNodeId(3),
+            anchor,
+            KeyCode::F10,
+            KeyModifiers::NONE,
+        )
+        .is_none());
 
         let clamped = clamp_context_menu_position(
             UiPoint::new(190.0, 190.0),

@@ -44,6 +44,7 @@ Theme and design-token stability policy is recorded in
 - `egui` remains host/input/platform compatibility.
 - `egui-renderer-compat` remains the legacy egui painter compatibility path.
 - `text-cosmic` enables the optional Cosmic Text measurer.
+- `accesskit-winit` enables the optional AccessKit bridge for winit hosts.
 
 6. Move shared host and renderer bookkeeping toward v5 contracts.
 
@@ -53,6 +54,18 @@ scrolling and compositor policy modules for new integration work. These are
 backend-neutral contracts; some existing widget and renderer paths still need
 incremental rewiring, so prefer thin local adapters while migrating downstream
 code.
+
+Use `PaintCompositorLayer` when a paint subtree needs isolated composition for
+rounded clipping, masks, opacity, or basic filters. The WGPU backend uses a real
+render-to-texture path for those layers when the `wgpu` feature is enabled, and
+rich-rect shadows use the backend's soft falloff path. Snapshot color management
+is explicitly sRGB-only in v5; treat `ColorManagementLevel` values above sRGB as
+future capability records rather than current CPU/WGPU snapshot output.
+`PaintPath` now exposes fill-rule and stroke cap/join options backed by shared
+lyon tessellation; glyphon text supports grayscale glyphs at fractional
+positions, while RGB/LCD component subpixel masks are not a v5 claim. True
+backdrop filters are also explicit future capability records rather than
+current CPU/WGPU snapshot behavior.
 
 7. Move async task and form state through explicit lifecycle records.
 
@@ -64,8 +77,11 @@ own their executor and product validators; Operad owns the UI-side contracts.
 8. Treat accessibility adapters as explicit host state.
 
 `HeadlessAccessibilityAdapter` is available for tests and non-platform
-integration. Platform adapters should consume the same request/report types and
-can publish canvas/editor target summaries through
+integration. Winit hosts can enable `accesskit-winit` to convert
+`AccessibilityTree` into AccessKit tree updates, publish full trees/focus
+changes through the platform adapter, and queue raw AccessKit action requests
+for host handling. Other platform adapters should consume the same
+request/report types and can publish canvas/editor target summaries through
 `AccessibilityAdapterTargetSummary`.
 
 9. Centralize help, context menu, and diagnostic output.
@@ -75,6 +91,21 @@ Use `CommandTooltipResolver`, `TooltipRequest`, `ContextMenuRequest`, and
 `DiagnosticReport` when tests, hosts, or devtools need one surface for input
 routing, widget actions, overlays, accessibility output, effective geometry,
 dirty flags, warnings, errors, and render timing.
+
+Context menus can now be opened through `ContextMenuState::open_from_pointer_event`,
+`ContextMenuState::open_from_keyboard`, or `ContextMenuState::open_from_key_event`.
+The key path treats the dedicated `KeyCode::ContextMenu` key and `Shift+F10`
+as keyboard context-menu invocation. The return value includes both the menu
+outcome and the policy resolution so disabled/read-only suppression is visible
+to hosts and tests.
+
+Editable text remains `text_input` plus app-owned `TextInputState`. For
+read-only copyable text, prefer `selectable_text` and
+`handle_selectable_text_event`; these wrap `TextInputOptions` as read-only,
+selectable, and copyable while suppressing edits, paste, IME commits, and edit
+actions. Use `TextInputOptions::read_only()`, `.selectable(false)`, and
+`.allow_copy(false)` when a lower-level text input needs explicit interaction
+policy.
 
 ## Validation
 

@@ -7,11 +7,13 @@ use operad::{
     ScenarioHarness, TextStyle, WgpuRenderer,
 };
 use operad::{
-    AlignedStroke, ColorRgba, CpuSnapshotRenderer, LinearGradient, PaintBrush, PaintEffect,
-    PaintItem, PaintKind, PaintList, PaintRect, PaintTransform, RenderFrameRequest, RenderOptions,
-    RenderedImage, RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver,
-    ResourceUpdate, StrokeStyle, TextContent, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint,
-    UiRect, UiSize, UiVisual,
+    AlignedStroke, ColorRgba, CompositorClip, CompositorFilter, CompositorFilterKind,
+    CompositorMask, CornerRadii, CpuSnapshotRenderer, LinearGradient, MaskMode, PaintBrush,
+    PaintCompositorLayer, PaintEffect, PaintItem, PaintKind, PaintList, PaintPath, PaintRect,
+    PaintTransform, PathFillRule, RenderFrameRequest, RenderOptions, RenderedImage,
+    RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
+    StrokeLineCap, StrokeLineJoin, StrokeStyle, TextContent, UiDocument, UiNode, UiNodeId,
+    UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 fn scene_document() -> UiDocument {
@@ -238,6 +240,19 @@ fn wgpu_text_snapshot_uses_glyphon_rendering() {
 }
 
 #[test]
+fn wgpu_text_snapshot_preserves_fractional_glyph_positioning() {
+    let integer = text_snapshot_at(UiPoint::new(4.0, 4.0));
+    let fractional = text_snapshot_at(UiPoint::new(4.5, 4.25));
+
+    assert!(lit_pixel_count(&integer) > 24);
+    assert!(lit_pixel_count(&fractional) > 24);
+    assert_ne!(
+        integer.pixels, fractional.pixels,
+        "fractional text placement should affect grayscale glyph coverage"
+    );
+}
+
+#[test]
 fn wgpu_paint_order_allows_geometry_to_cover_prior_text() {
     let paint = PaintList {
         items: vec![
@@ -378,6 +393,478 @@ fn wgpu_rich_rect_gradient_and_effects_track_cpu_snapshot() {
         [18, 20, 24, 255],
         "shadow/effect fallback should affect pixels outside the filled rect"
     );
+}
+
+#[test]
+fn wgpu_rich_rect_shadow_has_soft_falloff() {
+    let rich_rect = PaintRect::new(
+        UiRect::new(10.0, 10.0, 20.0, 12.0),
+        PaintBrush::Solid(ColorRgba::new(40, 120, 220, 255)),
+    )
+    .effect(PaintEffect::shadow(
+        ColorRgba::new(0, 0, 0, 160),
+        UiPoint::new(0.0, 0.0),
+        10.0,
+        0.0,
+    ));
+    let request = RenderFrameRequest::new(
+        RenderTarget::snapshot(PixelSize::new(52, 36)),
+        UiSize::new(52.0, 36.0),
+        PaintList {
+            items: vec![PaintItem {
+                node: UiNodeId(0),
+                rect: UiRect::new(10.0, 10.0, 20.0, 12.0),
+                clip_rect: UiRect::new(0.0, 0.0, 52.0, 36.0),
+                z_index: 0,
+                layer_order: LayerOrder::DEFAULT,
+                opacity: 1.0,
+                transform: PaintTransform::default(),
+                shader: None,
+                kind: PaintKind::RichRect(rich_rect),
+            }],
+        },
+    )
+    .options(RenderOptions {
+        clear_color: ColorRgba::new(240, 240, 240, 255),
+        ..RenderOptions::default()
+    });
+
+    let cpu = CpuSnapshotRenderer::new(ColorRgba::new(240, 240, 240, 255))
+        .render_frame(request.clone(), &EmptyResourceResolver)
+        .expect("cpu soft shadow render")
+        .snapshot
+        .expect("cpu snapshot");
+    let wgpu = WgpuRenderer::default()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("wgpu soft shadow render")
+        .snapshot
+        .expect("wgpu snapshot");
+
+    let near = pixel_rgba(&wgpu.pixels, 52, 32, 16);
+    let far = pixel_rgba(&wgpu.pixels, 52, 39, 16);
+    let outside = pixel_rgba(&wgpu.pixels, 52, 47, 16);
+    assert!(
+        near[0] < far[0] && far[0] < outside[0],
+        "expected soft shadow falloff from near to far pixels, got near={near:?} far={far:?} outside={outside:?}"
+    );
+    assert_pixel_near(near, pixel_rgba(&cpu.pixels, 52, 32, 16), 5);
+    assert_pixel_near(far, pixel_rgba(&cpu.pixels, 52, 39, 16), 5);
+}
+
+#[test]
+fn wgpu_path_stroke_flattens_quadratic_curve() {
+    let path = PaintPath::new()
+        .move_to(UiPoint::new(8.0, 28.0))
+        .quadratic_to(UiPoint::new(26.0, 4.0), UiPoint::new(44.0, 28.0))
+        .stroke(StrokeStyle::new(ColorRgba::WHITE, 4.0));
+    let request = RenderFrameRequest::new(
+        RenderTarget::snapshot(PixelSize::new(56, 36)),
+        UiSize::new(56.0, 36.0),
+        PaintList {
+            items: vec![PaintItem {
+                node: UiNodeId(0),
+                rect: path.bounds(),
+                clip_rect: UiRect::new(0.0, 0.0, 56.0, 36.0),
+                z_index: 0,
+                layer_order: LayerOrder::DEFAULT,
+                opacity: 1.0,
+                transform: PaintTransform::default(),
+                shader: None,
+                kind: PaintKind::Path(path),
+            }],
+        },
+    )
+    .options(RenderOptions {
+        clear_color: ColorRgba::new(0, 0, 0, 255),
+        ..RenderOptions::default()
+    });
+
+    let cpu = CpuSnapshotRenderer::default()
+        .render_frame(request.clone(), &EmptyResourceResolver)
+        .expect("cpu flattened path render")
+        .snapshot
+        .expect("cpu snapshot");
+    let wgpu = WgpuRenderer::default()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("wgpu flattened path render")
+        .snapshot
+        .expect("wgpu snapshot");
+
+    let curve_midpoint = pixel_rgba(&wgpu.pixels, 56, 26, 16);
+    assert!(
+        curve_midpoint[0] > 16,
+        "expected quadratic control point to lift the rendered stroke, got {curve_midpoint:?}"
+    );
+    assert_pixel_near(curve_midpoint, pixel_rgba(&cpu.pixels, 56, 26, 16), 24);
+}
+
+#[test]
+fn wgpu_path_stroke_line_caps_are_tessellated() {
+    let butt = stroked_path_snapshot(
+        PaintPath::new()
+            .move_to(UiPoint::new(16.0, 16.0))
+            .line_to(UiPoint::new(32.0, 16.0))
+            .stroke(StrokeStyle::new(ColorRgba::WHITE, 8.0))
+            .line_cap(StrokeLineCap::Butt),
+        PixelSize::new(48, 32),
+    );
+    let square = stroked_path_snapshot(
+        PaintPath::new()
+            .move_to(UiPoint::new(16.0, 16.0))
+            .line_to(UiPoint::new(32.0, 16.0))
+            .stroke(StrokeStyle::new(ColorRgba::WHITE, 8.0))
+            .line_cap(StrokeLineCap::Square),
+        PixelSize::new(48, 32),
+    );
+
+    assert_eq!(pixel_rgba(&butt.pixels, 48, 13, 16), [0, 0, 0, 255]);
+    assert_eq!(pixel_rgba(&square.pixels, 48, 13, 16), [255, 255, 255, 255]);
+}
+
+#[test]
+fn wgpu_path_stroke_line_joins_are_tessellated() {
+    let base_path = || {
+        PaintPath::new()
+            .move_to(UiPoint::new(10.0, 30.0))
+            .line_to(UiPoint::new(24.0, 8.0))
+            .line_to(UiPoint::new(38.0, 30.0))
+            .stroke(StrokeStyle::new(ColorRgba::WHITE, 8.0))
+            .line_cap(StrokeLineCap::Butt)
+    };
+    let bevel = stroked_path_snapshot(
+        base_path().line_join(StrokeLineJoin::Bevel),
+        PixelSize::new(48, 36),
+    );
+    let miter = stroked_path_snapshot(
+        base_path()
+            .line_join(StrokeLineJoin::Miter)
+            .miter_limit(8.0),
+        PixelSize::new(48, 36),
+    );
+
+    assert_ne!(
+        bevel.pixels, miter.pixels,
+        "miter and bevel joins should not collapse to the same stroke mesh"
+    );
+    assert!(
+        lit_pixel_count(&miter) > lit_pixel_count(&bevel),
+        "miter join should add coverage beyond bevel"
+    );
+}
+
+#[test]
+fn wgpu_path_fill_even_odd_contours_cut_holes() {
+    let path = PaintPath::new()
+        .move_to(UiPoint::new(4.0, 4.0))
+        .line_to(UiPoint::new(44.0, 4.0))
+        .line_to(UiPoint::new(44.0, 44.0))
+        .line_to(UiPoint::new(4.0, 44.0))
+        .close()
+        .move_to(UiPoint::new(14.0, 14.0))
+        .line_to(UiPoint::new(34.0, 14.0))
+        .line_to(UiPoint::new(34.0, 34.0))
+        .line_to(UiPoint::new(14.0, 34.0))
+        .close()
+        .fill_rule(PathFillRule::EvenOdd)
+        .fill(ColorRgba::new(220, 40, 60, 255));
+    let image = filled_path_snapshot(path, PixelSize::new(48, 48));
+
+    assert_eq!(pixel_rgba(&image.pixels, 48, 8, 8), [220, 40, 60, 255]);
+    assert_eq!(pixel_rgba(&image.pixels, 48, 24, 24), [0, 0, 0, 255]);
+}
+
+#[test]
+fn wgpu_path_fill_tessellates_curved_concave_shapes() {
+    let path = PaintPath::new()
+        .move_to(UiPoint::new(8.0, 8.0))
+        .line_to(UiPoint::new(48.0, 8.0))
+        .cubic_to(
+            UiPoint::new(56.0, 8.0),
+            UiPoint::new(56.0, 20.0),
+            UiPoint::new(48.0, 20.0),
+        )
+        .line_to(UiPoint::new(24.0, 20.0))
+        .line_to(UiPoint::new(24.0, 32.0))
+        .line_to(UiPoint::new(48.0, 32.0))
+        .cubic_to(
+            UiPoint::new(56.0, 32.0),
+            UiPoint::new(56.0, 44.0),
+            UiPoint::new(48.0, 44.0),
+        )
+        .line_to(UiPoint::new(8.0, 44.0))
+        .close()
+        .fill_rule(PathFillRule::NonZero)
+        .fill(ColorRgba::new(40, 210, 110, 255));
+    let image = filled_path_snapshot(path, PixelSize::new(64, 52));
+
+    assert_eq!(pixel_rgba(&image.pixels, 64, 12, 26), [40, 210, 110, 255]);
+    assert_eq!(pixel_rgba(&image.pixels, 64, 36, 26), [0, 0, 0, 255]);
+}
+
+#[test]
+fn wgpu_composited_layer_rounded_clip_masks_child_content() {
+    let layer_bounds = UiRect::new(4.0, 4.0, 24.0, 24.0);
+    let child = PaintItem {
+        node: UiNodeId(1),
+        rect: layer_bounds,
+        clip_rect: UiRect::new(0.0, 0.0, 32.0, 32.0),
+        z_index: 0,
+        layer_order: LayerOrder::DEFAULT,
+        opacity: 1.0,
+        transform: PaintTransform::default(),
+        shader: None,
+        kind: PaintKind::Rect {
+            fill: ColorRgba::new(220, 32, 48, 255),
+            stroke: None,
+            corner_radius: 0.0,
+        },
+    };
+    let layer = PaintCompositorLayer::new(layer_bounds, PaintList { items: vec![child] }).clip(
+        CompositorClip::rounded_rect(layer_bounds, CornerRadii::uniform(10.0)),
+    );
+    let request =
+        composited_layer_request(layer, PixelSize::new(32, 32), ColorRgba::new(2, 4, 8, 255));
+
+    let wgpu = WgpuRenderer::default()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("wgpu composited rounded clip render")
+        .snapshot
+        .expect("wgpu snapshot");
+
+    assert_eq!(pixel_rgba(&wgpu.pixels, 32, 4, 4), [2, 4, 8, 255]);
+    assert_eq!(pixel_rgba(&wgpu.pixels, 32, 16, 16), [220, 32, 48, 255]);
+}
+
+#[test]
+fn wgpu_composited_layer_mask_and_filter_track_cpu_snapshot() {
+    let layer_bounds = UiRect::new(4.0, 4.0, 24.0, 16.0);
+    let child_color = ColorRgba::new(100, 120, 200, 255);
+    let child = PaintItem {
+        node: UiNodeId(1),
+        rect: layer_bounds,
+        clip_rect: UiRect::new(0.0, 0.0, 32.0, 24.0),
+        z_index: 0,
+        layer_order: LayerOrder::DEFAULT,
+        opacity: 1.0,
+        transform: PaintTransform::default(),
+        shader: None,
+        kind: PaintKind::Rect {
+            fill: child_color,
+            stroke: None,
+            corner_radius: 0.0,
+        },
+    };
+    let layer = PaintCompositorLayer::new(layer_bounds, PaintList { items: vec![child] })
+        .mask(CompositorMask::new(
+            UiRect::new(10.0, 4.0, 12.0, 16.0),
+            MaskMode::Alpha,
+        ))
+        .filter(CompositorFilter::new(CompositorFilterKind::Brightness, 0.5));
+    let request =
+        composited_layer_request(layer, PixelSize::new(32, 24), ColorRgba::new(3, 4, 5, 255));
+
+    let cpu = CpuSnapshotRenderer::default()
+        .render_frame(request.clone(), &EmptyResourceResolver)
+        .expect("cpu composited mask/filter render")
+        .snapshot
+        .expect("cpu snapshot");
+    let wgpu = WgpuRenderer::default()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("wgpu composited mask/filter render")
+        .snapshot
+        .expect("wgpu snapshot");
+
+    assert_eq!(pixel_rgba(&wgpu.pixels, 32, 6, 10), [3, 4, 5, 255]);
+    assert_pixel_near(
+        pixel_rgba(&wgpu.pixels, 32, 14, 10),
+        pixel_rgba(&cpu.pixels, 32, 14, 10),
+        3,
+    );
+}
+
+#[test]
+fn wgpu_composited_layer_blur_runs_on_gpu_texture() {
+    let layer_bounds = UiRect::new(0.0, 0.0, 32.0, 16.0);
+    let child = PaintItem {
+        node: UiNodeId(1),
+        rect: UiRect::new(8.0, 4.0, 4.0, 8.0),
+        clip_rect: layer_bounds,
+        z_index: 0,
+        layer_order: LayerOrder::DEFAULT,
+        opacity: 1.0,
+        transform: PaintTransform::default(),
+        shader: None,
+        kind: PaintKind::Rect {
+            fill: ColorRgba::WHITE,
+            stroke: None,
+            corner_radius: 0.0,
+        },
+    };
+    let layer = PaintCompositorLayer::new(layer_bounds, PaintList { items: vec![child] })
+        .filter(CompositorFilter::new(CompositorFilterKind::Blur, 4.0));
+    let request =
+        composited_layer_request(layer, PixelSize::new(32, 16), ColorRgba::new(0, 0, 0, 255));
+
+    let wgpu = WgpuRenderer::default()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("wgpu composited blur render")
+        .snapshot
+        .expect("wgpu snapshot");
+
+    let blurred_edge = pixel_rgba(&wgpu.pixels, 32, 5, 8);
+    assert!(
+        blurred_edge[0] > 0 && blurred_edge[0] < 255,
+        "expected blurred offscreen content to affect a neighboring pixel, got {blurred_edge:?}"
+    );
+}
+
+#[test]
+fn wgpu_composited_layer_renders_glyphon_text_child() {
+    let layer_bounds = UiRect::new(0.0, 0.0, 96.0, 36.0);
+    let child = PaintItem {
+        node: UiNodeId(1),
+        rect: UiRect::new(5.25, 5.5, 86.0, 26.0),
+        clip_rect: layer_bounds,
+        z_index: 0,
+        layer_order: LayerOrder::DEFAULT,
+        opacity: 1.0,
+        transform: PaintTransform::default(),
+        shader: None,
+        kind: PaintKind::Text(TextContent::new(
+            "Layer",
+            TextStyle {
+                font_size: 20.0,
+                line_height: 24.0,
+                color: ColorRgba::new(255, 255, 255, 255),
+                ..Default::default()
+            },
+        )),
+    };
+    let layer = PaintCompositorLayer::new(layer_bounds, PaintList { items: vec![child] })
+        .clip(CompositorClip::rect(layer_bounds));
+    let request =
+        composited_layer_request(layer, PixelSize::new(96, 36), ColorRgba::new(0, 0, 0, 255));
+
+    let wgpu = WgpuRenderer::default()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("wgpu composited text render")
+        .snapshot
+        .expect("wgpu snapshot");
+
+    let lit_pixels = wgpu
+        .pixels
+        .chunks_exact(4)
+        .filter(|pixel| pixel[0] > 16 || pixel[1] > 16 || pixel[2] > 16)
+        .count();
+    assert!(
+        lit_pixels > 24,
+        "expected visible glyph pixels in composited layer, got {lit_pixels}"
+    );
+}
+
+fn composited_layer_request(
+    layer: PaintCompositorLayer,
+    size: PixelSize,
+    clear_color: ColorRgba,
+) -> RenderFrameRequest {
+    RenderFrameRequest::new(
+        RenderTarget::snapshot(size),
+        UiSize::new(size.width as f32, size.height as f32),
+        PaintList {
+            items: vec![PaintItem {
+                node: UiNodeId(0),
+                rect: layer.bounds,
+                clip_rect: UiRect::new(0.0, 0.0, size.width as f32, size.height as f32),
+                z_index: 0,
+                layer_order: LayerOrder::DEFAULT,
+                opacity: 1.0,
+                transform: PaintTransform::default(),
+                shader: None,
+                kind: PaintKind::CompositedLayer(layer),
+            }],
+        },
+    )
+    .options(RenderOptions {
+        clear_color,
+        ..RenderOptions::default()
+    })
+}
+
+fn text_snapshot_at(position: UiPoint) -> RenderedImage {
+    wgpu_snapshot_for_item(
+        PixelSize::new(96, 36),
+        PaintItem {
+            node: UiNodeId(0),
+            rect: UiRect::new(position.x, position.y, 88.0, 28.0),
+            clip_rect: UiRect::new(0.0, 0.0, 96.0, 36.0),
+            z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Text(TextContent::new(
+                "Glyphon",
+                TextStyle {
+                    font_size: 20.0,
+                    line_height: 24.0,
+                    color: ColorRgba::WHITE,
+                    ..Default::default()
+                },
+            )),
+        },
+    )
+}
+
+fn stroked_path_snapshot(path: PaintPath, size: PixelSize) -> RenderedImage {
+    path_snapshot(path, size)
+}
+
+fn filled_path_snapshot(path: PaintPath, size: PixelSize) -> RenderedImage {
+    path_snapshot(path, size)
+}
+
+fn path_snapshot(path: PaintPath, size: PixelSize) -> RenderedImage {
+    let bounds = path.bounds();
+    wgpu_snapshot_for_item(
+        size,
+        PaintItem {
+            node: UiNodeId(0),
+            rect: bounds,
+            clip_rect: UiRect::new(0.0, 0.0, size.width as f32, size.height as f32),
+            z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Path(path),
+        },
+    )
+}
+
+fn wgpu_snapshot_for_item(size: PixelSize, item: PaintItem) -> RenderedImage {
+    let request = RenderFrameRequest::new(
+        RenderTarget::snapshot(size),
+        UiSize::new(size.width as f32, size.height as f32),
+        PaintList { items: vec![item] },
+    )
+    .options(RenderOptions {
+        clear_color: ColorRgba::new(0, 0, 0, 255),
+        ..RenderOptions::default()
+    });
+
+    WgpuRenderer::default()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("wgpu paint item render")
+        .snapshot
+        .expect("wgpu snapshot")
+}
+
+fn lit_pixel_count(image: &RenderedImage) -> usize {
+    image
+        .pixels
+        .chunks_exact(4)
+        .filter(|pixel| pixel[0] > 16 || pixel[1] > 16 || pixel[2] > 16)
+        .count()
 }
 
 fn pixel_rgba(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {

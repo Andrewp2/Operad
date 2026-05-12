@@ -396,13 +396,9 @@ impl WidgetAction {
         result: &UiInputResult,
         binding_for: impl FnMut(UiNodeId) -> Option<WidgetActionBinding>,
     ) -> Option<Self> {
-        if result
-            .clicked
-            .is_some_and(|target| !action_target_enabled(document, target))
-        {
-            return None;
-        }
-        Self::activation_from_input_result(result, binding_for)
+        let target = result.clicked?;
+        let (target, binding) = resolve_action_target(document, target, binding_for)?;
+        Some(Self::pointer_activate(target, binding, 1))
     }
 
     pub fn activation_from_key(
@@ -436,16 +432,37 @@ impl WidgetAction {
         event: &GestureEvent,
         binding_for: impl FnMut(UiNodeId) -> Option<WidgetActionBinding>,
     ) -> Option<Self> {
-        let target = match event {
-            GestureEvent::Click(click) => Some(click.target),
-            GestureEvent::Drag(gesture) => Some(gesture.target),
+        match event {
+            GestureEvent::Click(click) if click.button == PointerButton::Primary => {
+                let (target, binding) = resolve_action_target(document, click.target, binding_for)?;
+                Some(Self::pointer_activate(target, binding, click.count))
+            }
+            GestureEvent::Drag(gesture) => {
+                let (target, binding) =
+                    resolve_action_target(document, gesture.target, binding_for)?;
+                let mut gesture = *gesture;
+                gesture.target = target;
+                Self::drag_from_gesture(&gesture, binding)
+            }
             _ => None,
-        };
-        if target.is_some_and(|target| !action_target_enabled(document, target)) {
-            return None;
         }
-        Self::from_gesture_event(event, binding_for)
     }
+}
+
+fn resolve_action_target(
+    document: &UiDocument,
+    target: UiNodeId,
+    mut binding_for: impl FnMut(UiNodeId) -> Option<WidgetActionBinding>,
+) -> Option<(UiNodeId, WidgetActionBinding)> {
+    let mut current = Some(target);
+    while let Some(candidate) = current {
+        let node = document.nodes().get(candidate.0)?;
+        if let Some(binding) = binding_for(candidate) {
+            return action_target_enabled(document, candidate).then_some((candidate, binding));
+        }
+        current = node.parent;
+    }
+    None
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -930,6 +947,33 @@ mod tests {
 
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.as_slice()[0].target, enabled);
+    }
+
+    #[test]
+    fn descendant_document_target_resolves_to_actionable_ancestor() {
+        let mut document = fixed_doc();
+        let button = document.add_child(
+            document.root,
+            UiNode::container("button", LayoutStyle::new())
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button)),
+        );
+        let label = document.add_child(
+            button,
+            UiNode::container("button.label", LayoutStyle::new()),
+        );
+        let result = UiInputResult {
+            clicked: Some(label),
+            ..Default::default()
+        };
+        let mut queue = WidgetActionQueue::new();
+
+        queue.push_input_result_for_document(&document, &result, |target| {
+            (target == button).then(|| WidgetActionBinding::action("button.activate"))
+        });
+
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.as_slice()[0].target, button);
     }
 
     #[test]

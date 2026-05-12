@@ -39,12 +39,12 @@ use crate::renderer::{
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
     AccessibilityStateKind, AccessibilityTree, AccessibilityValueRangeIssue, ApproxTextMeasurer,
-    AuditWarning, CanvasContent, ColorRgba, FocusDirection, KeyCode, KeyModifiers, LinearGradient,
-    PaintBrush, PaintItem, PaintKind, PaintList, PaintTransform, PathVerb, RawInputEvent,
-    StrokeStyle, TextContent, TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNode,
-    UiNodeId, UiPoint, UiRect, UiSize,
+    AuditWarning, CanvasContent, ColorRgba, CompositorClip, CompositorFilterKind, CompositorMask,
+    FocusDirection, KeyCode, KeyModifiers, LinearGradient, MaskMode, PaintBrush,
+    PaintCompositorLayer, PaintEffectKind, PaintItem, PaintKind, PaintList, PaintTransform,
+    RawInputEvent, StrokeStyle, TextContent, TextMeasurer, UiDocument, UiInputEvent, UiInputResult,
+    UiNode, UiNodeId, UiPoint, UiRect, UiSize,
 };
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestFailure {
     pub message: String,
@@ -2942,15 +2942,16 @@ fn draw_cpu_snapshot_item(image: &mut CpuSnapshotImage, item: &PaintItem) {
         }
         PaintKind::RichRect(rect_primitive) => {
             let rect = cpu_snapshot_transform_rect(rect_primitive.rect, item.transform);
+            let radius = rect_primitive.corner_radii.max_radius() * item.transform.scale.max(0.0);
             for effect in &rect_primitive.effects {
-                let spread = effect.spread.max(0.0) + effect.blur_radius.max(0.0) * 0.25;
-                let effect_rect = UiRect::new(
-                    rect.x + effect.offset.x - spread,
-                    rect.y + effect.offset.y - spread,
-                    rect.width + spread * 2.0,
-                    rect.height + spread * 2.0,
+                cpu_snapshot_draw_rich_rect_effect(
+                    image,
+                    rect,
+                    clip,
+                    *effect,
+                    item.opacity,
+                    radius,
                 );
-                cpu_snapshot_fill_rect(image, effect_rect, clip, effect.color, item.opacity);
             }
             cpu_snapshot_fill_brush_rect(
                 image,
@@ -3041,37 +3042,36 @@ fn draw_cpu_snapshot_item(image: &mut CpuSnapshotImage, item: &PaintItem) {
                 *tint,
             );
         }
+        PaintKind::CompositedLayer(layer) => {
+            cpu_snapshot_draw_composited_layer(image, item, layer);
+        }
         PaintKind::Path(path) => {
-            let points = path
-                .verbs
-                .iter()
-                .filter_map(|verb| match *verb {
-                    PathVerb::MoveTo(point) | PathVerb::LineTo(point) => {
-                        Some(cpu_snapshot_transform_point(point, item.transform))
-                    }
-                    PathVerb::QuadraticTo { to, .. } | PathVerb::CubicTo { to, .. } => {
-                        Some(cpu_snapshot_transform_point(to, item.transform))
-                    }
-                    PathVerb::Close => None,
-                })
-                .collect::<Vec<_>>();
             if let Some(fill) = &path.fill {
-                cpu_snapshot_fill_polygon(
-                    image,
-                    &points,
-                    clip,
-                    fill.fallback_color(),
-                    item.opacity,
-                );
+                for triangle in path.tessellated_fill(1.0) {
+                    let triangle = triangle
+                        .into_iter()
+                        .map(|point| cpu_snapshot_transform_point(point, item.transform))
+                        .collect::<Vec<_>>();
+                    cpu_snapshot_fill_polygon(
+                        image,
+                        &triangle,
+                        clip,
+                        fill.fallback_color(),
+                        item.opacity,
+                    );
+                }
             }
             if let Some(stroke) = path.stroke {
-                for segment in points.windows(2) {
-                    cpu_snapshot_draw_line(
+                for triangle in path.tessellated_stroke(1.0) {
+                    let triangle = triangle
+                        .into_iter()
+                        .map(|point| cpu_snapshot_transform_point(point, item.transform))
+                        .collect::<Vec<_>>();
+                    cpu_snapshot_fill_polygon(
                         image,
-                        segment[0],
-                        segment[1],
+                        &triangle,
                         clip,
-                        stroke.style,
+                        stroke.style.color,
                         item.opacity,
                     );
                 }
@@ -3085,6 +3085,348 @@ fn draw_cpu_snapshot_item(image: &mut CpuSnapshotImage, item: &PaintItem) {
                 &image_placement.key,
                 image_placement.tint,
             );
+        }
+    }
+}
+
+fn cpu_snapshot_draw_composited_layer(
+    image: &mut CpuSnapshotImage,
+    item: &PaintItem,
+    layer: &PaintCompositorLayer,
+) {
+    let opacity = item.opacity * layer.opacity;
+    if opacity <= 0.0 || layer.bounds.width <= 0.0 || layer.bounds.height <= 0.0 {
+        return;
+    }
+
+    let mut layer_image = CpuSnapshotImage::new(image.size, ColorRgba::TRANSPARENT);
+    for child in &layer.paint.items {
+        draw_cpu_snapshot_item(&mut layer_image, child);
+    }
+    if let Some(clip) = &layer.clip {
+        cpu_snapshot_apply_layer_clip(&mut layer_image, clip);
+    }
+    if let Some(mask) = &layer.mask {
+        cpu_snapshot_apply_layer_mask(&mut layer_image, mask);
+    }
+    for filter in &layer.filters {
+        cpu_snapshot_apply_layer_filter(&mut layer_image, filter.kind, filter.amount);
+    }
+
+    let destination_bounds = cpu_snapshot_transform_rect(layer.bounds, item.transform);
+    let Some(composite_bounds) = destination_bounds.intersection(item.clip_rect) else {
+        return;
+    };
+    cpu_snapshot_composite_layer(
+        image,
+        &layer_image,
+        layer.bounds,
+        destination_bounds,
+        composite_bounds,
+        opacity,
+    );
+}
+
+fn cpu_snapshot_apply_layer_clip(image: &mut CpuSnapshotImage, clip: &CompositorClip) {
+    match clip {
+        CompositorClip::Rect(rect) => {
+            cpu_snapshot_multiply_outside_rect_alpha(image, *rect, 0.0);
+        }
+        CompositorClip::RoundedRect { rect, radii } => {
+            let radius = radii.max_radius().max(0.0);
+            for y in 0..image.height() {
+                for x in 0..image.width() {
+                    let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
+                    let alpha = cpu_snapshot_rounded_rect_alpha(point, *rect, radius);
+                    cpu_snapshot_multiply_pixel_alpha(image, x, y, alpha);
+                }
+            }
+        }
+    }
+}
+
+fn cpu_snapshot_apply_layer_mask(image: &mut CpuSnapshotImage, mask: &CompositorMask) {
+    match mask.mode {
+        MaskMode::Alpha | MaskMode::Luminance => {
+            cpu_snapshot_multiply_outside_rect_alpha(image, mask.bounds, 0.0);
+        }
+    }
+}
+
+fn cpu_snapshot_apply_layer_filter(
+    image: &mut CpuSnapshotImage,
+    kind: CompositorFilterKind,
+    amount: f32,
+) {
+    match kind {
+        CompositorFilterKind::Blur => cpu_snapshot_blur_layer(image, amount),
+        CompositorFilterKind::Brightness => {
+            cpu_snapshot_color_filter_layer(image, amount, 1.0, 1.0)
+        }
+        CompositorFilterKind::Contrast => cpu_snapshot_color_filter_layer(image, 1.0, amount, 1.0),
+        CompositorFilterKind::Saturate => cpu_snapshot_color_filter_layer(image, 1.0, 1.0, amount),
+        CompositorFilterKind::Custom => {}
+    }
+}
+
+fn cpu_snapshot_color_filter_layer(
+    image: &mut CpuSnapshotImage,
+    brightness: f32,
+    contrast: f32,
+    saturate: f32,
+) {
+    let brightness = finite_or_default(brightness, 1.0).max(0.0);
+    let contrast = finite_or_default(contrast, 1.0).max(0.0);
+    let saturate = finite_or_default(saturate, 1.0).max(0.0);
+    for pixel in image.pixels.chunks_exact_mut(4) {
+        if pixel[3] == 0 {
+            continue;
+        }
+        let mut rgb = [
+            f32::from(pixel[0]) / 255.0,
+            f32::from(pixel[1]) / 255.0,
+            f32::from(pixel[2]) / 255.0,
+        ];
+        for channel in &mut rgb {
+            *channel = ((*channel * brightness - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
+        }
+        let luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+        for channel in &mut rgb {
+            *channel = (luma + (*channel - luma) * saturate).clamp(0.0, 1.0);
+        }
+        pixel[0] = (rgb[0] * 255.0).round() as u8;
+        pixel[1] = (rgb[1] * 255.0).round() as u8;
+        pixel[2] = (rgb[2] * 255.0).round() as u8;
+    }
+}
+
+fn cpu_snapshot_blur_layer(image: &mut CpuSnapshotImage, amount: f32) {
+    let radius = finite_or_default(amount, 0.0).round().clamp(0.0, 16.0) as isize;
+    if radius <= 0 {
+        return;
+    }
+    let source = image.pixels.clone();
+    let width = image.width() as isize;
+    let height = image.height() as isize;
+    for y in 0..height {
+        for x in 0..width {
+            let mut rgba = [0_u32; 4];
+            let mut samples = 0_u32;
+            for sample_y in (y - radius)..=(y + radius) {
+                for sample_x in (x - radius)..=(x + radius) {
+                    if sample_x < 0 || sample_y < 0 || sample_x >= width || sample_y >= height {
+                        continue;
+                    }
+                    let index = ((sample_y * width + sample_x) as usize) * 4;
+                    rgba[0] += u32::from(source[index]);
+                    rgba[1] += u32::from(source[index + 1]);
+                    rgba[2] += u32::from(source[index + 2]);
+                    rgba[3] += u32::from(source[index + 3]);
+                    samples += 1;
+                }
+            }
+            if samples == 0 {
+                continue;
+            }
+            let index = ((y * width + x) as usize) * 4;
+            image.pixels[index] = (rgba[0] / samples) as u8;
+            image.pixels[index + 1] = (rgba[1] / samples) as u8;
+            image.pixels[index + 2] = (rgba[2] / samples) as u8;
+            image.pixels[index + 3] = (rgba[3] / samples) as u8;
+        }
+    }
+}
+
+fn cpu_snapshot_composite_layer(
+    image: &mut CpuSnapshotImage,
+    layer: &CpuSnapshotImage,
+    source_bounds: UiRect,
+    destination_bounds: UiRect,
+    composite_bounds: UiRect,
+    opacity: f32,
+) {
+    if source_bounds.width <= 0.0
+        || source_bounds.height <= 0.0
+        || destination_bounds.width <= 0.0
+        || destination_bounds.height <= 0.0
+    {
+        return;
+    }
+    let left = composite_bounds.x.floor().max(0.0) as usize;
+    let top = composite_bounds.y.floor().max(0.0) as usize;
+    let right = composite_bounds.right().ceil().min(image.width() as f32) as usize;
+    let bottom = composite_bounds.bottom().ceil().min(image.height() as f32) as usize;
+    for y in top..bottom {
+        for x in left..right {
+            let u = ((x as f32 + 0.5 - destination_bounds.x) / destination_bounds.width)
+                .clamp(0.0, 1.0);
+            let v = ((y as f32 + 0.5 - destination_bounds.y) / destination_bounds.height)
+                .clamp(0.0, 1.0);
+            let source_x = (source_bounds.x + u * source_bounds.width).floor().max(0.0) as usize;
+            let source_y = (source_bounds.y + v * source_bounds.height)
+                .floor()
+                .max(0.0) as usize;
+            let color = cpu_snapshot_pixel_color(layer, source_x, source_y);
+            if color.a > 0 {
+                cpu_snapshot_blend_pixel(image, x, y, color, opacity);
+            }
+        }
+    }
+}
+
+fn cpu_snapshot_multiply_outside_rect_alpha(
+    image: &mut CpuSnapshotImage,
+    rect: UiRect,
+    outside_alpha: f32,
+) {
+    for y in 0..image.height() {
+        for x in 0..image.width() {
+            let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
+            if !rect.contains_point(point) {
+                cpu_snapshot_multiply_pixel_alpha(image, x, y, outside_alpha);
+            }
+        }
+    }
+}
+
+fn cpu_snapshot_rounded_rect_alpha(point: UiPoint, rect: UiRect, radius: f32) -> f32 {
+    if !rect.contains_point(point) {
+        return 0.0;
+    }
+    let distance = cpu_snapshot_rounded_rect_signed_distance(point, rect, radius);
+    (0.5 - distance).clamp(0.0, 1.0)
+}
+
+fn cpu_snapshot_rounded_rect_signed_distance(point: UiPoint, rect: UiRect, radius: f32) -> f32 {
+    let radius = radius.min(rect.width.min(rect.height) * 0.5).max(0.0);
+    let half_width = rect.width * 0.5;
+    let half_height = rect.height * 0.5;
+    let centered_x = point.x - rect.x - half_width;
+    let centered_y = point.y - rect.y - half_height;
+    let qx = centered_x.abs() - half_width + radius;
+    let qy = centered_y.abs() - half_height + radius;
+    let outside_x = qx.max(0.0);
+    let outside_y = qy.max(0.0);
+    (outside_x * outside_x + outside_y * outside_y).sqrt() + qx.max(qy).min(0.0) - radius
+}
+
+fn cpu_snapshot_multiply_pixel_alpha(
+    image: &mut CpuSnapshotImage,
+    x: usize,
+    y: usize,
+    factor: f32,
+) {
+    if x >= image.width() || y >= image.height() {
+        return;
+    }
+    let index = (y * image.width() + x) * 4;
+    let factor = finite_or_default(factor, 1.0).clamp(0.0, 1.0);
+    if factor <= 0.0 {
+        image.pixels[index..index + 4].copy_from_slice(&[0, 0, 0, 0]);
+        return;
+    }
+    image.pixels[index + 3] = (f32::from(image.pixels[index + 3]) * factor)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+}
+
+fn cpu_snapshot_pixel_color(image: &CpuSnapshotImage, x: usize, y: usize) -> ColorRgba {
+    if x >= image.width() || y >= image.height() {
+        return ColorRgba::TRANSPARENT;
+    }
+    let index = (y * image.width() + x) * 4;
+    ColorRgba::new(
+        image.pixels[index],
+        image.pixels[index + 1],
+        image.pixels[index + 2],
+        image.pixels[index + 3],
+    )
+}
+
+fn cpu_snapshot_draw_rich_rect_effect(
+    image: &mut CpuSnapshotImage,
+    rect: UiRect,
+    clip: UiRect,
+    effect: crate::PaintEffect,
+    opacity: f32,
+    radius: f32,
+) {
+    if effect.color.a == 0 || opacity <= 0.0 {
+        return;
+    }
+    let spread = effect.spread.max(0.0);
+    let blur_radius = effect.blur_radius.max(0.0);
+    match effect.kind {
+        PaintEffectKind::Shadow | PaintEffectKind::Glow => {
+            let shape_rect = UiRect::new(
+                rect.x + effect.offset.x - spread,
+                rect.y + effect.offset.y - spread,
+                rect.width + spread * 2.0,
+                rect.height + spread * 2.0,
+            );
+            let padding = blur_radius.max(1.0);
+            let draw_rect = UiRect::new(
+                shape_rect.x - padding,
+                shape_rect.y - padding,
+                shape_rect.width + padding * 2.0,
+                shape_rect.height + padding * 2.0,
+            );
+            cpu_snapshot_draw_soft_rect_effect(
+                image,
+                draw_rect,
+                shape_rect,
+                clip,
+                effect.color,
+                opacity,
+                radius + spread,
+                blur_radius,
+            );
+        }
+        PaintEffectKind::InsetShadow => {
+            let width = (effect.spread.max(1.0) + effect.blur_radius.max(0.0) * 0.25).max(1.0);
+            cpu_snapshot_stroke_rect(
+                image,
+                rect,
+                clip,
+                StrokeStyle::new(effect.color, width),
+                opacity,
+            );
+        }
+    }
+}
+
+fn cpu_snapshot_draw_soft_rect_effect(
+    image: &mut CpuSnapshotImage,
+    draw_rect: UiRect,
+    shape_rect: UiRect,
+    clip: UiRect,
+    color: ColorRgba,
+    opacity: f32,
+    radius: f32,
+    blur_radius: f32,
+) {
+    let Some(bounds) = draw_rect.intersection(clip) else {
+        return;
+    };
+    let left = bounds.x.floor().max(0.0) as usize;
+    let top = bounds.y.floor().max(0.0) as usize;
+    let right = bounds.right().ceil().min(image.width() as f32) as usize;
+    let bottom = bounds.bottom().ceil().min(image.height() as f32) as usize;
+    for y in top..bottom {
+        for x in left..right {
+            let point = UiPoint::new(x as f32 + 0.5, y as f32 + 0.5);
+            let distance = cpu_snapshot_rounded_rect_signed_distance(point, shape_rect, radius);
+            let outside_distance = distance.max(0.0);
+            let alpha = if blur_radius > 0.5 {
+                1.0 - smoothstep(0.0, blur_radius, outside_distance)
+            } else if outside_distance <= 0.75 {
+                1.0
+            } else {
+                0.0
+            };
+            if alpha > 0.0 {
+                cpu_snapshot_blend_pixel(image, x, y, color, opacity * alpha);
+            }
         }
     }
 }
@@ -3467,20 +3809,40 @@ fn cpu_snapshot_blend_pixel(
         return;
     }
     let index = (y * image.width() + x) * 4;
-    let alpha = (f32::from(color.a) / 255.0 * opacity.clamp(0.0, 1.0)).clamp(0.0, 1.0);
-    let inv = 1.0 - alpha;
-    image.pixels[index] = (f32::from(image.pixels[index]) * inv + f32::from(color.r) * alpha)
+    let alpha = (f32::from(color.a) * opacity.clamp(0.0, 1.0))
         .round()
         .clamp(0.0, 255.0) as u8;
-    image.pixels[index + 1] = (f32::from(image.pixels[index + 1]) * inv
-        + f32::from(color.g) * alpha)
-        .round()
-        .clamp(0.0, 255.0) as u8;
-    image.pixels[index + 2] = (f32::from(image.pixels[index + 2]) * inv
-        + f32::from(color.b) * alpha)
-        .round()
-        .clamp(0.0, 255.0) as u8;
-    image.pixels[index + 3] = 255;
+    if alpha == 0 {
+        return;
+    }
+    let source = ColorRgba::new(color.r, color.g, color.b, alpha);
+    let destination = ColorRgba::new(
+        image.pixels[index],
+        image.pixels[index + 1],
+        image.pixels[index + 2],
+        image.pixels[index + 3],
+    );
+    let out = source.composite_over(destination);
+    image.pixels[index] = out.r;
+    image.pixels[index + 1] = out.g;
+    image.pixels[index + 2] = out.b;
+    image.pixels[index + 3] = out.a;
+}
+
+fn finite_or_default(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    if (edge1 - edge0).abs() <= f32::EPSILON {
+        return if value < edge0 { 0.0 } else { 1.0 };
+    }
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn cpu_snapshot_transform_gradient(

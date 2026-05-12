@@ -2,10 +2,14 @@ use std::error::Error;
 
 use operad::platform::PixelSize;
 use operad::{
-    layout, process_document_frame, root_style, ApproxTextMeasurer, ColorRgba,
-    HostDocumentFrameOutput, HostDocumentFrameRequest, HostFrameOutput, HostInteractionState,
-    InputBehavior, RenderTarget, StrokeStyle, TextStyle, UiDocument, UiNode, UiSize, UiVisual,
+    layout, process_document_frame, root_style, AccessibilityMeta, AccessibilityRole,
+    ApproxTextMeasurer, ColorRgba, HostDocumentFrameOutput, HostDocumentFrameRequest,
+    HostFrameOutput, HostInteractionState, InputBehavior, RenderTarget, StrokeStyle, TextStyle,
+    UiDocument, UiNode, UiSize, UiVisual,
 };
+
+#[cfg(all(feature = "accesskit-winit", feature = "native-window"))]
+use operad::{AccessKitTreeOptions, AccessKitWinitAdapter};
 
 #[cfg(feature = "wgpu")]
 use operad::{EmptyResourceResolver, RendererAdapter, WgpuRenderer};
@@ -89,6 +93,8 @@ struct NativeWindowApp {
     window: Option<Arc<Window>>,
     window_id: Option<WindowId>,
     renderer: Option<WgpuSurfaceRenderer<'static>>,
+    #[cfg(feature = "accesskit-winit")]
+    accesskit: Option<AccessKitWinitAdapter>,
     error: Option<String>,
     frame_limit: Option<usize>,
     presented_frames: usize,
@@ -102,6 +108,8 @@ impl NativeWindowApp {
             window: None,
             window_id: None,
             renderer: None,
+            #[cfg(feature = "accesskit-winit")]
+            accesskit: None,
             error: None,
             frame_limit,
             presented_frames: 0,
@@ -114,7 +122,8 @@ impl NativeWindowApp {
             event_loop.create_window(
                 Window::default_attributes()
                     .with_title("Operad native WGPU host")
-                    .with_inner_size(PhysicalSize::new(640, 360)),
+                    .with_inner_size(PhysicalSize::new(640, 360))
+                    .with_visible(false),
             )?,
         );
         let size = nonzero_window_size(window.inner_size());
@@ -145,6 +154,19 @@ impl NativeWindowApp {
             queue,
             surface_config,
         )?);
+        #[cfg(feature = "accesskit-winit")]
+        {
+            let viewport = UiSize::new(size.width as f32, size.height as f32);
+            let frame = sample_frame(viewport, RenderTarget::window("native-wgpu-host", viewport))?;
+            self.accesskit = Some(AccessKitWinitAdapter::new(
+                event_loop,
+                &window,
+                frame.accessibility_tree,
+                None,
+                AccessKitTreeOptions::default(),
+            ));
+        }
+        window.set_visible(true);
         self.window = Some(window);
         Ok(())
     }
@@ -163,6 +185,10 @@ impl NativeWindowApp {
         }
         let viewport = UiSize::new(size.width as f32, size.height as f32);
         let frame = sample_frame(viewport, RenderTarget::window("native-wgpu-host", viewport))?;
+        #[cfg(feature = "accesskit-winit")]
+        if let Some(accesskit) = self.accesskit.as_mut() {
+            accesskit.publish_tree(frame.accessibility_tree.clone(), None);
+        }
         let output = renderer.render_frame(frame.render_request, &EmptyResourceResolver)?;
         if output.snapshot.is_some() {
             return Err("native surface smoke must present without snapshot readback".into());
@@ -209,6 +235,11 @@ impl ApplicationHandler for NativeWindowApp {
     ) {
         if Some(window_id) != self.window_id {
             return;
+        }
+
+        #[cfg(feature = "accesskit-winit")]
+        if let (Some(window), Some(accesskit)) = (self.window.as_ref(), self.accesskit.as_mut()) {
+            accesskit.process_event(window, &event);
         }
 
         match event {
@@ -275,7 +306,7 @@ fn build_document() -> UiDocument {
         UiNode::container(
             "native.panel",
             layout::node_style(layout::with_margin_all(
-                layout::with_size(layout::column(), layout::px(280.0), layout::px(180.0)),
+                layout::with_size(layout::column(), layout::px(280.0), layout::px(340.0)),
                 24.0,
             )),
         )
@@ -301,23 +332,131 @@ fn build_document() -> UiDocument {
         ),
     );
 
-    for (index, label) in ["Play", "Select", "Drag"].into_iter().enumerate() {
+    for (index, label) in ["Play", "Select"].into_iter().enumerate() {
         document.add_child(
             panel,
             UiNode::text(
                 format!("native.button.{index}"),
                 label,
                 TextStyle::default(),
-                layout::size(layout::percent(1.0), layout::px(36.0)),
+                layout::size(layout::percent(1.0), layout::px(34.0)),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(
                 ColorRgba::new(42, 51, 63, 255),
                 Some(StrokeStyle::new(ColorRgba::new(112, 135, 162, 255), 1.0)),
                 4.0,
-            )),
+            ))
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label(label)
+                    .focusable(),
+            ),
         );
     }
+
+    let text_input = document.add_child(
+        panel,
+        UiNode::container(
+            "native.text_input",
+            layout::node_style(layout::with_size(
+                layout::row(),
+                layout::percent(1.0),
+                layout::px(34.0),
+            )),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            ColorRgba::new(18, 22, 28, 255),
+            Some(StrokeStyle::new(ColorRgba::new(72, 84, 104, 255), 1.0)),
+            4.0,
+        ))
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::TextBox)
+                .label("Filter")
+                .value("filter clips")
+                .focusable(),
+        ),
+    );
+    document.add_child(
+        text_input,
+        UiNode::text(
+            "native.text_input.value",
+            "filter clips",
+            TextStyle::default(),
+            layout::size(layout::percent(1.0), layout::px(30.0)),
+        ),
+    );
+
+    let menu = document.add_child(
+        panel,
+        UiNode::container(
+            "native.popup.menu",
+            layout::node_style(layout::with_size(
+                layout::column(),
+                layout::percent(1.0),
+                layout::px(68.0),
+            )),
+        )
+        .with_visual(UiVisual::panel(
+            ColorRgba::new(31, 38, 48, 255),
+            Some(StrokeStyle::new(ColorRgba::new(112, 135, 162, 255), 1.0)),
+            4.0,
+        ))
+        .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Menu).label("Mode menu")),
+    );
+    for (index, label) in ["Auto", "Manual"].into_iter().enumerate() {
+        document.add_child(
+            menu,
+            UiNode::text(
+                format!("native.popup.item.{index}"),
+                label,
+                TextStyle::default(),
+                layout::size(layout::percent(1.0), layout::px(30.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::MenuItem)
+                    .label(label)
+                    .focusable(),
+            ),
+        );
+    }
+
+    document.add_child(
+        panel,
+        UiNode::text(
+            "native.drag.handle",
+            "Drag handle",
+            TextStyle::default(),
+            layout::size(layout::percent(1.0), layout::px(28.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Slider)
+                .label("Drag handle")
+                .focusable(),
+        ),
+    );
+
+    document.add_child(
+        panel,
+        UiNode::canvas(
+            "native.canvas.viewport",
+            "native.canvas.viewport",
+            layout::size(layout::percent(1.0), layout::px(52.0)),
+        )
+        .with_visual(UiVisual::panel(
+            ColorRgba::new(18, 22, 28, 255),
+            Some(StrokeStyle::new(ColorRgba::new(72, 84, 104, 255), 1.0)),
+            4.0,
+        ))
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Group)
+                .label("Canvas viewport")
+                .focusable(),
+        ),
+    );
 
     document
 }

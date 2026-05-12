@@ -540,8 +540,11 @@ pub enum FeatureSupportLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SubpixelTextPolicy {
+    /// Text is not rasterized with subpixel positioning or component masks.
     Disabled,
+    /// Grayscale alpha glyph masks with fractional-position placement.
     Grayscale,
+    /// RGB/LCD component subpixel masks.
     Subpixel,
 }
 
@@ -561,6 +564,7 @@ pub enum RenderFeature {
     Gradients,
     Masks,
     Filters,
+    BackdropFilters,
     SubpixelText,
     ColorManagement,
 }
@@ -573,11 +577,13 @@ pub struct RenderFeatureSupport {
     pub gradients: FeatureSupportLevel,
     pub masks: FeatureSupportLevel,
     pub filters: FeatureSupportLevel,
+    pub backdrop_filters: FeatureSupportLevel,
     pub subpixel_text: SubpixelTextPolicy,
     pub color_management: ColorManagementLevel,
     pub max_shadow_blur: f32,
     pub max_border_width: f32,
     pub max_gradient_stops: usize,
+    pub max_backdrop_blur: f32,
 }
 
 impl RenderFeatureSupport {
@@ -588,11 +594,13 @@ impl RenderFeatureSupport {
         gradients: FeatureSupportLevel::Unsupported,
         masks: FeatureSupportLevel::Unsupported,
         filters: FeatureSupportLevel::Unsupported,
+        backdrop_filters: FeatureSupportLevel::Unsupported,
         subpixel_text: SubpixelTextPolicy::Disabled,
         color_management: ColorManagementLevel::SrgbOnly,
         max_shadow_blur: 0.0,
         max_border_width: 0.0,
         max_gradient_stops: 0,
+        max_backdrop_blur: 0.0,
     };
 
     pub const STANDARD: Self = Self {
@@ -602,25 +610,29 @@ impl RenderFeatureSupport {
         gradients: FeatureSupportLevel::Full,
         masks: FeatureSupportLevel::Full,
         filters: FeatureSupportLevel::Full,
+        backdrop_filters: FeatureSupportLevel::Full,
         subpixel_text: SubpixelTextPolicy::Subpixel,
         color_management: ColorManagementLevel::DisplayP3,
         max_shadow_blur: 256.0,
         max_border_width: 256.0,
         max_gradient_stops: 16,
+        max_backdrop_blur: 128.0,
     };
 
     pub const CPU_SNAPSHOT_QUALITY: Self = Self {
         shadows: FeatureSupportLevel::Basic,
-        rounded_clipping: FeatureSupportLevel::Unsupported,
+        rounded_clipping: FeatureSupportLevel::Basic,
         borders: FeatureSupportLevel::Basic,
         gradients: FeatureSupportLevel::Basic,
-        masks: FeatureSupportLevel::Unsupported,
-        filters: FeatureSupportLevel::Unsupported,
+        masks: FeatureSupportLevel::Basic,
+        filters: FeatureSupportLevel::Basic,
+        backdrop_filters: FeatureSupportLevel::Unsupported,
         subpixel_text: SubpixelTextPolicy::Disabled,
         color_management: ColorManagementLevel::SrgbOnly,
-        max_shadow_blur: 0.0,
+        max_shadow_blur: 64.0,
         max_border_width: 64.0,
         max_gradient_stops: 8,
+        max_backdrop_blur: 0.0,
     };
 
     pub const WGPU_SNAPSHOT_QUALITY: Self = Self {
@@ -628,13 +640,15 @@ impl RenderFeatureSupport {
         rounded_clipping: FeatureSupportLevel::Basic,
         borders: FeatureSupportLevel::Basic,
         gradients: FeatureSupportLevel::Basic,
-        masks: FeatureSupportLevel::Unsupported,
-        filters: FeatureSupportLevel::Unsupported,
+        masks: FeatureSupportLevel::Basic,
+        filters: FeatureSupportLevel::Basic,
+        backdrop_filters: FeatureSupportLevel::Unsupported,
         subpixel_text: SubpixelTextPolicy::Grayscale,
         color_management: ColorManagementLevel::SrgbOnly,
-        max_shadow_blur: 0.0,
+        max_shadow_blur: 64.0,
         max_border_width: 64.0,
         max_gradient_stops: 2,
+        max_backdrop_blur: 0.0,
     };
 }
 
@@ -652,6 +666,7 @@ pub enum RenderFeatureRequirement {
     Gradient { stops: usize, fallback: ColorRgba },
     Mask,
     Filter { kind: CompositorFilterKind },
+    BackdropFilter { kind: CompositorFilterKind },
     SubpixelText { policy: SubpixelTextPolicy },
     ColorManagement { level: ColorManagementLevel },
 }
@@ -665,6 +680,7 @@ impl RenderFeatureRequirement {
             Self::Gradient { .. } => RenderFeature::Gradients,
             Self::Mask => RenderFeature::Masks,
             Self::Filter { .. } => RenderFeature::Filters,
+            Self::BackdropFilter { .. } => RenderFeature::BackdropFilters,
             Self::SubpixelText { .. } => RenderFeature::SubpixelText,
             Self::ColorManagement { .. } => RenderFeature::ColorManagement,
         }
@@ -764,8 +780,14 @@ pub fn compositor_quality_requirements() -> Vec<RenderFeatureRequirement> {
         RenderFeatureRequirement::Filter {
             kind: CompositorFilterKind::Blur,
         },
+        RenderFeatureRequirement::BackdropFilter {
+            kind: CompositorFilterKind::Blur,
+        },
+        RenderFeatureRequirement::ColorManagement {
+            level: ColorManagementLevel::SrgbOnly,
+        },
         RenderFeatureRequirement::SubpixelText {
-            policy: SubpixelTextPolicy::Subpixel,
+            policy: SubpixelTextPolicy::Grayscale,
         },
     ]
 }
@@ -886,6 +908,23 @@ pub fn plan_render_feature_fallbacks(
                         FeatureFallbackAction::RasterizeOffscreen,
                     ),
                 ),
+                RenderFeatureRequirement::BackdropFilter { kind } => {
+                    let action = match support.backdrop_filters {
+                        FeatureSupportLevel::Full => FeatureFallbackAction::Native,
+                        FeatureSupportLevel::Basic => {
+                            if *kind == CompositorFilterKind::Blur
+                                && support.max_backdrop_blur > 0.0
+                            {
+                                FeatureFallbackAction::Native
+                            } else {
+                                FeatureFallbackAction::Approximate
+                            }
+                        }
+                        FeatureSupportLevel::Fallback => FeatureFallbackAction::RasterizeOffscreen,
+                        FeatureSupportLevel::Unsupported => FeatureFallbackAction::Disable,
+                    };
+                    (support.backdrop_filters, action)
+                }
                 RenderFeatureRequirement::SubpixelText { policy } => {
                     let action = if support.subpixel_text >= *policy {
                         FeatureFallbackAction::Native
@@ -931,6 +970,12 @@ fn parity_expectation_for(
         return CompositorParityExpectation::CpuAuthoritativeFallback;
     }
     match feature {
+        RenderFeature::Shadows => CompositorParityExpectation::ChannelTolerance {
+            max_channel_delta: 8,
+        },
+        RenderFeature::Filters => CompositorParityExpectation::ChannelTolerance {
+            max_channel_delta: 8,
+        },
         RenderFeature::SubpixelText => CompositorParityExpectation::ChannelTolerance {
             max_channel_delta: 2,
         },
@@ -1145,11 +1190,13 @@ mod tests {
             gradients: FeatureSupportLevel::Basic,
             masks: FeatureSupportLevel::Unsupported,
             filters: FeatureSupportLevel::Fallback,
+            backdrop_filters: FeatureSupportLevel::Unsupported,
             subpixel_text: SubpixelTextPolicy::Grayscale,
             color_management: ColorManagementLevel::SrgbOnly,
             max_shadow_blur: 4.0,
             max_border_width: 8.0,
             max_gradient_stops: 2,
+            max_backdrop_blur: 0.0,
         };
         let requirements = vec![
             RenderFeatureRequirement::Shadow { blur_radius: 12.0 },
@@ -1159,6 +1206,9 @@ mod tests {
                 fallback: ColorRgba::BLACK,
             },
             RenderFeatureRequirement::Filter {
+                kind: CompositorFilterKind::Blur,
+            },
+            RenderFeatureRequirement::BackdropFilter {
                 kind: CompositorFilterKind::Blur,
             },
             RenderFeatureRequirement::Mask,
@@ -1189,6 +1239,10 @@ mod tests {
             Some(FeatureFallbackAction::RasterizeOffscreen)
         );
         assert_eq!(
+            plan.action_for(RenderFeature::BackdropFilters),
+            Some(FeatureFallbackAction::Disable)
+        );
+        assert_eq!(
             plan.action_for(RenderFeature::Masks),
             Some(FeatureFallbackAction::Disable)
         );
@@ -1200,7 +1254,7 @@ mod tests {
             plan.action_for(RenderFeature::ColorManagement),
             Some(FeatureFallbackAction::ConvertToSrgb)
         );
-        assert_eq!(plan.fallback_items().len(), 6);
+        assert_eq!(plan.fallback_items().len(), 7);
     }
 
     #[test]
@@ -1216,8 +1270,10 @@ mod tests {
         assert!(features.contains(&RenderFeature::Gradients));
         assert!(features.contains(&RenderFeature::Masks));
         assert!(features.contains(&RenderFeature::Filters));
+        assert!(features.contains(&RenderFeature::BackdropFilters));
         assert!(features.contains(&RenderFeature::SubpixelText));
-        assert_eq!(features.len(), 7);
+        assert!(features.contains(&RenderFeature::ColorManagement));
+        assert_eq!(features.len(), 9);
     }
 
     #[test]
@@ -1235,7 +1291,7 @@ mod tests {
         assert_eq!(rounded.wgpu_action, FeatureFallbackAction::Native);
         assert_eq!(
             rounded.parity_expectation,
-            CompositorParityExpectation::CpuAuthoritativeFallback
+            CompositorParityExpectation::PixelExact
         );
 
         let border = plan
@@ -1259,37 +1315,59 @@ mod tests {
         let shadow = plan
             .record_for(RenderFeature::Shadows)
             .expect("shadow record");
-        assert_eq!(shadow.wgpu_action, FeatureFallbackAction::Approximate);
+        assert_eq!(shadow.wgpu_action, FeatureFallbackAction::Native);
         assert_eq!(
             shadow.parity_expectation,
-            CompositorParityExpectation::FallbackActionParity
+            CompositorParityExpectation::ChannelTolerance {
+                max_channel_delta: 8
+            }
         );
 
         let mask = plan.record_for(RenderFeature::Masks).expect("mask record");
-        assert_eq!(mask.wgpu_action, FeatureFallbackAction::Disable);
+        assert_eq!(mask.wgpu_action, FeatureFallbackAction::Native);
         assert_eq!(
             mask.parity_expectation,
-            CompositorParityExpectation::Unsupported
+            CompositorParityExpectation::PixelExact
         );
 
         let filter = plan
             .record_for(RenderFeature::Filters)
             .expect("filter record");
-        assert_eq!(filter.wgpu_action, FeatureFallbackAction::Disable);
+        assert_eq!(filter.wgpu_action, FeatureFallbackAction::Native);
         assert_eq!(
             filter.parity_expectation,
+            CompositorParityExpectation::ChannelTolerance {
+                max_channel_delta: 8
+            }
+        );
+
+        let backdrop = plan
+            .record_for(RenderFeature::BackdropFilters)
+            .expect("backdrop filter record");
+        assert_eq!(backdrop.wgpu_action, FeatureFallbackAction::Disable);
+        assert_eq!(
+            backdrop.parity_expectation,
             CompositorParityExpectation::Unsupported
+        );
+
+        let color = plan
+            .record_for(RenderFeature::ColorManagement)
+            .expect("color management record");
+        assert_eq!(color.wgpu_action, FeatureFallbackAction::Native);
+        assert_eq!(
+            color.parity_expectation,
+            CompositorParityExpectation::PixelExact
         );
 
         let text = plan
             .record_for(RenderFeature::SubpixelText)
             .expect("subpixel text record");
-        assert_eq!(text.wgpu_action, FeatureFallbackAction::UseGrayscaleText);
+        assert_eq!(text.wgpu_action, FeatureFallbackAction::Native);
         assert_eq!(
             text.parity_expectation,
             CompositorParityExpectation::CpuAuthoritativeFallback
         );
-        assert_eq!(plan.wgpu_fallback_records().len(), 5);
+        assert_eq!(plan.wgpu_fallback_records().len(), 2);
     }
 
     #[test]

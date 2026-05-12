@@ -1,5 +1,13 @@
 //! Renderer-neutral paint primitives for dense application and editor surfaces.
 
+use lyon_tessellation::{
+    geometry_builder::{simple_builder, VertexBuffers},
+    math::point as lyon_point,
+    path::Path as LyonPath,
+    FillOptions, FillRule as LyonFillRule, FillTessellator, LineCap as LyonLineCap,
+    LineJoin as LyonLineJoin, StrokeOptions, StrokeTessellator,
+};
+
 use crate::{ColorRgba, StrokeStyle, TextStyle, UiPoint, UiRect};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -106,6 +114,69 @@ pub enum StrokeAlignment {
     #[default]
     Center,
     Outside,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum StrokeLineCap {
+    Butt,
+    Square,
+    #[default]
+    Round,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum StrokeLineJoin {
+    Miter,
+    Bevel,
+    #[default]
+    Round,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathStrokeOptions {
+    pub line_cap: StrokeLineCap,
+    pub line_join: StrokeLineJoin,
+    pub miter_limit: f32,
+}
+
+impl PathStrokeOptions {
+    pub const DEFAULT_MITER_LIMIT: f32 = 4.0;
+
+    pub const fn new() -> Self {
+        Self {
+            line_cap: StrokeLineCap::Round,
+            line_join: StrokeLineJoin::Round,
+            miter_limit: Self::DEFAULT_MITER_LIMIT,
+        }
+    }
+
+    pub const fn line_cap(mut self, line_cap: StrokeLineCap) -> Self {
+        self.line_cap = line_cap;
+        self
+    }
+
+    pub const fn line_join(mut self, line_join: StrokeLineJoin) -> Self {
+        self.line_join = line_join;
+        self
+    }
+
+    pub const fn miter_limit(mut self, miter_limit: f32) -> Self {
+        self.miter_limit = miter_limit;
+        self
+    }
+}
+
+impl Default for PathStrokeOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PathFillRule {
+    NonZero,
+    #[default]
+    EvenOdd,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -589,6 +660,8 @@ pub struct PaintPath {
     pub verbs: Vec<PathVerb>,
     pub fill: Option<PaintBrush>,
     pub stroke: Option<AlignedStroke>,
+    pub stroke_options: PathStrokeOptions,
+    pub fill_rule: PathFillRule,
 }
 
 impl PaintPath {
@@ -597,6 +670,8 @@ impl PaintPath {
             verbs: Vec::new(),
             fill: None,
             stroke: None,
+            stroke_options: PathStrokeOptions::default(),
+            fill_rule: PathFillRule::default(),
         }
     }
 
@@ -634,8 +709,33 @@ impl PaintPath {
         self
     }
 
+    pub const fn fill_rule(mut self, fill_rule: PathFillRule) -> Self {
+        self.fill_rule = fill_rule;
+        self
+    }
+
     pub fn stroke(mut self, stroke: impl Into<AlignedStroke>) -> Self {
         self.stroke = Some(stroke.into());
+        self
+    }
+
+    pub const fn stroke_options(mut self, options: PathStrokeOptions) -> Self {
+        self.stroke_options = options;
+        self
+    }
+
+    pub const fn line_cap(mut self, line_cap: StrokeLineCap) -> Self {
+        self.stroke_options.line_cap = line_cap;
+        self
+    }
+
+    pub const fn line_join(mut self, line_join: StrokeLineJoin) -> Self {
+        self.stroke_options.line_join = line_join;
+        self
+    }
+
+    pub const fn miter_limit(mut self, miter_limit: f32) -> Self {
+        self.stroke_options.miter_limit = miter_limit;
         self
     }
 
@@ -690,12 +790,354 @@ impl PaintPath {
 
         rect_from_points(&points)
     }
+
+    pub fn flattened_points(&self, tolerance: f32) -> Vec<UiPoint> {
+        self.flattened_contours(tolerance)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    pub fn flattened_contours(&self, tolerance: f32) -> Vec<Vec<UiPoint>> {
+        let tolerance = if tolerance.is_finite() && tolerance > 0.0 {
+            tolerance
+        } else {
+            1.0
+        };
+        let mut contours = Vec::<Vec<UiPoint>>::new();
+        let mut points = Vec::<UiPoint>::new();
+        let mut current = None;
+        let mut contour_start = None;
+        for verb in &self.verbs {
+            match *verb {
+                PathVerb::MoveTo(point) => {
+                    if !points.is_empty() {
+                        contours.push(std::mem::take(&mut points));
+                    }
+                    points.push(point);
+                    current = Some(point);
+                    contour_start = Some(point);
+                }
+                PathVerb::LineTo(point) => {
+                    points.push(point);
+                    current = Some(point);
+                }
+                PathVerb::QuadraticTo { control, to } => {
+                    let Some(from) = current else {
+                        points.push(to);
+                        current = Some(to);
+                        contour_start.get_or_insert(to);
+                        continue;
+                    };
+                    let segments = quadratic_segments(from, control, to, tolerance);
+                    for index in 1..=segments {
+                        let t = index as f32 / segments as f32;
+                        points.push(quadratic_point(from, control, to, t));
+                    }
+                    current = Some(to);
+                }
+                PathVerb::CubicTo {
+                    control_a,
+                    control_b,
+                    to,
+                } => {
+                    let Some(from) = current else {
+                        points.push(to);
+                        current = Some(to);
+                        contour_start.get_or_insert(to);
+                        continue;
+                    };
+                    let segments = cubic_segments(from, control_a, control_b, to, tolerance);
+                    for index in 1..=segments {
+                        let t = index as f32 / segments as f32;
+                        points.push(cubic_point(from, control_a, control_b, to, t));
+                    }
+                    current = Some(to);
+                }
+                PathVerb::Close => {
+                    if let (Some(start), Some(last)) = (contour_start, current) {
+                        if start != last {
+                            points.push(start);
+                        }
+                    }
+                    if !points.is_empty() {
+                        contours.push(std::mem::take(&mut points));
+                    }
+                    current = contour_start;
+                    contour_start = None;
+                }
+            }
+        }
+        if !points.is_empty() {
+            contours.push(points);
+        }
+        contours
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.verbs
+            .iter()
+            .any(|verb| matches!(verb, PathVerb::Close))
+    }
+
+    pub fn tessellated_fill(&self, tolerance: f32) -> Vec<[UiPoint; 3]> {
+        let path = self.to_lyon_path();
+        let mut buffers: VertexBuffers<lyon_tessellation::math::Point, u16> = VertexBuffers::new();
+        let mut tessellator = FillTessellator::new();
+        let options = FillOptions::tolerance(finite_positive_or(tolerance, 1.0)).with_fill_rule(
+            match self.fill_rule {
+                PathFillRule::NonZero => LyonFillRule::NonZero,
+                PathFillRule::EvenOdd => LyonFillRule::EvenOdd,
+            },
+        );
+        if tessellator
+            .tessellate_path(&path, &options, &mut simple_builder(&mut buffers))
+            .is_err()
+        {
+            return tessellate_polygon(&self.flattened_points(tolerance));
+        }
+        vertex_buffers_to_triangles(buffers)
+    }
+
+    pub fn tessellated_stroke(&self, tolerance: f32) -> Vec<[UiPoint; 3]> {
+        let Some(stroke) = self.stroke else {
+            return Vec::new();
+        };
+        let path = self.to_lyon_path();
+        let mut buffers: VertexBuffers<lyon_tessellation::math::Point, u16> = VertexBuffers::new();
+        let mut tessellator = StrokeTessellator::new();
+        let options = StrokeOptions::tolerance(finite_positive_or(tolerance, 1.0))
+            .with_line_width(stroke.style.width.max(1.0))
+            .with_line_cap(match self.stroke_options.line_cap {
+                StrokeLineCap::Butt => LyonLineCap::Butt,
+                StrokeLineCap::Square => LyonLineCap::Square,
+                StrokeLineCap::Round => LyonLineCap::Round,
+            })
+            .with_line_join(match self.stroke_options.line_join {
+                StrokeLineJoin::Miter => LyonLineJoin::Miter,
+                StrokeLineJoin::Bevel => LyonLineJoin::Bevel,
+                StrokeLineJoin::Round => LyonLineJoin::Round,
+            })
+            .with_miter_limit(
+                finite_positive_or(
+                    self.stroke_options.miter_limit,
+                    PathStrokeOptions::DEFAULT_MITER_LIMIT,
+                )
+                .max(StrokeOptions::MINIMUM_MITER_LIMIT),
+            );
+        if tessellator
+            .tessellate_path(&path, &options, &mut simple_builder(&mut buffers))
+            .is_err()
+        {
+            return tessellate_polyline_stroke(
+                &self.flattened_points(tolerance),
+                stroke.style,
+                self.stroke_options,
+                self.is_closed(),
+            );
+        }
+        vertex_buffers_to_triangles(buffers)
+    }
+
+    fn to_lyon_path(&self) -> LyonPath {
+        let mut builder = LyonPath::builder().with_svg();
+        for verb in &self.verbs {
+            match *verb {
+                PathVerb::MoveTo(point) => {
+                    builder.move_to(to_lyon_point(point));
+                }
+                PathVerb::LineTo(point) => {
+                    builder.line_to(to_lyon_point(point));
+                }
+                PathVerb::QuadraticTo { control, to } => {
+                    builder.quadratic_bezier_to(to_lyon_point(control), to_lyon_point(to));
+                }
+                PathVerb::CubicTo {
+                    control_a,
+                    control_b,
+                    to,
+                } => {
+                    builder.cubic_bezier_to(
+                        to_lyon_point(control_a),
+                        to_lyon_point(control_b),
+                        to_lyon_point(to),
+                    );
+                }
+                PathVerb::Close => {
+                    builder.close();
+                }
+            }
+        }
+        builder.build()
+    }
 }
 
 impl Default for PaintPath {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn to_lyon_point(point: UiPoint) -> lyon_tessellation::math::Point {
+    lyon_point(point.x, point.y)
+}
+
+fn from_lyon_point(point: lyon_tessellation::math::Point) -> UiPoint {
+    UiPoint::new(point.x, point.y)
+}
+
+fn vertex_buffers_to_triangles(
+    buffers: VertexBuffers<lyon_tessellation::math::Point, u16>,
+) -> Vec<[UiPoint; 3]> {
+    buffers
+        .indices
+        .chunks_exact(3)
+        .filter_map(|indices| {
+            let a = buffers.vertices.get(usize::from(indices[0]))?;
+            let b = buffers.vertices.get(usize::from(indices[1]))?;
+            let c = buffers.vertices.get(usize::from(indices[2]))?;
+            Some([
+                from_lyon_point(*a),
+                from_lyon_point(*b),
+                from_lyon_point(*c),
+            ])
+        })
+        .collect()
+}
+
+fn tessellate_polygon(points: &[UiPoint]) -> Vec<[UiPoint; 3]> {
+    let mut polygon = sanitize_polygon(points);
+    if polygon.len() < 3 {
+        return Vec::new();
+    }
+    if signed_area(&polygon) < 0.0 {
+        polygon.reverse();
+    }
+
+    let mut indices = (0..polygon.len()).collect::<Vec<_>>();
+    let mut triangles = Vec::with_capacity(polygon.len().saturating_sub(2));
+    let mut guard = 0usize;
+    while indices.len() > 3 && guard < polygon.len().saturating_mul(polygon.len()) {
+        guard += 1;
+        let mut clipped = false;
+        for index in 0..indices.len() {
+            let previous = indices[(index + indices.len() - 1) % indices.len()];
+            let current = indices[index];
+            let next = indices[(index + 1) % indices.len()];
+            let a = polygon[previous];
+            let b = polygon[current];
+            let c = polygon[next];
+            if cross(sub_points(b, a), sub_points(c, b)) <= 0.0 {
+                continue;
+            }
+            if indices.iter().copied().any(|candidate| {
+                candidate != previous
+                    && candidate != current
+                    && candidate != next
+                    && point_in_triangle(polygon[candidate], a, b, c)
+            }) {
+                continue;
+            }
+            triangles.push([a, b, c]);
+            indices.remove(index);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            return polygon_fan_triangles(&polygon);
+        }
+    }
+
+    if indices.len() == 3 {
+        triangles.push([
+            polygon[indices[0]],
+            polygon[indices[1]],
+            polygon[indices[2]],
+        ]);
+    }
+    triangles
+}
+
+fn tessellate_polyline_stroke(
+    points: &[UiPoint],
+    stroke: StrokeStyle,
+    options: PathStrokeOptions,
+    closed: bool,
+) -> Vec<[UiPoint; 3]> {
+    if stroke.color.a == 0 {
+        return Vec::new();
+    }
+    let points = sanitize_polyline(points);
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let width = stroke.width.max(1.0);
+    let half = width * 0.5 + 0.75;
+    if points.len() == 1 {
+        return circle_triangles(points[0], half);
+    }
+
+    let mut triangles = Vec::new();
+    let segment_count = if closed {
+        points.len()
+    } else {
+        points.len() - 1
+    };
+    let mut directions = Vec::with_capacity(segment_count);
+    let mut normals = Vec::with_capacity(segment_count);
+    for index in 0..segment_count {
+        let from = points[index];
+        let to = points[(index + 1) % points.len()];
+        let direction = normalize(sub_points(to, from));
+        directions.push(direction);
+        normals.push(UiPoint::new(-direction.y, direction.x));
+    }
+
+    for index in 0..segment_count {
+        let mut from = points[index];
+        let mut to = points[(index + 1) % points.len()];
+        if !closed {
+            if index == 0 && options.line_cap == StrokeLineCap::Square {
+                from = add_points(from, scale_point(directions[index], -half));
+            }
+            if index == segment_count - 1 && options.line_cap == StrokeLineCap::Square {
+                to = add_points(to, scale_point(directions[index], half));
+            }
+        }
+        push_stroke_quad(&mut triangles, from, to, normals[index], half);
+    }
+
+    if closed {
+        for index in 0..points.len() {
+            let previous = (index + segment_count - 1) % segment_count;
+            let next = index % segment_count;
+            push_join_triangles(
+                &mut triangles,
+                points[index],
+                normals[previous],
+                normals[next],
+                half,
+                options,
+            );
+        }
+    } else {
+        if options.line_cap == StrokeLineCap::Round {
+            triangles.extend(circle_triangles(points[0], half));
+            triangles.extend(circle_triangles(*points.last().unwrap(), half));
+        }
+        for index in 1..points.len() - 1 {
+            push_join_triangles(
+                &mut triangles,
+                points[index],
+                normals[index - 1],
+                normals[index],
+                half,
+                options,
+            );
+        }
+    }
+
+    triangles
 }
 
 fn translated_point(point: UiPoint, offset: UiPoint) -> UiPoint {
@@ -719,6 +1161,273 @@ fn rect_from_points(points: &[UiPoint]) -> UiRect {
     }
 
     UiRect::new(left, top, right - left, bottom - top)
+}
+
+fn point_distance(left: UiPoint, right: UiPoint) -> f32 {
+    let dx = right.x - left.x;
+    let dy = right.y - left.y;
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn quadratic_segments(from: UiPoint, control: UiPoint, to: UiPoint, tolerance: f32) -> usize {
+    let length = point_distance(from, control) + point_distance(control, to);
+    ((length / tolerance).ceil() as usize).clamp(4, 64)
+}
+
+fn cubic_segments(
+    from: UiPoint,
+    control_a: UiPoint,
+    control_b: UiPoint,
+    to: UiPoint,
+    tolerance: f32,
+) -> usize {
+    let length = point_distance(from, control_a)
+        + point_distance(control_a, control_b)
+        + point_distance(control_b, to);
+    ((length / tolerance).ceil() as usize).clamp(6, 96)
+}
+
+fn quadratic_point(from: UiPoint, control: UiPoint, to: UiPoint, t: f32) -> UiPoint {
+    let inverse = 1.0 - t;
+    UiPoint::new(
+        inverse * inverse * from.x + 2.0 * inverse * t * control.x + t * t * to.x,
+        inverse * inverse * from.y + 2.0 * inverse * t * control.y + t * t * to.y,
+    )
+}
+
+fn cubic_point(
+    from: UiPoint,
+    control_a: UiPoint,
+    control_b: UiPoint,
+    to: UiPoint,
+    t: f32,
+) -> UiPoint {
+    let inverse = 1.0 - t;
+    UiPoint::new(
+        inverse * inverse * inverse * from.x
+            + 3.0 * inverse * inverse * t * control_a.x
+            + 3.0 * inverse * t * t * control_b.x
+            + t * t * t * to.x,
+        inverse * inverse * inverse * from.y
+            + 3.0 * inverse * inverse * t * control_a.y
+            + 3.0 * inverse * t * t * control_b.y
+            + t * t * t * to.y,
+    )
+}
+
+fn sanitize_polygon(points: &[UiPoint]) -> Vec<UiPoint> {
+    let mut clean = sanitize_polyline(points);
+    if clean.len() > 1 && clean.first() == clean.last() {
+        clean.pop();
+    }
+    clean
+}
+
+fn sanitize_polyline(points: &[UiPoint]) -> Vec<UiPoint> {
+    let mut clean = Vec::with_capacity(points.len());
+    for point in points.iter().copied() {
+        if point.x.is_finite() && point.y.is_finite() && clean.last() != Some(&point) {
+            clean.push(point);
+        }
+    }
+    clean
+}
+
+fn polygon_fan_triangles(points: &[UiPoint]) -> Vec<[UiPoint; 3]> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    let mut triangles = Vec::with_capacity(points.len().saturating_sub(2));
+    for index in 1..points.len() - 1 {
+        triangles.push([points[0], points[index], points[index + 1]]);
+    }
+    triangles
+}
+
+fn signed_area(points: &[UiPoint]) -> f32 {
+    let mut area = 0.0;
+    for index in 0..points.len() {
+        let next = (index + 1) % points.len();
+        area += points[index].x * points[next].y - points[next].x * points[index].y;
+    }
+    area * 0.5
+}
+
+fn point_in_triangle(point: UiPoint, a: UiPoint, b: UiPoint, c: UiPoint) -> bool {
+    let ab = cross(sub_points(b, a), sub_points(point, a));
+    let bc = cross(sub_points(c, b), sub_points(point, b));
+    let ca = cross(sub_points(a, c), sub_points(point, c));
+    (ab >= -f32::EPSILON && bc >= -f32::EPSILON && ca >= -f32::EPSILON)
+        || (ab <= f32::EPSILON && bc <= f32::EPSILON && ca <= f32::EPSILON)
+}
+
+fn push_stroke_quad(
+    triangles: &mut Vec<[UiPoint; 3]>,
+    from: UiPoint,
+    to: UiPoint,
+    normal: UiPoint,
+    half_width: f32,
+) {
+    let offset = scale_point(normal, half_width);
+    let a = add_points(from, offset);
+    let b = add_points(to, offset);
+    let c = sub_points(to, offset);
+    let d = sub_points(from, offset);
+    triangles.push([a, b, c]);
+    triangles.push([a, c, d]);
+}
+
+fn push_join_triangles(
+    triangles: &mut Vec<[UiPoint; 3]>,
+    point: UiPoint,
+    previous_normal: UiPoint,
+    next_normal: UiPoint,
+    half_width: f32,
+    options: PathStrokeOptions,
+) {
+    match options.line_join {
+        StrokeLineJoin::Round => triangles.extend(circle_triangles(point, half_width)),
+        StrokeLineJoin::Bevel => {
+            push_bevel_join(triangles, point, previous_normal, next_normal, half_width);
+        }
+        StrokeLineJoin::Miter => {
+            if !push_miter_join(
+                triangles,
+                point,
+                previous_normal,
+                next_normal,
+                half_width,
+                options.miter_limit,
+            ) {
+                push_bevel_join(triangles, point, previous_normal, next_normal, half_width);
+            }
+        }
+    }
+}
+
+fn push_bevel_join(
+    triangles: &mut Vec<[UiPoint; 3]>,
+    point: UiPoint,
+    previous_normal: UiPoint,
+    next_normal: UiPoint,
+    half_width: f32,
+) {
+    triangles.push([
+        point,
+        add_points(point, scale_point(previous_normal, half_width)),
+        add_points(point, scale_point(next_normal, half_width)),
+    ]);
+    triangles.push([
+        point,
+        sub_points(point, scale_point(previous_normal, half_width)),
+        sub_points(point, scale_point(next_normal, half_width)),
+    ]);
+}
+
+fn push_miter_join(
+    triangles: &mut Vec<[UiPoint; 3]>,
+    point: UiPoint,
+    previous_normal: UiPoint,
+    next_normal: UiPoint,
+    half_width: f32,
+    miter_limit: f32,
+) -> bool {
+    let Some(miter) = try_miter(previous_normal, next_normal, half_width, miter_limit) else {
+        return false;
+    };
+    let previous = add_points(point, scale_point(previous_normal, half_width));
+    let next = add_points(point, scale_point(next_normal, half_width));
+    let tip = add_points(point, miter);
+    triangles.push([previous, tip, next]);
+
+    let previous = sub_points(point, scale_point(previous_normal, half_width));
+    let next = sub_points(point, scale_point(next_normal, half_width));
+    let tip = sub_points(point, miter);
+    triangles.push([previous, next, tip]);
+    true
+}
+
+fn try_miter(
+    previous_normal: UiPoint,
+    next_normal: UiPoint,
+    half_width: f32,
+    miter_limit: f32,
+) -> Option<UiPoint> {
+    let sum = add_points(previous_normal, next_normal);
+    let miter = normalize(sum);
+    if vector_length(miter) <= f32::EPSILON {
+        return None;
+    }
+    let denominator = dot(miter, next_normal);
+    if denominator.abs() <= 0.01 {
+        return None;
+    }
+    let length = half_width / denominator;
+    let max_length =
+        half_width * finite_positive_or(miter_limit, PathStrokeOptions::DEFAULT_MITER_LIMIT);
+    if length.abs() > max_length {
+        return None;
+    }
+    Some(scale_point(miter, length))
+}
+
+fn circle_triangles(center: UiPoint, radius: f32) -> Vec<[UiPoint; 3]> {
+    if radius <= 0.0 {
+        return Vec::new();
+    }
+    let segments = ((radius * 4.0).ceil() as usize).clamp(12, 48);
+    let mut triangles = Vec::with_capacity(segments);
+    for index in 0..segments {
+        let a0 = std::f32::consts::TAU * index as f32 / segments as f32;
+        let a1 = std::f32::consts::TAU * (index + 1) as f32 / segments as f32;
+        triangles.push([
+            center,
+            UiPoint::new(center.x + radius * a0.cos(), center.y + radius * a0.sin()),
+            UiPoint::new(center.x + radius * a1.cos(), center.y + radius * a1.sin()),
+        ]);
+    }
+    triangles
+}
+
+fn add_points(left: UiPoint, right: UiPoint) -> UiPoint {
+    UiPoint::new(left.x + right.x, left.y + right.y)
+}
+
+fn sub_points(left: UiPoint, right: UiPoint) -> UiPoint {
+    UiPoint::new(left.x - right.x, left.y - right.y)
+}
+
+fn scale_point(point: UiPoint, scale: f32) -> UiPoint {
+    UiPoint::new(point.x * scale, point.y * scale)
+}
+
+fn dot(left: UiPoint, right: UiPoint) -> f32 {
+    left.x * right.x + left.y * right.y
+}
+
+fn cross(left: UiPoint, right: UiPoint) -> f32 {
+    left.x * right.y - left.y * right.x
+}
+
+fn vector_length(point: UiPoint) -> f32 {
+    (point.x * point.x + point.y * point.y).sqrt()
+}
+
+fn normalize(point: UiPoint) -> UiPoint {
+    let length = vector_length(point);
+    if length <= f32::EPSILON {
+        UiPoint::new(0.0, 0.0)
+    } else {
+        UiPoint::new(point.x / length, point.y / length)
+    }
+}
+
+fn finite_positive_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        fallback
+    }
 }
 
 #[cfg(test)]
@@ -793,5 +1502,83 @@ mod tests {
             ]
         );
         assert_eq!(path.stroke.unwrap().style.width, 0.5);
+    }
+
+    #[test]
+    fn paint_path_flattens_quadratic_and_cubic_curves() {
+        let path = PaintPath::new()
+            .move_to(UiPoint::new(0.0, 10.0))
+            .quadratic_to(UiPoint::new(10.0, 0.0), UiPoint::new(20.0, 10.0))
+            .cubic_to(
+                UiPoint::new(28.0, 18.0),
+                UiPoint::new(34.0, 18.0),
+                UiPoint::new(40.0, 10.0),
+            );
+
+        let points = path.flattened_points(4.0);
+
+        assert!(points.len() > 6);
+        assert_eq!(points.first(), Some(&UiPoint::new(0.0, 10.0)));
+        assert_eq!(points.last(), Some(&UiPoint::new(40.0, 10.0)));
+        assert!(
+            points.iter().any(|point| point.y < 8.0),
+            "quadratic control point should affect flattened curve"
+        );
+        assert!(
+            points.iter().any(|point| point.y > 12.0),
+            "cubic control points should affect flattened curve"
+        );
+    }
+
+    #[test]
+    fn paint_path_preserves_contours_and_stroke_options() {
+        let path = PaintPath::new()
+            .move_to(UiPoint::new(0.0, 0.0))
+            .line_to(UiPoint::new(8.0, 0.0))
+            .move_to(UiPoint::new(0.0, 8.0))
+            .line_to(UiPoint::new(8.0, 8.0))
+            .stroke(StrokeStyle::new(ColorRgba::WHITE, 2.0))
+            .line_cap(StrokeLineCap::Butt)
+            .line_join(StrokeLineJoin::Miter)
+            .miter_limit(2.0);
+
+        let contours = path.flattened_contours(1.0);
+        assert_eq!(contours.len(), 2);
+        assert_eq!(path.stroke_options.line_cap, StrokeLineCap::Butt);
+        assert_eq!(path.stroke_options.line_join, StrokeLineJoin::Miter);
+        assert_eq!(path.stroke_options.miter_limit, 2.0);
+    }
+
+    #[test]
+    fn tessellators_cover_non_convex_fill_and_configurable_strokes() {
+        let polygon = [
+            UiPoint::new(0.0, 0.0),
+            UiPoint::new(16.0, 0.0),
+            UiPoint::new(16.0, 16.0),
+            UiPoint::new(8.0, 8.0),
+            UiPoint::new(0.0, 16.0),
+        ];
+        assert!(tessellate_polygon(&polygon).len() >= 3);
+
+        let polyline = [
+            UiPoint::new(0.0, 0.0),
+            UiPoint::new(12.0, 0.0),
+            UiPoint::new(12.0, 12.0),
+        ];
+        let butt = tessellate_polyline_stroke(
+            &polyline,
+            StrokeStyle::new(ColorRgba::WHITE, 3.0),
+            PathStrokeOptions::new().line_cap(StrokeLineCap::Butt),
+            false,
+        );
+        let round = tessellate_polyline_stroke(
+            &polyline,
+            StrokeStyle::new(ColorRgba::WHITE, 3.0),
+            PathStrokeOptions::new()
+                .line_cap(StrokeLineCap::Round)
+                .line_join(StrokeLineJoin::Round),
+            false,
+        );
+        assert!(round.len() > butt.len(), "round={round:?} butt={butt:?}");
     }
 }

@@ -108,14 +108,18 @@ host adapter.
 
 Theme tokens are backend-neutral; rendering is not pixel-identical by contract.
 
-- CPU and WGPU backends may differ in antialiasing, subpixel placement,
-  clipping edge behavior, shader/effect approximation, and texture sampling.
+- CPU and WGPU backends may differ in antialiasing, grayscale subpixel
+  placement, clipping edge behavior, shader/effect approximation, and texture
+  sampling.
 - Text metrics and glyph rasterization can vary by text backend and host font
   stack.
 - Effect tokens include fallback strokes so backends that cannot render a
   shadow or glow can still preserve affordance and contrast.
 - `wgpu` is backend-specific API. It is public when the feature is enabled, but
   availability depends on adapter support and validation environment.
+- `accesskit-winit` is backend-specific API for winit hosts. It publishes
+  accessibility trees through AccessKit, but host code still owns command/action
+  dispatch for platform action requests.
 - Existing runtime/widget paths are still being incrementally rewired to consume
   the full token vocabulary. The stable API is the theme contract; not every
   existing widget should be assumed to exercise every token today.

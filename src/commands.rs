@@ -684,6 +684,8 @@ fn hash_key_code<H: Hasher>(key: KeyCode, state: &mut H) {
         KeyCode::Enter => 9_u8.hash(state),
         KeyCode::Escape => 10_u8.hash(state),
         KeyCode::Tab => 11_u8.hash(state),
+        KeyCode::F10 => 12_u8.hash(state),
+        KeyCode::ContextMenu => 13_u8.hash(state),
     }
 }
 

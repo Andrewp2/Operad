@@ -19,9 +19,10 @@ It owns:
 - Layout/audit snapshots for debugging panel bounds, clipping, focusability, and
   unreachable interactive controls.
 
-The default feature set intentionally avoids `egui`, `glyphon`, `wgpu`, and
-`cosmic-text`. With `--no-default-features`, the normal dependency tree is
-currently just `taffy` plus its small layout dependencies.
+The default feature set intentionally avoids `egui`, `glyphon`, `wgpu`, `winit`,
+`accesskit`, and `cosmic-text`. With `--no-default-features`, the normal
+dependency tree is currently `taffy`, `lyon_tessellation`, and their small
+layout/geometry dependencies.
 
 ## Optional Layers
 
@@ -30,9 +31,15 @@ currently just `taffy` plus its small layout dependencies.
 - `egui`: provides host/input/platform compatibility for existing egui apps.
 - `egui-renderer-compat`: keeps the legacy egui `PaintList` painter available
   for migrations that still need it; new renderer validation should use WGPU.
+- `wgpu`: provides the native renderer path, including glyphon-backed text,
+  lyon-backed geometry upload, and GPU compositing validation.
+- `native-window`: adds winit/WGPU native-surface example support.
+- `accesskit-winit`: provides the optional AccessKit publication bridge for
+  winit hosts.
 - `widgets`: provides domain-neutral builders and helpers for buttons, labels,
-  checkboxes, sliders, text inputs, combo boxes, scroll areas, scrollbar thumb
-  geometry, virtual lists, and table headers.
+  checkboxes, sliders, editable text inputs, read-only selectable text,
+  combo boxes, scroll areas, scrollbar thumb geometry, virtual lists, context
+  menus, and table headers.
 - `audit`: keeps the headless layout and paint audit surface available for
   consumers that want stricter checks around clipped text, duplicate names,
   unusable hit targets, and empty paint clips.

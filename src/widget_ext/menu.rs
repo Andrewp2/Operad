@@ -8,11 +8,13 @@ use taffy::prelude::{
 };
 
 use crate::{
-    length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
-    AnimationMachine, ClipBehavior, ColorRgba, CommandId, CommandRegistry, CommandScope,
-    CommandTooltipResolver, ImageContent, InputBehavior, KeyCode, KeyModifiers, LayoutStyle,
-    ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument, UiInputEvent,
-    UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    length, resolve_context_menu_request, AccessibilityAction, AccessibilityLiveRegion,
+    AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba, CommandId,
+    CommandRegistry, CommandScope, CommandTooltipResolver, ContextMenuRequest,
+    ContextMenuResolution, HelpItemState, ImageContent, InputBehavior, KeyCode, KeyModifiers,
+    LayoutStyle, RawPointerEvent, ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle,
+    TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize,
+    UiVisual,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2294,6 +2296,12 @@ pub struct ContextMenuState {
     pub active: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextMenuOpenOutcome {
+    pub menu: MenuOutcome,
+    pub resolution: ContextMenuResolution,
+}
+
 impl ContextMenuState {
     pub const fn closed() -> Self {
         Self {
@@ -2315,6 +2323,79 @@ impl ContextMenuState {
         self.open = true;
         self.anchor = anchor;
         self.active = first_navigable_index(items);
+    }
+
+    pub fn open_from_request(
+        &mut self,
+        request: ContextMenuRequest,
+        items: &[MenuItem],
+    ) -> ContextMenuOpenOutcome {
+        let resolution = resolve_context_menu_request(request);
+        let mut menu = MenuOutcome::default();
+        if let Some(request) = resolution.request {
+            self.open_with_items(request.position, items);
+            menu.opened = true;
+            menu.active = self.active;
+        }
+        ContextMenuOpenOutcome { menu, resolution }
+    }
+
+    pub fn open_from_pointer_event(
+        &mut self,
+        target: UiNodeId,
+        anchor_rect: UiRect,
+        event: RawPointerEvent,
+        item_state: HelpItemState,
+        items: &[MenuItem],
+    ) -> ContextMenuOpenOutcome {
+        let Some(request) = ContextMenuRequest::from_pointer_event(target, anchor_rect, event)
+            .map(|request| request.item_state(item_state))
+        else {
+            return ContextMenuOpenOutcome {
+                menu: MenuOutcome::default(),
+                resolution: ContextMenuResolution {
+                    request: None,
+                    suppressed_reason: None,
+                },
+            };
+        };
+        self.open_from_request(request, items)
+    }
+
+    pub fn open_from_keyboard(
+        &mut self,
+        target: UiNodeId,
+        anchor_rect: UiRect,
+        item_state: HelpItemState,
+        items: &[MenuItem],
+    ) -> ContextMenuOpenOutcome {
+        self.open_from_request(
+            ContextMenuRequest::keyboard(target, anchor_rect).item_state(item_state),
+            items,
+        )
+    }
+
+    pub fn open_from_key_event(
+        &mut self,
+        target: UiNodeId,
+        anchor_rect: UiRect,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+        item_state: HelpItemState,
+        items: &[MenuItem],
+    ) -> ContextMenuOpenOutcome {
+        let Some(request) = ContextMenuRequest::from_key_event(target, anchor_rect, key, modifiers)
+            .map(|request| request.item_state(item_state))
+        else {
+            return ContextMenuOpenOutcome {
+                menu: MenuOutcome::default(),
+                resolution: ContextMenuResolution {
+                    request: None,
+                    suppressed_reason: None,
+                },
+            };
+        };
+        self.open_from_request(request, items)
     }
 
     pub fn close(&mut self) {
@@ -4565,8 +4646,9 @@ mod tests {
     use crate::{
         root_style, AccessibilityMeta, AccessibilityRole, AnimatedValues, AnimationMachine,
         AnimationState, AnimationTransition, AnimationTrigger, ApproxTextMeasurer, Command,
-        CommandId, CommandMeta, CommandRegistry, CommandScope, KeyModifiers, ShaderEffect,
-        Shortcut, ShortcutFormatter, UiContent,
+        CommandId, CommandMeta, CommandRegistry, CommandScope, ContextMenuSuppressedReason,
+        HelpItemState, KeyModifiers, PointerButton, PointerEventKind, RawPointerEvent,
+        ShaderEffect, Shortcut, ShortcutFormatter, UiContent,
     };
 
     fn test_animation() -> AnimationMachine {
@@ -5433,6 +5515,104 @@ mod tests {
             })
         );
         assert!(outcome.closed);
+    }
+
+    #[test]
+    fn context_menu_state_opens_from_pointer_and_keyboard_requests() {
+        let items = vec![
+            MenuItem::separator(),
+            MenuItem::command("copy", "Copy"),
+            MenuItem::command("paste", "Paste"),
+        ];
+        let anchor = UiRect::new(12.0, 18.0, 40.0, 20.0);
+        let pointer = RawPointerEvent::new(
+            PointerEventKind::Down(PointerButton::Secondary),
+            UiPoint::new(32.0, 44.0),
+            7,
+        );
+        let mut state = ContextMenuState::closed();
+
+        let opened = state.open_from_pointer_event(
+            UiNodeId(4),
+            anchor,
+            pointer,
+            HelpItemState::ENABLED,
+            &items,
+        );
+
+        assert!(opened.menu.opened);
+        assert_eq!(opened.menu.active, Some(1));
+        assert_eq!(opened.resolution.suppressed_reason, None);
+        assert_eq!(state.anchor, UiPoint::new(32.0, 44.0));
+        assert_eq!(state.active, Some(1));
+
+        let primary = RawPointerEvent::new(
+            PointerEventKind::Down(PointerButton::Primary),
+            UiPoint::new(18.0, 22.0),
+            8,
+        );
+        let ignored = state.open_from_pointer_event(
+            UiNodeId(4),
+            anchor,
+            primary,
+            HelpItemState::ENABLED,
+            &items,
+        );
+        assert!(!ignored.menu.opened);
+        assert_eq!(ignored.resolution.request, None);
+
+        let mut keyboard_state = ContextMenuState::closed();
+        let keyboard =
+            keyboard_state.open_from_keyboard(UiNodeId(4), anchor, HelpItemState::ENABLED, &items);
+        assert!(keyboard.menu.opened);
+        assert_eq!(keyboard.menu.active, Some(1));
+        assert!(keyboard_state.open);
+
+        let mut key_state = ContextMenuState::closed();
+        let key = key_state.open_from_key_event(
+            UiNodeId(4),
+            anchor,
+            KeyCode::F10,
+            KeyModifiers {
+                shift: true,
+                ..KeyModifiers::NONE
+            },
+            HelpItemState::ENABLED,
+            &items,
+        );
+        assert!(key.menu.opened);
+        assert_eq!(key.menu.active, Some(1));
+
+        let ignored_key = key_state.open_from_key_event(
+            UiNodeId(4),
+            anchor,
+            KeyCode::F10,
+            KeyModifiers::NONE,
+            HelpItemState::ENABLED,
+            &items,
+        );
+        assert!(!ignored_key.menu.opened);
+        assert_eq!(ignored_key.resolution.request, None);
+    }
+
+    #[test]
+    fn context_menu_state_reports_suppressed_open_requests() {
+        let items = vec![MenuItem::command("copy", "Copy")];
+        let mut state = ContextMenuState::closed();
+
+        let disabled = state.open_from_keyboard(
+            UiNodeId(4),
+            UiRect::new(10.0, 10.0, 20.0, 20.0),
+            HelpItemState::disabled(),
+            &items,
+        );
+
+        assert!(!disabled.menu.opened);
+        assert!(!state.open);
+        assert_eq!(
+            disabled.resolution.suppressed_reason,
+            Some(ContextMenuSuppressedReason::Disabled)
+        );
     }
 
     #[test]

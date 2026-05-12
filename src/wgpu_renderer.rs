@@ -27,11 +27,12 @@ use crate::platform::{
     PlatformServiceCapabilities, RenderingCapabilities, ResourceCapabilities,
 };
 use crate::{
-    ColorRgba, FontFamily, FontStretch, FontStyle, FrameTiming, ImageAlignment, ImageFit,
-    LinearGradient, PaintBrush, PaintKind, PathVerb, PixelRect, RenderError, RenderFrameOutput,
-    RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, RendererAdapter,
-    ResourceFormat, ResourceResolver, ResourceUpdate, StrokeStyle, TextStyle, TextWrap, UiNodeId,
-    UiPoint, UiRect, UiSize, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
+    ColorRgba, CompositorClip, CompositorFilterKind, CompositorMask, FontFamily, FontStretch,
+    FontStyle, FrameTiming, ImageAlignment, ImageFit, LinearGradient, MaskMode, PaintBrush,
+    PaintCompositorLayer, PaintEffectKind, PaintKind, PaintTransform, PixelRect, RenderError,
+    RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage,
+    RendererAdapter, ResourceFormat, ResourceResolver, ResourceUpdate, StrokeStyle, TextStyle,
+    TextWrap, UiNodeId, UiPoint, UiRect, UiSize, DEFAULT_CPU_SNAPSHOT_BACKGROUND,
 };
 
 const OFFSCREEN_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
@@ -60,10 +61,28 @@ struct TexturedRectInput {
     @location(2) tint: vec4<f32>,
 };
 
+struct CompositedRectInput {
+    @location(0) rect: vec4<f32>,
+    @location(1) uv: vec4<f32>,
+    @location(2) tint: vec4<f32>,
+    @location(3) clip_rect: vec4<f32>,
+    @location(4) mask_rect: vec4<f32>,
+    @location(5) params: vec4<f32>,
+    @location(6) filter_params: vec4<f32>,
+    @location(7) texel_size: vec2<f32>,
+};
+
 struct SdfRectInput {
     @location(0) rect: vec4<f32>,
     @location(1) color: vec4<f32>,
     @location(2) radius: f32,
+};
+
+struct ShadowRectInput {
+    @location(0) draw_rect: vec4<f32>,
+    @location(1) shape_rect: vec4<f32>,
+    @location(2) color: vec4<f32>,
+    @location(3) params: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -77,12 +96,32 @@ struct TexturedVertexOutput {
     @location(1) tint: vec4<f32>,
 };
 
+struct CompositedRectOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) world_position: vec2<f32>,
+    @location(3) clip_rect: vec4<f32>,
+    @location(4) mask_rect: vec4<f32>,
+    @location(5) params: vec4<f32>,
+    @location(6) filter_params: vec4<f32>,
+    @location(7) texel_size: vec2<f32>,
+};
+
 struct SdfRectOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) local_position: vec2<f32>,
     @location(2) size: vec2<f32>,
     @location(3) radius: f32,
+};
+
+struct ShadowRectOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) world_position: vec2<f32>,
+    @location(1) shape_rect: vec4<f32>,
+    @location(2) color: vec4<f32>,
+    @location(3) params: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -146,6 +185,33 @@ fn vs_textured_rect(@builtin(vertex_index) vertex_index: u32, input: TexturedRec
 }
 
 @vertex
+fn vs_composited_rect(@builtin(vertex_index) vertex_index: u32, input: CompositedRectInput) -> CompositedRectOutput {
+    let unit_positions = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 1.0)
+    );
+    let unit = unit_positions[vertex_index];
+    let position = input.rect.xy + unit * input.rect.zw;
+    var output: CompositedRectOutput;
+    let x = position.x / scene.viewport.x * 2.0 - 1.0;
+    let y = 1.0 - position.y / scene.viewport.y * 2.0;
+    output.clip_position = vec4<f32>(x, y, 0.0, 1.0);
+    output.uv = input.uv.xy + unit * input.uv.zw;
+    output.tint = input.tint;
+    output.world_position = position;
+    output.clip_rect = input.clip_rect;
+    output.mask_rect = input.mask_rect;
+    output.params = input.params;
+    output.filter_params = input.filter_params;
+    output.texel_size = input.texel_size;
+    return output;
+}
+
+@vertex
 fn vs_sdf_rect(@builtin(vertex_index) vertex_index: u32, input: SdfRectInput) -> SdfRectOutput {
     let unit_positions = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -168,6 +234,29 @@ fn vs_sdf_rect(@builtin(vertex_index) vertex_index: u32, input: SdfRectInput) ->
     return output;
 }
 
+@vertex
+fn vs_shadow_rect(@builtin(vertex_index) vertex_index: u32, input: ShadowRectInput) -> ShadowRectOutput {
+    let unit_positions = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 1.0)
+    );
+    let unit = unit_positions[vertex_index];
+    let position = input.draw_rect.xy + unit * input.draw_rect.zw;
+    var output: ShadowRectOutput;
+    let x = position.x / scene.viewport.x * 2.0 - 1.0;
+    let y = 1.0 - position.y / scene.viewport.y * 2.0;
+    output.clip_position = vec4<f32>(x, y, 0.0, 1.0);
+    output.world_position = position;
+    output.shape_rect = input.shape_rect;
+    output.color = input.color;
+    output.params = input.params;
+    return output;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return input.color;
@@ -176,6 +265,82 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fs_textured(input: TexturedVertexOutput) -> @location(0) vec4<f32> {
     return textureSample(image_texture, image_sampler, input.uv) * input.tint;
+}
+
+fn rounded_rect_alpha(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
+    if point.x < rect.x || point.y < rect.y || point.x > rect.x + rect.z || point.y > rect.y + rect.w {
+        return 0.0;
+    }
+    let clamped_radius = clamp(radius, 0.0, min(rect.z, rect.w) * 0.5);
+    if clamped_radius <= 0.0 {
+        return 1.0;
+    }
+    let half_size = rect.zw * 0.5;
+    let centered = point - rect.xy - half_size;
+    let q = abs(centered) - half_size + vec2<f32>(clamped_radius, clamped_radius);
+    let distance = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - clamped_radius;
+    return 1.0 - smoothstep(-0.75, 0.75, distance);
+}
+
+fn rounded_rect_distance(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
+    let clamped_radius = clamp(radius, 0.0, min(rect.z, rect.w) * 0.5);
+    let half_size = rect.zw * 0.5;
+    let centered = point - rect.xy - half_size;
+    let q = abs(centered) - half_size + vec2<f32>(clamped_radius, clamped_radius);
+    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - clamped_radius;
+}
+
+fn sample_composited_layer(uv: vec2<f32>, texel_size: vec2<f32>, blur_radius: f32) -> vec4<f32> {
+    if blur_radius <= 0.5 {
+        return textureSample(image_texture, image_sampler, uv);
+    }
+    let offset = texel_size * min(blur_radius, 8.0);
+    var color = textureSample(image_texture, image_sampler, uv) * 4.0;
+    color = color + textureSample(image_texture, image_sampler, uv + vec2<f32>(offset.x, 0.0));
+    color = color + textureSample(image_texture, image_sampler, uv - vec2<f32>(offset.x, 0.0));
+    color = color + textureSample(image_texture, image_sampler, uv + vec2<f32>(0.0, offset.y));
+    color = color + textureSample(image_texture, image_sampler, uv - vec2<f32>(0.0, offset.y));
+    color = color + textureSample(image_texture, image_sampler, uv + offset);
+    color = color + textureSample(image_texture, image_sampler, uv - offset);
+    color = color + textureSample(image_texture, image_sampler, uv + vec2<f32>(offset.x, -offset.y));
+    color = color + textureSample(image_texture, image_sampler, uv + vec2<f32>(-offset.x, offset.y));
+    return color / 12.0;
+}
+
+@fragment
+fn fs_composited(input: CompositedRectOutput) -> @location(0) vec4<f32> {
+    let opacity = input.params.x;
+    let clip_enabled = input.params.y;
+    let mask_enabled = input.params.z;
+    let blur_radius = input.params.w;
+    let brightness = input.filter_params.x;
+    let contrast = input.filter_params.y;
+    let saturate = input.filter_params.z;
+    let clip_radius = input.filter_params.w;
+
+    let sampled = sample_composited_layer(input.uv, input.texel_size, blur_radius);
+    var rgb = sampled.rgb;
+    var alpha = sampled.a;
+    if alpha > 0.0001 {
+        rgb = rgb / alpha;
+    }
+    if clip_enabled > 0.5 {
+        alpha = alpha * rounded_rect_alpha(input.world_position, input.clip_rect, clip_radius);
+    }
+    if mask_enabled > 0.5 {
+        let inside_mask =
+            input.world_position.x >= input.mask_rect.x &&
+            input.world_position.y >= input.mask_rect.y &&
+            input.world_position.x <= input.mask_rect.x + input.mask_rect.z &&
+            input.world_position.y <= input.mask_rect.y + input.mask_rect.w;
+        if !inside_mask {
+            alpha = 0.0;
+        }
+    }
+    rgb = clamp((rgb * brightness - vec3<f32>(0.5, 0.5, 0.5)) * contrast + vec3<f32>(0.5, 0.5, 0.5), vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(1.0, 1.0, 1.0));
+    let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    rgb = mix(vec3<f32>(luma, luma, luma), rgb, saturate);
+    return vec4<f32>(rgb * input.tint.rgb, alpha * input.tint.a * opacity);
 }
 
 @fragment
@@ -187,6 +352,21 @@ fn fs_sdf_rect(input: SdfRectOutput) -> @location(0) vec4<f32> {
     let distance = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
     let alpha = 1.0 - smoothstep(-0.75, 0.75, distance);
     return vec4<f32>(input.color.rgb, input.color.a * alpha);
+}
+
+@fragment
+fn fs_shadow_rect(input: ShadowRectOutput) -> @location(0) vec4<f32> {
+    let radius = input.params.x;
+    let blur_radius = max(input.params.y, 0.0);
+    let distance = rounded_rect_distance(input.world_position, input.shape_rect, radius);
+    let outside_distance = max(distance, 0.0);
+    var alpha = input.color.a;
+    if blur_radius > 0.5 {
+        alpha = alpha * (1.0 - smoothstep(0.0, blur_radius, outside_distance));
+    } else if outside_distance > 0.75 {
+        alpha = 0.0;
+    }
+    return vec4<f32>(input.color.rgb, alpha);
 }
 "#;
 
@@ -207,7 +387,9 @@ struct WgpuContext {
     triangle_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
     rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
     textured_rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
+    composited_rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
     sdf_rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
+    shadow_rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
     scene_buffer: wgpu::Buffer,
     scene_bind_group: wgpu::BindGroup,
     vertex_buffer: Option<wgpu::Buffer>,
@@ -216,8 +398,12 @@ struct WgpuContext {
     rect_capacity: u64,
     textured_rect_buffer: Option<wgpu::Buffer>,
     textured_rect_capacity: u64,
+    composited_rect_buffer: Option<wgpu::Buffer>,
+    composited_rect_capacity: u64,
     sdf_rect_buffer: Option<wgpu::Buffer>,
     sdf_rect_capacity: u64,
+    shadow_rect_buffer: Option<wgpu::Buffer>,
+    shadow_rect_capacity: u64,
     textures: HashMap<String, WgpuTextureResource>,
     font_system: GlyphFontSystem,
     swash_cache: GlyphSwashCache,
@@ -236,6 +422,8 @@ struct WgpuContext {
     glyph_generation: u64,
     gpu_timer: Option<GpuTimer>,
     discard_target: Option<CachedTarget>,
+    layer_generation: u64,
+    layer_index: u64,
 }
 
 impl std::fmt::Debug for WgpuContext {
@@ -248,7 +436,12 @@ impl std::fmt::Debug for WgpuContext {
                 "textured_rect_pipelines",
                 &self.textured_rect_pipelines.len(),
             )
+            .field(
+                "composited_rect_pipelines",
+                &self.composited_rect_pipelines.len(),
+            )
             .field("sdf_rect_pipelines", &self.sdf_rect_pipelines.len())
+            .field("shadow_rect_pipelines", &self.shadow_rect_pipelines.len())
             .field("textures", &self.textures.len())
             .field("glyph_format", &self.glyph_format)
             .field("glyph_buffer_cache", &self.glyph_buffer_cache.len())
@@ -360,7 +553,9 @@ impl WgpuContext {
             triangle_pipelines: HashMap::new(),
             rect_pipelines: HashMap::new(),
             textured_rect_pipelines: HashMap::new(),
+            composited_rect_pipelines: HashMap::new(),
             sdf_rect_pipelines: HashMap::new(),
+            shadow_rect_pipelines: HashMap::new(),
             scene_buffer,
             scene_bind_group,
             vertex_buffer: None,
@@ -369,8 +564,12 @@ impl WgpuContext {
             rect_capacity: 0,
             textured_rect_buffer: None,
             textured_rect_capacity: 0,
+            composited_rect_buffer: None,
+            composited_rect_capacity: 0,
             sdf_rect_buffer: None,
             sdf_rect_capacity: 0,
+            shadow_rect_buffer: None,
+            shadow_rect_capacity: 0,
             textures,
             font_system: GlyphFontSystem::new(),
             swash_cache: GlyphSwashCache::new(),
@@ -389,6 +588,8 @@ impl WgpuContext {
             glyph_generation: 0,
             gpu_timer,
             discard_target: None,
+            layer_generation: 0,
+            layer_index: 0,
         })
     }
 
@@ -440,6 +641,22 @@ impl WgpuContext {
             .expect("pipeline was inserted before lookup")
     }
 
+    fn composited_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
+        if !self.composited_rect_pipelines.contains_key(&format) {
+            let pipeline = self.create_pipeline(
+                format,
+                "vs_composited_rect",
+                "fs_composited",
+                &[GpuCompositedRectInstance::layout()],
+                &self.texture_pipeline_layout,
+            );
+            self.composited_rect_pipelines.insert(format, pipeline);
+        }
+        self.composited_rect_pipelines
+            .get(&format)
+            .expect("pipeline was inserted before lookup")
+    }
+
     fn sdf_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
         if !self.sdf_rect_pipelines.contains_key(&format) {
             let pipeline = self.create_pipeline(
@@ -452,6 +669,22 @@ impl WgpuContext {
             self.sdf_rect_pipelines.insert(format, pipeline);
         }
         self.sdf_rect_pipelines
+            .get(&format)
+            .expect("pipeline was inserted before lookup")
+    }
+
+    fn shadow_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
+        if !self.shadow_rect_pipelines.contains_key(&format) {
+            let pipeline = self.create_pipeline(
+                format,
+                "vs_shadow_rect",
+                "fs_shadow_rect",
+                &[GpuShadowRectInstance::layout()],
+                &self.pipeline_layout,
+            );
+            self.shadow_rect_pipelines.insert(format, pipeline);
+        }
+        self.shadow_rect_pipelines
             .get(&format)
             .expect("pipeline was inserted before lookup")
     }
@@ -597,6 +830,36 @@ impl WgpuContext {
         Some(buffer.clone())
     }
 
+    fn composited_rect_buffer_for(
+        &mut self,
+        rects: &[GpuCompositedRectInstance],
+    ) -> Option<wgpu::Buffer> {
+        if rects.is_empty() {
+            return None;
+        }
+
+        let rect_bytes = composited_rect_instance_bytes(rects);
+        let required = u64::try_from(rect_bytes.len()).ok()?;
+        if self.composited_rect_capacity < required {
+            let capacity = required.next_power_of_two();
+            self.composited_rect_buffer =
+                Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("operad-wgpu-ui-composited-rect-instances"),
+                    size: capacity,
+                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            self.composited_rect_capacity = capacity;
+        }
+
+        let buffer = self
+            .composited_rect_buffer
+            .as_ref()
+            .expect("composited rect instance buffer is allocated before upload");
+        self.queue.write_buffer(buffer, 0, rect_bytes);
+        Some(buffer.clone())
+    }
+
     fn sdf_rect_buffer_for(&mut self, rects: &[GpuSdfRectInstance]) -> Option<wgpu::Buffer> {
         if rects.is_empty() {
             return None;
@@ -621,6 +884,76 @@ impl WgpuContext {
             .expect("sdf rect instance buffer is allocated before upload");
         self.queue.write_buffer(buffer, 0, rect_bytes);
         Some(buffer.clone())
+    }
+
+    fn shadow_rect_buffer_for(&mut self, rects: &[GpuShadowRectInstance]) -> Option<wgpu::Buffer> {
+        if rects.is_empty() {
+            return None;
+        }
+
+        let rect_bytes = shadow_rect_instance_bytes(rects);
+        let required = u64::try_from(rect_bytes.len()).ok()?;
+        if self.shadow_rect_capacity < required {
+            let capacity = required.next_power_of_two();
+            self.shadow_rect_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("operad-wgpu-ui-shadow-rect-instances"),
+                size: capacity,
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.shadow_rect_capacity = capacity;
+        }
+
+        let buffer = self
+            .shadow_rect_buffer
+            .as_ref()
+            .expect("shadow rect instance buffer is allocated before upload");
+        self.queue.write_buffer(buffer, 0, rect_bytes);
+        Some(buffer.clone())
+    }
+
+    fn begin_frame(&mut self) {
+        self.layer_generation = self.layer_generation.wrapping_add(1);
+        self.layer_index = 0;
+        self.textures
+            .retain(|key, _| !key.starts_with("__operad_layer_"));
+    }
+
+    fn insert_layer_texture(
+        &mut self,
+        size: PixelSize,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+    ) -> String {
+        let key = format!(
+            "__operad_layer_{}_{}",
+            self.layer_generation, self.layer_index
+        );
+        self.layer_index = self.layer_index.wrapping_add(1);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("operad-wgpu-layer-texture-bind-group"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.texture_sampler),
+                },
+            ],
+        });
+        self.textures.insert(
+            key.clone(),
+            WgpuTextureResource {
+                size,
+                texture,
+                _view: view,
+                bind_group,
+            },
+        );
+        key
     }
 
     fn upload_resource_updates(&mut self, updates: &[ResourceUpdate]) -> Result<(), RenderError> {
@@ -1212,6 +1545,84 @@ impl GpuTexturedRectInstance {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+struct GpuCompositedRectInstance {
+    rect: [f32; 4],
+    uv: [f32; 4],
+    tint: [f32; 4],
+    clip_rect: [f32; 4],
+    mask_rect: [f32; 4],
+    params: [f32; 4],
+    filter_params: [f32; 4],
+    texel_size: [f32; 2],
+    _pad: [f32; 2],
+}
+
+impl GpuCompositedRectInstance {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+        0 => Float32x4,
+        1 => Float32x4,
+        2 => Float32x4,
+        3 => Float32x4,
+        4 => Float32x4,
+        5 => Float32x4,
+        6 => Float32x4,
+        7 => Float32x2
+    ];
+
+    fn new(
+        rect: UiRect,
+        uv: [f32; 4],
+        opacity: f32,
+        clip: Option<(UiRect, f32)>,
+        mask: Option<UiRect>,
+        filter_params: LayerFilterParams,
+        texture_size: PixelSize,
+    ) -> Self {
+        let (clip_rect, clip_radius, clip_enabled) = match clip {
+            Some((rect, radius)) => (rect, radius, 1.0),
+            None => (rect, 0.0, 0.0),
+        };
+        let (mask_rect, mask_enabled) = match mask {
+            Some(rect) => (rect, 1.0),
+            None => (rect, 0.0),
+        };
+        Self {
+            rect: [rect.x, rect.y, rect.width, rect.height],
+            uv,
+            tint: [1.0, 1.0, 1.0, 1.0],
+            clip_rect: [clip_rect.x, clip_rect.y, clip_rect.width, clip_rect.height],
+            mask_rect: [mask_rect.x, mask_rect.y, mask_rect.width, mask_rect.height],
+            params: [
+                opacity.clamp(0.0, 1.0),
+                clip_enabled,
+                mask_enabled,
+                filter_params.blur_radius,
+            ],
+            filter_params: [
+                filter_params.brightness,
+                filter_params.contrast,
+                filter_params.saturate,
+                clip_radius,
+            ],
+            texel_size: [
+                1.0 / texture_size.width.max(1) as f32,
+                1.0 / texture_size.height.max(1) as f32,
+            ],
+            _pad: [0.0; 2],
+        }
+    }
+
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 struct GpuSdfRectInstance {
     rect: [f32; 4],
     color: [f32; 4],
@@ -1241,12 +1652,56 @@ impl GpuSdfRectInstance {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct GpuShadowRectInstance {
+    draw_rect: [f32; 4],
+    shape_rect: [f32; 4],
+    color: [f32; 4],
+    params: [f32; 4],
+}
+
+impl GpuShadowRectInstance {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+
+    fn new(
+        draw_rect: UiRect,
+        shape_rect: UiRect,
+        color: [f32; 4],
+        radius: f32,
+        blur_radius: f32,
+    ) -> Self {
+        Self {
+            draw_rect: [draw_rect.x, draw_rect.y, draw_rect.width, draw_rect.height],
+            shape_rect: [
+                shape_rect.x,
+                shape_rect.y,
+                shape_rect.width,
+                shape_rect.height,
+            ],
+            color,
+            params: [radius.max(0.0), blur_radius.max(0.0), 0.0, 0.0],
+        }
+    }
+
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GeometryBatchKind {
     Rect,
     Triangle,
     TexturedRect,
+    CompositedRect,
     SdfRect,
+    ShadowRect,
     Text,
 }
 
@@ -1433,7 +1888,9 @@ impl TextRenderKey {
 struct RenderGeometry {
     rects: Vec<GpuRectInstance>,
     textured_rects: Vec<GpuTexturedRectInstance>,
+    composited_rects: Vec<GpuCompositedRectInstance>,
     sdf_rects: Vec<GpuSdfRectInstance>,
+    shadow_rects: Vec<GpuShadowRectInstance>,
     vertices: Vec<GpuVertex>,
     texts: Vec<TextPaint>,
     batches: Vec<GeometryBatch>,
@@ -1443,7 +1900,9 @@ impl RenderGeometry {
     fn clear(&mut self) {
         self.rects.clear();
         self.textured_rects.clear();
+        self.composited_rects.clear();
         self.sdf_rects.clear();
+        self.shadow_rects.clear();
         self.vertices.clear();
         self.texts.clear();
         self.batches.clear();
@@ -1553,6 +2012,25 @@ impl RenderGeometry {
         );
     }
 
+    fn push_composited_rect(
+        &mut self,
+        clip: UiRect,
+        texture_key: &str,
+        instance: GpuCompositedRectInstance,
+    ) {
+        let Ok(start) = u32::try_from(self.composited_rects.len()) else {
+            return;
+        };
+        self.composited_rects.push(instance);
+        self.push_batch(
+            GeometryBatchKind::CompositedRect,
+            clip,
+            Some(texture_key),
+            start,
+            1,
+        );
+    }
+
     fn push_sdf_rect(&mut self, clip: UiRect, rect: UiRect, color: [f32; 4], radius: f32) {
         let Ok(start) = u32::try_from(self.sdf_rects.len()) else {
             return;
@@ -1560,6 +2038,28 @@ impl RenderGeometry {
         self.sdf_rects
             .push(GpuSdfRectInstance::new(rect, color, radius));
         self.push_batch(GeometryBatchKind::SdfRect, clip, None, start, 1);
+    }
+
+    fn push_shadow_rect(
+        &mut self,
+        clip: UiRect,
+        draw_rect: UiRect,
+        shape_rect: UiRect,
+        color: [f32; 4],
+        radius: f32,
+        blur_radius: f32,
+    ) {
+        let Ok(start) = u32::try_from(self.shadow_rects.len()) else {
+            return;
+        };
+        self.shadow_rects.push(GpuShadowRectInstance::new(
+            draw_rect,
+            shape_rect,
+            color,
+            radius,
+            blur_radius,
+        ));
+        self.push_batch(GeometryBatchKind::ShadowRect, clip, None, start, 1);
     }
 
     fn push_text(&mut self, text: TextPaint) {
@@ -1601,7 +2101,9 @@ impl WgpuRenderer {
         let _ = context.triangle_pipeline(OFFSCREEN_FORMAT);
         let _ = context.rect_pipeline(OFFSCREEN_FORMAT);
         let _ = context.textured_rect_pipeline(OFFSCREEN_FORMAT);
+        let _ = context.composited_rect_pipeline(OFFSCREEN_FORMAT);
         let _ = context.sdf_rect_pipeline(OFFSCREEN_FORMAT);
+        let _ = context.shadow_rect_pipeline(OFFSCREEN_FORMAT);
         context.prepare_glyphon_text(
             PixelSize::new(512, 128),
             OFFSCREEN_FORMAT,
@@ -1641,8 +2143,14 @@ impl WgpuRenderer {
         let clear_color = clear_color_for_request(&request);
         let mut context = WgpuContext::new(device.clone(), queue.clone())?;
         context.upload_resource_updates(&request.resource_updates)?;
+        context.begin_frame();
         self.geometry.clear();
-        build_geometry_into(&mut self.geometry, &request.paint, &mut context);
+        build_geometry_into(
+            &mut self.geometry,
+            &request.paint,
+            &mut context,
+            UiPoint::new(0.0, 0.0),
+        )?;
         let mut output = RenderFrameOutput::new(request.target);
         output.painted_items = request.paint.items.len();
         output.batches = batches;
@@ -1953,7 +2461,13 @@ impl<'window> RendererAdapter for WgpuSurfaceRenderer<'window> {
                 RenderError::Backend("wgpu surface renderer missing context".to_string())
             })?;
             context.upload_resource_updates(&request.resource_updates)?;
-            build_geometry_into(&mut self.renderer.geometry, &request.paint, context);
+            context.begin_frame();
+            build_geometry_into(
+                &mut self.renderer.geometry,
+                &request.paint,
+                context,
+                UiPoint::new(0.0, 0.0),
+            )?;
         }
         let mut output = RenderFrameOutput::new(request.target.clone());
         output.painted_items = request.paint.items.len();
@@ -2015,6 +2529,7 @@ impl RendererAdapter for WgpuRenderer {
         {
             let context = self.ensure_context()?;
             context.upload_resource_updates(&request.resource_updates)?;
+            context.begin_frame();
         }
         let mut geometry = mem::take(&mut self.geometry);
         geometry.clear();
@@ -2022,7 +2537,12 @@ impl RendererAdapter for WgpuRenderer {
             let context = self.context.as_mut().ok_or_else(|| {
                 RenderError::Backend("wgpu backend failed to initialize".to_string())
             })?;
-            build_geometry_into(&mut geometry, &request.paint, context);
+            build_geometry_into(
+                &mut geometry,
+                &request.paint,
+                context,
+                UiPoint::new(0.0, 0.0),
+            )?;
         }
         self.geometry = geometry;
         let mut output = RenderFrameOutput::new(request.target);
@@ -2224,7 +2744,9 @@ fn record_render_pass(
     let bind_group = context.scene_bind_group.clone();
     let rect_buffer = context.rect_buffer_for(&geometry.rects);
     let textured_rect_buffer = context.textured_rect_buffer_for(&geometry.textured_rects);
+    let composited_rect_buffer = context.composited_rect_buffer_for(&geometry.composited_rects);
     let sdf_rect_buffer = context.sdf_rect_buffer_for(&geometry.sdf_rects);
+    let shadow_rect_buffer = context.shadow_rect_buffer_for(&geometry.shadow_rects);
     let vertex_buffer = context.vertex_buffer_for(&geometry.vertices);
     let texture_bind_groups = geometry
         .batches
@@ -2242,7 +2764,9 @@ fn record_render_pass(
     let rect_pipeline = context.rect_pipeline(format).clone();
     let triangle_pipeline = context.triangle_pipeline(format).clone();
     let textured_rect_pipeline = context.textured_rect_pipeline(format).clone();
+    let composited_rect_pipeline = context.composited_rect_pipeline(format).clone();
     let sdf_rect_pipeline = context.sdf_rect_pipeline(format).clone();
+    let shadow_rect_pipeline = context.shadow_rect_pipeline(format).clone();
     let gpu_timer = if collect_gpu_timing {
         context.gpu_timer.as_ref()
     } else {
@@ -2305,12 +2829,35 @@ fn record_render_pass(
                 pass.set_vertex_buffer(0, textured_rect_buffer.slice(..));
                 pass.draw(0..6, batch.start..batch.start + batch.count);
             }
+            GeometryBatchKind::CompositedRect => {
+                let Some(composited_rect_buffer) = &composited_rect_buffer else {
+                    continue;
+                };
+                let Some(texture_key) = batch.texture_key.as_ref() else {
+                    continue;
+                };
+                let Some(texture_bind_group) = texture_bind_groups.get(texture_key) else {
+                    continue;
+                };
+                pass.set_pipeline(&composited_rect_pipeline);
+                pass.set_bind_group(1, texture_bind_group, &[]);
+                pass.set_vertex_buffer(0, composited_rect_buffer.slice(..));
+                pass.draw(0..6, batch.start..batch.start + batch.count);
+            }
             GeometryBatchKind::SdfRect => {
                 let Some(sdf_rect_buffer) = &sdf_rect_buffer else {
                     continue;
                 };
                 pass.set_pipeline(&sdf_rect_pipeline);
                 pass.set_vertex_buffer(0, sdf_rect_buffer.slice(..));
+                pass.draw(0..6, batch.start..batch.start + batch.count);
+            }
+            GeometryBatchKind::ShadowRect => {
+                let Some(shadow_rect_buffer) = &shadow_rect_buffer else {
+                    continue;
+                };
+                pass.set_pipeline(&shadow_rect_pipeline);
+                pass.set_vertex_buffer(0, shadow_rect_buffer.slice(..));
                 pass.draw(0..6, batch.start..batch.start + batch.count);
             }
             GeometryBatchKind::Text => {
@@ -2336,23 +2883,25 @@ fn build_geometry_into(
     geometry: &mut RenderGeometry,
     paint: &crate::PaintList,
     context: &mut WgpuContext,
-) {
+    origin: UiPoint,
+) -> Result<(), RenderError> {
     for item in &paint.items {
-        let clip = item.clip_rect;
+        let clip = paint_rect_in_target(item.clip_rect, origin);
+        let transform = paint_transform_in_target(item.transform, origin);
         match &item.kind {
             PaintKind::Rect {
                 fill,
                 stroke,
                 corner_radius,
             } => {
-                let rect = item.transform.transform_rect(item.rect);
+                let rect = transform.transform_rect(item.rect);
                 push_fill_rect_with_radius(
                     geometry,
                     rect,
                     clip,
                     *fill,
                     item.opacity,
-                    corner_radius * item.transform.scale.max(0.0),
+                    corner_radius * transform.scale.max(0.0),
                 );
                 if let Some(stroke) = stroke {
                     push_stroke_rect(geometry, rect, clip, *stroke, item.opacity);
@@ -2366,7 +2915,7 @@ fn build_geometry_into(
                 &text.text,
                 &text.style,
                 item.opacity,
-                item.transform,
+                transform,
             ),
             PaintKind::SceneText(text) => {
                 push_text(
@@ -2377,13 +2926,13 @@ fn build_geometry_into(
                     &text.text,
                     &text.style,
                     item.opacity,
-                    item.transform,
+                    transform,
                 );
             }
             PaintKind::Canvas(canvas) => {
                 push_canvas(
                     geometry,
-                    item.transform.transform_rect(item.rect),
+                    transform.transform_rect(item.rect),
                     clip,
                     &canvas.key,
                     item.opacity,
@@ -2392,8 +2941,8 @@ fn build_geometry_into(
             PaintKind::Line { from, to, stroke } => {
                 push_line(
                     geometry,
-                    item.transform.transform_point(*from),
-                    item.transform.transform_point(*to),
+                    transform.transform_point(*from),
+                    transform.transform_point(*to),
                     clip,
                     *stroke,
                     item.opacity,
@@ -2405,8 +2954,8 @@ fn build_geometry_into(
                 fill,
                 stroke,
             } => {
-                let center = item.transform.transform_point(*center);
-                let radius = radius * item.transform.scale.max(0.0);
+                let center = transform.transform_point(*center);
+                let radius = radius * transform.scale.max(0.0);
                 push_fill_circle(geometry, center, radius, clip, *fill, item.opacity);
                 if let Some(stroke) = stroke {
                     push_stroke_circle(geometry, center, radius, clip, *stroke, item.opacity);
@@ -2420,7 +2969,7 @@ fn build_geometry_into(
                 let points = points
                     .iter()
                     .copied()
-                    .map(|point| item.transform.transform_point(point))
+                    .map(|point| transform.transform_point(point))
                     .collect::<Vec<_>>();
                 push_polygon(geometry, &points, clip, *fill, item.opacity);
                 if let Some(stroke) = stroke {
@@ -2430,7 +2979,7 @@ fn build_geometry_into(
             PaintKind::Image { key, tint } => {
                 push_image(
                     geometry,
-                    item.transform.transform_rect(item.rect),
+                    transform.transform_rect(item.rect),
                     clip,
                     key,
                     *tint,
@@ -2441,20 +2990,15 @@ fn build_geometry_into(
                     context,
                 );
             }
+            PaintKind::CompositedLayer(layer) => {
+                push_composited_layer(geometry, item, transform, layer, clip, context)?;
+            }
             PaintKind::RichRect(rect_primitive) => {
-                let rect = item.transform.transform_rect(rect_primitive.rect);
+                let rect = transform.transform_rect(rect_primitive.rect);
+                let radius = rect_primitive.corner_radii.max_radius() * transform.scale.max(0.0);
                 for effect in &rect_primitive.effects {
-                    let spread = effect.spread.max(0.0) + effect.blur_radius.max(0.0) * 0.25;
-                    let effect_rect = UiRect::new(
-                        rect.x + effect.offset.x - spread,
-                        rect.y + effect.offset.y - spread,
-                        rect.width + spread * 2.0,
-                        rect.height + spread * 2.0,
-                    );
-                    push_fill_rect(geometry, effect_rect, clip, effect.color, item.opacity);
+                    push_rich_rect_effect(geometry, rect, clip, *effect, item.opacity, radius);
                 }
-                let radius =
-                    rect_primitive.corner_radii.max_radius() * item.transform.scale.max(0.0);
                 push_fill_brush_rect_with_radius(
                     geometry,
                     rect,
@@ -2462,43 +3006,38 @@ fn build_geometry_into(
                     &rect_primitive.fill,
                     item.opacity,
                     radius,
-                    item.transform,
+                    transform,
                 );
                 if let Some(stroke) = rect_primitive.stroke {
                     push_stroke_rect(geometry, rect, clip, stroke.style, item.opacity);
                 }
             }
             PaintKind::Path(path) => {
-                let path_points = path
-                    .verbs
-                    .iter()
-                    .filter_map(|verb| path_verb_end_point(*verb))
-                    .map(|point| item.transform.transform_point(point))
-                    .collect::<Vec<_>>();
                 if let Some(fill) = &path.fill {
-                    push_polygon(
+                    push_triangle_mesh(
                         geometry,
-                        &path_points,
+                        &path.tessellated_fill(1.0),
+                        transform,
                         clip,
                         fill.fallback_color(),
                         item.opacity,
                     );
                 }
                 if let Some(stroke) = path.stroke {
-                    push_polyline(
+                    push_triangle_mesh(
                         geometry,
-                        &path_points,
+                        &path.tessellated_stroke(1.0),
+                        transform,
                         clip,
-                        stroke.style,
+                        stroke.style.color,
                         item.opacity,
-                        false,
                     );
                 }
             }
             PaintKind::ImagePlacement(image) => {
                 push_image(
                     geometry,
-                    item.transform.transform_rect(image.rect),
+                    transform.transform_rect(image.rect),
                     clip,
                     &image.key,
                     image.tint,
@@ -2509,6 +3048,243 @@ fn build_geometry_into(
                     context,
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LayerFilterParams {
+    blur_radius: f32,
+    brightness: f32,
+    contrast: f32,
+    saturate: f32,
+}
+
+impl Default for LayerFilterParams {
+    fn default() -> Self {
+        Self {
+            blur_radius: 0.0,
+            brightness: 1.0,
+            contrast: 1.0,
+            saturate: 1.0,
+        }
+    }
+}
+
+fn paint_transform_in_target(
+    mut transform: crate::PaintTransform,
+    origin: UiPoint,
+) -> crate::PaintTransform {
+    transform.translation.x -= origin.x;
+    transform.translation.y -= origin.y;
+    transform
+}
+
+fn paint_rect_in_target(rect: UiRect, origin: UiPoint) -> UiRect {
+    UiRect::new(
+        rect.x - origin.x,
+        rect.y - origin.y,
+        rect.width,
+        rect.height,
+    )
+}
+
+fn layer_texture_size(bounds: UiRect) -> Result<PixelSize, RenderError> {
+    if !bounds.width.is_finite() || !bounds.height.is_finite() {
+        return Err(RenderError::Backend(
+            "composited layer bounds must be finite".to_string(),
+        ));
+    }
+    let width = bounds.width.ceil().max(1.0);
+    let height = bounds.height.ceil().max(1.0);
+    if width > u32::MAX as f32 || height > u32::MAX as f32 {
+        return Err(RenderError::Backend(
+            "composited layer bounds exceed u32 pixel dimensions".to_string(),
+        ));
+    }
+    Ok(PixelSize::new(width as u32, height as u32))
+}
+
+fn push_composited_layer(
+    geometry: &mut RenderGeometry,
+    item: &crate::PaintItem,
+    transform: crate::PaintTransform,
+    layer: &PaintCompositorLayer,
+    clip: UiRect,
+    context: &mut WgpuContext,
+) -> Result<(), RenderError> {
+    let opacity = item.opacity * layer.opacity;
+    if opacity <= 0.0 || layer.bounds.width <= 0.0 || layer.bounds.height <= 0.0 {
+        return Ok(());
+    }
+
+    let rect = transform.transform_rect(layer.bounds);
+    let Some(batch_clip) = composited_layer_scissor(rect, clip, layer, transform) else {
+        return Ok(());
+    };
+
+    let (texture_key, texture_size) = render_composited_layer_to_texture(context, layer)?;
+    let instance = GpuCompositedRectInstance::new(
+        rect,
+        [0.0, 0.0, 1.0, 1.0],
+        opacity,
+        layer_clip_for_shader(layer.clip.as_ref(), transform),
+        layer_mask_for_shader(layer.mask.as_ref(), transform),
+        layer_filter_params(layer),
+        texture_size,
+    );
+    geometry.push_composited_rect(batch_clip, &texture_key, instance);
+    Ok(())
+}
+
+fn render_composited_layer_to_texture(
+    context: &mut WgpuContext,
+    layer: &PaintCompositorLayer,
+) -> Result<(String, PixelSize), RenderError> {
+    let size = layer_texture_size(layer.bounds)?;
+    let origin = UiPoint::new(layer.bounds.x, layer.bounds.y);
+    let mut geometry = RenderGeometry::default();
+    build_geometry_into(&mut geometry, &layer.paint, context, origin)?;
+
+    let texture = context.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("operad-wgpu-composited-layer-texture"),
+        size: Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: OFFSCREEN_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = context
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("operad-wgpu-composited-layer-encoder"),
+        });
+    record_render_pass(
+        context,
+        &mut encoder,
+        &view,
+        OFFSCREEN_FORMAT,
+        size,
+        &geometry,
+        ColorRgba::TRANSPARENT,
+        true,
+        false,
+    )?;
+    context.queue.submit(Some(encoder.finish()));
+    Ok((context.insert_layer_texture(size, texture, view), size))
+}
+
+fn composited_layer_scissor(
+    rect: UiRect,
+    clip: UiRect,
+    layer: &PaintCompositorLayer,
+    transform: crate::PaintTransform,
+) -> Option<UiRect> {
+    let mut scissor = rect.intersection(clip)?;
+    if let Some(layer_clip) = &layer.clip {
+        scissor = scissor.intersection(transform.transform_rect(layer_clip.bounds()))?;
+    }
+    if let Some(mask) = &layer.mask {
+        scissor = scissor.intersection(transform.transform_rect(mask.bounds))?;
+    }
+    Some(scissor)
+}
+
+fn layer_clip_for_shader(
+    clip: Option<&CompositorClip>,
+    transform: crate::PaintTransform,
+) -> Option<(UiRect, f32)> {
+    match clip {
+        Some(CompositorClip::Rect(rect)) => Some((transform.transform_rect(*rect), 0.0)),
+        Some(CompositorClip::RoundedRect { rect, radii }) => Some((
+            transform.transform_rect(*rect),
+            radii.max_radius() * transform.scale.max(0.0),
+        )),
+        None => None,
+    }
+}
+
+fn layer_mask_for_shader(
+    mask: Option<&CompositorMask>,
+    transform: crate::PaintTransform,
+) -> Option<UiRect> {
+    mask.and_then(|mask| match mask.mode {
+        MaskMode::Alpha | MaskMode::Luminance => Some(transform.transform_rect(mask.bounds)),
+    })
+}
+
+fn layer_filter_params(layer: &PaintCompositorLayer) -> LayerFilterParams {
+    let mut params = LayerFilterParams::default();
+    for filter in &layer.filters {
+        let amount = finite_or(filter.amount, 1.0).max(0.0);
+        match filter.kind {
+            CompositorFilterKind::Blur => params.blur_radius = amount,
+            CompositorFilterKind::Brightness => params.brightness = amount,
+            CompositorFilterKind::Contrast => params.contrast = amount,
+            CompositorFilterKind::Saturate => params.saturate = amount,
+            CompositorFilterKind::Custom => {}
+        }
+    }
+    params
+}
+
+fn push_rich_rect_effect(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    effect: crate::PaintEffect,
+    opacity: f32,
+    radius: f32,
+) {
+    if effect.color.a == 0 || opacity <= 0.0 {
+        return;
+    }
+    let spread = effect.spread.max(0.0);
+    let blur_radius = effect.blur_radius.max(0.0);
+    match effect.kind {
+        PaintEffectKind::Shadow | PaintEffectKind::Glow => {
+            let shape_rect = UiRect::new(
+                rect.x + effect.offset.x - spread,
+                rect.y + effect.offset.y - spread,
+                rect.width + spread * 2.0,
+                rect.height + spread * 2.0,
+            );
+            let padding = blur_radius.max(1.0);
+            let draw_rect = UiRect::new(
+                shape_rect.x - padding,
+                shape_rect.y - padding,
+                shape_rect.width + padding * 2.0,
+                shape_rect.height + padding * 2.0,
+            );
+            if draw_rect.intersection(clip).is_none() {
+                return;
+            }
+            geometry.push_shadow_rect(
+                clip,
+                draw_rect,
+                shape_rect,
+                color_as_vertex(effect.color, opacity),
+                radius + spread,
+                blur_radius,
+            );
+        }
+        PaintEffectKind::InsetShadow => {
+            let width = (effect.spread.max(1.0) + effect.blur_radius.max(0.0) * 0.25).max(1.0);
+            push_stroke_rect(
+                geometry,
+                rect,
+                clip,
+                StrokeStyle::new(effect.color, width),
+                opacity,
+            );
         }
     }
 }
@@ -2913,6 +3689,8 @@ fn push_line(
         clip,
         color_as_vertex(stroke.color, opacity),
     );
+    push_fill_circle(geometry, from, half, clip, stroke.color, opacity);
+    push_fill_circle(geometry, to, half, clip, stroke.color, opacity);
 }
 
 fn push_fill_circle(
@@ -3003,6 +3781,29 @@ fn push_polygon(
     geometry.push_triangle_vertices(clip, &vertices);
 }
 
+fn push_triangle_mesh(
+    geometry: &mut RenderGeometry,
+    triangles: &[[UiPoint; 3]],
+    transform: PaintTransform,
+    clip: UiRect,
+    color: ColorRgba,
+    opacity: f32,
+) {
+    if triangles.is_empty() || color.a == 0 || opacity <= 0.0 {
+        return;
+    }
+    let color = color_as_vertex(color, opacity);
+    let mut vertices = Vec::with_capacity(triangles.len().saturating_mul(3));
+    for triangle in triangles {
+        vertices.extend_from_slice(&[
+            GpuVertex::new(transform.transform_point(triangle[0]), color),
+            GpuVertex::new(transform.transform_point(triangle[1]), color),
+            GpuVertex::new(transform.transform_point(triangle[2]), color),
+        ]);
+    }
+    geometry.push_triangle_vertices(clip, &vertices);
+}
+
 fn push_polyline(
     geometry: &mut RenderGeometry,
     points: &[UiPoint],
@@ -3076,16 +3877,6 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
 
 fn circle_segments(radius: f32) -> usize {
     max(12, (radius.abs().sqrt() * 8.0).ceil() as usize).min(96)
-}
-
-fn path_verb_end_point(verb: PathVerb) -> Option<UiPoint> {
-    match verb {
-        PathVerb::MoveTo(point)
-        | PathVerb::LineTo(point)
-        | PathVerb::QuadraticTo { to: point, .. }
-        | PathVerb::CubicTo { to: point, .. } => Some(point),
-        PathVerb::Close => None,
-    }
 }
 
 fn color_as_vertex(color: ColorRgba, opacity: f32) -> [f32; 4] {
@@ -3380,12 +4171,30 @@ fn textured_rect_instance_bytes(rects: &[GpuTexturedRectInstance]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(rects.as_ptr().cast::<u8>(), byte_len) }
 }
 
+fn composited_rect_instance_bytes(rects: &[GpuCompositedRectInstance]) -> &[u8] {
+    let byte_len = rects
+        .len()
+        .saturating_mul(mem::size_of::<GpuCompositedRectInstance>());
+    // GpuCompositedRectInstance is #[repr(C)] and contains only f32 arrays
+    // matching the composited instance buffer layout described to wgpu.
+    unsafe { std::slice::from_raw_parts(rects.as_ptr().cast::<u8>(), byte_len) }
+}
+
 fn sdf_rect_instance_bytes(rects: &[GpuSdfRectInstance]) -> &[u8] {
     let byte_len = rects
         .len()
         .saturating_mul(mem::size_of::<GpuSdfRectInstance>());
     // GpuSdfRectInstance is #[repr(C)] and contains only f32 values matching
     // the SDF instance buffer layout described to wgpu.
+    unsafe { std::slice::from_raw_parts(rects.as_ptr().cast::<u8>(), byte_len) }
+}
+
+fn shadow_rect_instance_bytes(rects: &[GpuShadowRectInstance]) -> &[u8] {
+    let byte_len = rects
+        .len()
+        .saturating_mul(mem::size_of::<GpuShadowRectInstance>());
+    // GpuShadowRectInstance is #[repr(C)] and contains only f32 arrays matching
+    // the shadow instance buffer layout described to wgpu.
     unsafe { std::slice::from_raw_parts(rects.as_ptr().cast::<u8>(), byte_len) }
 }
 
@@ -3505,6 +4314,34 @@ mod tests {
                 "non-timestamp devices should not fake GPU timing"
             );
         }
+    }
+
+    #[test]
+    fn text_render_key_preserves_fractional_position_without_rebuilding_layout_buffer() {
+        let text = TextPaint {
+            node: UiNodeId(1),
+            rect: UiRect::new(4.25, 6.5, 88.0, 28.0),
+            clip: UiRect::new(0.0, 0.0, 96.0, 36.0),
+            text: "Subpixel".to_string(),
+            style: TextStyle {
+                font_size: 20.0,
+                line_height: 24.0,
+                color: ColorRgba::WHITE,
+                ..Default::default()
+            },
+            opacity: 1.0,
+        };
+        let moved = TextPaint {
+            rect: UiRect::new(4.75, 6.5, 88.0, 28.0),
+            ..text.clone()
+        };
+        let size = PixelSize::new(96, 36);
+        let original_key = TextRenderKey::new(&text, size);
+        let moved_key = TextRenderKey::new(&moved, size);
+
+        assert_eq!(original_key.buffer, moved_key.buffer);
+        assert!(original_key.buffer.has_same_layout_as(&moved_key.buffer));
+        assert_ne!(original_key.rect_x, moved_key.rect_x);
     }
 
     fn chunked_text_request(frame: usize) -> RenderFrameRequest {

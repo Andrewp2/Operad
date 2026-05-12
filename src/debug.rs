@@ -568,6 +568,7 @@ fn paint_kind_label(kind: &PaintKind) -> &'static str {
         PaintKind::Circle { .. } => "circle",
         PaintKind::Polygon { .. } => "polygon",
         PaintKind::Image { .. } => "image",
+        PaintKind::CompositedLayer(_) => "composited_layer",
         PaintKind::RichRect(_) => "rich_rect",
         PaintKind::SceneText(_) => "scene_text",
         PaintKind::Path(_) => "path",

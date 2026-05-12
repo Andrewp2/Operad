@@ -711,6 +711,7 @@ pub fn egui_key(key: egui::Key) -> Option<KeyCode> {
         egui::Key::Delete => KeyCode::Delete,
         egui::Key::Home => KeyCode::Home,
         egui::Key::End => KeyCode::End,
+        egui::Key::F10 => KeyCode::F10,
         egui::Key::Space => KeyCode::Character(' '),
         egui::Key::Colon => KeyCode::Character(':'),
         egui::Key::Comma => KeyCode::Character(','),
@@ -1086,6 +1087,7 @@ mod tests {
             [
                 key_event(egui::Key::A, true, true, command),
                 key_event(egui::Key::A, false, false, command),
+                key_event(egui::Key::F10, true, false, egui::Modifiers::SHIFT),
                 key_event(egui::Key::Tab, true, false, egui::Modifiers::NONE),
                 key_event(egui::Key::Tab, true, false, egui::Modifiers::SHIFT),
             ]
@@ -1113,9 +1115,23 @@ mod tests {
         };
         assert!(!release.pressed);
         assert_eq!(translated[1].to_ui_input_event(), None);
-        assert_eq!(translated[2], RawInputEvent::Focus(FocusDirection::Next));
+
+        let RawInputEvent::Keyboard(context_menu) = translated[2] else {
+            panic!("expected F10 key press");
+        };
+        assert_eq!(context_menu.key, KeyCode::F10);
+        assert!(context_menu.modifiers.shift);
         assert_eq!(
-            translated[3],
+            translated[2].to_ui_input_event(),
+            Some(UiInputEvent::Key {
+                key: KeyCode::F10,
+                modifiers: context_menu.modifiers,
+            })
+        );
+
+        assert_eq!(translated[3], RawInputEvent::Focus(FocusDirection::Next));
+        assert_eq!(
+            translated[4],
             RawInputEvent::Focus(FocusDirection::Previous)
         );
     }

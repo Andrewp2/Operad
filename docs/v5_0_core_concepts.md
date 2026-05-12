@@ -55,6 +55,8 @@ events are normalized into Operad records before widgets or host logic interpret
 them. Widget actions and command descriptors represent UI intent such as
 activation, selection, preview, commit, cancellation, open/close, drag phases,
 and focus changes. Applications map those records to product behavior.
+`KeyCode::ContextMenu` and `Shift+F10` are the canonical keyboard affordances
+for requesting a context menu.
 
 ### Transactions And Selection
 
@@ -79,6 +81,18 @@ non-modal, nested, dismissal, z-order, and focus-restore behavior. Navigation
 records define roving focus, active descendants, collection kind, boundary
 behavior, and activation/dismissal semantics for menus, listboxes, tabs, trees,
 tables, toolbars, and related dense UI controls.
+`ContextMenuState::open_from_pointer_event`, `.open_from_keyboard`, and
+`.open_from_key_event` wrap context-menu policy and return both the menu
+outcome and suppression resolution.
+
+### Text Interaction
+
+Editable text is modeled with app-owned `TextInputState`, `TextInputOptions`,
+clipboard platform requests, and IME platform requests. `TextInputOptions`
+exposes `read_only`, `selectable`, and `allow_copy` policy so read-only text can
+still receive focus, selection, and copy commands without accepting mutation.
+Use `selectable_text` plus `handle_selectable_text_event` for the common
+read-only copyable text case; use plain labels for non-selectable display text.
 
 ### Rendering, Geometry, And Resources
 
@@ -86,15 +100,27 @@ Renderer-neutral paint, compositor, effective-geometry, scrolling, and
 virtualization records describe what the UI needs. Backends decide how to draw
 or approximate it. Resource and font contracts track cache identity, generation,
 budgeting, fallback, loaded/missing/failed state, stale rejection, and eviction
-planning. Pixel parity is not guaranteed across CPU, WGPU, text backends, or
-host font stacks.
+planning. `PaintCompositorLayer` is the explicit paint-list primitive for
+isolated offscreen composition; WGPU can render it to a texture for rounded
+clips, rectangular masks, opacity, basic filters, and glyphon text when
+available. WGPU also has a native soft rich-rect shadow falloff path,
+lyon-backed path fill/stroke tessellation, and glyphon text with fractional
+grayscale placement. Backdrop filters are modeled in the compositor quality
+plan, but current CPU/WGPU snapshot renderers explicitly disable them because
+they do not sample the already-composited framebuffer. Snapshot backends use
+sRGB `ColorRgba` compositing; future wide-gamut support is modeled by
+`ColorManagementLevel` but is not claimed for CPU/WGPU snapshots. Pixel parity
+is not guaranteed across CPU, WGPU, text backends, or host font stacks.
 
 ### Accessibility
 
 Accessibility records are host-facing state, not only test metadata. Operad
 defines focus traps, navigable targets, live-region and adapter requests, and
-headless adapter behavior. Platform screen-reader publication is backend work,
-but platform adapters should consume the same request and report types.
+headless adapter behavior. The optional `accesskit-winit` feature provides a
+backend-specific bridge that converts `AccessibilityTree` into AccessKit
+`TreeUpdate` values and lets winit hosts publish full trees and focus changes
+to the platform adapter. Other platform adapters should consume the same
+request and report types.
 
 ### Themes And Stability
 
@@ -151,6 +177,8 @@ Operad should own:
   virtualization, and paint intent.
 - Compatibility bridges that help existing consumers migrate without becoming
   the preferred v5 surface for new code.
+- Optional backend-specific bridges, such as `accesskit-winit`, where they
+  convert Operad contracts without taking ownership of the whole host runtime.
 
 Hosts and renderers should own:
 
@@ -178,6 +206,21 @@ New v5 adoption should be incremental:
    cursor, and resource code behind host or renderer adapters.
 7. Use the completion audit to distinguish stable contracts from areas where
    existing widget helpers or native backends still need incremental adoption.
+
+## Executable Showcase
+
+Run the full widget showcase with:
+
+```bash
+cargo run --locked --features widgets --example operad_showcase
+```
+
+The example writes `target/operad_showcase.ppm` by default, or the path named by
+`OPERAD_SHOWCASE_PPM`. It composes a menu bar, dropdown, command palette,
+context menu, buttons, sliders, editable and selectable text, picker primitives,
+tree/property/table data widgets, scroll surfaces, split panes, tabs, toasts,
+timeline/editor primitives, canvas/image/resource slots, accessibility metadata,
+and shader/compositor metadata in one UI document.
 
 ## Compatibility Notes
 
