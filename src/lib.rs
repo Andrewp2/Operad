@@ -3718,6 +3718,7 @@ pub mod widgets {
         pub enabled: bool,
         pub pressed: bool,
         pub focused: bool,
+        pub action: Option<WidgetActionBinding>,
         pub accessibility_label: Option<String>,
         pub accessibility_hint: Option<String>,
     }
@@ -3733,6 +3734,16 @@ pub mod widgets {
 
         pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
             self.layout = layout.into();
+            self
+        }
+
+        pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+            self.action = Some(action.into());
+            self
+        }
+
+        pub fn with_command(mut self, command: impl Into<CommandId>) -> Self {
+            self.action = Some(WidgetActionBinding::command(command));
             self
         }
     }
@@ -3779,6 +3790,7 @@ pub mod widgets {
                 enabled: true,
                 pressed: false,
                 focused: false,
+                action: None,
                 accessibility_label: None,
                 accessibility_hint: None,
             }
@@ -3889,6 +3901,92 @@ pub mod widgets {
         button
     }
 
+    pub fn button_actions_from_input_result(
+        document: &UiDocument,
+        button: UiNodeId,
+        options: &ButtonOptions,
+        result: &UiInputResult,
+    ) -> WidgetActionQueue {
+        let mut queue = WidgetActionQueue::new();
+        push_button_input_result_actions(&mut queue, document, button, options, result);
+        queue
+    }
+
+    pub fn push_button_input_result_actions<'a>(
+        queue: &'a mut WidgetActionQueue,
+        document: &UiDocument,
+        button: UiNodeId,
+        options: &ButtonOptions,
+        result: &UiInputResult,
+    ) -> &'a mut WidgetActionQueue {
+        queue.push_input_result_for_document(document, result, |target| {
+            widget_option_binding(document, button, target, &options.action)
+        })
+    }
+
+    pub fn button_actions_from_key_event(
+        document: &UiDocument,
+        button: UiNodeId,
+        options: &ButtonOptions,
+        event: &UiInputEvent,
+    ) -> WidgetActionQueue {
+        let mut queue = WidgetActionQueue::new();
+        push_button_key_event_actions(&mut queue, document, button, options, event);
+        queue
+    }
+
+    pub fn push_button_key_event_actions<'a>(
+        queue: &'a mut WidgetActionQueue,
+        document: &UiDocument,
+        button: UiNodeId,
+        options: &ButtonOptions,
+        event: &UiInputEvent,
+    ) -> &'a mut WidgetActionQueue {
+        let UiInputEvent::Key { key, modifiers } = event else {
+            return queue;
+        };
+        if document.focus.focused != Some(button) || !action_target_enabled(document, button) {
+            return queue;
+        }
+        if let Some(binding) = options.action.clone() {
+            queue.push_key_activation(button, binding, *key, *modifiers);
+        }
+        queue
+    }
+
+    pub fn button_actions_from_gesture_event(
+        document: &UiDocument,
+        button: UiNodeId,
+        options: &ButtonOptions,
+        event: &GestureEvent,
+    ) -> WidgetActionQueue {
+        let mut queue = WidgetActionQueue::new();
+        push_button_gesture_event_actions(&mut queue, document, button, options, event);
+        queue
+    }
+
+    pub fn push_button_gesture_event_actions<'a>(
+        queue: &'a mut WidgetActionQueue,
+        document: &UiDocument,
+        button: UiNodeId,
+        options: &ButtonOptions,
+        event: &GestureEvent,
+    ) -> &'a mut WidgetActionQueue {
+        let GestureEvent::Click(click) = event else {
+            return queue;
+        };
+        if click.target != button || click.button != PointerButton::Primary {
+            return queue;
+        }
+        if !action_target_enabled(document, button) {
+            return queue;
+        }
+        if let Some(binding) = options.action.clone() {
+            queue.push(WidgetAction::pointer_activate(button, binding, click.count));
+        }
+        queue
+    }
+
     pub fn label(
         document: &mut UiDocument,
         parent: UiNodeId,
@@ -3968,6 +4066,7 @@ pub mod widgets {
         pub shader: Option<ShaderEffect>,
         pub animation: Option<AnimationMachine>,
         pub enabled: bool,
+        pub action: Option<WidgetActionBinding>,
         pub accessibility_label: Option<String>,
         pub accessibility_hint: Option<String>,
     }
@@ -4007,6 +4106,7 @@ pub mod widgets {
                 shader: None,
                 animation: None,
                 enabled: true,
+                action: None,
                 accessibility_label: None,
                 accessibility_hint: None,
             }
@@ -4016,6 +4116,16 @@ pub mod widgets {
     impl CheckboxOptions {
         pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
             self.layout = layout.into();
+            self
+        }
+
+        pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+            self.action = Some(action.into());
+            self
+        }
+
+        pub fn with_command(mut self, command: impl Into<CommandId>) -> Self {
+            self.action = Some(WidgetActionBinding::command(command));
             self
         }
     }
@@ -4178,6 +4288,8 @@ pub mod widgets {
         pub shader: Option<ShaderEffect>,
         pub animation: Option<AnimationMachine>,
         pub enabled: bool,
+        pub drag_action: Option<WidgetActionBinding>,
+        pub value_edit_action: Option<WidgetActionBinding>,
         pub accessibility_label: Option<String>,
         pub accessibility_value: Option<String>,
         pub accessibility_hint: Option<String>,
@@ -4220,6 +4332,8 @@ pub mod widgets {
                 shader: None,
                 animation: None,
                 enabled: true,
+                drag_action: None,
+                value_edit_action: None,
                 accessibility_label: None,
                 accessibility_value: None,
                 accessibility_hint: None,
@@ -4230,6 +4344,16 @@ pub mod widgets {
     impl SliderOptions {
         pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
             self.layout = layout.into();
+            self
+        }
+
+        pub fn with_drag_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+            self.drag_action = Some(action.into());
+            self
+        }
+
+        pub fn with_value_edit_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+            self.value_edit_action = Some(action.into());
             self
         }
     }
@@ -4395,6 +4519,41 @@ pub mod widgets {
     pub fn slider_value_from_point(track: UiRect, point: UiPoint, range: Range<f32>) -> f32 {
         let t = ((point.x - track.x) / track.width.max(1.0)).clamp(0.0, 1.0);
         range.start + (range.end - range.start) * t
+    }
+
+    pub fn slider_actions_from_gesture_event(
+        document: &UiDocument,
+        slider: UiNodeId,
+        options: &SliderOptions,
+        event: &GestureEvent,
+    ) -> WidgetActionQueue {
+        let mut queue = WidgetActionQueue::new();
+        push_slider_gesture_event_actions(&mut queue, document, slider, options, event);
+        queue
+    }
+
+    pub fn push_slider_gesture_event_actions<'a>(
+        queue: &'a mut WidgetActionQueue,
+        document: &UiDocument,
+        slider: UiNodeId,
+        options: &SliderOptions,
+        event: &GestureEvent,
+    ) -> &'a mut WidgetActionQueue {
+        let GestureEvent::Drag(gesture) = event else {
+            return queue;
+        };
+        if gesture.target != slider || !action_target_enabled(document, slider) {
+            return queue;
+        }
+        if let Some(binding) = options.drag_action.clone() {
+            if let Some(action) = WidgetAction::drag_from_gesture(gesture, binding) {
+                queue.push(action);
+            }
+        }
+        if let Some(binding) = options.value_edit_action.clone() {
+            queue.push(WidgetAction::value_edit_from_drag(gesture, binding));
+        }
+        queue
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5205,6 +5364,7 @@ pub mod widgets {
         pub animation: Option<AnimationMachine>,
         pub enabled: bool,
         pub focused: bool,
+        pub edit_action: Option<WidgetActionBinding>,
         pub accessibility_label: Option<String>,
         pub accessibility_hint: Option<String>,
     }
@@ -5246,6 +5406,7 @@ pub mod widgets {
                 animation: None,
                 enabled: true,
                 focused: false,
+                edit_action: None,
                 accessibility_label: None,
                 accessibility_hint: None,
             }
@@ -5255,6 +5416,11 @@ pub mod widgets {
     impl TextInputOptions {
         pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
             self.layout = layout.into();
+            self
+        }
+
+        pub fn with_edit_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+            self.edit_action = Some(action.into());
             self
         }
     }
@@ -5473,12 +5639,50 @@ pub mod widgets {
         }
     }
 
+    pub fn text_input_actions_from_outcome(
+        document: &UiDocument,
+        input: UiNodeId,
+        options: &TextInputOptions,
+        outcome: &TextInputOutcome,
+    ) -> WidgetActionQueue {
+        let mut queue = WidgetActionQueue::new();
+        push_text_input_outcome_actions(&mut queue, document, input, options, outcome);
+        queue
+    }
+
+    pub fn push_text_input_outcome_actions<'a>(
+        queue: &'a mut WidgetActionQueue,
+        document: &UiDocument,
+        input: UiNodeId,
+        options: &TextInputOptions,
+        outcome: &TextInputOutcome,
+    ) -> &'a mut WidgetActionQueue {
+        if !action_target_enabled(document, input) {
+            return queue;
+        }
+        if let Some(binding) = options.edit_action.clone() {
+            queue.value_edit(input, binding, outcome.phase);
+        }
+        queue
+    }
+
     fn text_input_pointer_edit(event: &UiInputEvent, pressed: bool) -> Option<(UiPoint, bool)> {
         match event {
             UiInputEvent::PointerDown(point) => Some((*point, false)),
             UiInputEvent::PointerMove(point) if pressed => Some((*point, true)),
             _ => None,
         }
+    }
+
+    fn widget_option_binding(
+        document: &UiDocument,
+        node: UiNodeId,
+        target: UiNodeId,
+        binding: &Option<WidgetActionBinding>,
+    ) -> Option<WidgetActionBinding> {
+        (target == node && action_target_enabled(document, node))
+            .then(|| binding.clone())
+            .flatten()
     }
 
     fn filter_text_input(text: &str, multiline: bool) -> String {
@@ -5819,6 +6023,7 @@ pub mod widgets {
                 enabled: options.enabled,
                 pressed: open,
                 focused: false,
+                action: None,
                 accessibility_label: Some(accessibility_label.clone()),
                 accessibility_hint: accessibility_hint.clone(),
             },
@@ -9223,6 +9428,159 @@ mod tests {
         let image = doc.node(button).children[0];
         assert!(matches!(doc.node(image).content, UiContent::Image(_)));
         assert_eq!(doc.node(image).shader.as_ref().unwrap().key, "ui.icon_mask");
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
+        let mut doc = UiDocument::new(root_style(200.0, 80.0));
+        let root = doc.root;
+        let options = widgets::ButtonOptions::new(LayoutStyle::from_taffy_style(Style {
+            size: TaffySize {
+                width: length(96.0),
+                height: length(32.0),
+            },
+            ..Default::default()
+        }))
+        .with_action(WidgetActionBinding::action("transport.play"));
+        let button = widgets::button(&mut doc, root, "play", "Play", options.clone());
+        doc.compute_layout(UiSize::new(200.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        doc.handle_input(UiInputEvent::PointerDown(UiPoint::new(12.0, 12.0)));
+        let pointer_result = doc.handle_input(UiInputEvent::PointerUp(UiPoint::new(12.0, 12.0)));
+        let pointer_actions =
+            widgets::button_actions_from_input_result(&doc, button, &options, &pointer_result);
+
+        assert_eq!(pointer_actions.len(), 1);
+        assert_eq!(pointer_actions.as_slice()[0].target, button);
+        assert_eq!(
+            pointer_actions.as_slice()[0].kind,
+            WidgetActionKind::Activate(WidgetActivation::pointer(1))
+        );
+
+        let key_actions = widgets::button_actions_from_key_event(
+            &doc,
+            button,
+            &options,
+            &UiInputEvent::Key {
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+
+        assert_eq!(key_actions.len(), 1);
+        assert_eq!(
+            key_actions.as_slice()[0].kind,
+            WidgetActionKind::Activate(WidgetActivation::keyboard())
+        );
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_button_action_helpers_suppress_disabled_and_preserve_command_binding() {
+        let mut doc = UiDocument::new(root_style(240.0, 80.0));
+        let root = doc.root;
+        let disabled_options = widgets::ButtonOptions {
+            enabled: false,
+            action: Some(WidgetActionBinding::action("render.disabled")),
+            ..Default::default()
+        };
+        let disabled =
+            widgets::button(&mut doc, root, "render", "Render", disabled_options.clone());
+        let disabled_result = UiInputResult {
+            clicked: Some(disabled),
+            ..Default::default()
+        };
+
+        assert!(widgets::button_actions_from_input_result(
+            &doc,
+            disabled,
+            &disabled_options,
+            &disabled_result
+        )
+        .is_empty());
+
+        let command_options = widgets::ButtonOptions::default().with_command("file.save");
+        let save = widgets::button(&mut doc, root, "save", "Save", command_options.clone());
+        let save_result = UiInputResult {
+            clicked: Some(save),
+            ..Default::default()
+        };
+        let actions =
+            widgets::button_actions_from_input_result(&doc, save, &command_options, &save_result);
+
+        assert_eq!(
+            actions.as_slice()[0].binding.command_id(),
+            Some(&CommandId::from("file.save"))
+        );
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn widget_action_helpers_preserve_order_and_map_drag_value_edits() {
+        let mut doc = UiDocument::new(root_style(320.0, 120.0));
+        let root = doc.root;
+        let apply_options =
+            widgets::ButtonOptions::default().with_action(WidgetActionBinding::action("apply"));
+        let apply = widgets::button(&mut doc, root, "apply", "Apply", apply_options.clone());
+        let slider_options = widgets::SliderOptions::default()
+            .with_drag_action(WidgetActionBinding::action("gain.drag"))
+            .with_value_edit_action(WidgetActionBinding::action("gain.edit"));
+        let slider = widgets::slider(
+            &mut doc,
+            root,
+            "gain",
+            0.5,
+            0.0..1.0,
+            slider_options.clone(),
+        );
+        let mut queue = WidgetActionQueue::new();
+        let click = UiInputResult {
+            clicked: Some(apply),
+            ..Default::default()
+        };
+        let drag = GestureEvent::Drag(DragGesture {
+            pointer_id: PointerId::MOUSE,
+            target: slider,
+            phase: GesturePhase::Update,
+            origin: UiPoint::new(10.0, 10.0),
+            current: UiPoint::new(60.0, 10.0),
+            previous: UiPoint::new(40.0, 10.0),
+            delta: UiPoint::new(20.0, 0.0),
+            total_delta: UiPoint::new(50.0, 0.0),
+            button: PointerButton::Primary,
+            modifiers: KeyModifiers::NONE,
+            captured: true,
+            timestamp_millis: 12,
+        });
+
+        widgets::push_button_input_result_actions(&mut queue, &doc, apply, &apply_options, &click);
+        widgets::push_slider_gesture_event_actions(
+            &mut queue,
+            &doc,
+            slider,
+            &slider_options,
+            &drag,
+        );
+
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.as_slice()[0].target, apply);
+        assert_eq!(
+            queue.as_slice()[1].kind,
+            WidgetActionKind::Drag(WidgetDrag {
+                phase: WidgetDragPhase::Update,
+                origin: UiPoint::new(10.0, 10.0),
+                current: UiPoint::new(60.0, 10.0),
+                previous: UiPoint::new(40.0, 10.0),
+                delta: UiPoint::new(20.0, 0.0),
+                total_delta: UiPoint::new(50.0, 0.0),
+            })
+        );
+        assert_eq!(
+            queue.as_slice()[2].kind,
+            WidgetActionKind::ValueEdit(WidgetValueEditPhase::Update)
+        );
     }
 
     #[cfg(feature = "widgets")]
