@@ -5,7 +5,11 @@
 //! same command metadata and platform-aware shortcut labels.
 
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
-use crate::{KeyCode, UiNodeId, UiRect};
+use crate::input::{PointerButton, PointerEventKind, RawPointerEvent};
+use crate::{
+    KeyCode, OverlayDismissPolicy, OverlayEntry, OverlayFocusRestoreTarget, OverlayId, OverlayKind,
+    UiNodeId, UiPoint, UiRect,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutDisplayPlatform {
@@ -115,6 +119,194 @@ impl CommandTooltip {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibleHelpText {
+    pub label: String,
+    pub description: Option<String>,
+}
+
+impl AccessibleHelpText {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            description: None,
+        }
+    }
+
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn text(&self) -> String {
+        match &self.description {
+            Some(description) => format!("{}: {}", self.label, description),
+            None => self.label.clone(),
+        }
+    }
+}
+
+impl From<&CommandTooltip> for AccessibleHelpText {
+    fn from(value: &CommandTooltip) -> Self {
+        let mut text = Self::new(value.title.clone());
+        let description = value
+            .description
+            .iter()
+            .chain(value.shortcut_label.iter())
+            .chain(value.disabled_reason.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        if !description.is_empty() {
+            text.description = Some(description.join(". "));
+        }
+        text
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TooltipInvocationKind {
+    Hover,
+    Focus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TooltipVisibility {
+    Hidden,
+    Pending,
+    Visible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HelpDismissReason {
+    HoverLost,
+    FocusLost,
+    Escape,
+    PointerDown,
+    ContentChanged,
+    Programmatic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HelpTimingPolicy {
+    pub hover_show_delay_ms: u16,
+    pub focus_show_delay_ms: u16,
+    pub hide_delay_ms: u16,
+    pub dismiss_grace_ms: u16,
+}
+
+impl HelpTimingPolicy {
+    pub const fn immediate() -> Self {
+        Self {
+            hover_show_delay_ms: 0,
+            focus_show_delay_ms: 0,
+            hide_delay_ms: 0,
+            dismiss_grace_ms: 0,
+        }
+    }
+}
+
+impl Default for HelpTimingPolicy {
+    fn default() -> Self {
+        Self {
+            hover_show_delay_ms: 450,
+            focus_show_delay_ms: 0,
+            hide_delay_ms: 80,
+            dismiss_grace_ms: 120,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HelpItemState {
+    pub disabled: bool,
+    pub read_only: bool,
+    pub allow_disabled_help: bool,
+    pub allow_read_only_context_menu: bool,
+}
+
+impl HelpItemState {
+    pub const ENABLED: Self = Self {
+        disabled: false,
+        read_only: false,
+        allow_disabled_help: true,
+        allow_read_only_context_menu: true,
+    };
+
+    pub const fn disabled() -> Self {
+        Self {
+            disabled: true,
+            read_only: false,
+            allow_disabled_help: true,
+            allow_read_only_context_menu: true,
+        }
+    }
+
+    pub const fn read_only() -> Self {
+        Self {
+            disabled: false,
+            read_only: true,
+            allow_disabled_help: true,
+            allow_read_only_context_menu: true,
+        }
+    }
+
+    pub const fn allows_help(self) -> bool {
+        !self.disabled || self.allow_disabled_help
+    }
+
+    pub const fn allows_context_menu(self) -> bool {
+        !self.disabled && (!self.read_only || self.allow_read_only_context_menu)
+    }
+}
+
+impl Default for HelpItemState {
+    fn default() -> Self {
+        Self::ENABLED
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationHelp {
+    pub field: String,
+    pub message: String,
+    pub severity: ValidationHelpSeverity,
+}
+
+impl ValidationHelp {
+    pub fn new(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            message: message.into(),
+            severity: ValidationHelpSeverity::Error,
+        }
+    }
+
+    pub const fn severity(mut self, severity: ValidationHelpSeverity) -> Self {
+        self.severity = severity;
+        self
+    }
+
+    pub fn tooltip_content(&self) -> TooltipContent {
+        TooltipContent::new(match self.severity {
+            ValidationHelpSeverity::Info => "Help",
+            ValidationHelpSeverity::Warning => "Warning",
+            ValidationHelpSeverity::Error => "Error",
+        })
+        .body(self.message.clone())
+    }
+
+    pub fn accessible_text(&self) -> AccessibleHelpText {
+        AccessibleHelpText::new(self.field.clone()).description(self.message.clone())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValidationHelpSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TooltipPlacement {
     Above,
@@ -204,6 +396,7 @@ pub struct TooltipRequest {
     pub anchor: TooltipAnchor,
     pub placement: TooltipPlacement,
     pub delay_ms: u16,
+    pub invocation: TooltipInvocationKind,
     pub content: TooltipContent,
 }
 
@@ -213,6 +406,7 @@ impl TooltipRequest {
             anchor,
             placement: TooltipPlacement::default(),
             delay_ms: 450,
+            invocation: TooltipInvocationKind::Hover,
             content,
         }
     }
@@ -227,12 +421,253 @@ impl TooltipRequest {
         self
     }
 
+    pub const fn invocation(mut self, invocation: TooltipInvocationKind) -> Self {
+        self.invocation = invocation;
+        self
+    }
+
     pub fn from_command(anchor: TooltipAnchor, tooltip: CommandTooltip) -> Self {
         Self::new(anchor, tooltip.into())
     }
 
     pub fn text(&self) -> String {
         self.content.text()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TooltipResolution {
+    pub visibility: TooltipVisibility,
+    pub request: Option<TooltipRequest>,
+    pub show_at_ms: Option<u64>,
+    pub hide_at_ms: Option<u64>,
+}
+
+impl TooltipResolution {
+    pub const fn hidden() -> Self {
+        Self {
+            visibility: TooltipVisibility::Hidden,
+            request: None,
+            show_at_ms: None,
+            hide_at_ms: None,
+        }
+    }
+}
+
+pub fn resolve_tooltip_request(
+    hover: Option<TooltipRequest>,
+    focus: Option<TooltipRequest>,
+    item_state: HelpItemState,
+    policy: HelpTimingPolicy,
+    now_ms: u64,
+) -> TooltipResolution {
+    if !item_state.allows_help() {
+        return TooltipResolution::hidden();
+    }
+
+    let request = focus
+        .map(|request| {
+            request
+                .invocation(TooltipInvocationKind::Focus)
+                .delay_ms(policy.focus_show_delay_ms)
+        })
+        .or_else(|| {
+            hover.map(|request| {
+                request
+                    .invocation(TooltipInvocationKind::Hover)
+                    .delay_ms(policy.hover_show_delay_ms)
+            })
+        });
+
+    let Some(request) = request else {
+        return TooltipResolution::hidden();
+    };
+
+    let delay_ms = request.delay_ms;
+    TooltipResolution {
+        visibility: if delay_ms == 0 {
+            TooltipVisibility::Visible
+        } else {
+            TooltipVisibility::Pending
+        },
+        request: Some(request),
+        show_at_ms: Some(now_ms + u64::from(delay_ms)),
+        hide_at_ms: None,
+    }
+}
+
+pub fn resolve_tooltip_dismissal(
+    active: Option<TooltipRequest>,
+    reason: HelpDismissReason,
+    policy: HelpTimingPolicy,
+    now_ms: u64,
+) -> TooltipResolution {
+    match (active, reason) {
+        (Some(request), HelpDismissReason::HoverLost) => TooltipResolution {
+            visibility: TooltipVisibility::Pending,
+            request: Some(request),
+            show_at_ms: None,
+            hide_at_ms: Some(now_ms + u64::from(policy.hide_delay_ms)),
+        },
+        (Some(request), HelpDismissReason::FocusLost) if policy.dismiss_grace_ms > 0 => {
+            TooltipResolution {
+                visibility: TooltipVisibility::Pending,
+                request: Some(request),
+                show_at_ms: None,
+                hide_at_ms: Some(now_ms + u64::from(policy.dismiss_grace_ms)),
+            }
+        }
+        _ => TooltipResolution::hidden(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContextMenuTrigger {
+    Pointer,
+    Keyboard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContextMenuRequest {
+    pub trigger: ContextMenuTrigger,
+    pub target: UiNodeId,
+    pub anchor_rect: UiRect,
+    pub position: UiPoint,
+    pub item_state: HelpItemState,
+}
+
+impl ContextMenuRequest {
+    pub const fn pointer(target: UiNodeId, anchor_rect: UiRect, position: UiPoint) -> Self {
+        Self {
+            trigger: ContextMenuTrigger::Pointer,
+            target,
+            anchor_rect,
+            position,
+            item_state: HelpItemState::ENABLED,
+        }
+    }
+
+    pub fn from_pointer_event(
+        target: UiNodeId,
+        anchor_rect: UiRect,
+        event: RawPointerEvent,
+    ) -> Option<Self> {
+        matches!(
+            event.kind,
+            PointerEventKind::Down(PointerButton::Secondary)
+                | PointerEventKind::Up(PointerButton::Secondary)
+        )
+        .then(|| Self::pointer(target, anchor_rect, event.position))
+    }
+
+    pub fn keyboard(target: UiNodeId, anchor_rect: UiRect) -> Self {
+        Self {
+            trigger: ContextMenuTrigger::Keyboard,
+            target,
+            anchor_rect,
+            position: keyboard_context_menu_position(anchor_rect),
+            item_state: HelpItemState::ENABLED,
+        }
+    }
+
+    pub const fn item_state(mut self, item_state: HelpItemState) -> Self {
+        self.item_state = item_state;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextMenuResolution {
+    pub request: Option<ContextMenuRequest>,
+    pub suppressed_reason: Option<ContextMenuSuppressedReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContextMenuSuppressedReason {
+    Disabled,
+    ReadOnly,
+}
+
+pub fn resolve_context_menu_request(request: ContextMenuRequest) -> ContextMenuResolution {
+    if request.item_state.disabled {
+        return ContextMenuResolution {
+            request: None,
+            suppressed_reason: Some(ContextMenuSuppressedReason::Disabled),
+        };
+    }
+    if request.item_state.read_only && !request.item_state.allow_read_only_context_menu {
+        return ContextMenuResolution {
+            request: None,
+            suppressed_reason: Some(ContextMenuSuppressedReason::ReadOnly),
+        };
+    }
+    ContextMenuResolution {
+        request: Some(request),
+        suppressed_reason: None,
+    }
+}
+
+pub fn keyboard_context_menu_position(anchor_rect: UiRect) -> UiPoint {
+    UiPoint::new(anchor_rect.x, anchor_rect.bottom())
+}
+
+pub fn clamp_context_menu_position(
+    position: UiPoint,
+    menu_size: crate::UiSize,
+    viewport: UiRect,
+) -> UiPoint {
+    UiPoint::new(
+        position
+            .x
+            .max(viewport.x)
+            .min((viewport.right() - menu_size.width).max(viewport.x)),
+        position
+            .y
+            .max(viewport.y)
+            .min((viewport.bottom() - menu_size.height).max(viewport.y)),
+    )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpOverlayRecord {
+    pub overlay: OverlayId,
+    pub kind: OverlayKind,
+    pub target: UiNodeId,
+    pub bounds: UiRect,
+    pub dismiss_policy: OverlayDismissPolicy,
+    pub focus_restore: Option<OverlayFocusRestoreTarget>,
+}
+
+impl HelpOverlayRecord {
+    pub fn tooltip(overlay: OverlayId, request: &TooltipRequest, bounds: UiRect) -> Self {
+        Self {
+            overlay,
+            kind: OverlayKind::Tooltip,
+            target: request.anchor.node,
+            bounds,
+            dismiss_policy: OverlayDismissPolicy::tooltip(),
+            focus_restore: None,
+        }
+    }
+
+    pub fn context_menu(overlay: OverlayId, request: &ContextMenuRequest, bounds: UiRect) -> Self {
+        Self {
+            overlay,
+            kind: OverlayKind::ContextMenu,
+            target: request.target,
+            bounds,
+            dismiss_policy: OverlayDismissPolicy::dismissible(),
+            focus_restore: Some(OverlayFocusRestoreTarget::Node(request.target)),
+        }
+    }
+
+    pub fn overlay_entry(&self) -> OverlayEntry {
+        let mut entry = OverlayEntry::new(self.overlay, self.kind, self.bounds)
+            .dismiss_policy(self.dismiss_policy);
+        if let Some(target) = self.focus_restore.clone() {
+            entry = entry.focus_restore(target);
+        }
+        entry
     }
 }
 
@@ -347,7 +782,8 @@ fn format_key(key: KeyCode) -> String {
 mod tests {
     use super::*;
     use crate::commands::{Command, CommandMeta};
-    use crate::{KeyModifiers, UiRect};
+    use crate::input::{PointerButton, PointerEventKind, RawPointerEvent};
+    use crate::{KeyModifiers, OverlayDismissReason, OverlayStack, UiPoint, UiRect, UiSize};
 
     fn registry() -> CommandRegistry {
         let mut registry = CommandRegistry::new();
@@ -498,6 +934,160 @@ mod tests {
         assert_eq!(
             content.text(),
             "Snap to grid (G)\nConstrains edits to the visible grid"
+        );
+    }
+
+    #[test]
+    fn delayed_hover_tooltip_resolves_pending_show_time() {
+        let anchor = TooltipAnchor::new(UiNodeId(9), UiRect::new(10.0, 12.0, 44.0, 18.0));
+        let hover = TooltipRequest::new(anchor, TooltipContent::new("Pan tool"));
+        let resolution = resolve_tooltip_request(
+            Some(hover),
+            None,
+            HelpItemState::ENABLED,
+            HelpTimingPolicy::default(),
+            1_000,
+        );
+
+        assert_eq!(resolution.visibility, TooltipVisibility::Pending);
+        assert_eq!(resolution.show_at_ms, Some(1_450));
+        let request = resolution.request.expect("hover request");
+        assert_eq!(request.invocation, TooltipInvocationKind::Hover);
+        assert_eq!(request.delay_ms, 450);
+    }
+
+    #[test]
+    fn focus_tooltip_takes_precedence_over_hover_and_shows_immediately() {
+        let hover_anchor = TooltipAnchor::new(UiNodeId(1), UiRect::new(0.0, 0.0, 20.0, 20.0));
+        let focus_anchor = TooltipAnchor::new(UiNodeId(2), UiRect::new(30.0, 0.0, 20.0, 20.0));
+        let resolution = resolve_tooltip_request(
+            Some(TooltipRequest::new(
+                hover_anchor,
+                TooltipContent::new("Hover help"),
+            )),
+            Some(TooltipRequest::new(
+                focus_anchor,
+                TooltipContent::new("Focus help"),
+            )),
+            HelpItemState::ENABLED,
+            HelpTimingPolicy::default(),
+            5,
+        );
+
+        assert_eq!(resolution.visibility, TooltipVisibility::Visible);
+        let request = resolution.request.expect("focus request");
+        assert_eq!(request.anchor.node, UiNodeId(2));
+        assert_eq!(request.invocation, TooltipInvocationKind::Focus);
+        assert_eq!(request.delay_ms, 0);
+    }
+
+    #[test]
+    fn command_tooltip_accessible_text_includes_description_shortcut_and_disabled_reason() {
+        let registry = registry();
+        let tooltip = CommandTooltipResolver::new(&registry)
+            .tooltip_for("quantize", &[CommandScope::Editor])
+            .expect("tooltip");
+        let accessible = AccessibleHelpText::from(&tooltip);
+
+        assert_eq!(accessible.label, "Quantize");
+        assert_eq!(
+            accessible.description.as_deref(),
+            Some("Ctrl+Q. No clip selected")
+        );
+        assert_eq!(accessible.text(), "Quantize: Ctrl+Q. No clip selected");
+    }
+
+    #[test]
+    fn validation_help_builds_tooltip_and_accessible_description() {
+        let help = ValidationHelp::new("Gain", "Must be between -60 dB and +12 dB")
+            .severity(ValidationHelpSeverity::Warning);
+
+        assert_eq!(
+            help.tooltip_content().text(),
+            "Warning\nMust be between -60 dB and +12 dB"
+        );
+        assert_eq!(
+            help.accessible_text().text(),
+            "Gain: Must be between -60 dB and +12 dB"
+        );
+    }
+
+    #[test]
+    fn context_menu_pointer_and_keyboard_triggers_resolve_positions() {
+        let anchor = UiRect::new(20.0, 30.0, 100.0, 24.0);
+        let pointer_event = RawPointerEvent::new(
+            PointerEventKind::Down(PointerButton::Secondary),
+            UiPoint::new(40.0, 50.0),
+            10,
+        );
+        let pointer_request =
+            ContextMenuRequest::from_pointer_event(UiNodeId(3), anchor, pointer_event)
+                .expect("pointer context menu");
+        let keyboard_request = ContextMenuRequest::keyboard(UiNodeId(3), anchor);
+
+        assert_eq!(pointer_request.trigger, ContextMenuTrigger::Pointer);
+        assert_eq!(pointer_request.position, UiPoint::new(40.0, 50.0));
+        assert_eq!(keyboard_request.trigger, ContextMenuTrigger::Keyboard);
+        assert_eq!(keyboard_request.position, UiPoint::new(20.0, 54.0));
+
+        let clamped = clamp_context_menu_position(
+            UiPoint::new(190.0, 190.0),
+            UiSize::new(50.0, 40.0),
+            UiRect::new(0.0, 0.0, 200.0, 200.0),
+        );
+        assert_eq!(clamped, UiPoint::new(150.0, 160.0));
+    }
+
+    #[test]
+    fn context_menu_disabled_items_are_suppressed_but_read_only_can_allow_menu() {
+        let anchor = UiRect::new(0.0, 0.0, 30.0, 20.0);
+        let disabled = resolve_context_menu_request(
+            ContextMenuRequest::keyboard(UiNodeId(4), anchor).item_state(HelpItemState::disabled()),
+        );
+        let read_only = resolve_context_menu_request(
+            ContextMenuRequest::keyboard(UiNodeId(4), anchor)
+                .item_state(HelpItemState::read_only()),
+        );
+
+        assert!(disabled.request.is_none());
+        assert_eq!(
+            disabled.suppressed_reason,
+            Some(ContextMenuSuppressedReason::Disabled)
+        );
+        assert!(read_only.request.is_some());
+    }
+
+    #[test]
+    fn dismissal_and_overlay_records_integrate_with_overlay_stack() {
+        let anchor = TooltipAnchor::new(UiNodeId(8), UiRect::new(2.0, 4.0, 20.0, 12.0));
+        let request = TooltipRequest::new(anchor, TooltipContent::new("Edit value"));
+        let dismiss = resolve_tooltip_dismissal(
+            Some(request.clone()),
+            HelpDismissReason::HoverLost,
+            HelpTimingPolicy::default(),
+            100,
+        );
+        assert_eq!(dismiss.visibility, TooltipVisibility::Pending);
+        assert_eq!(dismiss.hide_at_ms, Some(180));
+
+        let context_request = ContextMenuRequest::keyboard(UiNodeId(8), anchor.rect);
+        let record = HelpOverlayRecord::context_menu(
+            OverlayId::new(30),
+            &context_request,
+            UiRect::new(2.0, 16.0, 120.0, 96.0),
+        );
+        let mut stack = OverlayStack::new();
+        stack.push(record.overlay_entry());
+
+        let outcome = stack.dismiss(OverlayId::new(30), OverlayDismissReason::Escape);
+        assert_eq!(outcome.dismissed, vec![OverlayId::new(30)]);
+        assert_eq!(
+            outcome.focus_restore,
+            vec![crate::OverlayFocusRestoreRecord {
+                overlay: OverlayId::new(30),
+                target: OverlayFocusRestoreTarget::Node(UiNodeId(8)),
+                reason: OverlayDismissReason::Escape,
+            }]
         );
     }
 }

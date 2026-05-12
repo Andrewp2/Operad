@@ -275,8 +275,13 @@ pub use theme::{
     ThemeScopeError, ThemeScopeId, ThemeScopeKind, TypographyTokens, OPERAD_DARK_THEME_NAME,
 };
 pub use tooltips::{
-    CommandTooltip, CommandTooltipResolver, ShortcutDisplayPlatform, ShortcutFormatter,
-    TooltipAnchor, TooltipContent, TooltipPlacement, TooltipRequest,
+    clamp_context_menu_position, keyboard_context_menu_position, resolve_context_menu_request,
+    resolve_tooltip_dismissal, resolve_tooltip_request, AccessibleHelpText, CommandTooltip,
+    CommandTooltipResolver, ContextMenuRequest, ContextMenuResolution, ContextMenuSuppressedReason,
+    ContextMenuTrigger, HelpDismissReason, HelpItemState, HelpOverlayRecord, HelpTimingPolicy,
+    ShortcutDisplayPlatform, ShortcutFormatter, TooltipAnchor, TooltipContent,
+    TooltipInvocationKind, TooltipPlacement, TooltipRequest, TooltipResolution, TooltipVisibility,
+    ValidationHelp, ValidationHelpSeverity,
 };
 pub use transactions::{
     EditTransaction, EditTransactionPhase, SelectionMode, SelectionModel, SelectionMovement,
