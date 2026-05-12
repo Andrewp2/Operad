@@ -609,20 +609,32 @@ impl RenderFeatureSupport {
         max_gradient_stops: 16,
     };
 
-    pub const CPU_SNAPSHOT_QUALITY: Self = Self::STANDARD;
+    pub const CPU_SNAPSHOT_QUALITY: Self = Self {
+        shadows: FeatureSupportLevel::Basic,
+        rounded_clipping: FeatureSupportLevel::Unsupported,
+        borders: FeatureSupportLevel::Basic,
+        gradients: FeatureSupportLevel::Basic,
+        masks: FeatureSupportLevel::Unsupported,
+        filters: FeatureSupportLevel::Unsupported,
+        subpixel_text: SubpixelTextPolicy::Disabled,
+        color_management: ColorManagementLevel::SrgbOnly,
+        max_shadow_blur: 0.0,
+        max_border_width: 64.0,
+        max_gradient_stops: 8,
+    };
 
     pub const WGPU_SNAPSHOT_QUALITY: Self = Self {
-        shadows: FeatureSupportLevel::Unsupported,
-        rounded_clipping: FeatureSupportLevel::Full,
-        borders: FeatureSupportLevel::Full,
-        gradients: FeatureSupportLevel::Unsupported,
+        shadows: FeatureSupportLevel::Basic,
+        rounded_clipping: FeatureSupportLevel::Basic,
+        borders: FeatureSupportLevel::Basic,
+        gradients: FeatureSupportLevel::Basic,
         masks: FeatureSupportLevel::Unsupported,
         filters: FeatureSupportLevel::Unsupported,
         subpixel_text: SubpixelTextPolicy::Grayscale,
         color_management: ColorManagementLevel::SrgbOnly,
         max_shadow_blur: 0.0,
         max_border_width: 64.0,
-        max_gradient_stops: 0,
+        max_gradient_stops: 2,
     };
 }
 
@@ -1209,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn compositor_quality_plan_records_current_wgpu_fallback_expectations() {
+    fn compositor_quality_plan_records_current_snapshot_fallback_expectations() {
         let requirements = compositor_quality_requirements();
         let plan = plan_compositor_quality(
             &requirements,
@@ -1223,7 +1235,7 @@ mod tests {
         assert_eq!(rounded.wgpu_action, FeatureFallbackAction::Native);
         assert_eq!(
             rounded.parity_expectation,
-            CompositorParityExpectation::PixelExact
+            CompositorParityExpectation::CpuAuthoritativeFallback
         );
 
         let border = plan
@@ -1238,10 +1250,7 @@ mod tests {
         let gradient = plan
             .record_for(RenderFeature::Gradients)
             .expect("gradient record");
-        assert_eq!(
-            gradient.wgpu_action,
-            FeatureFallbackAction::FlattenToSolidColor
-        );
+        assert_eq!(gradient.wgpu_action, FeatureFallbackAction::Approximate);
         assert_eq!(
             gradient.parity_expectation,
             CompositorParityExpectation::CpuAuthoritativeFallback
@@ -1250,10 +1259,10 @@ mod tests {
         let shadow = plan
             .record_for(RenderFeature::Shadows)
             .expect("shadow record");
-        assert_eq!(shadow.wgpu_action, FeatureFallbackAction::Disable);
+        assert_eq!(shadow.wgpu_action, FeatureFallbackAction::Approximate);
         assert_eq!(
             shadow.parity_expectation,
-            CompositorParityExpectation::Unsupported
+            CompositorParityExpectation::FallbackActionParity
         );
 
         let mask = plan.record_for(RenderFeature::Masks).expect("mask record");

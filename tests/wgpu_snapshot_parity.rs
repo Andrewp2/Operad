@@ -7,10 +7,11 @@ use operad::{
     ScenarioHarness, TextStyle, WgpuRenderer,
 };
 use operad::{
-    ColorRgba, CpuSnapshotRenderer, PaintItem, PaintKind, PaintList, PaintTransform,
-    RenderFrameRequest, RenderOptions, RenderedImage, RendererAdapter, ResourceDescriptor,
-    ResourceFormat, ResourceResolver, ResourceUpdate, TextContent, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiRect, UiSize, UiVisual,
+    AlignedStroke, ColorRgba, CpuSnapshotRenderer, LinearGradient, PaintBrush, PaintEffect,
+    PaintItem, PaintKind, PaintList, PaintRect, PaintTransform, RenderFrameRequest, RenderOptions,
+    RenderedImage, RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver,
+    ResourceUpdate, StrokeStyle, TextContent, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint,
+    UiRect, UiSize, UiVisual,
 };
 
 fn scene_document() -> UiDocument {
@@ -298,6 +299,87 @@ fn wgpu_paint_order_allows_geometry_to_cover_prior_text() {
         .all(|pixel| pixel == [0, 96, 64, 255]));
 }
 
+#[test]
+fn wgpu_rich_rect_gradient_and_effects_track_cpu_snapshot() {
+    let rich_rect = PaintRect::new(
+        UiRect::new(8.0, 8.0, 48.0, 24.0),
+        PaintBrush::LinearGradient(
+            LinearGradient::new(
+                UiPoint::new(8.0, 8.0),
+                UiPoint::new(56.0, 8.0),
+                ColorRgba::new(240, 32, 48, 255),
+                ColorRgba::new(24, 72, 230, 255),
+            )
+            .stop(0.5, ColorRgba::new(24, 210, 96, 255))
+            .fallback(ColorRgba::new(240, 32, 48, 255)),
+        ),
+    )
+    .stroke(AlignedStroke::outside(StrokeStyle::new(
+        ColorRgba::new(255, 255, 255, 255),
+        2.0,
+    )))
+    .effect(PaintEffect::shadow(
+        ColorRgba::new(0, 0, 0, 96),
+        UiPoint::new(4.0, 4.0),
+        8.0,
+        2.0,
+    ));
+    let request = RenderFrameRequest::new(
+        RenderTarget::snapshot(PixelSize::new(72, 48)),
+        UiSize::new(72.0, 48.0),
+        PaintList {
+            items: vec![PaintItem {
+                node: UiNodeId(0),
+                rect: UiRect::new(8.0, 8.0, 48.0, 24.0),
+                clip_rect: UiRect::new(0.0, 0.0, 72.0, 48.0),
+                z_index: 0,
+                layer_order: LayerOrder::DEFAULT,
+                opacity: 1.0,
+                transform: PaintTransform::default(),
+                shader: None,
+                kind: PaintKind::RichRect(rich_rect),
+            }],
+        },
+    )
+    .options(RenderOptions {
+        clear_color: ColorRgba::new(18, 20, 24, 255),
+        ..RenderOptions::default()
+    });
+
+    let cpu = CpuSnapshotRenderer::default()
+        .render_frame(request.clone(), &EmptyResourceResolver)
+        .expect("cpu rich rect render")
+        .snapshot
+        .expect("cpu snapshot");
+    let wgpu = WgpuRenderer::default()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("wgpu rich rect render")
+        .snapshot
+        .expect("wgpu snapshot");
+
+    assert_eq!(cpu.size, wgpu.size);
+    assert_pixel_near(
+        pixel_rgba(&wgpu.pixels, 72, 12, 18),
+        pixel_rgba(&cpu.pixels, 72, 12, 18),
+        4,
+    );
+    assert_pixel_near(
+        pixel_rgba(&wgpu.pixels, 72, 32, 18),
+        pixel_rgba(&cpu.pixels, 72, 32, 18),
+        4,
+    );
+    assert_pixel_near(
+        pixel_rgba(&wgpu.pixels, 72, 52, 18),
+        pixel_rgba(&cpu.pixels, 72, 52, 18),
+        4,
+    );
+    assert_ne!(
+        pixel_rgba(&wgpu.pixels, 72, 60, 36),
+        [18, 20, 24, 255],
+        "shadow/effect fallback should affect pixels outside the filled rect"
+    );
+}
+
 fn pixel_rgba(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
     let index = (y * width + x) * 4;
     [
@@ -306,4 +388,13 @@ fn pixel_rgba(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
         pixels[index + 2],
         pixels[index + 3],
     ]
+}
+
+fn assert_pixel_near(actual: [u8; 4], expected: [u8; 4], max_delta: u8) {
+    for (actual, expected) in actual.into_iter().zip(expected) {
+        assert!(
+            actual.abs_diff(expected) <= max_delta,
+            "actual channel {actual} differed from expected {expected} by more than {max_delta}"
+        );
+    }
 }

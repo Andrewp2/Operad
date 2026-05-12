@@ -38,6 +38,8 @@
 - Added a bounded native WGPU window smoke mode to `native_wgpu_host` so release
   validation can prove OS-surface presentation without snapshot readback while
   keeping display-dependent execution opt-in.
+- Added CPU/WGPU rich-rect gradient rendering coverage and corrected compositor
+  quality profiles so fallback and unsupported effects are not overclaimed.
 
 ## 4.0.0
 

@@ -1,4 +1,4 @@
-use std::{error::Error, time::Duration};
+use std::error::Error;
 
 use operad::platform::PixelSize;
 use operad::{
@@ -13,7 +13,7 @@ use operad::{EmptyResourceResolver, RendererAdapter, WgpuRenderer};
 #[cfg(all(feature = "wgpu", feature = "native-window"))]
 use {
     operad::WgpuSurfaceRenderer,
-    std::sync::Arc,
+    std::{sync::Arc, time::Duration},
     winit::{
         application::ApplicationHandler,
         dpi::PhysicalSize,
