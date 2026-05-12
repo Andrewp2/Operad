@@ -18,6 +18,7 @@ use taffy::prelude::{
 };
 
 pub mod accessibility;
+pub mod actions;
 pub mod assets;
 pub mod charts;
 pub mod commands;
@@ -39,6 +40,11 @@ pub mod tooltips;
 #[cfg(feature = "wgpu")]
 pub mod wgpu_renderer;
 
+pub use actions::{
+    action_target_enabled, keyboard_activation_key, WidgetAction, WidgetActionBinding,
+    WidgetActionId, WidgetActionKind, WidgetActionQueue, WidgetActionTrigger, WidgetActivation,
+    WidgetDrag, WidgetDragPhase, WidgetFocusChange, WidgetSelection, WidgetValueEditPhase,
+};
 pub use assets::{
     AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
 };
