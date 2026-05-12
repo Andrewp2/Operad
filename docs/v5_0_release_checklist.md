@@ -74,6 +74,7 @@ workstation, GPU runner, or runner configured with a known-good software adapter
 - [ ] Snapshot parity: `cargo test --locked --features wgpu --test wgpu_snapshot_parity -- --nocapture`
 - [ ] WGPU perf smoke: `cargo test --locked --features widgets,wgpu --test perf_smoke -- --nocapture`
 - [ ] Release WGPU perf smoke: `cargo test --release --locked --features widgets,wgpu --test perf_smoke -- --nocapture`
+- [ ] Native window smoke: `OPERAD_RUN_WGPU_EXAMPLE_WINDOW=1 cargo run --locked --features native-window --example native_wgpu_host`
 
 Do not make these commands required for the baseline GitHub-hosted CI job unless
 the runner image is explicitly provisioned for WGPU.

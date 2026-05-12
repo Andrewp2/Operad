@@ -3,27 +3,34 @@ use std::error::Error;
 use operad::platform::PixelSize;
 use operad::{
     layout, process_document_frame, root_style, ApproxTextMeasurer, ColorRgba,
-    HostDocumentFrameRequest, HostFrameOutput, HostInteractionState, InputBehavior, RenderTarget,
-    StrokeStyle, TextStyle, UiDocument, UiNode, UiSize, UiVisual,
+    HostDocumentFrameOutput, HostDocumentFrameRequest, HostFrameOutput, HostInteractionState,
+    InputBehavior, RenderTarget, StrokeStyle, TextStyle, UiDocument, UiNode, UiSize, UiVisual,
 };
 
 #[cfg(feature = "wgpu")]
 use operad::{EmptyResourceResolver, RendererAdapter, WgpuRenderer};
 
+#[cfg(all(feature = "wgpu", feature = "native-window"))]
+use {
+    operad::WgpuSurfaceRenderer,
+    std::sync::Arc,
+    winit::{
+        application::ApplicationHandler,
+        dpi::PhysicalSize,
+        event::WindowEvent,
+        event_loop::{ActiveEventLoop, EventLoop},
+        window::{Window, WindowId},
+    },
+};
+
 fn main() -> Result<(), Box<dyn Error>> {
+    #[cfg(all(feature = "wgpu", feature = "native-window"))]
+    if std::env::var_os("OPERAD_RUN_WGPU_EXAMPLE_WINDOW").is_some() {
+        return run_windowed_wgpu_example();
+    }
+
     let viewport = UiSize::new(640.0, 360.0);
-    let mut document = build_document();
-    let mut measurer = ApproxTextMeasurer;
-    let host_output = HostFrameOutput::new(HostInteractionState::default());
-    let frame = process_document_frame(
-        &mut document,
-        &mut measurer,
-        HostDocumentFrameRequest::new(
-            viewport,
-            RenderTarget::offscreen(PixelSize::new(640, 360)),
-            host_output,
-        ),
-    )?;
+    let frame = sample_frame(viewport, RenderTarget::offscreen(PixelSize::new(640, 360)))?;
 
     println!(
         "native_wgpu_host: {} paint items, {} accessibility nodes",
@@ -42,6 +49,160 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn sample_frame(
+    viewport: UiSize,
+    target: RenderTarget,
+) -> Result<HostDocumentFrameOutput, Box<dyn Error>> {
+    let mut document = build_document();
+    let mut measurer = ApproxTextMeasurer;
+    let host_output = HostFrameOutput::new(HostInteractionState::default());
+    Ok(process_document_frame(
+        &mut document,
+        &mut measurer,
+        HostDocumentFrameRequest::new(viewport, target, host_output),
+    )?)
+}
+
+#[cfg(all(feature = "wgpu", feature = "native-window"))]
+fn run_windowed_wgpu_example() -> Result<(), Box<dyn Error>> {
+    let event_loop = EventLoop::new()?;
+    let mut app = NativeWindowApp::default();
+    event_loop.run_app(&mut app)?;
+    if let Some(error) = app.error {
+        Err(error.into())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "wgpu", feature = "native-window"))]
+#[derive(Default)]
+struct NativeWindowApp {
+    window: Option<Arc<Window>>,
+    window_id: Option<WindowId>,
+    renderer: Option<WgpuSurfaceRenderer<'static>>,
+    error: Option<String>,
+}
+
+#[cfg(all(feature = "wgpu", feature = "native-window"))]
+impl NativeWindowApp {
+    fn init_window(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+        let window = Arc::new(
+            event_loop.create_window(
+                Window::default_attributes()
+                    .with_title("Operad native WGPU host")
+                    .with_inner_size(PhysicalSize::new(640, 360)),
+            )?,
+        );
+        let size = nonzero_window_size(window.inner_size());
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let surface = instance.create_surface(window.clone())?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            power_preference: wgpu::PowerPreference::default(),
+            force_fallback_adapter: false,
+        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("operad-native-wgpu-host-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            }))?;
+        let surface_config = surface
+            .get_default_config(&adapter, size.width, size.height)
+            .ok_or("adapter does not support the native window surface")?;
+
+        self.window_id = Some(window.id());
+        self.renderer = Some(WgpuSurfaceRenderer::new(
+            surface,
+            device,
+            queue,
+            surface_config,
+        )?);
+        self.window = Some(window);
+        Ok(())
+    }
+
+    fn render(&mut self) -> Result<(), Box<dyn Error>> {
+        let Some(window) = self.window.as_ref() else {
+            return Ok(());
+        };
+        let Some(renderer) = self.renderer.as_mut() else {
+            return Ok(());
+        };
+
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return Ok(());
+        }
+        let viewport = UiSize::new(size.width as f32, size.height as f32);
+        let frame = sample_frame(viewport, RenderTarget::window("native-wgpu-host", viewport))?;
+        let output = renderer.render_frame(frame.render_request, &EmptyResourceResolver)?;
+        println!(
+            "native_wgpu_host: presented {} items into {:?}",
+            output.painted_items, output.target
+        );
+        Ok(())
+    }
+
+    fn fail_and_exit(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
+        self.error = Some(error.to_string());
+        event_loop.exit();
+    }
+}
+
+#[cfg(all(feature = "wgpu", feature = "native-window"))]
+impl ApplicationHandler for NativeWindowApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        if let Err(error) = self.init_window(event_loop) {
+            self.fail_and_exit(event_loop, error);
+            return;
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        if Some(window_id) != self.window_id {
+            return;
+        }
+
+        match event {
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if size.width > 0 && size.height > 0 {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Err(error) = self.render() {
+                    self.fail_and_exit(event_loop, error);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(all(feature = "wgpu", feature = "native-window"))]
+fn nonzero_window_size(size: PhysicalSize<u32>) -> PhysicalSize<u32> {
+    PhysicalSize::new(size.width.max(1), size.height.max(1))
 }
 
 fn build_document() -> UiDocument {
