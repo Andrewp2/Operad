@@ -34,19 +34,16 @@ fn build_game_hud() -> UiDocument {
         UiNode::container(
             "game.hotbar",
             UiNodeStyle {
-                layout: layout::with_margin_bottom(
+                clip: ClipBehavior::Clip,
+                z_index: 10,
+                ..layout::node_style(layout::with_margin_bottom(
                     layout::with_auto_horizontal_margin(layout::with_size(
                         layout::centered_row(),
                         layout::px(360.0),
                         layout::px(64.0),
                     )),
                     18.0,
-                )
-                .as_taffy_style()
-                .clone(),
-                clip: ClipBehavior::Clip,
-                z_index: 10,
-                ..Default::default()
+                ))
             },
         )
         .with_visual(UiVisual::panel(
@@ -61,12 +58,7 @@ fn build_game_hud() -> UiDocument {
             hotbar,
             UiNode::container(
                 format!("game.hotbar.slot.{slot}"),
-                UiNodeStyle {
-                    layout: layout::with_margin_all(layout::fixed(36.0, 36.0), 4.0)
-                        .as_taffy_style()
-                        .clone(),
-                    ..Default::default()
-                },
+                layout::node_style(layout::with_margin_all(layout::fixed(36.0, 36.0), 4.0)),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(
@@ -87,11 +79,12 @@ fn build_fabricad_panel() -> UiDocument {
         UiNode::container(
             "fabricad.sidebar.modules",
             UiNodeStyle {
-                layout: layout::with_size(layout::column(), layout::px(260.0), layout::px(220.0))
-                    .as_taffy_style()
-                    .clone(),
                 clip: ClipBehavior::Clip,
-                ..Default::default()
+                ..layout::node_style(layout::with_size(
+                    layout::column(),
+                    layout::px(260.0),
+                    layout::px(220.0),
+                ))
             },
         )
         .with_scroll(ScrollAxes::VERTICAL)
@@ -130,15 +123,12 @@ fn build_orbifold_editor() -> UiDocument {
         UiNode::container(
             "orbifold.shell",
             UiNodeStyle {
-                layout: layout::with_size(
+                clip: ClipBehavior::Clip,
+                ..layout::node_style(layout::with_size(
                     layout::column(),
                     layout::percent(1.0),
                     layout::percent(1.0),
-                )
-                .as_taffy_style()
-                .clone(),
-                clip: ClipBehavior::Clip,
-                ..Default::default()
+                ))
             },
         ),
     );

@@ -31,7 +31,9 @@ pub mod editor;
 pub mod egui_host;
 pub mod errors;
 pub mod host;
+pub mod i18n;
 pub mod input;
+pub mod layout;
 pub mod limits;
 pub mod paint;
 pub mod platform;
@@ -43,6 +45,7 @@ pub mod testing;
 pub mod theme;
 pub mod tooltips;
 pub mod transactions;
+pub mod versioning;
 #[cfg(feature = "wgpu")]
 pub mod wgpu_renderer;
 
@@ -114,11 +117,20 @@ pub use host::{
     HostInteractionState, HostNodeInteraction, HostShellEvent, HostShellFrameOutput,
     HostShellFrameRequest, HostShortcutRoute,
 };
+pub use i18n::{
+    BidiPolicy, DynamicLabelMeta, LabelUpdatePolicy, LayoutMirrorMode, LocaleId,
+    LocaleIdentifierError, LocalizationPolicy, ResolvedTextDirection, TextDirection,
+};
 pub use input::{
     DragGesture, GestureEvent, GesturePhase, GestureSettings, PointerButton, PointerButtons,
     PointerCapture, PointerClick, PointerEventKind, PointerGestureTracker, PointerId, PointerKind,
     RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent,
     WheelDeltaUnit, WheelPhase,
+};
+pub use layout::{
+    Layout, LayoutAlignment, LayoutDimension, LayoutDisplay, LayoutFlexDirection, LayoutGap,
+    LayoutInset, LayoutInsets, LayoutJustifyContent, LayoutLength, LayoutPosition, LayoutSize,
+    LayoutSpacing,
 };
 pub use limits::{
     drag_payload_byte_len, truncate_str_to_byte_limit, validate_cache_budget,
@@ -202,6 +214,10 @@ pub use transactions::{
     TextEditChange, TextEditHistory, TextEditHistoryApply, TextEditHistoryDirection,
     TextEditRecord, TextEditTransaction, TransactionError, TransactionId, TransactionTarget,
     TransactionWidgetId, UndoRedoCommandDescriptors,
+};
+pub use versioning::{
+    ApiStability, ApiStabilityMarker, ApiStatus, BackendSpecific, Experimental, FeatureStability,
+    MigrationOnly, StabilityNote, Stable,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -6126,219 +6142,6 @@ pub fn root_style(width: f32, height: f32) -> UiNodeStyle {
 
 pub fn length(value: f32) -> Dimension {
     Dimension::length(value)
-}
-
-pub mod layout {
-    use taffy::prelude::{
-        AlignItems, JustifyContent, LengthPercentage, LengthPercentageAuto, Position, Rect,
-    };
-
-    use super::*;
-
-    pub fn px(value: f32) -> Dimension {
-        Dimension::length(value)
-    }
-
-    pub fn percent(value: f32) -> Dimension {
-        Dimension::percent(value)
-    }
-
-    pub fn auto() -> Dimension {
-        Dimension::auto()
-    }
-
-    pub fn spacing(value: f32) -> LengthPercentage {
-        LengthPercentage::length(value)
-    }
-
-    pub fn fixed(width: f32, height: f32) -> LayoutStyle {
-        LayoutStyle::from_taffy_style(Style {
-            size: TaffySize {
-                width: px(width),
-                height: px(height),
-            },
-            ..Default::default()
-        })
-    }
-
-    pub fn absolute(x: f32, y: f32, width: f32, height: f32) -> LayoutStyle {
-        with_absolute_position(fixed(width, height), x, y)
-    }
-
-    pub fn absolute_fill() -> LayoutStyle {
-        LayoutStyle::from_taffy_style(Style {
-            position: Position::Absolute,
-            inset: Rect::length(0.0),
-            size: TaffySize {
-                width: percent(1.0),
-                height: percent(1.0),
-            },
-            ..Default::default()
-        })
-    }
-
-    pub fn size(width: Dimension, height: Dimension) -> LayoutStyle {
-        LayoutStyle::from_taffy_style(Style {
-            size: TaffySize { width, height },
-            ..Default::default()
-        })
-    }
-
-    pub fn row() -> LayoutStyle {
-        LayoutStyle::from_taffy_style(Style {
-            display: Display::Flex,
-            flex_direction: FlexDirection::Row,
-            ..Default::default()
-        })
-    }
-
-    pub fn column() -> LayoutStyle {
-        LayoutStyle::from_taffy_style(Style {
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            ..Default::default()
-        })
-    }
-
-    pub fn centered_row() -> LayoutStyle {
-        with_centered_children(row())
-    }
-
-    pub fn centered_column() -> LayoutStyle {
-        with_centered_children(column())
-    }
-
-    pub fn fill() -> LayoutStyle {
-        size(percent(1.0), percent(1.0))
-    }
-
-    pub fn flex_item(grow: f32, shrink: f32, basis: Dimension) -> LayoutStyle {
-        with_flex(LayoutStyle::default(), grow, shrink, basis)
-    }
-
-    pub fn with_size(mut style: LayoutStyle, width: Dimension, height: Dimension) -> LayoutStyle {
-        style.as_taffy_style_mut().size = TaffySize { width, height };
-        style
-    }
-
-    pub fn with_min_size(
-        mut style: LayoutStyle,
-        width: Dimension,
-        height: Dimension,
-    ) -> LayoutStyle {
-        style.as_taffy_style_mut().min_size = TaffySize { width, height };
-        style
-    }
-
-    pub fn with_max_size(
-        mut style: LayoutStyle,
-        width: Dimension,
-        height: Dimension,
-    ) -> LayoutStyle {
-        style.as_taffy_style_mut().max_size = TaffySize { width, height };
-        style
-    }
-
-    pub fn with_absolute_position(mut style: LayoutStyle, x: f32, y: f32) -> LayoutStyle {
-        let taffy_style = style.as_taffy_style_mut();
-        taffy_style.position = Position::Absolute;
-        taffy_style.inset.left = LengthPercentageAuto::length(x);
-        taffy_style.inset.top = LengthPercentageAuto::length(y);
-        taffy_style.inset.right = LengthPercentageAuto::auto();
-        taffy_style.inset.bottom = LengthPercentageAuto::auto();
-        style
-    }
-
-    pub fn with_flex(
-        mut style: LayoutStyle,
-        grow: f32,
-        shrink: f32,
-        basis: Dimension,
-    ) -> LayoutStyle {
-        let taffy_style = style.as_taffy_style_mut();
-        taffy_style.flex_grow = grow.max(0.0);
-        taffy_style.flex_shrink = shrink.max(0.0);
-        taffy_style.flex_basis = basis;
-        style
-    }
-
-    pub fn with_centered_children(mut style: LayoutStyle) -> LayoutStyle {
-        let taffy_style = style.as_taffy_style_mut();
-        taffy_style.align_items = Some(AlignItems::Center);
-        taffy_style.justify_content = Some(JustifyContent::Center);
-        style
-    }
-
-    pub fn with_flex_start_children(mut style: LayoutStyle) -> LayoutStyle {
-        style.as_taffy_style_mut().align_items = Some(AlignItems::FlexStart);
-        style
-    }
-
-    pub fn with_gap(mut style: LayoutStyle, column_gap: f32, row_gap: f32) -> LayoutStyle {
-        style.as_taffy_style_mut().gap = TaffySize {
-            width: spacing(column_gap.max(0.0)),
-            height: spacing(row_gap.max(0.0)),
-        };
-        style
-    }
-
-    pub fn with_gap_all(style: LayoutStyle, value: f32) -> LayoutStyle {
-        with_gap(style, value, value)
-    }
-
-    pub fn with_margin_all(mut style: LayoutStyle, value: f32) -> LayoutStyle {
-        style.as_taffy_style_mut().margin = Rect::length(value);
-        style
-    }
-
-    pub fn with_margin_left(mut style: LayoutStyle, value: f32) -> LayoutStyle {
-        style.as_taffy_style_mut().margin.left = LengthPercentageAuto::length(value);
-        style
-    }
-
-    pub fn with_margin_right(mut style: LayoutStyle, value: f32) -> LayoutStyle {
-        style.as_taffy_style_mut().margin.right = LengthPercentageAuto::length(value);
-        style
-    }
-
-    pub fn with_margin_top(mut style: LayoutStyle, value: f32) -> LayoutStyle {
-        style.as_taffy_style_mut().margin.top = LengthPercentageAuto::length(value);
-        style
-    }
-
-    pub fn with_margin_bottom(mut style: LayoutStyle, value: f32) -> LayoutStyle {
-        style.as_taffy_style_mut().margin.bottom = LengthPercentageAuto::length(value);
-        style
-    }
-
-    pub fn with_padding_all(mut style: LayoutStyle, value: f32) -> LayoutStyle {
-        style.as_taffy_style_mut().padding = Rect::length(value);
-        style
-    }
-
-    pub fn with_auto_horizontal_margin(mut style: LayoutStyle) -> LayoutStyle {
-        let taffy_style = style.as_taffy_style_mut();
-        taffy_style.margin.left = LengthPercentageAuto::auto();
-        taffy_style.margin.right = LengthPercentageAuto::auto();
-        style
-    }
-
-    pub fn node_style(layout: impl Into<LayoutStyle>) -> UiNodeStyle {
-        let layout = layout.into();
-        UiNodeStyle {
-            layout: layout.style,
-            ..Default::default()
-        }
-    }
-
-    pub fn clipped_node_style(layout: impl Into<LayoutStyle>) -> UiNodeStyle {
-        let layout = layout.into();
-        UiNodeStyle {
-            layout: layout.style,
-            clip: ClipBehavior::Clip,
-            ..Default::default()
-        }
-    }
 }
 
 #[cfg(feature = "egui-renderer-compat")]
