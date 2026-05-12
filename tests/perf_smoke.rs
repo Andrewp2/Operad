@@ -7,6 +7,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use common::render_document;
+#[cfg(feature = "wgpu")]
+use operad::platform::{ImageHandle, PixelSize, ResourceHandle};
 use operad::widgets::*;
 use operad::*;
 
@@ -150,6 +152,132 @@ fn command_palette_filter_build_and_paint_stays_under_budget() {
 }
 
 #[test]
+fn interaction_heavy_frame_build_and_paint_stays_under_budget() {
+    let _perf_guard = perf_test_lock();
+    let mut perf = PerformanceSamples::new("interaction-heavy frame build and paint smoke");
+    let mut interaction_count = 0_usize;
+    let mut painted_count = 0_usize;
+
+    for frame in 0..16 {
+        let started = Instant::now();
+        let mut document = perf_screen();
+        let root = document.root;
+        let toolbar = document.add_child(
+            root,
+            UiNode::container(
+                "perf.interactions.toolbar",
+                UiNodeStyle::from(layout::with_size(
+                    layout::row(),
+                    layout::px(920.0),
+                    layout::px(44.0),
+                )),
+            )
+            .with_visual(UiVisual::panel(
+                ColorRgba::new(17, 24, 32, 255),
+                Some(StrokeStyle::new(ColorRgba::new(45, 57, 70, 255), 1.0)),
+                0.0,
+            )),
+        );
+
+        for index in 0..24 {
+            button(
+                &mut document,
+                toolbar,
+                format!("perf.interactions.tool.{index}"),
+                format!("T{index:02}"),
+                ButtonOptions {
+                    layout: fixed_style(36.0, 30.0),
+                    pressed: index == frame % 24,
+                    focused: index == (frame + 2) % 24,
+                    text_style: TextStyle {
+                        font_size: 10.0,
+                        line_height: 13.0,
+                        color: ColorRgba::new(235, 240, 247, 255),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+        }
+
+        let list = scroll_area(
+            &mut document,
+            root,
+            "perf.interactions.list",
+            ScrollAxes::VERTICAL,
+            layout::with_size(layout::column(), layout::px(920.0), layout::px(470.0)),
+        );
+        for row in 0..180 {
+            let active = row == frame * 7 % 180;
+            let row_node = document.add_child(
+                list,
+                UiNode::container(
+                    format!("perf.interactions.row.{row}"),
+                    UiNodeStyle::from(layout::with_size(
+                        layout::row(),
+                        layout::px(900.0),
+                        layout::px(20.0),
+                    )),
+                )
+                .with_input(InputBehavior::BUTTON)
+                .with_visual(UiVisual::panel(
+                    if active {
+                        ColorRgba::new(47, 83, 103, 255)
+                    } else if row % 2 == 0 {
+                        ColorRgba::new(14, 20, 28, 255)
+                    } else {
+                        ColorRgba::new(10, 16, 23, 255)
+                    },
+                    Some(StrokeStyle::new(ColorRgba::new(27, 37, 48, 255), 1.0)),
+                    0.0,
+                )),
+            );
+            if active || row % 11 == frame % 11 || row % 17 == frame % 17 {
+                interaction_count += 1;
+            }
+            document.add_child(
+                row_node,
+                UiNode::text(
+                    format!("perf.interactions.row.{row}.label"),
+                    format!(
+                        "route row {row:03} hover={} press={} focus={}",
+                        row % 11 == frame % 11,
+                        active,
+                        row % 17 == frame % 17
+                    ),
+                    TextStyle {
+                        font_size: 10.0,
+                        line_height: 13.0,
+                        color: ColorRgba::new(224, 231, 240, 255),
+                        ..Default::default()
+                    },
+                    layout::size(layout::auto(), layout::auto()),
+                ),
+            );
+        }
+
+        document
+            .compute_layout(PERF_VIEWPORT, &mut ApproxTextMeasurer)
+            .expect("layout");
+        let paint = document.paint_list();
+        painted_count += paint.items.len();
+        black_box(paint.items.len());
+        perf.push(started.elapsed());
+    }
+
+    assert!(interaction_count > 400);
+    assert!(painted_count > 900);
+    let budget = PerformanceAssertions::new(&perf);
+    budget.require_sample_count(16).expect("sample count");
+    budget
+        .require_total_within(Duration::from_secs(4))
+        .expect("total budget");
+    budget
+        .require_average_within(Duration::from_millis(250))
+        .expect("average budget");
+}
+
+#[test]
 fn retained_display_list_reuse_smoke_reports_expected_hit_rate() {
     let _perf_guard = perf_test_lock();
     let mut cache = RetainedDisplayListCache::new();
@@ -206,6 +334,69 @@ fn retained_display_list_reuse_smoke_reports_expected_hit_rate() {
     assertions.require_no_evictions().expect("no evictions");
     assertions
         .require_reuse_rate_at_least(0.8)
+        .expect("reuse rate");
+}
+
+#[test]
+fn retained_display_list_large_scene_reuse_survives_interaction_churn() {
+    let _perf_guard = perf_test_lock();
+    let mut cache = RetainedDisplayListCache::new();
+    let keys = (0..96)
+        .map(|index| DisplayListKey::editor_background(format!("perf.large.layer.{index}"), 5))
+        .collect::<Vec<_>>();
+    let mut series = DisplayListReuseSeries::new("large retained display-list reuse smoke");
+    let mut inserted_items = 0_usize;
+    let mut invalidated = 0_usize;
+
+    for frame in 0..18 {
+        cache.advance_frame();
+        for (index, key) in keys.iter().enumerate() {
+            let dirty = if frame == 9 && index % 12 == 0 {
+                DirtyFlags {
+                    paint: true,
+                    ..DirtyFlags::NONE
+                }
+            } else {
+                DirtyFlags {
+                    input: true,
+                    ..DirtyFlags::NONE
+                }
+            };
+            let report = cache.reuse_report(key, dirty);
+            let missed = report.missed();
+            series.push(report);
+            if missed {
+                let item_count = 96 + index % 32;
+                inserted_items += item_count;
+                cache.insert(
+                    key.clone(),
+                    DisplayListKind::StaticBackground,
+                    DisplayListInvalidation::STATIC_EDITOR_BACKGROUND,
+                    retained_panel_paint(item_count),
+                );
+            }
+        }
+
+        if frame == 9 {
+            invalidated += cache
+                .invalidate_with_report(DisplayListInvalidationRequest::Dirty(DirtyFlags {
+                    paint: true,
+                    ..DirtyFlags::NONE
+                }))
+                .removed_count();
+        }
+        black_box(cache.len());
+    }
+
+    assert_eq!(invalidated, 96);
+    assert!(inserted_items > 18_000);
+    let assertions = DisplayListReuseSeriesAssertions::new(&series);
+    assertions
+        .require_report_count(96 * 18)
+        .expect("report count");
+    assertions.require_no_evictions().expect("no evictions");
+    assertions
+        .require_reuse_rate_at_least(0.85)
         .expect("reuse rate");
 }
 
@@ -332,6 +523,32 @@ fn editor_geometry_scene_build_and_raster_smoke_stays_under_budget() {
     budget
         .require_average_within(Duration::from_millis(500))
         .expect("average budget");
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn wgpu_large_resource_window_request_enumerates_no_readback_path_without_adapter() {
+    let request = wgpu_large_resource_perf_request(3);
+
+    assert_eq!(request.target.kind(), RenderTargetKind::Window);
+    assert_eq!(request.resource_updates.len(), 3);
+    assert_eq!(request.paint.items.len(), 1 + 3 * 48);
+    assert!(request
+        .resource_updates
+        .iter()
+        .all(|update| !update.is_partial()));
+    assert!(request
+        .resource_updates
+        .iter()
+        .all(ResourceUpdate::has_expected_byte_len));
+    assert!(
+        request
+            .paint
+            .items
+            .iter()
+            .any(|item| matches!(item.kind, PaintKind::Image { .. })),
+        "large resource path should include texture-backed image paint items"
+    );
 }
 
 #[cfg(feature = "wgpu")]
@@ -871,6 +1088,92 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
         viewport,
         PaintList { items },
     )
+}
+
+#[cfg(feature = "wgpu")]
+fn wgpu_large_resource_perf_request(frame: usize) -> RenderFrameRequest {
+    const RESOURCE_COUNT: usize = 3;
+    const TILE_COUNT: usize = 48;
+    let viewport = UiSize::new(960.0, 540.0);
+    let clip = UiRect::new(0.0, 0.0, viewport.width, viewport.height);
+    let mut items = Vec::with_capacity(1 + RESOURCE_COUNT * TILE_COUNT);
+    let mut request = RenderFrameRequest::new(
+        RenderTarget::window("perf.large-resources", viewport),
+        viewport,
+        PaintList { items: Vec::new() },
+    );
+
+    items.push(PaintItem {
+        node: UiNodeId(70_000),
+        rect: clip,
+        clip_rect: clip,
+        z_index: 0,
+        layer_order: operad::platform::LayerOrder::DEFAULT,
+        opacity: 1.0,
+        transform: PaintTransform::default(),
+        shader: None,
+        kind: PaintKind::Rect {
+            fill: ColorRgba::new(7, 10, 14, 255),
+            stroke: None,
+            corner_radius: 0.0,
+        },
+    });
+
+    for resource_index in 0..RESOURCE_COUNT {
+        let key = format!("perf.large.texture.{resource_index}");
+        let descriptor = ResourceDescriptor::new(
+            ResourceHandle::Image(ImageHandle::app(key.clone())),
+            PixelSize::new(512, 512),
+            ResourceFormat::Rgba8,
+        )
+        .version(frame as u64 + 1);
+        request = request.resource_update(ResourceUpdate::full(
+            descriptor,
+            large_resource_texture_bytes(resource_index, frame),
+        ));
+
+        for tile in 0..TILE_COUNT {
+            let column = tile % 12;
+            let row = tile / 12 + resource_index * 4;
+            let x = 18.0 + column as f32 * 76.0;
+            let y = 18.0 + row as f32 * 34.0;
+            items.push(PaintItem {
+                node: UiNodeId(70_100 + resource_index * TILE_COUNT + tile),
+                rect: UiRect::new(x, y, 64.0, 28.0),
+                clip_rect: clip,
+                z_index: 0,
+                layer_order: operad::platform::LayerOrder::DEFAULT,
+                opacity: 0.95,
+                transform: PaintTransform::default(),
+                shader: None,
+                kind: PaintKind::Image {
+                    key: key.clone(),
+                    tint: if tile % 7 == frame % 7 {
+                        Some(ColorRgba::new(190, 220, 240, 255))
+                    } else {
+                        None
+                    },
+                },
+            });
+        }
+    }
+
+    request.paint = PaintList { items };
+    request
+}
+
+#[cfg(feature = "wgpu")]
+fn large_resource_texture_bytes(resource_index: usize, frame: usize) -> Vec<u8> {
+    const WIDTH: usize = 512;
+    const HEIGHT: usize = 512;
+    let mut bytes = Vec::with_capacity(WIDTH * HEIGHT * 4);
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let shade = ((x / 16 + y / 16 + resource_index * 17 + frame * 3) % 255) as u8;
+            bytes.extend_from_slice(&[shade, shade.wrapping_add(40), shade.wrapping_add(90), 255]);
+        }
+    }
+    bytes
 }
 
 fn perf_test_lock() -> std::sync::MutexGuard<'static, ()> {

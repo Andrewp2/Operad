@@ -38,7 +38,7 @@ Status key:
 | Public layout APIs have an Operad-owned path that avoids direct Taffy use for common cases. | Done | `src/layout.rs` facade and conversion tests. | Internals and legacy helpers still expose Taffy for migration and advanced use. |
 | Localization, RTL/text-direction, and dynamic labels have an explicit support path and regression coverage. | Partial | `src/i18n.rs` policy and unit tests. | Widgets/renderers do not yet apply these policies end to end. |
 | Font, icon, image, and texture lifecycle behavior is documented and tested. | Done | `src/assets.rs`, `src/fonts.rs`, `src/resource_cache.rs`, renderer resource descriptors, WGPU resource paths. `FontRegistry` covers fallback stacks, loaded/missing/failed states, byte accounting, stale generation rejection, and LRU eviction planning. | Backend adapters still need to feed concrete platform font and resource objects into these contracts. |
-| Renderer/performance tests cover interaction-heavy frames, large resources, and native-surface rendering where available. | Partial | `tests/perf_smoke.rs`, CPU snapshots, WGPU parity tests. | Native-surface and large resource stress coverage remain limited. |
+| Renderer/performance tests cover interaction-heavy frames, large resources, and native-surface rendering where available. | Partial | `tests/perf_smoke.rs` covers interaction-heavy frame build/paint, large retained display-list reuse, WGPU window-target no-readback perf paths, and adapter-free WGPU enumeration for large resource requests; WGPU parity tests keep snapshot readback out of perf coverage. | True native OS-surface execution is not claimed in this environment; the current WGPU perf smoke path renders window/app-owned targets through discard/offscreen command paths and the native surface renderer remains a manual/host-backed gate. |
 | Advanced scrolling handles nested arbitration, anchoring, sticky/fixed content, kinetic behavior, scrollbars, reveal-into-view, and synchronized surfaces. | Done | `src/scrolling.rs` covers nested arbitration, anchoring, fixed/sticky resolution, kinetic stepping, scrollbar geometry, reveal-into-view, and scroll sync tests. | Widget-level adoption remains incremental. |
 | Layering/compositing semantics are explicit for stacking contexts, transforms, opacity groups, offscreen layers, clipping, masks, and transformed hit testing. | Done | `src/compositor.rs` and `src/effective_geometry.rs` cover stacking contexts, transforms, clips, masks, offscreen isolation, feature fallback plans, and shared hit geometry. | WGPU rendering does not yet implement every feature at visual parity. |
 | Compositor-quality rendering covers shadows, rounded clipping, borders, gradients, masks, filters, subpixel text, and parity for composited content. | Partial | `src/compositor.rs`, paint primitives, gradients, paths, CPU/WGPU renderers. | Some compositor features are modeled with fallback policy rather than fully rendered. |
@@ -66,6 +66,10 @@ Status key:
   focused regression tests. Remaining partial areas are primarily deep backend
   rendering parity, native window runtime integration, and incremental adoption
   of the shared contracts by older widget helpers.
+- Renderer perf coverage intentionally separates WGPU perf timing from snapshot
+  readback. `tests/perf_smoke.rs` uses window targets for WGPU perf paths and
+  includes adapter-free enumeration for large resource display lists so CI can
+  compile/list the path even when a native adapter or OS surface is unavailable.
 - `docs/v5_0_core_concepts.md` is the concise concept/reference entry point for
   the backend-neutral v5 contracts and should be updated when ownership or
   lifecycle rules change.
