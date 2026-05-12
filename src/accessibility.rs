@@ -6,7 +6,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{AccessibilityLiveRegion, AccessibilityNode, AccessibilityTree, UiNodeId};
+use crate::{
+    AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityNode,
+    AccessibilityRole, AccessibilitySummary, AccessibilityTree, UiNodeId, UiRect,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AccessibilityPreferences {
@@ -417,6 +420,198 @@ impl AccessibilityAnnouncementQueue {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibilityAdapterTargetKind {
+    CanvasHitTarget,
+    EditorHitTarget,
+    Custom,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityAdapterTargetSummary {
+    pub owner: UiNodeId,
+    pub target_id: String,
+    pub kind: AccessibilityAdapterTargetKind,
+    pub role: AccessibilityRole,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub hint: Option<String>,
+    pub rect: UiRect,
+    pub enabled: bool,
+    pub focusable: bool,
+    pub selected: Option<bool>,
+    pub summary: Option<AccessibilitySummary>,
+    pub key_shortcuts: Vec<String>,
+    pub actions: Vec<AccessibilityAction>,
+}
+
+impl AccessibilityAdapterTargetSummary {
+    pub fn new(
+        owner: UiNodeId,
+        target_id: impl Into<String>,
+        kind: AccessibilityAdapterTargetKind,
+        role: AccessibilityRole,
+        rect: UiRect,
+    ) -> Self {
+        Self {
+            owner,
+            target_id: target_id.into(),
+            kind,
+            role,
+            label: None,
+            value: None,
+            hint: None,
+            rect,
+            enabled: true,
+            focusable: true,
+            selected: None,
+            summary: None,
+            key_shortcuts: Vec::new(),
+            actions: Vec::new(),
+        }
+    }
+
+    pub fn from_accessibility_meta(
+        owner: UiNodeId,
+        target_id: impl Into<String>,
+        kind: AccessibilityAdapterTargetKind,
+        rect: UiRect,
+        meta: AccessibilityMeta,
+    ) -> Self {
+        Self {
+            owner,
+            target_id: target_id.into(),
+            kind,
+            role: meta.role,
+            label: meta.label,
+            value: meta.value,
+            hint: meta.hint,
+            rect,
+            enabled: meta.enabled && !meta.hidden,
+            focusable: meta.focusable && !meta.hidden,
+            selected: meta.selected,
+            summary: meta.summary,
+            key_shortcuts: meta.key_shortcuts,
+            actions: meta.actions,
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    pub const fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self.focusable = false;
+        self
+    }
+
+    pub const fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
+    }
+
+    pub const fn selected(mut self, selected: bool) -> Self {
+        self.selected = Some(selected);
+        self
+    }
+
+    pub fn summary(mut self, summary: AccessibilitySummary) -> Self {
+        self.summary = Some(summary);
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.key_shortcuts.push(shortcut.into());
+        self
+    }
+
+    pub fn action(mut self, action: AccessibilityAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub const fn is_navigable(&self) -> bool {
+        self.enabled && self.focusable
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AccessibilityNavigableItemSource {
+    Node(UiNodeId),
+    Target {
+        owner: UiNodeId,
+        target_id: String,
+        kind: AccessibilityAdapterTargetKind,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityNavigableItem {
+    pub source: AccessibilityNavigableItemSource,
+    pub role: AccessibilityRole,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub hint: Option<String>,
+    pub rect: UiRect,
+    pub enabled: bool,
+    pub selected: Option<bool>,
+    pub summary: Option<AccessibilitySummary>,
+    pub key_shortcuts: Vec<String>,
+    pub actions: Vec<AccessibilityAction>,
+}
+
+impl AccessibilityNavigableItem {
+    pub fn from_node(tree: &AccessibilityTree, node: &AccessibilityNode) -> Self {
+        Self {
+            source: AccessibilityNavigableItemSource::Node(node.id),
+            role: node.role,
+            label: tree.accessible_name(node.id).or_else(|| node.label.clone()),
+            value: node.value.clone(),
+            hint: tree
+                .accessible_description(node.id)
+                .or_else(|| node.hint.clone()),
+            rect: node.rect,
+            enabled: node.enabled,
+            selected: node.selected,
+            summary: node.summary.clone(),
+            key_shortcuts: node.key_shortcuts.clone(),
+            actions: node.actions.clone(),
+        }
+    }
+
+    pub fn from_target(target: &AccessibilityAdapterTargetSummary) -> Self {
+        Self {
+            source: AccessibilityNavigableItemSource::Target {
+                owner: target.owner,
+                target_id: target.target_id.clone(),
+                kind: target.kind,
+            },
+            role: target.role,
+            label: target.label.clone(),
+            value: target.value.clone(),
+            hint: target.hint.clone(),
+            rect: target.rect,
+            enabled: target.enabled,
+            selected: target.selected,
+            summary: target.summary.clone(),
+            key_shortcuts: target.key_shortcuts.clone(),
+            actions: target.actions.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccessibilityAdapterRequest {
     PublishTree {
@@ -448,6 +643,10 @@ impl AccessibilityAdapterRequest {
             Self::Announce(_) => AccessibilityRequestKind::Announce,
             Self::ApplyPreferences(_) => AccessibilityRequestKind::ApplyPreferences,
         }
+    }
+
+    pub const fn supported_by(&self, capabilities: AccessibilityCapabilities) -> bool {
+        capabilities.supports(self.kind())
     }
 }
 
@@ -534,6 +733,299 @@ pub enum AccessibilityAdapterResponse {
     },
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AccessibilityAdapterApplyReport {
+    pub supported: Vec<AccessibilityRequestKind>,
+    pub unsupported: Vec<AccessibilityRequestKind>,
+    pub responses: Vec<AccessibilityAdapterResponse>,
+}
+
+impl AccessibilityAdapterApplyReport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(
+        &mut self,
+        request: AccessibilityRequestKind,
+        response: AccessibilityAdapterResponse,
+    ) {
+        if let AccessibilityAdapterResponse::Unsupported(kind) = response {
+            self.unsupported.push(kind);
+            self.responses
+                .push(AccessibilityAdapterResponse::Unsupported(kind));
+        } else {
+            self.supported.push(request);
+            self.responses.push(response);
+        }
+    }
+
+    pub fn is_fully_supported(&self) -> bool {
+        self.unsupported.is_empty()
+    }
+
+    pub fn supported_count(&self, kind: AccessibilityRequestKind) -> usize {
+        self.supported
+            .iter()
+            .filter(|request| **request == kind)
+            .count()
+    }
+
+    pub fn unsupported_count(&self, kind: AccessibilityRequestKind) -> usize {
+        self.unsupported
+            .iter()
+            .filter(|request| **request == kind)
+            .count()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessibilityFocusTrapState {
+    pub trap: FocusTrap,
+    pub previous_focus: Option<UiNodeId>,
+}
+
+impl AccessibilityFocusTrapState {
+    pub const fn new(trap: FocusTrap, previous_focus: Option<UiNodeId>) -> Self {
+        Self {
+            trap,
+            previous_focus,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityAdapterState {
+    pub published_tree: Option<AccessibilityTree>,
+    pub focused: Option<UiNodeId>,
+    pub announcements: Vec<AccessibilityAnnouncement>,
+    pub preferences: AccessibilityPreferences,
+    pub focus_trap: Option<AccessibilityFocusTrapState>,
+    pub target_summaries: Vec<AccessibilityAdapterTargetSummary>,
+}
+
+impl Default for AccessibilityAdapterState {
+    fn default() -> Self {
+        Self {
+            published_tree: None,
+            focused: None,
+            announcements: Vec::new(),
+            preferences: AccessibilityPreferences::DEFAULT,
+            focus_trap: None,
+            target_summaries: Vec::new(),
+        }
+    }
+}
+
+impl AccessibilityAdapterState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn publish_tree(
+        &mut self,
+        tree: AccessibilityTree,
+        focused: Option<UiNodeId>,
+        preferences: AccessibilityPreferences,
+    ) -> AccessibilityAdapterResponse {
+        self.published_tree = Some(tree);
+        self.focused = focused;
+        self.preferences = preferences;
+        AccessibilityAdapterResponse::Applied
+    }
+
+    pub fn move_focus(&mut self, target: UiNodeId) -> AccessibilityAdapterResponse {
+        self.focused = Some(target);
+        AccessibilityAdapterResponse::FocusChanged(self.focused)
+    }
+
+    pub fn set_focus_trap(&mut self, trap: FocusTrap) -> AccessibilityAdapterResponse {
+        self.focus_trap = Some(AccessibilityFocusTrapState::new(trap, self.focused));
+        AccessibilityAdapterResponse::Applied
+    }
+
+    pub fn clear_focus_trap(
+        &mut self,
+        restore: FocusRestoreTarget,
+    ) -> AccessibilityAdapterResponse {
+        let previous_focus = self.focus_trap.and_then(|trap| trap.previous_focus);
+        self.focus_trap = None;
+        self.focused = self.resolve_restore_target(restore, previous_focus);
+        AccessibilityAdapterResponse::FocusChanged(self.focused)
+    }
+
+    pub fn restore_focus(&mut self, restore: FocusRestoreTarget) -> AccessibilityAdapterResponse {
+        let previous_focus = self.focus_trap.and_then(|trap| trap.previous_focus);
+        self.focused = self.resolve_restore_target(restore, previous_focus);
+        AccessibilityAdapterResponse::FocusChanged(self.focused)
+    }
+
+    pub fn announce(
+        &mut self,
+        announcement: AccessibilityAnnouncement,
+    ) -> AccessibilityAdapterResponse {
+        if !announcement.message.is_empty() {
+            self.announcements.push(announcement);
+        }
+        AccessibilityAdapterResponse::Applied
+    }
+
+    pub fn apply_preferences(
+        &mut self,
+        preferences: AccessibilityPreferences,
+    ) -> AccessibilityAdapterResponse {
+        self.preferences = preferences;
+        AccessibilityAdapterResponse::PreferencesChanged(preferences)
+    }
+
+    pub fn publish_target_summaries(
+        &mut self,
+        targets: impl IntoIterator<Item = AccessibilityAdapterTargetSummary>,
+    ) -> AccessibilityAdapterResponse {
+        self.target_summaries = targets.into_iter().collect();
+        AccessibilityAdapterResponse::Applied
+    }
+
+    pub fn clear_target_summaries(&mut self) {
+        self.target_summaries.clear();
+    }
+
+    pub fn navigable_items(&self) -> Vec<AccessibilityNavigableItem> {
+        let mut items = Vec::new();
+        if let Some(tree) = &self.published_tree {
+            items.extend(tree.effective_focus_order().into_iter().filter_map(|id| {
+                let node = tree.node(id)?;
+                node.enabled
+                    .then(|| AccessibilityNavigableItem::from_node(tree, node))
+            }));
+        }
+        items.extend(
+            self.target_summaries
+                .iter()
+                .filter(|target| target.is_navigable())
+                .map(AccessibilityNavigableItem::from_target),
+        );
+        items
+    }
+
+    pub fn apply_request(
+        &mut self,
+        request: AccessibilityAdapterRequest,
+        capabilities: AccessibilityCapabilities,
+    ) -> AccessibilityAdapterResponse {
+        let kind = request.kind();
+        if !capabilities.supports(kind) {
+            return AccessibilityAdapterResponse::Unsupported(kind);
+        }
+
+        self.apply_supported_request(request)
+    }
+
+    pub fn apply_requests(
+        &mut self,
+        requests: impl IntoIterator<Item = AccessibilityAdapterRequest>,
+        capabilities: AccessibilityCapabilities,
+    ) -> AccessibilityAdapterApplyReport {
+        let mut report = AccessibilityAdapterApplyReport::new();
+        for request in requests {
+            let kind = request.kind();
+            let response = self.apply_request(request, capabilities);
+            report.record(kind, response);
+        }
+        report
+    }
+
+    fn apply_supported_request(
+        &mut self,
+        request: AccessibilityAdapterRequest,
+    ) -> AccessibilityAdapterResponse {
+        match request {
+            AccessibilityAdapterRequest::PublishTree {
+                tree,
+                focused,
+                preferences,
+            } => self.publish_tree(tree, focused, preferences),
+            AccessibilityAdapterRequest::MoveFocus { target, .. } => self.move_focus(target),
+            AccessibilityAdapterRequest::SetFocusTrap(trap) => self.set_focus_trap(trap),
+            AccessibilityAdapterRequest::ClearFocusTrap { restore } => {
+                self.clear_focus_trap(restore)
+            }
+            AccessibilityAdapterRequest::RestoreFocus(restore) => self.restore_focus(restore),
+            AccessibilityAdapterRequest::Announce(announcement) => self.announce(announcement),
+            AccessibilityAdapterRequest::ApplyPreferences(preferences) => {
+                self.apply_preferences(preferences)
+            }
+        }
+    }
+
+    fn resolve_restore_target(
+        &self,
+        restore: FocusRestoreTarget,
+        previous_focus: Option<UiNodeId>,
+    ) -> Option<UiNodeId> {
+        match restore {
+            FocusRestoreTarget::None => None,
+            FocusRestoreTarget::Previous => previous_focus.or(self.focused),
+            FocusRestoreTarget::Node(node) => Some(node),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeadlessAccessibilityAdapter {
+    capabilities: AccessibilityCapabilities,
+    state: AccessibilityAdapterState,
+}
+
+impl Default for HeadlessAccessibilityAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HeadlessAccessibilityAdapter {
+    pub fn new() -> Self {
+        Self::with_capabilities(AccessibilityCapabilities::SCREEN_READER)
+    }
+
+    pub fn with_capabilities(capabilities: AccessibilityCapabilities) -> Self {
+        Self {
+            capabilities,
+            state: AccessibilityAdapterState::new(),
+        }
+    }
+
+    pub const fn capabilities(&self) -> AccessibilityCapabilities {
+        self.capabilities
+    }
+
+    pub fn state(&self) -> &AccessibilityAdapterState {
+        &self.state
+    }
+
+    pub fn state_mut(&mut self) -> &mut AccessibilityAdapterState {
+        &mut self.state
+    }
+
+    pub fn into_state(self) -> AccessibilityAdapterState {
+        self.state
+    }
+
+    pub fn handle_accessibility_requests(
+        &mut self,
+        requests: impl IntoIterator<Item = AccessibilityAdapterRequest>,
+    ) -> AccessibilityAdapterApplyReport {
+        self.state.apply_requests(requests, self.capabilities)
+    }
+
+    pub fn publish_target_summaries(
+        &mut self,
+        targets: impl IntoIterator<Item = AccessibilityAdapterTargetSummary>,
+    ) -> AccessibilityAdapterResponse {
+        self.state.publish_target_summaries(targets)
+    }
+}
+
 pub trait AccessibilityAdapter {
     fn accessibility_capabilities(&self) -> AccessibilityCapabilities;
 
@@ -541,6 +1033,19 @@ pub trait AccessibilityAdapter {
         &mut self,
         request: AccessibilityAdapterRequest,
     ) -> AccessibilityAdapterResponse;
+}
+
+impl AccessibilityAdapter for HeadlessAccessibilityAdapter {
+    fn accessibility_capabilities(&self) -> AccessibilityCapabilities {
+        self.capabilities
+    }
+
+    fn handle_accessibility_request(
+        &mut self,
+        request: AccessibilityAdapterRequest,
+    ) -> AccessibilityAdapterResponse {
+        self.state.apply_request(request, self.capabilities)
+    }
 }
 
 impl AccessibilityTree {
@@ -1165,6 +1670,275 @@ mod tests {
             AccessibilityAdapterResponse::Unsupported(AccessibilityRequestKind::PublishTree)
         );
         assert_eq!(adapter.handled, vec![AccessibilityRequestKind::Announce]);
+    }
+
+    #[test]
+    fn headless_adapter_publishes_tree_focus_and_navigation_items() {
+        let root = UiNodeId(1);
+        let button = UiNodeId(2);
+        let tree = AccessibilityTree {
+            nodes: vec![
+                accessible_node(root, None, false),
+                accessible_node(button, Some(root), true),
+            ],
+            focus_order: vec![button],
+            modal_scope: None,
+        };
+        let preferences = AccessibilityPreferences::DEFAULT
+            .screen_reader_active(true)
+            .text_scale(1.25);
+        let mut adapter = HeadlessAccessibilityAdapter::new();
+
+        let report =
+            adapter.handle_accessibility_requests([AccessibilityAdapterRequest::PublishTree {
+                tree: tree.clone(),
+                focused: Some(button),
+                preferences,
+            }]);
+
+        assert!(report.is_fully_supported());
+        assert_eq!(
+            report.supported_count(AccessibilityRequestKind::PublishTree),
+            1
+        );
+        assert_eq!(
+            report.responses,
+            vec![AccessibilityAdapterResponse::Applied]
+        );
+        assert_eq!(adapter.state().published_tree.as_ref(), Some(&tree));
+        assert_eq!(adapter.state().focused, Some(button));
+        assert_eq!(adapter.state().preferences, preferences);
+
+        let navigable = adapter.state().navigable_items();
+        assert_eq!(navigable.len(), 1);
+        assert_eq!(
+            navigable[0].source,
+            AccessibilityNavigableItemSource::Node(button)
+        );
+        assert_eq!(navigable[0].label.as_deref(), Some("node-2"));
+    }
+
+    #[test]
+    fn headless_adapter_updates_focus_and_records_live_region_announcements() {
+        let target = UiNodeId(4);
+        let announcement = AccessibilityAnnouncement::polite("Status: Running").source(target);
+        let mut adapter = HeadlessAccessibilityAdapter::new();
+
+        let report = adapter.handle_accessibility_requests([
+            AccessibilityAdapterRequest::MoveFocus {
+                target,
+                restore: FocusRestoreTarget::Previous,
+            },
+            AccessibilityAdapterRequest::Announce(announcement.clone()),
+        ]);
+
+        assert!(report.is_fully_supported());
+        assert_eq!(
+            report.supported_count(AccessibilityRequestKind::MoveFocus),
+            1
+        );
+        assert_eq!(
+            report.supported_count(AccessibilityRequestKind::Announce),
+            1
+        );
+        assert_eq!(
+            report.responses,
+            vec![
+                AccessibilityAdapterResponse::FocusChanged(Some(target)),
+                AccessibilityAdapterResponse::Applied,
+            ]
+        );
+        assert_eq!(adapter.state().focused, Some(target));
+        assert_eq!(adapter.state().announcements, vec![announcement]);
+    }
+
+    #[test]
+    fn headless_adapter_applies_preferences_and_focus_trap_lifecycle() {
+        let dialog = UiNodeId(10);
+        let previous = UiNodeId(2);
+        let trapped = UiNodeId(11);
+        let preferences = AccessibilityPreferences::DEFAULT
+            .high_contrast(true)
+            .reduced_motion(true);
+        let trap = FocusTrap::new(dialog).restore_focus(FocusRestoreTarget::Previous);
+        let mut adapter = HeadlessAccessibilityAdapter::new();
+
+        adapter.handle_accessibility_request(AccessibilityAdapterRequest::MoveFocus {
+            target: previous,
+            restore: FocusRestoreTarget::Previous,
+        });
+        let report = adapter.handle_accessibility_requests([
+            AccessibilityAdapterRequest::ApplyPreferences(preferences),
+            AccessibilityAdapterRequest::SetFocusTrap(trap),
+            AccessibilityAdapterRequest::MoveFocus {
+                target: trapped,
+                restore: FocusRestoreTarget::Previous,
+            },
+            AccessibilityAdapterRequest::ClearFocusTrap {
+                restore: FocusRestoreTarget::Previous,
+            },
+        ]);
+
+        assert!(report.is_fully_supported());
+        assert_eq!(
+            report.responses,
+            vec![
+                AccessibilityAdapterResponse::PreferencesChanged(preferences),
+                AccessibilityAdapterResponse::Applied,
+                AccessibilityAdapterResponse::FocusChanged(Some(trapped)),
+                AccessibilityAdapterResponse::FocusChanged(Some(previous)),
+            ]
+        );
+        assert_eq!(adapter.state().preferences, preferences);
+        assert_eq!(adapter.state().focused, Some(previous));
+        assert_eq!(adapter.state().focus_trap, None);
+
+        adapter.handle_accessibility_request(AccessibilityAdapterRequest::SetFocusTrap(trap));
+        assert_eq!(
+            adapter.state().focus_trap,
+            Some(AccessibilityFocusTrapState::new(trap, Some(previous)))
+        );
+        assert_eq!(
+            adapter.handle_accessibility_request(AccessibilityAdapterRequest::ClearFocusTrap {
+                restore: FocusRestoreTarget::Node(trapped),
+            }),
+            AccessibilityAdapterResponse::FocusChanged(Some(trapped))
+        );
+        assert_eq!(adapter.state().focus_trap, None);
+    }
+
+    #[test]
+    fn headless_adapter_reports_unsupported_requests_without_mutating_state() {
+        let mut adapter =
+            HeadlessAccessibilityAdapter::with_capabilities(AccessibilityCapabilities {
+                announcements: true,
+                ..AccessibilityCapabilities::NONE
+            });
+        let tree = AccessibilityTree {
+            nodes: vec![accessible_node(UiNodeId(1), None, true)],
+            focus_order: vec![UiNodeId(1)],
+            modal_scope: None,
+        };
+        let announcement = AccessibilityAnnouncement::assertive("Saved");
+
+        let report = adapter.handle_accessibility_requests([
+            AccessibilityAdapterRequest::PublishTree {
+                tree,
+                focused: Some(UiNodeId(1)),
+                preferences: AccessibilityPreferences::DEFAULT.high_contrast(true),
+            },
+            AccessibilityAdapterRequest::Announce(announcement.clone()),
+        ]);
+
+        assert!(!report.is_fully_supported());
+        assert_eq!(
+            report.unsupported_count(AccessibilityRequestKind::PublishTree),
+            1
+        );
+        assert_eq!(
+            report.supported_count(AccessibilityRequestKind::Announce),
+            1
+        );
+        assert_eq!(
+            report.responses,
+            vec![
+                AccessibilityAdapterResponse::Unsupported(AccessibilityRequestKind::PublishTree,),
+                AccessibilityAdapterResponse::Applied,
+            ]
+        );
+        assert_eq!(adapter.state().published_tree, None);
+        assert_eq!(adapter.state().focused, None);
+        assert_eq!(
+            adapter.state().preferences,
+            AccessibilityPreferences::DEFAULT
+        );
+        assert_eq!(adapter.state().announcements, vec![announcement]);
+    }
+
+    #[test]
+    fn adapter_target_summaries_publish_canvas_and_editor_items() {
+        use crate::editor::{EditorCursor, EditorHitKind, EditorHitTarget};
+        use crate::renderer::CanvasHitTarget;
+        use crate::{AccessibilityValueRange, UiRect};
+
+        let owner = UiNodeId(5);
+        let canvas_target =
+            CanvasHitTarget::new("canvas.range.7", UiRect::new(10.0, 12.0, 30.0, 16.0))
+                .label("Selected canvas range")
+                .value("ready")
+                .metadata("Layer", "foreground");
+        let canvas_summary = AccessibilityAdapterTargetSummary::from_accessibility_meta(
+            owner,
+            canvas_target.id.clone(),
+            AccessibilityAdapterTargetKind::CanvasHitTarget,
+            canvas_target.rect,
+            canvas_target.accessibility_meta(0, 2, true),
+        );
+
+        let editor_hit = EditorHitTarget::new(
+            "range.1.start",
+            EditorHitKind::ResizeHandle,
+            UiRect::new(120.0, 62.0, 3.0, 5.0),
+        )
+        .cursor(EditorCursor::ResizeHorizontal);
+        let editor_meta = editor_hit
+            .accessible_target("Range start")
+            .value("Start 120")
+            .hint("Resize with arrow keys or drag")
+            .selected(true)
+            .value_range(AccessibilityValueRange::new(0.0, 240.0).with_step(0.25))
+            .shortcut("Left")
+            .action(AccessibilityAction::new("nudge.left", "Nudge left").shortcut("Left"))
+            .accessibility_meta();
+        let editor_summary = AccessibilityAdapterTargetSummary::from_accessibility_meta(
+            owner,
+            editor_hit.id.as_str(),
+            AccessibilityAdapterTargetKind::EditorHitTarget,
+            editor_hit.world_rect,
+            editor_meta,
+        );
+
+        let mut adapter = HeadlessAccessibilityAdapter::new();
+        assert_eq!(
+            adapter.publish_target_summaries([canvas_summary.clone(), editor_summary.clone()]),
+            AccessibilityAdapterResponse::Applied
+        );
+
+        let items = adapter.state().navigable_items();
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].source,
+            AccessibilityNavigableItemSource::Target {
+                owner,
+                target_id: "canvas.range.7".to_string(),
+                kind: AccessibilityAdapterTargetKind::CanvasHitTarget,
+            }
+        );
+        assert_eq!(items[0].role, AccessibilityRole::ListItem);
+        assert_eq!(items[0].label.as_deref(), Some("Selected canvas range"));
+        assert_eq!(items[0].value.as_deref(), Some("ready; target 1 of 2"));
+        assert_eq!(items[0].selected, Some(true));
+        assert!(items[0]
+            .summary
+            .as_ref()
+            .is_some_and(|summary| summary.screen_reader_text().contains("Layer: foreground")));
+
+        assert_eq!(
+            items[1].source,
+            AccessibilityNavigableItemSource::Target {
+                owner,
+                target_id: "range.1.start".to_string(),
+                kind: AccessibilityAdapterTargetKind::EditorHitTarget,
+            }
+        );
+        assert_eq!(items[1].role, AccessibilityRole::Slider);
+        assert_eq!(items[1].label.as_deref(), Some("Range start"));
+        assert_eq!(
+            items[1].hint.as_deref(),
+            Some("Resize with arrow keys or drag")
+        );
+        assert_eq!(items[1].key_shortcuts, vec!["Left".to_string()]);
+        assert_eq!(items[1].actions[0].id, "nudge.left");
     }
 
     #[test]
