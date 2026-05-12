@@ -288,9 +288,9 @@ pub use versioning::{
     MigrationOnly, StabilityNote, Stable,
 };
 pub use windows::{
-    DocumentId, OverlayId, OverlayOwner, RenderSurfaceOwner, RoutedRenderTarget, RoutedWindowEvent,
-    SurfaceId, WindowDocumentTarget, WindowId, WindowRouteEventKind, WindowRouteRejection,
-    WindowRouter, WindowRoutingState, WindowRoutingSummary,
+    DocumentId, OverlayId as WindowOverlayId, OverlayOwner, RenderSurfaceOwner, RoutedRenderTarget,
+    RoutedWindowEvent, SurfaceId, WindowDocumentTarget, WindowId, WindowRouteEventKind,
+    WindowRouteRejection, WindowRouter, WindowRoutingState, WindowRoutingSummary,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
