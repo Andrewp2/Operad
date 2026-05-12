@@ -31,6 +31,7 @@ pub mod effective_geometry;
 #[cfg(feature = "egui")]
 pub mod egui_host;
 pub mod errors;
+pub mod fonts;
 pub mod forms;
 pub mod host;
 pub mod i18n;
@@ -136,6 +137,12 @@ pub use errors::{
     classify_platform_error, classify_render_error, ErrorContext, ErrorDomain, ErrorKind,
     ErrorReport, ErrorSeverity, FallbackAction, FallbackDecision, FallbackScope, PlatformErrorKind,
     RendererErrorKind, ResourceErrorKind, RuntimeErrorKind, UiErrorKind,
+};
+pub use fonts::{
+    CachedFontFace, FontCachePolicy, FontEvictionCandidate, FontEvictionPlan, FontFaceDescriptor,
+    FontFaceId, FontFallbackAttempt, FontFallbackResolution, FontFallbackStack, FontFamilyId,
+    FontGeneration, FontLifecycleIssue, FontLifecycleOutcome, FontLifecycleReport, FontLoadStatus,
+    FontRegistry, FontSourceDescriptor,
 };
 pub use forms::{
     AccessibleErrorSummaryRecord, FieldId, FieldState, FieldValidationRequest,
