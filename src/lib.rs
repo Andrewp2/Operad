@@ -2156,19 +2156,27 @@ impl UiDocument {
     }
 
     pub fn hit_test(&self, point: UiPoint) -> Option<UiNodeId> {
-        for index in self.visual_order().into_iter().rev() {
-            let node = &self.nodes[index];
-            if !node.input.pointer
-                || !node.layout.visible
-                || !node.layout.clip_rect.contains_point(point)
-            {
-                continue;
-            }
-            if self.node_paint_rect(index).contains_point(point) {
-                return Some(UiNodeId(index));
-            }
-        }
-        None
+        topmost_effective_hit(&self.effective_geometries(), point).map(|hit| hit.node)
+    }
+
+    pub fn effective_geometries(&self) -> Vec<EffectiveGeometry> {
+        let layer_orders = self.effective_layer_orders();
+        self.visual_order_with_layer(&layer_orders)
+            .into_iter()
+            .enumerate()
+            .map(|(order, index)| {
+                let id = UiNodeId(index);
+                let node = &self.nodes[index];
+                EffectiveGeometry::new(id, node.layout.rect)
+                    .paint_transform(Self::node_paint_transform(node))
+                    .clip_rect(node.layout.clip_rect)
+                    .layer_order(layer_orders[index])
+                    .order(order)
+                    .visible(node.layout.visible)
+                    .hit_testable(node.input.pointer)
+                    .accessibility_rect(node.layout.rect)
+            })
+            .collect()
     }
 
     pub fn handle_input(&mut self, event: UiInputEvent) -> UiInputResult {
@@ -7051,6 +7059,71 @@ mod tests {
         );
         assert_eq!(doc.hit_test(UiPoint::new(20.0, 10.0)), None);
         assert_eq!(doc.hit_test(UiPoint::new(95.0, 30.0)), Some(button));
+    }
+
+    #[test]
+    fn document_effective_geometries_feed_hit_testing_and_accessibility_bounds() {
+        let animation = AnimationMachine::new(
+            vec![AnimationState::new(
+                "shown",
+                AnimatedValues::new(1.0, UiPoint::new(30.0, 0.0), 2.0),
+            )],
+            Vec::new(),
+            "shown",
+        )
+        .expect("animation");
+        let mut doc = UiDocument::new(root_style(160.0, 100.0));
+        let clip_parent = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "clip",
+                UiNodeStyle {
+                    layout: LayoutStyle::from_taffy_style(Style {
+                        size: TaffySize {
+                            width: length(80.0),
+                            height: length(80.0),
+                        },
+                        ..Default::default()
+                    })
+                    .style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            ),
+        );
+        let button = doc.add_child(
+            clip_parent,
+            UiNode::container("transformed", button_style(40.0, 20.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_animation(animation),
+        );
+        doc.compute_layout(UiSize::new(160.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let geometries = doc.effective_geometries();
+        let geometry = geometries
+            .iter()
+            .find(|geometry| geometry.node == button)
+            .expect("button geometry");
+
+        assert_eq!(
+            geometry.transformed_bounds(),
+            UiRect::new(30.0, 0.0, 80.0, 40.0)
+        );
+        assert_eq!(
+            geometry.visible_rect(),
+            Some(UiRect::new(30.0, 0.0, 50.0, 40.0))
+        );
+        assert_eq!(
+            geometry.accessibility_bounds().map(|bounds| bounds.rect),
+            Some(UiRect::new(30.0, 0.0, 50.0, 40.0))
+        );
+        assert_eq!(
+            topmost_effective_hit(&geometries, UiPoint::new(75.0, 20.0)).map(|hit| hit.node),
+            Some(button)
+        );
+        assert_eq!(doc.hit_test(UiPoint::new(75.0, 20.0)), Some(button));
+        assert_eq!(doc.hit_test(UiPoint::new(95.0, 20.0)), None);
     }
 
     #[test]
