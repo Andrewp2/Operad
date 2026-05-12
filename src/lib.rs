@@ -27,8 +27,10 @@ pub mod drag_drop;
 pub mod editor;
 #[cfg(feature = "egui")]
 pub mod egui_host;
+pub mod errors;
 pub mod host;
 pub mod input;
+pub mod limits;
 pub mod paint;
 pub mod platform;
 pub mod renderer;
@@ -83,6 +85,11 @@ pub use egui_host::{
     egui_texture_id_for_resource, EguiAccessibilityOutputPlan, EguiHostAdapter, EguiInputAdapter,
     EguiPlatformOutputPlan, EguiTextureDeltaPlan,
 };
+pub use errors::{
+    classify_platform_error, classify_render_error, ErrorContext, ErrorDomain, ErrorKind,
+    ErrorReport, ErrorSeverity, FallbackAction, FallbackDecision, FallbackScope, PlatformErrorKind,
+    RendererErrorKind, ResourceErrorKind, RuntimeErrorKind, UiErrorKind,
+};
 pub use host::{
     process_document_frame, process_shell_frame, text_input_id_for_node, HostAccessibilityState,
     HostAdapter, HostAdapterError, HostCommandDispatch, HostDocumentFrameOutput,
@@ -95,6 +102,15 @@ pub use input::{
     PointerCapture, PointerClick, PointerEventKind, PointerGestureTracker, PointerId, PointerKind,
     RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent,
     WheelDeltaUnit, WheelPhase,
+};
+pub use limits::{
+    drag_payload_byte_len, truncate_str_to_byte_limit, validate_cache_budget,
+    validate_drag_drop_payload, validate_font_bytes, validate_image_dimensions,
+    validate_paste_payload, validate_resource_descriptor, validate_resource_id,
+    validate_resource_update, validate_text_input, validate_texture_size,
+    validate_virtualized_row_count, CacheBudgetAction, CacheBudgetDecision, DimensionLimit,
+    InputLimitPolicy, LimitKind, LimitPolicy, LimitReport, LimitStatus, LimitValue,
+    ResourceLimitPolicy,
 };
 #[cfg(feature = "wgpu")]
 pub use wgpu_renderer::{WgpuRenderer, WgpuSurfaceRenderer};
