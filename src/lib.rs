@@ -38,6 +38,8 @@ pub mod input;
 pub mod input_devices;
 pub mod layout;
 pub mod limits;
+pub mod navigation;
+pub mod overlays;
 pub mod paint;
 pub mod platform;
 pub mod renderer;
@@ -177,6 +179,16 @@ pub use limits::{
     validate_virtualized_row_count, CacheBudgetAction, CacheBudgetDecision, DimensionLimit,
     InputLimitPolicy, LimitKind, LimitPolicy, LimitReport, LimitStatus, LimitValue,
     ResourceLimitPolicy,
+};
+pub use navigation::{
+    next_enabled_item, NavigationAction, NavigationBoundaryBehavior, NavigationCollectionKind,
+    NavigationContract, NavigationDirection, NavigationFocusModel, NavigationItem,
+    NavigationItemId, NavigationKeyResult, NavigationOrientation, NavigationState,
+};
+pub use overlays::{
+    OverlayDismissOutcome, OverlayDismissPolicy, OverlayDismissReason, OverlayEntry,
+    OverlayFocusRestoreRecord, OverlayFocusRestoreTarget, OverlayHitTestDecision, OverlayId,
+    OverlayKind, OverlayStack,
 };
 #[cfg(feature = "wgpu")]
 pub use wgpu_renderer::{WgpuRenderer, WgpuSurfaceRenderer};
