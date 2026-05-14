@@ -151,6 +151,16 @@ Public document-building widget functions currently exported under `operad::widg
 - `context_menu`
 - `command_palette`
 - `color_picker`
+- `compact_color_button`
+- `color_swatch_button`
+- `color_edit_button_rgb`
+- `color_edit_button_rgba`
+- `color_edit_button_srgb`
+- `color_edit_button_srgba`
+- `color_edit_button_hsva`
+- `color_edit_button_oklch`
+- `show_color`
+- `show_color_at`
 - `date_picker`
 - `canvas`
 - `image`
@@ -224,24 +234,16 @@ This section lists egui widget and widget-adjacent features from the sources abo
 Missing visual widgets:
 
 - Selectable value convenience helper
-- Compact color button
 - Angle drag controls
 
 Missing color-editing conveniences:
 
-- `color_edit_button_hsva`
-- `color_edit_button_rgb`
-- `color_edit_button_rgba`
 - `color_edit_button_rgba_premultiplied`
 - `color_edit_button_rgba_unmultiplied`
-- `color_edit_button_srgb`
-- `color_edit_button_srgba`
 - `color_edit_button_srgba_premultiplied`
 - `color_edit_button_srgba_unmultiplied`
 - `color_picker_color32`
 - `color_picker_hsva_2d`
-- `show_color`
-- `show_color_at`
 
 Missing containers and layout widgets:
 

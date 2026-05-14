@@ -97,6 +97,16 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::indented_section`
 - `operad::widgets::resize_handle`
 - `operad::widgets::resize_container`
+- `operad::widgets::compact_color_button`
+- `operad::widgets::color_swatch_button`
+- `operad::widgets::color_edit_button_rgb`
+- `operad::widgets::color_edit_button_rgba`
+- `operad::widgets::color_edit_button_srgb`
+- `operad::widgets::color_edit_button_srgba`
+- `operad::widgets::color_edit_button_hsva`
+- `operad::widgets::color_edit_button_oklch`
+- `operad::widgets::show_color`
+- `operad::widgets::show_color_at`
 - `operad::widgets::singleline_text_input`
 - `operad::widgets::multiline_text_input`
 - `operad::widgets::text_area`
@@ -126,6 +136,11 @@ The container and panel helpers are convenience builders over the retained
 document tree. Existing `panel` and `UiNode::container` code keeps working, but
 new examples should prefer the named helpers when building ordinary panels,
 frames, side-by-side sections, columns, indentation, or resizable regions.
+
+The color button helpers use the existing color picker state and action model.
+They are compact trigger/display widgets for common color formats; applications
+still decide whether a click opens a picker, copies a value, or commits a
+color change.
 
 The text-input convenience builders all use `TextInputState` and
 `TextInputOptions`; they configure common defaults without replacing the

@@ -967,6 +967,370 @@ impl ColorPickerOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorValueFormat {
+    HexRgb,
+    HexRgba,
+    Rgb,
+    Rgba,
+    Srgb,
+    Srgba,
+    Hsva,
+    Oklch,
+}
+
+impl ColorValueFormat {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::HexRgb => "HEX",
+            Self::HexRgba => "HEXA",
+            Self::Rgb => "RGB",
+            Self::Rgba => "RGBA",
+            Self::Srgb => "SRGB",
+            Self::Srgba => "SRGBA",
+            Self::Hsva => "HSVA",
+            Self::Oklch => "OKLCH",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorButtonOptions {
+    pub layout: LayoutStyle,
+    pub visual: UiVisual,
+    pub swatch_size: UiSize,
+    pub text_style: TextStyle,
+    pub format: ColorValueFormat,
+    pub action: Option<WidgetActionBinding>,
+    pub accessibility_label: Option<String>,
+    pub show_label: bool,
+}
+
+impl ColorButtonOptions {
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+
+    pub fn with_visual(mut self, visual: UiVisual) -> Self {
+        self.visual = visual;
+        self
+    }
+
+    pub fn with_swatch_size(mut self, size: UiSize) -> Self {
+        self.swatch_size = UiSize::new(size.width.max(1.0), size.height.max(1.0));
+        self
+    }
+
+    pub fn with_format(mut self, format: ColorValueFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub const fn show_label(mut self, show_label: bool) -> Self {
+        self.show_label = show_label;
+        self
+    }
+}
+
+impl Default for ColorButtonOptions {
+    fn default() -> Self {
+        Self {
+            layout: LayoutStyle::from_taffy_style(Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(taffy::prelude::JustifyContent::Center),
+                size: TaffySize {
+                    width: length(112.0),
+                    height: length(30.0),
+                },
+                padding: TaffyRect::length(4.0),
+                gap: TaffySize {
+                    width: taffy::prelude::LengthPercentage::length(6.0),
+                    height: taffy::prelude::LengthPercentage::length(6.0),
+                },
+                ..Default::default()
+            }),
+            visual: UiVisual::panel(
+                ColorRgba::new(36, 42, 52, 255),
+                Some(StrokeStyle::new(ColorRgba::new(74, 85, 104, 255), 1.0)),
+                4.0,
+            ),
+            swatch_size: UiSize::new(20.0, 20.0),
+            text_style: TextStyle {
+                font_size: 11.0,
+                line_height: 14.0,
+                color: ColorRgba::new(235, 240, 247, 255),
+                ..Default::default()
+            },
+            format: ColorValueFormat::HexRgb,
+            action: None,
+            accessibility_label: None,
+            show_label: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorButtonNodes {
+    pub root: UiNodeId,
+    pub swatch: UiNodeId,
+    pub label: Option<UiNodeId>,
+}
+
+pub fn compact_color_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(document, parent, name, color, options)
+}
+
+pub fn color_swatch_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(document, parent, name, color, options.show_label(false))
+}
+
+pub fn color_edit_button_rgb(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        ColorRgba::new(color.r, color.g, color.b, 255),
+        options.with_format(ColorValueFormat::Rgb),
+    )
+}
+
+pub fn color_edit_button_rgba(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        color,
+        options.with_format(ColorValueFormat::Rgba),
+    )
+}
+
+pub fn color_edit_button_srgb(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        ColorRgba::new(color.r, color.g, color.b, 255),
+        options.with_format(ColorValueFormat::Srgb),
+    )
+}
+
+pub fn color_edit_button_srgba(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        color,
+        options.with_format(ColorValueFormat::Srgba),
+    )
+}
+
+pub fn color_edit_button_hsva(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        color,
+        options.with_format(ColorValueFormat::Hsva),
+    )
+}
+
+pub fn color_edit_button_oklch(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        color,
+        options.with_format(ColorValueFormat::Oklch),
+    )
+}
+
+pub fn show_color(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    size: UiSize,
+) -> UiNodeId {
+    let name = name.into();
+    document.add_child(
+        parent,
+        UiNode::container(
+            name.clone(),
+            LayoutStyle::size(size.width.max(1.0), size.height.max(1.0)),
+        )
+        .with_visual(UiVisual::panel(
+            color,
+            Some(StrokeStyle::new(ColorRgba::new(220, 226, 236, 255), 1.0)),
+            3.0,
+        ))
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Image)
+                .label(format!("{name} color"))
+                .value(format_hex_color(color, color.a < 255)),
+        ),
+    )
+}
+
+pub fn show_color_at(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    rect: UiRect,
+) -> UiNodeId {
+    let name = name.into();
+    document.add_child(
+        parent,
+        UiNode::container(name.clone(), LayoutStyle::absolute_rect(rect))
+            .with_visual(UiVisual::panel(
+                color,
+                Some(StrokeStyle::new(ColorRgba::new(220, 226, 236, 255), 1.0)),
+                3.0,
+            ))
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Image)
+                    .label(format!("{name} color"))
+                    .value(format_hex_color(color, color.a < 255)),
+            ),
+    )
+}
+
+fn color_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    let name = name.into();
+    let value = format_color_value(color, options.format);
+    let mut root = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout: options.layout.style,
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
+    )
+    .with_visual(options.visual)
+    .with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::Button)
+            .label(
+                options
+                    .accessibility_label
+                    .clone()
+                    .unwrap_or_else(|| format!("Edit {name} color")),
+            )
+            .value(value.clone())
+            .focusable(),
+    );
+    if let Some(action) = options.action {
+        root = root.with_input(InputBehavior::BUTTON).with_action(action);
+    }
+    let root = document.add_child(parent, root);
+    let swatch = document.add_child(
+        root,
+        UiNode::container(
+            format!("{name}.swatch"),
+            LayoutStyle::size(options.swatch_size.width, options.swatch_size.height),
+        )
+        .with_visual(UiVisual::panel(
+            color,
+            Some(StrokeStyle::new(ColorRgba::new(220, 226, 236, 255), 1.0)),
+            3.0,
+        ))
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Image)
+                .label(format!("{name} swatch"))
+                .value(format_hex_color(color, color.a < 255)),
+        ),
+    );
+    let label = options.show_label.then(|| {
+        document.add_child(
+            root,
+            UiNode::text(
+                format!("{name}.label"),
+                value,
+                options.text_style,
+                LayoutStyle::from_taffy_style(Style {
+                    size: TaffySize {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    flex_shrink: 1.0,
+                    ..Default::default()
+                }),
+            ),
+        )
+    });
+    ColorButtonNodes {
+        root,
+        swatch,
+        label,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColorPickerNodes {
     pub root: UiNodeId,
@@ -1925,6 +2289,43 @@ pub fn format_hex_color(color: ColorRgba, include_alpha: bool) -> String {
     }
 }
 
+pub fn format_color_value(color: ColorRgba, format: ColorValueFormat) -> String {
+    match format {
+        ColorValueFormat::HexRgb => format_hex_color(color, false),
+        ColorValueFormat::HexRgba => format_hex_color(color, true),
+        ColorValueFormat::Rgb => format!("rgb({}, {}, {})", color.r, color.g, color.b),
+        ColorValueFormat::Rgba => format!(
+            "rgba({}, {}, {}, {:.3})",
+            color.r,
+            color.g,
+            color.b,
+            color.a as f32 / 255.0
+        ),
+        ColorValueFormat::Srgb => format!("srgb({}, {}, {})", color.r, color.g, color.b),
+        ColorValueFormat::Srgba => format!(
+            "srgba({}, {}, {}, {:.3})",
+            color.r,
+            color.g,
+            color.b,
+            color.a as f32 / 255.0
+        ),
+        ColorValueFormat::Hsva => {
+            let hsv = ColorHsv::from_rgba(color);
+            format!(
+                "hsva({:.0}, {:.3}, {:.3}, {:.3})",
+                hsv.hue, hsv.saturation, hsv.value, hsv.alpha
+            )
+        }
+        ColorValueFormat::Oklch => {
+            let oklch = ColorOklch::from_rgba(color);
+            format!(
+                "oklch({:.3}, {:.3}, {:.0}, {:.3})",
+                oklch.lightness, oklch.chroma, oklch.hue, oklch.alpha
+            )
+        }
+    }
+}
+
 pub fn parse_hex_color(value: &str) -> Option<ColorRgba> {
     let value = value.trim().strip_prefix('#').unwrap_or(value.trim());
     match value.len() {
@@ -2022,7 +2423,109 @@ fn hex_byte(value: &str) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    use crate::root_style;
+
     use super::*;
+
+    #[test]
+    fn color_button_builders_expose_common_formats_and_actions() {
+        let mut document = UiDocument::new(root_style(360.0, 180.0));
+        let root = document.root;
+        let color = ColorRgba::new(51, 102, 153, 128);
+
+        let rgb = color_edit_button_rgb(
+            &mut document,
+            root,
+            "brand.rgb",
+            color,
+            ColorButtonOptions::default().with_action("color.open"),
+        );
+        let rgba = color_edit_button_rgba(
+            &mut document,
+            root,
+            "brand.rgba",
+            color,
+            ColorButtonOptions::default(),
+        );
+        let hsva = color_edit_button_hsva(
+            &mut document,
+            root,
+            "brand.hsva",
+            color,
+            ColorButtonOptions::default(),
+        );
+        let swatch = color_swatch_button(
+            &mut document,
+            root,
+            "brand.swatch",
+            color,
+            ColorButtonOptions::default(),
+        );
+        let absolute = show_color_at(
+            &mut document,
+            root,
+            "brand.absolute",
+            color,
+            UiRect::new(20.0, 40.0, 24.0, 24.0),
+        );
+
+        assert_eq!(
+            document.node(rgb.root).action.as_ref(),
+            Some(&WidgetActionBinding::action("color.open"))
+        );
+        assert_eq!(
+            document
+                .node(rgb.root)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("rgb(51, 102, 153)")
+        );
+        assert_eq!(
+            document
+                .node(rgba.root)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("rgba(51, 102, 153, 0.502)")
+        );
+        assert!(document
+            .node(hsva.root)
+            .accessibility
+            .as_ref()
+            .unwrap()
+            .value
+            .as_deref()
+            .unwrap()
+            .starts_with("hsva(210"));
+        assert!(swatch.label.is_none());
+        assert!(
+            document.node(absolute).style.layout.position == taffy::prelude::Position::Absolute
+        );
+    }
+
+    #[test]
+    fn color_value_format_helpers_cover_hex_oklch_and_srgb() {
+        let color = ColorRgba::new(51, 102, 153, 128);
+
+        assert_eq!(
+            format_color_value(color, ColorValueFormat::HexRgb),
+            "#336699"
+        );
+        assert_eq!(
+            format_color_value(color, ColorValueFormat::HexRgba),
+            "#33669980"
+        );
+        assert_eq!(
+            format_color_value(color, ColorValueFormat::Srgba),
+            "srgba(51, 102, 153, 0.502)"
+        );
+        assert!(format_color_value(color, ColorValueFormat::Oklch).starts_with("oklch("));
+    }
 
     #[test]
     fn color_picker_state_applies_prefixed_pointer_and_copy_actions() {

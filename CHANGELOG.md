@@ -36,6 +36,8 @@
   summary widget helpers backed by the existing form validation contracts.
 - Added egui-style container helpers for panels, frames, groups, sides, columns,
   indentation, resize handles, and resize containers.
+- Added compact color button, color swatch button, color-format display, and
+  RGB/RGBA/SRGB/SRGBA/HSVA/OKLCH color-edit button helpers.
 
 ## 6.1.0
 

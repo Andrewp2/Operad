@@ -46,6 +46,8 @@ These should pass on a normal Linux runner before every v7 milestone:
 - [x] Alpha 10 adds central, top, bottom, side, left, right, group, frame,
   sides, columns, indented-section, resize-handle, and resize-container widget
   helpers.
+- [x] Alpha 11 adds compact color button, swatch button, color display, and
+  RGB/RGBA/SRGB/SRGBA/HSVA/OKLCH color-edit button helpers.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

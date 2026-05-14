@@ -114,6 +114,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 10 has started container/layout parity by adding central, top, bottom,
   side, left, right, group, frame, sides, columns, indented-section,
   resize-handle, and resize-container builders.
+- Alpha 11 has started color-editing parity by adding compact color buttons,
+  swatch buttons, color value formatting, color display helpers, and
+  RGB/RGBA/SRGB/SRGBA/HSVA/OKLCH color-edit button helpers.
 
 ### 1. Architecture And API Cleanup
 
@@ -195,6 +198,10 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Add high-contrast and reduced-motion theme paths.
 - Add public text-style helpers: heading, strong, weak, small, monospace, code,
   colored label, and wrapped label.
+- Add color editing helpers for compact buttons, swatches, common color formats,
+  and copy/display affordances. Initial compact button, swatch, RGB/RGBA,
+  SRGB/SRGBA, HSVA, OKLCH, `show_color`, and `show_color_at` helpers are now
+  available.
 
 ### 7. Rendering, Canvas, And Media
 
