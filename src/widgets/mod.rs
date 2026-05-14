@@ -38,6 +38,7 @@ pub mod table;
 #[cfg(test)]
 mod tests;
 pub mod text_input;
+pub mod theme_preference;
 pub mod toggle;
 pub mod tooltip;
 pub mod virtual_list;
@@ -68,6 +69,7 @@ pub use slider::*;
 pub use spinner::*;
 pub use table::*;
 pub use text_input::*;
+pub use theme_preference::*;
 pub use toggle::*;
 pub use tooltip::*;
 pub use virtual_list::*;

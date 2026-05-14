@@ -132,6 +132,8 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 16 has closed the basic interaction-helper gap with visible/enabled
   UI blocks, exact/minimum allocation helpers, painter allocation, and
   programmatic scroll helpers.
+- Alpha 17 has closed the theme-preference helper gap with reusable
+  System/Light/Dark preference buttons and a compact dark-theme switch.
 
 ### 1. Architecture And API Cleanup
 
@@ -221,6 +223,8 @@ These are the items that should move from the v6 planning notes into v7 work.
   premultiplied/unmultiplied RGBA, SRGB/SRGBA, premultiplied/unmultiplied
   SRGBA, HSVA, OKLCH, `Color32`, HSV 2D picker, `show_color`, and
   `show_color_at` helpers are now available.
+- Add normal theme preference widgets for application settings surfaces.
+  `theme_preference_buttons` and `theme_preference_switch` are now available.
 
 ### 7. Rendering, Canvas, And Media
 

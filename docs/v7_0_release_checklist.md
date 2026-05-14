@@ -59,6 +59,7 @@ These should pass on a normal Linux runner before every v7 milestone:
   renderer-neutral scene primitives.
 - [x] Alpha 16 adds widget-level visible/enabled wrappers, fixed/minimum
   allocation helpers, painter allocation, and programmatic scroll helpers.
+- [x] Alpha 17 adds global theme preference buttons and a dark-theme switch.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

@@ -147,6 +147,8 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::scroll_to_cursor`
 - `operad::widgets::scroll_to_rect`
 - `operad::widgets::scroll_to_rect_with_options`
+- `operad::widgets::theme_preference_buttons`
+- `operad::widgets::theme_preference_switch`
 
 `selectable_label` is a selectable/toggleable label control. It is intentionally
 separate from `selectable_text`, which remains a read-only text input variant
@@ -164,6 +166,11 @@ The visible/enabled, allocation, painter, and programmatic scroll helpers are
 widget-adjacent convenience APIs. They wrap retained document primitives without
 changing ownership: applications still own whether content is shown, enabled, or
 scrolled into view.
+
+`theme_preference_buttons` and `theme_preference_switch` are normal widget
+builders for exposing application-owned theme preferences. They emit widget
+actions; applications still own resolving System, Light, and Dark choices into a
+theme.
 
 The form helpers build visual form rows, labels, help text, validation messages,
 and summaries around `FormState`, `FieldState`, and `ValidationMessage`.

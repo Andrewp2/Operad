@@ -95,6 +95,8 @@ Common `Ui` shorthand/widget methods:
 - `selectable_label`
 - `selectable_value`
 - `toggle_value`
+- `global_theme_preference_buttons`
+- `global_theme_preference_switch`
 - `text_edit_singleline`
 - `text_edit_multiline`
 - `image`
@@ -135,6 +137,8 @@ Public document-building widget functions currently exported under `operad::widg
 - `radio_button`
 - `radio_group`
 - `toggle_switch`
+- `theme_preference_buttons`
+- `theme_preference_switch`
 - `slider`
 - `drag_value_input`
 - `drag_angle`
@@ -229,6 +233,7 @@ Public document-building widget functions currently exported under `operad::widg
 - `timeline_ruler`
 - `toast_stack`
 - `scroll_area`
+- `scrollbar`
 - `popup_panel`
 - `floating_desktop`
 
@@ -264,11 +269,6 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 
 This section lists egui widget and widget-adjacent features from the sources above that do not currently have an equivalent public Operad visual widget builder. Some lower-level Operad contracts may exist, but they are counted as missing here if customers cannot add the feature with a normal `operad::widgets::*` builder.
 
-Missing theme/demo helpers:
-
-- Global theme preference buttons
-- Global theme preference switch
-
 Partially covered but not equivalent:
 
 - Text editing: Operad has single-line, multiline, text-area, code-editor, search, password, and selectable-text builders, but still needs richer editor-specific features.
@@ -276,7 +276,7 @@ Partially covered but not equivalent:
 - Tooltips: Operad now has `tooltip_box` plus tooltip contracts/resolution helpers, but still needs richer trigger wiring and animation policy.
 - Dialogs/modals: Operad now has `modal_dialog` plus dialog and overlay state contracts, but still needs focus-trap and dismissal helpers wired into the visual builder.
 - Drag and drop: Operad now has generic `dnd_drag_source` and `dnd_drop_zone` builders, plus descriptors and metadata on some complex widgets. It still needs fuller drop preview styling, drag-image policy, and platform adapter coverage.
-- Scroll bars: Operad exposes scrollbar geometry/accessibility helpers, but no complete visual scrollbar widget builder.
+- Scroll bars: Operad exposes a scrollbar widget and geometry/accessibility helpers, but still needs fuller integration coverage across every scrollable widget.
 - Panels: Operad has `central_panel`, `side_panel`, `top_panel`, `bottom_panel`,
   `left_panel`, `right_panel`, `dock_workspace`, `split_pane`, `scroll_area`,
   and generic containers. It still needs richer pane-grid docking and animated

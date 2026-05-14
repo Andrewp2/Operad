@@ -50,6 +50,8 @@
   scene primitives can be built through the normal public widget API.
 - Added widget interaction helpers for visible/enabled UI blocks, fixed/minimum
   allocations, scene painter allocations, and programmatic scrolling.
+- Added global theme preference button-group and switch builders so applications
+  can expose System/Light/Dark theme controls without showcase-specific code.
 
 ## 6.1.0
 
