@@ -102,8 +102,14 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::color_swatch_button`
 - `operad::widgets::color_edit_button_rgb`
 - `operad::widgets::color_edit_button_rgba`
+- `operad::widgets::color_edit_button_rgba_premultiplied`
+- `operad::widgets::color_edit_button_rgba_unmultiplied`
 - `operad::widgets::color_edit_button_srgb`
 - `operad::widgets::color_edit_button_srgba`
+- `operad::widgets::color_edit_button_srgba_premultiplied`
+- `operad::widgets::color_edit_button_srgba_unmultiplied`
+- `operad::widgets::color_picker_color32`
+- `operad::widgets::color_picker_hsva_2d`
 - `operad::widgets::color_edit_button_hsva`
 - `operad::widgets::color_edit_button_oklch`
 - `operad::widgets::show_color`
@@ -153,7 +159,9 @@ frames, side-by-side sections, columns, indentation, or resizable regions.
 The color button helpers use the existing color picker state and action model.
 They are compact trigger/display widgets for common color formats; applications
 still decide whether a click opens a picker, copies a value, or commits a
-color change.
+color change. The premultiplied variants display an unpremultiplied swatch
+while preserving the stored premultiplied channel values in the accessible
+value text.
 
 The menu-button helpers use `MenuButtonState`, `MenuItem`, and anchored popup
 geometry from the previous layout pass. They compose normal menu-list popups

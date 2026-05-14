@@ -53,6 +53,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   composition.
 - [x] Alpha 13 adds selectable-value and angle-drag helper builders over the
   existing selectable-label and drag-value primitives.
+- [x] Alpha 14 adds premultiplied/unmultiplied RGBA and SRGBA color buttons,
+  `Color32`-style color buttons, and standalone HSV 2D picker fields.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

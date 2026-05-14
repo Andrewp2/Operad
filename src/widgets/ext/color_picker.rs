@@ -973,8 +973,13 @@ pub enum ColorValueFormat {
     HexRgba,
     Rgb,
     Rgba,
+    RgbaPremultiplied,
+    RgbaUnmultiplied,
     Srgb,
     Srgba,
+    SrgbaPremultiplied,
+    SrgbaUnmultiplied,
+    Color32,
     Hsva,
     Oklch,
 }
@@ -986,8 +991,13 @@ impl ColorValueFormat {
             Self::HexRgba => "HEXA",
             Self::Rgb => "RGB",
             Self::Rgba => "RGBA",
+            Self::RgbaPremultiplied => "RGBA premultiplied",
+            Self::RgbaUnmultiplied => "RGBA unmultiplied",
             Self::Srgb => "SRGB",
             Self::Srgba => "SRGBA",
+            Self::SrgbaPremultiplied => "SRGBA premultiplied",
+            Self::SrgbaUnmultiplied => "SRGBA unmultiplied",
+            Self::Color32 => "Color32",
             Self::Hsva => "HSVA",
             Self::Oklch => "OKLCH",
         }
@@ -1089,6 +1099,53 @@ pub struct ColorButtonNodes {
     pub label: Option<UiNodeId>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ColorHsva2dOptions {
+    pub layout: LayoutStyle,
+    pub action_prefix: Option<String>,
+    pub accessibility_label: String,
+}
+
+impl Default for ColorHsva2dOptions {
+    fn default() -> Self {
+        Self {
+            layout: LayoutStyle::from_taffy_style(Style {
+                display: Display::Flex,
+                size: TaffySize {
+                    width: length(COLOR_FIELD_WIDTH),
+                    height: length(COLOR_FIELD_HEIGHT),
+                },
+                ..Default::default()
+            }),
+            action_prefix: None,
+            accessibility_label: "HSV color field".to_string(),
+        }
+    }
+}
+
+impl ColorHsva2dOptions {
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+
+    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.action_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = label.into();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorHsva2dNodes {
+    pub root: UiNodeId,
+    pub field: UiNodeId,
+}
+
 pub fn compact_color_button(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1141,6 +1198,39 @@ pub fn color_edit_button_rgba(
     )
 }
 
+pub fn color_edit_button_rgba_premultiplied(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button_with_value(
+        document,
+        parent,
+        name,
+        unpremultiply_alpha(color),
+        format_color_value(color, ColorValueFormat::RgbaPremultiplied),
+        options.with_format(ColorValueFormat::RgbaPremultiplied),
+    )
+}
+
+pub fn color_edit_button_rgba_unmultiplied(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        color,
+        options.with_format(ColorValueFormat::RgbaUnmultiplied),
+    )
+}
+
 pub fn color_edit_button_srgb(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1170,6 +1260,55 @@ pub fn color_edit_button_srgba(
         name,
         color,
         options.with_format(ColorValueFormat::Srgba),
+    )
+}
+
+pub fn color_edit_button_srgba_premultiplied(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button_with_value(
+        document,
+        parent,
+        name,
+        unpremultiply_alpha(color),
+        format_color_value(color, ColorValueFormat::SrgbaPremultiplied),
+        options.with_format(ColorValueFormat::SrgbaPremultiplied),
+    )
+}
+
+pub fn color_edit_button_srgba_unmultiplied(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        color,
+        options.with_format(ColorValueFormat::SrgbaUnmultiplied),
+    )
+}
+
+pub fn color_picker_color32(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(
+        document,
+        parent,
+        name,
+        color,
+        options.with_format(ColorValueFormat::Color32),
     )
 }
 
@@ -1203,6 +1342,48 @@ pub fn color_edit_button_oklch(
         color,
         options.with_format(ColorValueFormat::Oklch),
     )
+}
+
+pub fn color_picker_hsva_2d(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    hsv: ColorHsv,
+    options: ColorHsva2dOptions,
+) -> ColorHsva2dNodes {
+    let name = name.into();
+    let root = document.add_child(
+        parent,
+        UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: options.layout.style,
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Slider)
+                .label(options.accessibility_label.clone())
+                .value(format!(
+                    "hue {:.0}, saturation {:.0}%, value {:.0}%",
+                    hsv.hue,
+                    hsv.saturation * 100.0,
+                    hsv.value * 100.0
+                ))
+                .hint("Drag to edit saturation and value")
+                .focusable(),
+        ),
+    );
+    let state = ColorPickerState::new(hsv.to_rgba()).with_mode(ColorPickerMode::Hsv);
+    let field = color_field(
+        document,
+        root,
+        &name,
+        &state,
+        options.action_prefix.as_deref(),
+    );
+    ColorHsva2dNodes { root, field }
 }
 
 pub fn show_color(
@@ -1265,6 +1446,18 @@ fn color_button(
 ) -> ColorButtonNodes {
     let name = name.into();
     let value = format_color_value(color, options.format);
+    color_button_with_value(document, parent, name, color, value, options)
+}
+
+fn color_button_with_value(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    value: String,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    let name = name.into();
     let mut root = UiNode::container(
         name.clone(),
         UiNodeStyle {
@@ -2301,6 +2494,20 @@ pub fn format_color_value(color: ColorRgba, format: ColorValueFormat) -> String 
             color.b,
             color.a as f32 / 255.0
         ),
+        ColorValueFormat::RgbaPremultiplied => format!(
+            "rgba_premultiplied({}, {}, {}, {:.3})",
+            color.r,
+            color.g,
+            color.b,
+            color.a as f32 / 255.0
+        ),
+        ColorValueFormat::RgbaUnmultiplied => format!(
+            "rgba_unmultiplied({}, {}, {}, {:.3})",
+            color.r,
+            color.g,
+            color.b,
+            color.a as f32 / 255.0
+        ),
         ColorValueFormat::Srgb => format!("srgb({}, {}, {})", color.r, color.g, color.b),
         ColorValueFormat::Srgba => format!(
             "srgba({}, {}, {}, {:.3})",
@@ -2309,6 +2516,26 @@ pub fn format_color_value(color: ColorRgba, format: ColorValueFormat) -> String 
             color.b,
             color.a as f32 / 255.0
         ),
+        ColorValueFormat::SrgbaPremultiplied => format!(
+            "srgba_premultiplied({}, {}, {}, {:.3})",
+            color.r,
+            color.g,
+            color.b,
+            color.a as f32 / 255.0
+        ),
+        ColorValueFormat::SrgbaUnmultiplied => format!(
+            "srgba_unmultiplied({}, {}, {}, {:.3})",
+            color.r,
+            color.g,
+            color.b,
+            color.a as f32 / 255.0
+        ),
+        ColorValueFormat::Color32 => {
+            format!(
+                "Color32({}, {}, {}, {})",
+                color.r, color.g, color.b, color.a
+            )
+        }
         ColorValueFormat::Hsva => {
             let hsv = ColorHsv::from_rgba(color);
             format!(
@@ -2422,6 +2649,30 @@ fn hex_byte(value: &str) -> Option<u8> {
 }
 
 #[cfg(test)]
+fn premultiply_alpha(color: ColorRgba) -> ColorRgba {
+    let alpha = color.a as u16;
+    ColorRgba::new(
+        ((color.r as u16 * alpha + 127) / 255) as u8,
+        ((color.g as u16 * alpha + 127) / 255) as u8,
+        ((color.b as u16 * alpha + 127) / 255) as u8,
+        color.a,
+    )
+}
+
+fn unpremultiply_alpha(color: ColorRgba) -> ColorRgba {
+    if color.a == 0 {
+        return ColorRgba::TRANSPARENT;
+    }
+    let alpha = color.a as u16;
+    ColorRgba::new(
+        ((color.r as u16 * 255 + alpha / 2) / alpha).min(255) as u8,
+        ((color.g as u16 * 255 + alpha / 2) / alpha).min(255) as u8,
+        ((color.b as u16 * 255 + alpha / 2) / alpha).min(255) as u8,
+        color.a,
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use crate::root_style;
 
@@ -2505,6 +2756,112 @@ mod tests {
         assert!(swatch.label.is_none());
         assert!(
             document.node(absolute).style.layout.position == taffy::prelude::Position::Absolute
+        );
+    }
+
+    #[test]
+    fn color_button_builders_cover_egui_style_color_conveniences() {
+        let mut document = UiDocument::new(root_style(420.0, 240.0));
+        let root = document.root;
+        let color = ColorRgba::new(51, 102, 153, 128);
+        let premultiplied = premultiply_alpha(color);
+
+        let rgba_premultiplied = color_edit_button_rgba_premultiplied(
+            &mut document,
+            root,
+            "brand.rgba_premultiplied",
+            premultiplied,
+            ColorButtonOptions::default(),
+        );
+        let rgba_unmultiplied = color_edit_button_rgba_unmultiplied(
+            &mut document,
+            root,
+            "brand.rgba_unmultiplied",
+            color,
+            ColorButtonOptions::default(),
+        );
+        let srgba_premultiplied = color_edit_button_srgba_premultiplied(
+            &mut document,
+            root,
+            "brand.srgba_premultiplied",
+            premultiplied,
+            ColorButtonOptions::default(),
+        );
+        let srgba_unmultiplied = color_edit_button_srgba_unmultiplied(
+            &mut document,
+            root,
+            "brand.srgba_unmultiplied",
+            color,
+            ColorButtonOptions::default(),
+        );
+        let color32 = color_picker_color32(
+            &mut document,
+            root,
+            "brand.color32",
+            color,
+            ColorButtonOptions::default(),
+        );
+        let hsva_2d = color_picker_hsva_2d(
+            &mut document,
+            root,
+            "brand.hsva_2d",
+            ColorHsv::from_rgba(color),
+            ColorHsva2dOptions::default().with_action_prefix("brand.hsva_2d"),
+        );
+
+        assert_eq!(
+            document
+                .node(rgba_premultiplied.root)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("rgba_premultiplied(26, 51, 77, 0.502)")
+        );
+        assert_eq!(
+            document
+                .node(rgba_unmultiplied.root)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("rgba_unmultiplied(51, 102, 153, 0.502)")
+        );
+        assert_eq!(
+            document
+                .node(srgba_premultiplied.root)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("srgba_premultiplied(26, 51, 77, 0.502)")
+        );
+        assert_eq!(
+            document
+                .node(srgba_unmultiplied.root)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("srgba_unmultiplied(51, 102, 153, 0.502)")
+        );
+        assert_eq!(
+            document
+                .node(color32.root)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("Color32(51, 102, 153, 128)")
+        );
+        assert_eq!(
+            document.node(hsva_2d.field).action.as_ref(),
+            Some(&WidgetActionBinding::action("brand.hsva_2d.field"))
         );
     }
 

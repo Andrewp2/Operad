@@ -43,6 +43,9 @@
   composition.
 - Added selectable-value and angle-drag helper builders over the existing
   selectable-label and drag-value primitives.
+- Added egui-style color conveniences for premultiplied/unmultiplied RGBA and
+  SRGBA buttons, `Color32`-style color buttons, and standalone HSV 2D picker
+  fields.
 
 ## 6.1.0
 

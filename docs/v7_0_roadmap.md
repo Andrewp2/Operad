@@ -123,6 +123,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 13 has started selection/numeric convenience parity by adding
   `selectable_value`, `drag_angle`, and `drag_angle_tau` helpers over the
   existing selectable-label and drag-value primitives.
+- Alpha 14 has closed the remaining color-editing convenience gap with
+  premultiplied/unmultiplied RGBA and SRGBA buttons, `Color32`-style buttons,
+  and standalone HSV 2D picker fields.
 
 ### 1. Architecture And API Cleanup
 
@@ -206,8 +209,9 @@ These are the items that should move from the v6 planning notes into v7 work.
   colored label, and wrapped label.
 - Add color editing helpers for compact buttons, swatches, common color formats,
   and copy/display affordances. Initial compact button, swatch, RGB/RGBA,
-  SRGB/SRGBA, HSVA, OKLCH, `show_color`, and `show_color_at` helpers are now
-  available.
+  premultiplied/unmultiplied RGBA, SRGB/SRGBA, premultiplied/unmultiplied
+  SRGBA, HSVA, OKLCH, `Color32`, HSV 2D picker, `show_color`, and
+  `show_color_at` helpers are now available.
 
 ### 7. Rendering, Canvas, And Media
 

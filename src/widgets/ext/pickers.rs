@@ -7,12 +7,14 @@ use crate::{ColorRgba, ImageContent, ShaderEffect};
 
 pub use super::color_picker::{
     color_edit_button_hsva, color_edit_button_oklch, color_edit_button_rgb, color_edit_button_rgba,
-    color_edit_button_srgb, color_edit_button_srgba, color_picker, color_swatch_button,
-    compact_color_button, format_color_value, format_hex_color, parse_hex_color, show_color,
-    show_color_at, ColorButtonNodes, ColorButtonOptions, ColorChannel, ColorChannelStep, ColorHsv,
-    ColorOklch, ColorOklchChannel, ColorPalette, ColorPickerMode, ColorPickerNodes,
-    ColorPickerOptions, ColorPickerState, ColorPickerStyle, ColorPickerUpdate, ColorSwatch,
-    ColorValueFormat,
+    color_edit_button_rgba_premultiplied, color_edit_button_rgba_unmultiplied,
+    color_edit_button_srgb, color_edit_button_srgba, color_edit_button_srgba_premultiplied,
+    color_edit_button_srgba_unmultiplied, color_picker, color_picker_color32, color_picker_hsva_2d,
+    color_swatch_button, compact_color_button, format_color_value, format_hex_color,
+    parse_hex_color, show_color, show_color_at, ColorButtonNodes, ColorButtonOptions, ColorChannel,
+    ColorChannelStep, ColorHsv, ColorHsva2dNodes, ColorHsva2dOptions, ColorOklch,
+    ColorOklchChannel, ColorPalette, ColorPickerMode, ColorPickerNodes, ColorPickerOptions,
+    ColorPickerState, ColorPickerStyle, ColorPickerUpdate, ColorSwatch, ColorValueFormat,
 };
 pub use super::date_picker::{
     CalendarDate, CalendarDayCell, CalendarMonth, DatePickerBuilder, DatePickerControl,

@@ -45,8 +45,12 @@ Color widgets:
 - `color_edit_button_hsva`
 - `color_edit_button_rgb`
 - `color_edit_button_rgba`
+- `color_edit_button_rgba_premultiplied`
+- `color_edit_button_rgba_unmultiplied`
 - `color_edit_button_srgb`
 - `color_edit_button_srgba`
+- `color_edit_button_srgba_premultiplied`
+- `color_edit_button_srgba_unmultiplied`
 - `color_picker_color32`
 - `color_picker_hsva_2d`
 - `show_color`
@@ -163,8 +167,14 @@ Public document-building widget functions currently exported under `operad::widg
 - `color_swatch_button`
 - `color_edit_button_rgb`
 - `color_edit_button_rgba`
+- `color_edit_button_rgba_premultiplied`
+- `color_edit_button_rgba_unmultiplied`
 - `color_edit_button_srgb`
 - `color_edit_button_srgba`
+- `color_edit_button_srgba_premultiplied`
+- `color_edit_button_srgba_unmultiplied`
+- `color_picker_color32`
+- `color_picker_hsva_2d`
 - `color_edit_button_hsva`
 - `color_edit_button_oklch`
 - `show_color`
@@ -239,15 +249,6 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 
 This section lists egui widget and widget-adjacent features from the sources above that do not currently have an equivalent public Operad visual widget builder. Some lower-level Operad contracts may exist, but they are counted as missing here if customers cannot add the feature with a normal `operad::widgets::*` builder.
 
-Missing color-editing conveniences:
-
-- `color_edit_button_rgba_premultiplied`
-- `color_edit_button_rgba_unmultiplied`
-- `color_edit_button_srgba_premultiplied`
-- `color_edit_button_srgba_unmultiplied`
-- `color_picker_color32`
-- `color_picker_hsva_2d`
-
 Missing containers and layout widgets:
 
 - Area
@@ -272,4 +273,7 @@ Partially covered but not equivalent:
 - Dialogs/modals: Operad now has `modal_dialog` plus dialog and overlay state contracts, but still needs focus-trap and dismissal helpers wired into the visual builder.
 - Drag and drop: Operad now has generic `dnd_drag_source` and `dnd_drop_zone` builders, plus descriptors and metadata on some complex widgets. It still needs fuller drop preview styling, drag-image policy, and platform adapter coverage.
 - Scroll bars: Operad exposes scrollbar geometry/accessibility helpers, but no complete visual scrollbar widget builder.
-- Panels: Operad has `dock_workspace`, `split_pane`, `scroll_area`, and generic containers, but no direct `CentralPanel`, `SidePanel`, or `TopBottomPanel` equivalents.
+- Panels: Operad has `central_panel`, `side_panel`, `top_panel`, `bottom_panel`,
+  `left_panel`, `right_panel`, `dock_workspace`, `split_pane`, `scroll_area`,
+  and generic containers. It still needs richer pane-grid docking and animated
+  panel collapse behavior.
