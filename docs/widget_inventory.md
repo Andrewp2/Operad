@@ -148,6 +148,11 @@ Public document-building widget functions currently exported under `operad::widg
 - `menu_list`
 - `menu_list_popup`
 - `menu_bar`
+- `menu_button`
+- `image_menu_button`
+- `image_text_menu_button`
+- `submenu`
+- `submenu_button`
 - `context_menu`
 - `command_palette`
 - `color_picker`
@@ -249,14 +254,6 @@ Missing containers and layout widgets:
 
 - Area
 - Scene
-
-Missing menu conveniences:
-
-- Menu button
-- Image menu button
-- Image-and-text menu button
-- Submenu
-- Submenu button
 
 Missing interaction helpers:
 

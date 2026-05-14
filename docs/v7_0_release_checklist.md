@@ -48,6 +48,9 @@ These should pass on a normal Linux runner before every v7 milestone:
   helpers.
 - [x] Alpha 11 adds compact color button, swatch button, color display, and
   RGB/RGBA/SRGB/SRGBA/HSVA/OKLCH color-edit button helpers.
+- [x] Alpha 12 adds menu-button state, trigger builders, image menu buttons,
+  image-and-text menu buttons, submenu item helpers, and anchored submenu popup
+  composition.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

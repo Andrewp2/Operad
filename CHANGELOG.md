@@ -38,6 +38,9 @@
   indentation, resize handles, and resize containers.
 - Added compact color button, color swatch button, color-format display, and
   RGB/RGBA/SRGB/SRGBA/HSVA/OKLCH color-edit button helpers.
+- Added menu-button state, trigger builders, image menu buttons,
+  image-and-text menu buttons, submenu item helpers, and anchored submenu popup
+  composition.
 
 ## 6.1.0
 

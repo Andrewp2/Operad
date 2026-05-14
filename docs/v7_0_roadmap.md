@@ -117,6 +117,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 11 has started color-editing parity by adding compact color buttons,
   swatch buttons, color value formatting, color display helpers, and
   RGB/RGBA/SRGB/SRGBA/HSVA/OKLCH color-edit button helpers.
+- Alpha 12 has started menu convenience parity by adding menu-button state,
+  trigger builders, image menu buttons, image-and-text menu buttons, submenu
+  item helpers, and anchored submenu popup composition.
 
 ### 1. Architecture And API Cleanup
 
@@ -235,7 +238,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Add focus traps for modal/dialog surfaces.
 - Add roving focus helpers for menus, tab lists, tree views, tables, and radio
   groups.
-- Add keyboard shortcut, command, and menu semantics consistently.
+- Add keyboard shortcut, command, and menu semantics consistently. Menu-button
+  state, image menu buttons, image-and-text menu buttons, submenu item helpers,
+  and anchored submenu popups are now available.
 - Expand pointer/touch/stylus support and make capture/cancel behavior explicit.
 - Add screen-reader-friendly labels, value ranges, selected states, expanded
   states, disabled reasons, and live regions.

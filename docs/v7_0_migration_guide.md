@@ -107,6 +107,11 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::color_edit_button_oklch`
 - `operad::widgets::show_color`
 - `operad::widgets::show_color_at`
+- `operad::widgets::menu_button`
+- `operad::widgets::image_menu_button`
+- `operad::widgets::image_text_menu_button`
+- `operad::widgets::submenu`
+- `operad::widgets::submenu_button`
 - `operad::widgets::singleline_text_input`
 - `operad::widgets::multiline_text_input`
 - `operad::widgets::text_area`
@@ -141,6 +146,11 @@ The color button helpers use the existing color picker state and action model.
 They are compact trigger/display widgets for common color formats; applications
 still decide whether a click opens a picker, copies a value, or commits a
 color change.
+
+The menu-button helpers use `MenuButtonState`, `MenuItem`, and anchored popup
+geometry from the previous layout pass. They compose normal menu-list popups
+and anchored submenus without requiring examples to hand-build menu rows or
+inline popup panels.
 
 The text-input convenience builders all use `TextInputState` and
 `TextInputOptions`; they configure common defaults without replacing the

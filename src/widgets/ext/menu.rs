@@ -1,16 +1,18 @@
 //! Popup, menu, dropdown, and command-palette widgets.
 
 use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, LengthPercentageAuto, Position,
+    AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentageAuto, Position,
     Rect as TaffyRect, Size as TaffySize, Style,
 };
+
+use super::menu_list::{menu_list_popup, MenuListNodes, MenuListOptions};
 
 use crate::{
     length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
     AnimationMachine, ClipBehavior, ColorRgba, CommandId, CommandRegistry, CommandScope,
     CommandTooltipResolver, ImageContent, InputBehavior, KeyCode, KeyModifiers, LayoutStyle,
     ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument, UiInputEvent,
-    UiNode, UiNodeId, UiNodeStyle, UiRect, UiSize, UiVisual,
+    UiNode, UiNodeId, UiNodeStyle, UiRect, UiSize, UiVisual, WidgetActionBinding,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -647,6 +649,610 @@ pub fn menu_item_from_command(
         item = item.disabled();
     }
     Some(item)
+}
+
+pub fn submenu(id: impl Into<String>, label: impl Into<String>, items: Vec<MenuItem>) -> MenuItem {
+    MenuItem::submenu(id, label, items)
+}
+
+pub fn submenu_button(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    items: Vec<MenuItem>,
+) -> MenuItem {
+    MenuItem::submenu(id, label, items)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MenuButtonState {
+    pub open: bool,
+    pub navigation: MenuNavigationState,
+}
+
+impl MenuButtonState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn open(&mut self, items: &[MenuItem]) -> Option<Vec<usize>> {
+        self.open = true;
+        if self.navigation.active_path.is_empty() {
+            self.navigation.open_root(items)
+        } else {
+            Some(self.navigation.active_path.clone())
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.navigation.clear();
+    }
+
+    pub fn toggle(&mut self, items: &[MenuItem]) -> MenuButtonOutcome {
+        if self.open {
+            self.close();
+            MenuButtonOutcome {
+                closed: true,
+                ..Default::default()
+            }
+        } else {
+            MenuButtonOutcome {
+                opened: true,
+                active_path: self.open(items),
+                ..Default::default()
+            }
+        }
+    }
+
+    pub fn selected(&self, items: &[MenuItem]) -> Option<MenuSelection> {
+        self.navigation.select_active(items)
+    }
+
+    pub fn handle_event(&mut self, items: &[MenuItem], event: &UiInputEvent) -> MenuButtonOutcome {
+        if !self.open {
+            if menu_button_open_event(event) {
+                return MenuButtonOutcome {
+                    opened: true,
+                    active_path: self.open(items),
+                    ..Default::default()
+                };
+            }
+            return MenuButtonOutcome::default();
+        }
+
+        let navigation = self.navigation.handle_event(items, event);
+        let mut outcome = MenuButtonOutcome {
+            active_path: navigation.active_path.clone(),
+            opened_submenu: navigation.opened_submenu,
+            closed_submenu: navigation.closed_submenu,
+            selected: navigation.selected,
+            ..Default::default()
+        };
+        if navigation.closed || outcome.selected.is_some() {
+            self.open = false;
+            outcome.closed = true;
+        }
+        outcome
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MenuButtonOutcome {
+    pub opened: bool,
+    pub closed: bool,
+    pub opened_submenu: bool,
+    pub closed_submenu: bool,
+    pub active_path: Option<Vec<usize>>,
+    pub selected: Option<MenuSelection>,
+}
+
+impl MenuButtonOutcome {
+    pub fn is_empty(&self) -> bool {
+        !self.opened
+            && !self.closed
+            && !self.opened_submenu
+            && !self.closed_submenu
+            && self.active_path.is_none()
+            && self.selected.is_none()
+    }
+
+    pub fn selected_command(&self) -> Option<MenuCommandSelection> {
+        self.selected
+            .as_ref()
+            .and_then(MenuSelection::command_selection)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuSubmenuAnchor {
+    pub path: Vec<usize>,
+    pub anchor: UiRect,
+}
+
+impl MenuSubmenuAnchor {
+    pub fn new(path: impl Into<Vec<usize>>, anchor: UiRect) -> Self {
+        Self {
+            path: path.into(),
+            anchor,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuButtonAnchors {
+    pub trigger: UiRect,
+    pub viewport: UiRect,
+    pub submenus: Vec<MenuSubmenuAnchor>,
+}
+
+impl MenuButtonAnchors {
+    pub fn new(trigger: UiRect, viewport: UiRect) -> Self {
+        Self {
+            trigger,
+            viewport,
+            submenus: Vec::new(),
+        }
+    }
+
+    pub fn with_submenu_anchor(mut self, path: impl Into<Vec<usize>>, anchor: UiRect) -> Self {
+        self.submenus.push(MenuSubmenuAnchor::new(path, anchor));
+        self
+    }
+
+    pub fn submenu_anchor(&self, path: &[usize]) -> Option<UiRect> {
+        self.submenus
+            .iter()
+            .find(|submenu| submenu.path == path)
+            .map(|submenu| submenu.anchor)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MenuButtonOptions {
+    pub layout: LayoutStyle,
+    pub visual: UiVisual,
+    pub open_visual: Option<UiVisual>,
+    pub disabled_visual: Option<UiVisual>,
+    pub text_style: TextStyle,
+    pub disabled_text_style: TextStyle,
+    pub leading_image: Option<ImageContent>,
+    pub image_size: UiSize,
+    pub shader: Option<ShaderEffect>,
+    pub animation: Option<AnimationMachine>,
+    pub enabled: bool,
+    pub action: Option<WidgetActionBinding>,
+    pub accessibility_label: Option<String>,
+    pub accessibility_hint: Option<String>,
+    pub popup_placement: PopupPlacement,
+    pub submenu_placement: PopupPlacement,
+    pub popup_menu: MenuListOptions,
+}
+
+impl Default for MenuButtonOptions {
+    fn default() -> Self {
+        Self {
+            layout: LayoutStyle::from_taffy_style(Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                size: TaffySize {
+                    width: Dimension::auto(),
+                    height: length(30.0),
+                },
+                padding: TaffyRect {
+                    left: length_percentage(10.0),
+                    right: length_percentage(10.0),
+                    top: length_percentage(0.0),
+                    bottom: length_percentage(0.0),
+                },
+                ..Default::default()
+            }),
+            visual: UiVisual::panel(ColorRgba::new(36, 42, 52, 255), None, 3.0),
+            open_visual: Some(UiVisual::panel(ColorRgba::new(45, 55, 68, 255), None, 3.0)),
+            disabled_visual: Some(UiVisual::panel(ColorRgba::new(30, 34, 40, 170), None, 3.0)),
+            text_style: TextStyle::default(),
+            disabled_text_style: TextStyle {
+                color: ColorRgba::new(138, 148, 164, 255),
+                ..Default::default()
+            },
+            leading_image: None,
+            image_size: UiSize::new(18.0, 18.0),
+            shader: None,
+            animation: None,
+            enabled: true,
+            action: None,
+            accessibility_label: None,
+            accessibility_hint: None,
+            popup_placement: PopupPlacement::new(PopupSide::Bottom, PopupAlign::Start),
+            submenu_placement: PopupPlacement::new(PopupSide::Right, PopupAlign::Start),
+            popup_menu: MenuListOptions::default(),
+        }
+    }
+}
+
+impl MenuButtonOptions {
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+
+    pub fn with_leading_image(mut self, image: impl Into<ImageContent>) -> Self {
+        self.leading_image = Some(image.into());
+        self
+    }
+
+    pub fn with_image_size(mut self, size: UiSize) -> Self {
+        self.image_size = size;
+        self
+    }
+
+    pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn with_accessibility_hint(mut self, hint: impl Into<String>) -> Self {
+        self.accessibility_hint = Some(hint.into());
+        self
+    }
+
+    pub fn with_popup_placement(mut self, placement: PopupPlacement) -> Self {
+        self.popup_placement = placement;
+        self
+    }
+
+    pub fn with_submenu_placement(mut self, placement: PopupPlacement) -> Self {
+        self.submenu_placement = placement;
+        self
+    }
+
+    pub fn with_popup_menu(mut self, options: MenuListOptions) -> Self {
+        self.popup_menu = options;
+        self
+    }
+
+    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.popup_menu.action_prefix = Some(prefix.into());
+        self
+    }
+
+    pub const fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuButtonNodes {
+    pub button: UiNodeId,
+    pub popup: Option<MenuListNodes>,
+    pub submenus: Vec<MenuListNodes>,
+}
+
+pub fn menu_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    label_text: impl Into<String>,
+    items: &[MenuItem],
+    state: &MenuButtonState,
+    anchors: Option<&MenuButtonAnchors>,
+    options: MenuButtonOptions,
+) -> MenuButtonNodes {
+    menu_button_with_image(
+        document,
+        parent,
+        name,
+        label_text.into(),
+        items,
+        state,
+        anchors,
+        options,
+    )
+}
+
+pub fn image_text_menu_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    label_text: impl Into<String>,
+    image: impl Into<ImageContent>,
+    items: &[MenuItem],
+    state: &MenuButtonState,
+    anchors: Option<&MenuButtonAnchors>,
+    mut options: MenuButtonOptions,
+) -> MenuButtonNodes {
+    options.leading_image = Some(image.into());
+    menu_button_with_image(
+        document,
+        parent,
+        name,
+        label_text.into(),
+        items,
+        state,
+        anchors,
+        options,
+    )
+}
+
+pub fn image_menu_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    image: impl Into<ImageContent>,
+    items: &[MenuItem],
+    state: &MenuButtonState,
+    anchors: Option<&MenuButtonAnchors>,
+    mut options: MenuButtonOptions,
+) -> MenuButtonNodes {
+    options.leading_image = Some(image.into());
+    menu_button_with_image(
+        document,
+        parent,
+        name,
+        String::new(),
+        items,
+        state,
+        anchors,
+        options,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn menu_button_with_image(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    label_text: String,
+    items: &[MenuItem],
+    state: &MenuButtonState,
+    anchors: Option<&MenuButtonAnchors>,
+    options: MenuButtonOptions,
+) -> MenuButtonNodes {
+    let name = name.into();
+    let button = menu_button_trigger(
+        document,
+        parent,
+        name.clone(),
+        label_text,
+        state.open,
+        &options,
+    );
+    let popup = state
+        .open
+        .then(|| {
+            anchors.map(|anchors| {
+                let mut popup_menu = options.popup_menu.clone();
+                popup_menu.z_index = popup_menu.z_index.max(101);
+                menu_list_popup(
+                    document,
+                    parent,
+                    format!("{name}.popup"),
+                    AnchoredPopup::new(anchors.trigger, anchors.viewport, options.popup_placement),
+                    items,
+                    state.navigation.active_path.first().copied(),
+                    popup_menu,
+                )
+            })
+        })
+        .flatten();
+    if let Some(popup) = &popup {
+        document
+            .node_mut(button)
+            .accessibility
+            .as_mut()
+            .map(|accessibility| accessibility.relations.controls.push(popup.root));
+    }
+    let submenus = if state.open {
+        anchors
+            .map(|anchors| {
+                menu_button_submenus(
+                    document,
+                    parent,
+                    &name,
+                    items,
+                    &state.navigation.active_path,
+                    anchors,
+                    &options,
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    MenuButtonNodes {
+        button,
+        popup,
+        submenus,
+    }
+}
+
+fn menu_button_trigger(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: String,
+    label_text: String,
+    open: bool,
+    options: &MenuButtonOptions,
+) -> UiNodeId {
+    let mut layout = options.layout.style.clone();
+    layout.display = Display::Flex;
+    layout.flex_direction = FlexDirection::Row;
+    layout.align_items = Some(AlignItems::Center);
+    layout.justify_content = layout.justify_content.or(Some(JustifyContent::Center));
+
+    let visual = if !options.enabled {
+        options.disabled_visual.unwrap_or(options.visual)
+    } else if open {
+        options.open_visual.unwrap_or(options.visual)
+    } else {
+        options.visual
+    };
+    let mut node = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout,
+            clip: ClipBehavior::Clip,
+            z_index: if open { 20 } else { 0 },
+            ..Default::default()
+        },
+    )
+    .with_input(if options.enabled {
+        InputBehavior::BUTTON
+    } else {
+        InputBehavior::NONE
+    })
+    .with_visual(visual)
+    .with_accessibility(menu_button_accessibility(&name, &label_text, open, options));
+    if let Some(shader) = options.shader.clone() {
+        node = node.with_shader(shader);
+    }
+    if let Some(animation) = options.animation.clone() {
+        node = node.with_animation(animation);
+    }
+
+    let root = document.add_child(parent, node);
+    if let Some(action) = options.action.clone() {
+        document.node_mut(root).action = Some(action);
+    }
+    if let Some(image) = &options.leading_image {
+        leading_image(
+            document,
+            root,
+            format!("{name}.image"),
+            image.clone(),
+            &menu_button_accessibility_label(&name, &label_text, options),
+            options.image_size,
+        );
+    }
+    if !label_text.is_empty() {
+        label(
+            document,
+            root,
+            format!("{name}.label"),
+            label_text,
+            if options.enabled {
+                options.text_style.clone()
+            } else {
+                options.disabled_text_style.clone()
+            },
+            LayoutStyle::from_taffy_style(Style {
+                size: TaffySize {
+                    width: Dimension::auto(),
+                    height: Dimension::auto(),
+                },
+                ..Default::default()
+            }),
+        );
+    }
+    root
+}
+
+fn menu_button_submenus(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: &str,
+    items: &[MenuItem],
+    active_path: &[usize],
+    anchors: &MenuButtonAnchors,
+    options: &MenuButtonOptions,
+) -> Vec<MenuListNodes> {
+    let mut submenus = Vec::new();
+    let mut level_items = items;
+    for depth in 0..active_path.len() {
+        let index = active_path[depth];
+        let Some(item) = level_items.get(index) else {
+            break;
+        };
+        let Some(children) = item.children() else {
+            break;
+        };
+        let path = active_path[..=depth].to_vec();
+        let Some(anchor) = anchors.submenu_anchor(&path) else {
+            break;
+        };
+        let mut popup_menu = options.popup_menu.clone();
+        popup_menu.z_index = popup_menu.z_index.max(101).saturating_add(depth as i16 + 1);
+        let submenu = menu_list_popup(
+            document,
+            parent,
+            format!("{name}.submenu.{}", path_label(&path)),
+            AnchoredPopup::new(anchor, anchors.viewport, options.submenu_placement),
+            children,
+            active_path.get(depth + 1).copied(),
+            popup_menu,
+        );
+        submenus.push(submenu);
+        level_items = children;
+    }
+    submenus
+}
+
+fn menu_button_accessibility(
+    name: &str,
+    label_text: &str,
+    open: bool,
+    options: &MenuButtonOptions,
+) -> AccessibilityMeta {
+    let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Button)
+        .label(menu_button_accessibility_label(name, label_text, options))
+        .value(if open { "open" } else { "closed" })
+        .expanded(open)
+        .action(if open {
+            AccessibilityAction::new("close", "Close menu")
+        } else {
+            AccessibilityAction::new("open", "Open menu")
+        });
+    if let Some(hint) = &options.accessibility_hint {
+        accessibility = accessibility.hint(hint.clone());
+    }
+    if options.enabled {
+        accessibility.focusable()
+    } else {
+        accessibility.disabled()
+    }
+}
+
+fn menu_button_accessibility_label(
+    name: &str,
+    label_text: &str,
+    options: &MenuButtonOptions,
+) -> String {
+    options
+        .accessibility_label
+        .clone()
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| {
+            if label_text.is_empty() {
+                name.to_string()
+            } else {
+                label_text.to_string()
+            }
+        })
+}
+
+fn menu_button_open_event(event: &UiInputEvent) -> bool {
+    matches!(
+        event,
+        UiInputEvent::Key {
+            key: KeyCode::Enter | KeyCode::Character(' ') | KeyCode::ArrowDown,
+            ..
+        }
+    )
+}
+
+fn path_label(path: &[usize]) -> String {
+    path.iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 pub fn first_navigable_index(items: &[MenuItem]) -> Option<usize> {
@@ -1425,7 +2031,7 @@ mod tests {
         AnimationState, AnimationTransition, AnimationTrigger, ApproxTextMeasurer, Command,
         CommandId, CommandMeta, CommandRegistry, CommandScope, ContextMenuSuppressedReason,
         HelpItemState, KeyModifiers, PointerButton, PointerEventKind, RawPointerEvent,
-        ShaderEffect, Shortcut, ShortcutFormatter, UiContent, UiPoint,
+        ShaderEffect, Shortcut, ShortcutFormatter, UiContent, UiPoint, WidgetActionBinding,
     };
 
     fn test_animation() -> AnimationMachine {
@@ -2257,6 +2863,204 @@ mod tests {
 
         let submenu_accessibility = document.node(nodes.rows[2]).accessibility.as_ref().unwrap();
         assert_eq!(submenu_accessibility.hint.as_deref(), Some("Opens submenu"));
+    }
+
+    #[test]
+    fn menu_button_state_opens_navigates_submenus_and_selects_commands() {
+        let items = vec![submenu_button(
+            "file",
+            "File",
+            vec![
+                MenuItem::command("new", "New"),
+                MenuItem::command("open", "Open"),
+            ],
+        )];
+        let mut state = MenuButtonState::new();
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowDown,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.opened);
+        assert_eq!(outcome.active_path, Some(vec![0]));
+        assert!(state.open);
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowRight,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(outcome.opened_submenu);
+        assert_eq!(outcome.active_path, Some(vec![0, 0]));
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::ArrowDown,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(outcome.active_path, Some(vec![0, 1]));
+
+        let outcome = state.handle_event(
+            &items,
+            &UiInputEvent::Key {
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(
+            outcome.selected,
+            Some(MenuSelection {
+                id: Some("open".to_string()),
+                index_path: vec![0, 1],
+            })
+        );
+        assert!(outcome.closed);
+        assert!(!state.open);
+    }
+
+    #[test]
+    fn menu_button_builds_trigger_popup_and_submenu_popups() {
+        let mut document = UiDocument::new(root_style(640.0, 480.0));
+        let root = document.root;
+        let items = vec![
+            MenuItem::command("save", "Save").shortcut("Ctrl+S"),
+            submenu(
+                "recent",
+                "Recent",
+                vec![
+                    MenuItem::command("demo", "demo.rs"),
+                    MenuItem::command("notes", "notes.md"),
+                ],
+            ),
+        ];
+        let state = MenuButtonState {
+            open: true,
+            navigation: MenuNavigationState::with_active_path(vec![1, 0]),
+        };
+        let anchors = MenuButtonAnchors::new(
+            UiRect::new(20.0, 20.0, 80.0, 30.0),
+            UiRect::new(0.0, 0.0, 640.0, 480.0),
+        )
+        .with_submenu_anchor(vec![1], UiRect::new(220.0, 58.0, 240.0, 28.0));
+
+        let nodes = menu_button(
+            &mut document,
+            root,
+            "file-menu",
+            "File",
+            &items,
+            &state,
+            Some(&anchors),
+            MenuButtonOptions::default()
+                .with_action(WidgetActionBinding::action("file.toggle"))
+                .with_action_prefix("menu"),
+        );
+
+        let popup = nodes.popup.expect("root popup");
+        assert_eq!(popup.rows.len(), 2);
+        assert_eq!(nodes.submenus.len(), 1);
+        assert_eq!(nodes.submenus[0].rows.len(), 2);
+        assert_eq!(
+            document.node(popup.root).style.layout.position,
+            Position::Absolute
+        );
+        assert!(
+            document.node(nodes.submenus[0].root).style.z_index
+                > document.node(popup.root).style.z_index
+        );
+
+        let button = document.node(nodes.button);
+        assert_eq!(
+            button
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .map(AsRef::as_ref),
+            Some("file.toggle")
+        );
+        let accessibility = button.accessibility.as_ref().unwrap();
+        assert_eq!(accessibility.role, AccessibilityRole::Button);
+        assert_eq!(accessibility.label.as_deref(), Some("File"));
+        assert_eq!(accessibility.expanded, Some(true));
+        assert_eq!(accessibility.relations.controls, vec![popup.root]);
+
+        let submenu_row = document.node(nodes.submenus[0].rows[0]);
+        assert_eq!(
+            submenu_row
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .map(AsRef::as_ref),
+            Some("menu.demo")
+        );
+    }
+
+    #[test]
+    fn image_menu_button_variants_add_image_content_and_accessible_labels() {
+        let mut document = UiDocument::new(root_style(320.0, 180.0));
+        let root = document.root;
+        let items = vec![MenuItem::command("copy", "Copy")];
+        let state = MenuButtonState::new();
+
+        let image_only = image_menu_button(
+            &mut document,
+            root,
+            "tools",
+            ImageContent::new("icons.tools"),
+            &items,
+            &state,
+            None,
+            MenuButtonOptions::default().with_accessibility_label("Tools"),
+        );
+        let image_text = image_text_menu_button(
+            &mut document,
+            root,
+            "insert",
+            "Insert",
+            ImageContent::new("icons.plus"),
+            &items,
+            &state,
+            None,
+            MenuButtonOptions::default(),
+        );
+
+        assert!(document
+            .node(image_only.button)
+            .children
+            .iter()
+            .any(|child| {
+                matches!(
+                    &document.node(*child).content,
+                    UiContent::Image(image) if image.key == "icons.tools"
+                )
+            }));
+        assert_eq!(
+            document
+                .node(image_only.button)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("Tools")
+        );
+        assert!(document
+            .node(image_text.button)
+            .children
+            .iter()
+            .any(|child| {
+                matches!(
+                    &document.node(*child).content,
+                    UiContent::Text(text) if text.text == "Insert"
+                )
+            }));
     }
 
     #[test]
