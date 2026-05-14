@@ -587,6 +587,7 @@ impl<'a> WgpuCanvasContext<'a> {
             label: Some("operad-wgpu-canvas-render-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: self.view,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load,
@@ -596,6 +597,7 @@ impl<'a> WgpuCanvasContext<'a> {
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes: None,
+            multiview_mask: None,
         })
     }
 
@@ -663,7 +665,7 @@ impl<'a> WgpuCanvasContext<'a> {
                             },
                             depth_stencil: None,
                             multisample: wgpu::MultisampleState::default(),
-                            multiview: None,
+                            multiview_mask: None,
                             cache: None,
                         });
                 cache.insert(pipeline_key.clone(), pipeline);
@@ -830,8 +832,8 @@ impl WgpuContext {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("operad-wgpu-ui-pipeline-layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -858,14 +860,14 @@ impl WgpuContext {
         let texture_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("operad-wgpu-textured-ui-pipeline-layout"),
-                bind_group_layouts: &[&bind_group_layout, &texture_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout), Some(&texture_bind_group_layout)],
+                immediate_size: 0,
             });
         let canvas_empty_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("operad-wgpu-canvas-empty-pipeline-layout"),
                 bind_group_layouts: &[],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
         let canvas_uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -884,8 +886,8 @@ impl WgpuContext {
         let canvas_uniform_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("operad-wgpu-canvas-uniform-pipeline-layout"),
-                bind_group_layouts: &[&canvas_uniform_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&canvas_uniform_bind_group_layout)],
+                immediate_size: 0,
             });
         let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("operad-wgpu-texture-sampler"),
@@ -894,7 +896,7 @@ impl WgpuContext {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -1118,7 +1120,7 @@ impl WgpuContext {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
     }
@@ -1862,7 +1864,7 @@ impl WgpuContext {
         });
         let _ = self
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|error| RenderError::Backend(format!("wgpu poll failed: {error}")))?;
         rx.recv()
             .map_err(|_| RenderError::Backend("wgpu timestamp map wait failed".to_string()))?
@@ -2724,7 +2726,8 @@ impl WgpuRenderer {
 
     fn ensure_context(&mut self) -> Result<&mut WgpuContext, RenderError> {
         if self.context.is_none() {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
             let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
@@ -2884,21 +2887,29 @@ impl<'window> WgpuSurfaceRenderer<'window> {
 
         self.configure_surface(size)?;
         let frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 self.configure_surface(size)?;
-                self.surface.get_current_texture().map_err(|error| {
-                    RenderError::Backend(format!("surface reacquire failed: {error}"))
-                })?
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(frame)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                    other => {
+                        return Err(RenderError::Backend(format!(
+                            "surface reacquire failed: {other:?}"
+                        )));
+                    }
+                }
             }
-            Err(wgpu::SurfaceError::Timeout) => {
+            wgpu::CurrentSurfaceTexture::Timeout => {
                 return Err(RenderError::Backend(
                     "surface acquire timed out".to_string(),
                 ));
             }
-            Err(other) => {
+            wgpu::CurrentSurfaceTexture::Occluded => return Ok(None),
+            other => {
                 return Err(RenderError::Backend(format!(
-                    "surface acquire failed: {other}"
+                    "surface acquire failed: {other:?}"
                 )));
             }
         };
@@ -3268,7 +3279,7 @@ fn render_snapshot_with_context(
     context.queue.submit(Some(encoder.finish()));
     let _ = context
         .device
-        .poll(wgpu::PollType::Wait)
+        .poll(wgpu::PollType::wait_indefinitely())
         .map_err(|error| RenderError::Backend(format!("wgpu poll failed: {error}")))?;
 
     let readback_slice = readback_buffer.slice(..);
@@ -3278,7 +3289,7 @@ fn render_snapshot_with_context(
     });
     let _ = context
         .device
-        .poll(wgpu::PollType::Wait)
+        .poll(wgpu::PollType::wait_indefinitely())
         .map_err(|error| RenderError::Backend(format!("wgpu poll failed: {error}")))?;
     rx.recv()
         .map_err(|_| RenderError::Backend("wgpu map wait failed".to_string()))?
@@ -3371,6 +3382,7 @@ fn record_render_pass(
         label: Some("operad-wgpu-ui-render-pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(clear),
@@ -3380,6 +3392,7 @@ fn record_render_pass(
         depth_stencil_attachment: None,
         occlusion_query_set: None,
         timestamp_writes,
+        multiview_mask: None,
     });
     for (batch_index, batch) in geometry.batches.iter().enumerate() {
         let Some(scissor) = scissor_rect(batch.clip, size) else {
@@ -4688,7 +4701,13 @@ fn sync_glyph_buffer(
         buffer.set_wrap(font_system, glyph_wrap(text.style.wrap));
     }
     let attrs = glyph_attrs(&text.style);
-    buffer.set_text(font_system, &text.text, &attrs, glyph_shaping(&text.text));
+    buffer.set_text(
+        font_system,
+        &text.text,
+        &attrs,
+        glyph_shaping(&text.text),
+        None,
+    );
 }
 
 fn glyph_attrs(style: &TextStyle) -> GlyphAttrs<'_> {
