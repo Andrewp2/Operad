@@ -12,6 +12,8 @@
   work happens.
 - Carried the released `6.1.0` WGPU baseline forward, including `wgpu` 29.0.3
   and `glyphon` 0.11.0.
+- Moved widget-gated tests out of `core::document` and into the widget module
+  so the first source split also moves module ownership for widget behavior.
 
 ## 6.1.0
 

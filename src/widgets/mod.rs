@@ -22,6 +22,8 @@ pub mod scroll_area;
 pub mod scrollbar;
 pub mod slider;
 pub mod table;
+#[cfg(test)]
+mod tests;
 pub mod text_input;
 pub mod virtual_list;
 

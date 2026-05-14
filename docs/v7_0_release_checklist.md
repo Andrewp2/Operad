@@ -13,21 +13,22 @@ centralized overlay ordering, and useful performance instrumentation.
 - [x] `operad::prelude` exists for normal application imports.
 - [x] The v7 migration guide records the current public path policy.
 - [x] The v7 branch carries the published `6.1.0` WGPU 29/Glyphon 0.11 baseline.
-- [ ] Module-local tests have been reviewed and moved where they now belong.
-- [ ] Compatibility aliases have an explicit keep, deprecate, or remove decision.
+- [x] Widget module tests have been moved out of `core::document` and into
+  `src/widgets/tests.rs`.
+- [x] Compatibility aliases have an explicit keep, deprecate, or remove decision.
 
 ## Required CI Gates
 
 These should pass on a normal Linux runner before every v7 milestone:
 
-- [ ] Format: `cargo fmt --all -- --check`
-- [ ] No-default compile: `cargo check --locked --no-default-features --all-targets`
-- [ ] No-default lib tests: `cargo test --locked --no-default-features --lib`
-- [ ] All-features compile: `cargo check --locked --all-features --all-targets`
-- [ ] All-features test enumeration: `cargo test --locked --all-features -- --list`
-- [ ] Example compile: `cargo check --locked --all-features --examples`
-- [ ] Docs: `cargo doc --locked --all-features --no-deps`
-- [ ] Package verification dry run: `cargo package --locked`
+- [x] Format: `cargo fmt --all -- --check`
+- [x] No-default compile: `cargo check --locked --no-default-features --all-targets`
+- [x] No-default lib tests: `cargo test --locked --no-default-features --lib`
+- [x] All-features compile: `cargo check --locked --all-features --all-targets`
+- [x] All-features test enumeration: `cargo test --locked --all-features -- --list`
+- [x] Example compile: `cargo check --locked --all-features --examples`
+- [x] Docs: `cargo doc --locked --all-features --no-deps`
+- [x] Package verification dry run: `cargo package --locked`
 
 ## Widget And Showcase Gates
 
