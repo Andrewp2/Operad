@@ -32,6 +32,8 @@
   drag/drop descriptors and platform drag-start requests.
 - Added small, icon, image, toggle, and reset button convenience builders on top
   of the default button primitive.
+- Added form section, row, field label, help text, validation message, and error
+  summary widget helpers backed by the existing form validation contracts.
 
 ## 6.1.0
 

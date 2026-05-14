@@ -77,6 +77,12 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::image_button`
 - `operad::widgets::toggle_button`
 - `operad::widgets::reset_button`
+- `operad::widgets::form_section`
+- `operad::widgets::form_row`
+- `operad::widgets::field_label`
+- `operad::widgets::field_help_text`
+- `operad::widgets::field_validation_message`
+- `operad::widgets::form_error_summary`
 - `operad::widgets::singleline_text_input`
 - `operad::widgets::multiline_text_input`
 - `operad::widgets::text_area`
@@ -97,6 +103,10 @@ for copy and text-selection behavior.
 
 The button convenience builders share `ButtonOptions` with `button`. They are
 thin defaults for common cases rather than separate state models.
+
+The form helpers build visual form rows, labels, help text, validation messages,
+and summaries around `FormState`, `FieldState`, and `ValidationMessage`.
+Applications still own field values and submit/apply/cancel behavior.
 
 The text-input convenience builders all use `TextInputState` and
 `TextInputOptions`; they configure common defaults without replacing the

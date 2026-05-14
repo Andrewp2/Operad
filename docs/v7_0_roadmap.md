@@ -108,6 +108,9 @@ These are the items that should move from the v6 planning notes into v7 work.
   renderer-neutral drag/drop descriptors.
 - Alpha 8 has started button convenience parity by adding small, icon, image,
   toggle, and reset button builders on top of the default button primitive.
+- Alpha 9 has started form widget parity by adding form section, row, field
+  label, help text, validation message, and error-summary builders backed by
+  the existing form validation state model.
 
 ### 1. Architecture And API Cleanup
 
@@ -145,6 +148,8 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Add multiline text editing and a code editor convenience widget.
 - Add form primitives: field labels, help text, validation messages, field
   groups, dirty state, submit/cancel/apply actions, and keyboard traversal.
+  Initial section, row, field label, help, validation, and error-summary
+  widgets are now available; stateful submit/cancel/apply composition remains.
 - Add numeric entry primitives: integer, decimal, stepper, drag value, unit
   suffixes, range editors, clamping modes, and transient invalid input.
 

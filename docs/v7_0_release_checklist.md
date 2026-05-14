@@ -41,6 +41,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   password, single-line, multiline, and text-area configurations.
 - [x] Alpha 8 adds small, icon, image, toggle, and reset button convenience
   builders.
+- [x] Alpha 9 adds form section, row, field label, help text, validation
+  message, and error-summary widget helpers.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.
