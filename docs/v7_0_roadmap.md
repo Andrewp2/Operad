@@ -95,6 +95,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 3 has started performance instrumentation with named frame pipeline
   stages and cache diagnostics for hit, miss, eviction, and retained-byte
   reporting.
+- Alpha 4 has started overlay/widget parity by adding backend-neutral builders
+  for collapsing headers, tooltip boxes, and modal dialog surfaces on top of the
+  existing accessibility and overlay contracts.
 
 ### 1. Architecture And API Cleanup
 

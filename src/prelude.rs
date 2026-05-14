@@ -22,15 +22,17 @@ pub use crate::layout;
 
 #[cfg(feature = "widgets")]
 pub use crate::widgets::{
-    button, canvas, checkbox, code_label, code_text_style, colored_label, colored_text_style,
-    combo_box, drag_value_input, grid, grid_row, grid_text_cell, heading_label, heading_text_style,
-    image, label, localized_label, monospace_label, monospace_text_style, panel, radio_button,
-    radio_group, scroll_area, scrollbar, separator, slider, small_label, small_text_style, spacer,
-    spinner, strong_label, strong_text_style, table_header, text_input, toggle_switch,
-    virtual_list, weak_label, weak_text_style, wrapped_label, DragValueOptions, GridCellOptions,
-    GridOptions, GridRowOptions, ImageOptions, NumericPrecision, NumericRange, NumericUnitFormat,
-    PanelKind, PanelOptions, RadioButtonOptions, RadioGroupOptions, RadioOption, SeparatorOptions,
-    SeparatorOrientation, SpinnerOptions, ToggleSwitchOptions, ToggleValue,
+    button, canvas, checkbox, code_label, code_text_style, collapsing_header, colored_label,
+    colored_text_style, combo_box, drag_value_input, grid, grid_row, grid_text_cell, heading_label,
+    heading_text_style, image, label, localized_label, modal_dialog, monospace_label,
+    monospace_text_style, panel, radio_button, radio_group, scroll_area, scrollbar, separator,
+    slider, small_label, small_text_style, spacer, spinner, strong_label, strong_text_style,
+    table_header, text_input, toggle_switch, tooltip_box, virtual_list, weak_label,
+    weak_text_style, wrapped_label, CollapsingHeaderNodes, CollapsingHeaderOptions,
+    DragValueOptions, GridCellOptions, GridOptions, GridRowOptions, ImageOptions, ModalDialogNodes,
+    ModalDialogOptions, NumericPrecision, NumericRange, NumericUnitFormat, PanelKind, PanelOptions,
+    RadioButtonOptions, RadioGroupOptions, RadioOption, SeparatorOptions, SeparatorOrientation,
+    SpinnerOptions, ToggleSwitchOptions, ToggleValue, TooltipBoxOptions,
 };
 
 #[cfg(feature = "native-window")]

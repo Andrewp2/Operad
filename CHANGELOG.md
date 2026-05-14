@@ -21,6 +21,9 @@
 - Added renderer-neutral performance diagnostics that name frame pipeline stages
   and aggregate cache hit, miss, and eviction rates from display-list reuse
   reports.
+- Added v7 overlay/widget builders for collapsing headers, tooltip boxes, and
+  modal dialogs so examples and applications can use normal Operad surfaces
+  instead of hand-building those nodes from low-level containers.
 
 ## 6.1.0
 

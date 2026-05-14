@@ -63,6 +63,19 @@ continue to work.
 The inline `widgets` module moved from `src/lib.rs` into `src/widgets/mod.rs`.
 The public module remains `operad::widgets`.
 
+## V7 Widget Additions
+
+V7 adds normal widget builders for surfaces that previously required examples
+or applications to hand-build low-level document nodes:
+
+- `operad::widgets::collapsing_header`
+- `operad::widgets::tooltip_box`
+- `operad::widgets::modal_dialog`
+
+The existing tooltip, dialog, and overlay contracts remain available for state,
+timing, dismissal, and focus policy. The new builders are the preferred way to
+create the visual document nodes.
+
 ## Current Public Path Status
 
 | Path | V7 status | Notes |

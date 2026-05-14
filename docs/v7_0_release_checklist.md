@@ -51,6 +51,8 @@ These should pass on a normal Linux runner before every v7 milestone:
 
 ## Overlay And Surface Gates
 
+- [x] Alpha 4 adds reusable collapsing-header, tooltip-box, and modal-dialog
+  widget builders backed by shared accessibility and overlay contracts.
 - [ ] Paint ordering, hit testing, focus, popups, drag capture, and accessibility
   traversal use one effective ordering model.
 - [ ] Floating windows, popups, menus, tooltips, command palettes, modals, and

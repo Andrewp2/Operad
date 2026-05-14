@@ -148,6 +148,9 @@ Public document-building widget functions currently exported under `operad::widg
 - `grid_row`
 - `grid_text_cell`
 - `panel`
+- `collapsing_header`
+- `tooltip_box`
+- `modal_dialog`
 - `table_header`
 - `virtual_list`
 - `virtualized_data_table`
@@ -188,7 +191,6 @@ Missing visual widgets:
 - Selectable label / selectable value
 - Compact color button
 - Image button, deprecated in egui
-- Collapsing header
 - Generic scroll bar widget
 - Reset button / reset-to-default button
 - Angle drag controls
@@ -214,12 +216,10 @@ Missing containers and layout widgets:
 - Area
 - Frame
 - Group
-- Modal
 - Resize container
 - Resize handle
 - Scene
 - Sides
-- Tooltip
 - Central panel
 - Side panel
 - Top/bottom panel
@@ -261,10 +261,8 @@ Missing theme/demo helpers:
 Partially covered but not equivalent:
 
 - Text editing: Operad has `text_input` and `selectable_text`, but no `code_editor` convenience widget.
-- Images: Operad has `ImageContent` and image-bearing widgets, but no standalone `image` widget builder.
-- Tooltips: Operad has tooltip contracts/resolution helpers, but no public tooltip visual builder.
-- Dialogs/modals: Operad has dialog and overlay state contracts plus `floating_desktop` for window shells, but no public modal/dialog visual builder comparable to egui `Modal`.
+- Tooltips: Operad now has `tooltip_box` plus tooltip contracts/resolution helpers, but still needs richer trigger wiring and animation policy.
+- Dialogs/modals: Operad now has `modal_dialog` plus dialog and overlay state contracts, but still needs focus-trap and dismissal helpers wired into the visual builder.
 - Drag and drop: Operad has drag/drop descriptors and metadata on some complex widgets, but no generic `dnd_drag_source` or `dnd_drop_zone` widget.
 - Scroll bars: Operad exposes scrollbar geometry/accessibility helpers, but no complete visual scrollbar widget builder.
 - Panels: Operad has `dock_workspace`, `split_pane`, `scroll_area`, and generic containers, but no direct `CentralPanel`, `SidePanel`, or `TopBottomPanel` equivalents.
-- Generic grid: Operad has tables and property grids, but no general-purpose grid layout builder.
