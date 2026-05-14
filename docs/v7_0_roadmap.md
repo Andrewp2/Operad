@@ -138,6 +138,8 @@ These are the items that should move from the v6 planning notes into v7 work.
   submit/apply/cancel/reset buttons and stable field-order traversal helpers.
 - Alpha 19 has closed the basic tooltip trigger/animation gap with widget-level
   hover/focus trigger resolution and a reduced-motion-aware animation preset.
+- Alpha 20 has closed the basic modal helper gap with visual-builder dismissal
+  policy, focus-trap generation, and overlay-frame open/dismiss event helpers.
 
 ### 1. Architecture And API Cleanup
 
@@ -192,6 +194,8 @@ These are the items that should move from the v6 planning notes into v7 work.
   toast overlays use the same layering rules.
 - Tooltip hover/focus trigger resolution and reduced-motion animation policy
   are now reusable widget helpers.
+- Modal dialogs now expose dismissal policy, focus-trap generation, and
+  overlay-frame events through the visual builder helpers.
 - Add resize, collapse, close, drag, minimum-size, focus, and keyboard behavior
   as reusable surface primitives.
 - Add panel primitives comparable to egui's central/side/top/bottom panels and

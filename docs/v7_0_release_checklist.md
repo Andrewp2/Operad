@@ -64,6 +64,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   submit/apply/cancel/reset workflows.
 - [x] Alpha 19 adds tooltip hover/focus trigger resolution and
   reduced-motion-aware animation presets.
+- [x] Alpha 20 adds modal dialog dismissal policy, focus-trap helpers, and
+  overlay-frame event helpers.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

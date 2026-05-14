@@ -135,6 +135,12 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::tooltip_trigger_resolution`
 - `operad::widgets::tooltip_fade_slide_animation`
 - `operad::widgets::modal_dialog`
+- `operad::widgets::modal_dialog_descriptor`
+- `operad::widgets::modal_dialog_focus_trap`
+- `operad::widgets::modal_dialog_open_event`
+- `operad::widgets::modal_dialog_dismiss_event_from_input_result`
+- `operad::widgets::modal_dialog_dismiss_event_from_pointer_event`
+- `operad::widgets::modal_dialog_dismiss_event_from_key_event`
 - `operad::widgets::dnd_drag_source`
 - `operad::widgets::dnd_drop_zone`
 - `operad::widgets::dnd_drag_source_descriptor`
@@ -181,6 +187,12 @@ theme.
 `tooltip_trigger_resolution` maps hover/focus input state into `TooltipRequest`
 values using `HelpTimingPolicy`. `tooltip_fade_slide_animation` provides the
 default tooltip animation preset and accepts a reduced-motion flag.
+
+`modal_dialog` now carries dismissal policy, focus-trap preferences, and
+focus-restore defaults in `ModalDialogOptions`. The modal helper functions map
+the visual dialog nodes into `DialogDescriptor`, `FocusTrap`, and
+`OverlayFrameEvent` values so examples and applications do not need to hand-wire
+normal open, Escape, outside-click, or close-button behavior.
 
 The form helpers build visual form rows, labels, help text, validation messages,
 summaries, and action rows around `FormState`, `FieldState`, and

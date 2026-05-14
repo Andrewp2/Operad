@@ -56,6 +56,8 @@
   submit/apply/cancel/reset workflows.
 - Added tooltip trigger resolution and tooltip animation presets to the widget
   layer.
+- Added modal dialog dismissal policy, focus-trap helpers, and overlay-frame
+  event helpers to the visual modal builder.
 
 ## 6.1.0
 
