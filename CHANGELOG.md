@@ -1,5 +1,26 @@
 # Changelog
 
+## 7.0.0 - In progress
+
+- Started the v7 source-organization pass by moving retained document
+  primitives into `src/core/document.rs` and widget module wiring into
+  `src/widgets/mod.rs`.
+- Added `operad::prelude` as the preferred broad import surface for application
+  code.
+- Added v7 roadmap, migration-guide, and release-checklist drafts so API moves,
+  compatibility aliases, widget parity work, and release gates are tracked as
+  work happens.
+- Carried the released `6.1.0` WGPU baseline forward, including `wgpu` 29.0.3
+  and `glyphon` 0.11.0.
+
+## 6.1.0
+
+- Updated the optional WGPU stack to `wgpu` 29.0.3 and `glyphon` 0.11.0 so
+  native-window and GPU canvas consumers can share the same WGPU version as
+  downstream renderers that have already moved past WGPU 25.
+- Adjusted the WGPU adapter for WGPU 29 surface acquisition, pipeline layout,
+  render pass, polling, sampler, and glyphon text-buffer APIs.
+
 ## 6.0.0
 
 - Added a native window runner so simple apps can open a window with

@@ -375,7 +375,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let window = Arc::new(event_loop.create_window(attributes)?);
         let size = nonzero_window_size(window.inner_size());
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window.clone())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
@@ -387,6 +387,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
                 label: Some("native-window-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             }))?;

@@ -86,6 +86,8 @@ fn surface_animation_trigger(name: &str) -> AnimationTrigger {
 
 #[cfg(test)]
 mod tests {
+    use taffy::prelude::{Dimension, Size as TaffySize, Style};
+
     use crate::*;
 
     use super::*;

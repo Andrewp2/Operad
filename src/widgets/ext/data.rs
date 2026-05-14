@@ -74,7 +74,7 @@ impl PropertyRowStatus {
 
 #[cfg(test)]
 mod tests {
-    use taffy::prelude::Size as TaffySize;
+    use taffy::prelude::{Dimension, Display, FlexDirection, Size as TaffySize, Style};
 
     use super::super::data_table::data_table_header_accessibility;
     use super::super::{
