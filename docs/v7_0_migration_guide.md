@@ -80,6 +80,11 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::password_input`
 - `operad::widgets::tooltip_box`
 - `operad::widgets::modal_dialog`
+- `operad::widgets::dnd_drag_source`
+- `operad::widgets::dnd_drop_zone`
+- `operad::widgets::dnd_drag_source_descriptor`
+- `operad::widgets::dnd_drop_target_descriptor`
+- `operad::widgets::dnd_drag_start_request`
 
 `selectable_label` is a selectable/toggleable label control. It is intentionally
 separate from `selectable_text`, which remains a read-only text input variant
@@ -93,6 +98,11 @@ document state. Applications should keep owning the real text state.
 The existing tooltip, dialog, and overlay contracts remain available for state,
 timing, dismissal, and focus policy. The new surface builders are the preferred
 way to create the visual document nodes.
+
+The drag/drop builders use the existing `DragPayload`, `DragOperation`,
+`DragSourceDescriptor`, and `DropTargetDescriptor` contracts. Build the visual
+surface with the widget helper, then derive the descriptor from the rendered
+node when platform drag/drop routing needs bounds.
 
 ## Current Public Path Status
 

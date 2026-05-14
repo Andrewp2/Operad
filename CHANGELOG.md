@@ -28,6 +28,8 @@
   controls are available separately from selectable read-only text input.
 - Added text-input convenience builders for single-line input, multiline input,
   text areas, code editors, search boxes, and password fields.
+- Added generic drag/drop source and drop-zone builders backed by the existing
+  drag/drop descriptors and platform drag-start requests.
 
 ## 6.1.0
 

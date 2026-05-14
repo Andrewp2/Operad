@@ -160,6 +160,8 @@ Public document-building widget functions currently exported under `operad::widg
 - `collapsing_header`
 - `tooltip_box`
 - `modal_dialog`
+- `dnd_drag_source`
+- `dnd_drop_zone`
 - `table_header`
 - `virtual_list`
 - `virtualized_data_table`
@@ -184,6 +186,7 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 - `scrollbar_thumb`
 - `scrollbar_accessibility`
 - `path_breadcrumbs`
+- drag/drop descriptor, hit-testing, and platform drag-start helpers
 - popover and overlay processing helpers
 - menu hit-testing, placement, filtering, navigation, and selection helpers
 - data-table hit-testing, sizing, filtering, and export helpers
@@ -241,20 +244,8 @@ Missing menu conveniences:
 - Submenu
 - Submenu button
 
-Missing text-style conveniences:
-
-- Colored label
-- Heading
-- Code label
-- Monospace label
-- Strong label
-- Weak label
-- Small label
-
 Missing interaction helpers:
 
-- Generic drag source widget
-- Generic drop zone widget
 - Widget-level visible/enabled wrappers like `add_visible`, `add_enabled`, `add_visible_ui`, and `add_enabled_ui`
 - Widget sizing helpers like `add_sized`, `allocate_exact_size`, `allocate_at_least`, and `allocate_painter`
 - Programmatic scroll helpers like `scroll_to_cursor`, `scroll_to_rect`, and animated variants
@@ -269,6 +260,6 @@ Partially covered but not equivalent:
 - Text editing: Operad has single-line, multiline, text-area, code-editor, search, password, and selectable-text builders, but still needs richer validation/form wrappers and editor-specific features.
 - Tooltips: Operad now has `tooltip_box` plus tooltip contracts/resolution helpers, but still needs richer trigger wiring and animation policy.
 - Dialogs/modals: Operad now has `modal_dialog` plus dialog and overlay state contracts, but still needs focus-trap and dismissal helpers wired into the visual builder.
-- Drag and drop: Operad has drag/drop descriptors and metadata on some complex widgets, but no generic `dnd_drag_source` or `dnd_drop_zone` widget.
+- Drag and drop: Operad now has generic `dnd_drag_source` and `dnd_drop_zone` builders, plus descriptors and metadata on some complex widgets. It still needs fuller drop preview styling, drag-image policy, and platform adapter coverage.
 - Scroll bars: Operad exposes scrollbar geometry/accessibility helpers, but no complete visual scrollbar widget builder.
 - Panels: Operad has `dock_workspace`, `split_pane`, `scroll_area`, and generic containers, but no direct `CentralPanel`, `SidePanel`, or `TopBottomPanel` equivalents.

@@ -103,6 +103,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 6 has started text-editing convenience APIs by adding single-line,
   multiline, text-area, code-editor, search, and password-input builders backed
   by the existing text input state model.
+- Alpha 7 has started generic drag/drop widget parity by adding reusable
+  `dnd_drag_source` and `dnd_drop_zone` builders on top of the existing
+  renderer-neutral drag/drop descriptors.
 
 ### 1. Architecture And API Cleanup
 
@@ -122,7 +125,8 @@ These are the items that should move from the v6 planning notes into v7 work.
 
 - Close the largest egui/iced parity gaps first: radio buttons, toggles, visual
   numeric drag values, images, separators, spinners, collapsing headers, panels,
-  generic grids, tooltips, and modal/dialog surfaces.
+  generic grids, tooltips, modal/dialog surfaces, and generic drag/drop
+  surfaces.
 - Turn partially implemented contracts into normal visual widgets when they are
   customer-facing, for example scrollbars, property inspectors, command
   palette, tree views, and context menus.
