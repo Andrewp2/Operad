@@ -249,6 +249,71 @@ fn widget_button_options_apply_disabled_accessibility_and_media_hooks() {
 }
 #[cfg(feature = "widgets")]
 #[test]
+fn widget_button_convenience_builders_cover_common_button_modes() {
+    let mut doc = UiDocument::new(root_style(360.0, 120.0));
+    let root = doc.root;
+
+    let small = widgets::small_button(
+        &mut doc,
+        root,
+        "small",
+        "Small",
+        widgets::ButtonOptions::default(),
+    );
+    assert_eq!(
+        doc.node(small).style.layout.size.height,
+        Dimension::length(28.0)
+    );
+
+    let icon = widgets::icon_button(
+        &mut doc,
+        root,
+        "icon",
+        ImageContent::new("icons.save"),
+        "Save",
+        widgets::ButtonOptions::default(),
+    );
+    assert_eq!(
+        doc.node(icon)
+            .accessibility
+            .as_ref()
+            .unwrap()
+            .label
+            .as_deref(),
+        Some("Save")
+    );
+    assert_eq!(doc.node(icon).children.len(), 1);
+    assert!(matches!(
+        doc.node(doc.node(icon).children[0]).content,
+        UiContent::Image(_)
+    ));
+
+    let toggled = widgets::toggle_button(
+        &mut doc,
+        root,
+        "toggle",
+        "Pinned",
+        true,
+        widgets::ButtonOptions::default(),
+    );
+    assert_eq!(
+        doc.node(toggled).accessibility.as_ref().unwrap().pressed,
+        Some(true)
+    );
+    assert!(doc.node(toggled).visual.fill.relative_luminance() < 0.08);
+
+    let reset = widgets::reset_button(
+        &mut doc,
+        root,
+        "reset",
+        false,
+        widgets::ButtonOptions::default().with_action("style.reset"),
+    );
+    assert!(!doc.node(reset).input.pointer);
+    assert!(!doc.node(reset).accessibility.as_ref().unwrap().enabled);
+}
+#[cfg(feature = "widgets")]
+#[test]
 fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
     let mut doc = UiDocument::new(root_style(200.0, 80.0));
     let root = doc.root;

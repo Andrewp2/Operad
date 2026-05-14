@@ -72,6 +72,11 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::link`
 - `operad::widgets::hyperlink`
 - `operad::widgets::selectable_label`
+- `operad::widgets::small_button`
+- `operad::widgets::icon_button`
+- `operad::widgets::image_button`
+- `operad::widgets::toggle_button`
+- `operad::widgets::reset_button`
 - `operad::widgets::singleline_text_input`
 - `operad::widgets::multiline_text_input`
 - `operad::widgets::text_area`
@@ -89,6 +94,9 @@ or applications to hand-build low-level document nodes:
 `selectable_label` is a selectable/toggleable label control. It is intentionally
 separate from `selectable_text`, which remains a read-only text input variant
 for copy and text-selection behavior.
+
+The button convenience builders share `ButtonOptions` with `button`. They are
+thin defaults for common cases rather than separate state models.
 
 The text-input convenience builders all use `TextInputState` and
 `TextInputOptions`; they configure common defaults without replacing the

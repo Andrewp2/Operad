@@ -30,6 +30,8 @@
   text areas, code editors, search boxes, and password fields.
 - Added generic drag/drop source and drop-zone builders backed by the existing
   drag/drop descriptors and platform drag-start requests.
+- Added small, icon, image, toggle, and reset button convenience builders on top
+  of the default button primitive.
 
 ## 6.1.0
 

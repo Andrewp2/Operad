@@ -39,6 +39,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   builders so egui-style text controls no longer require manual node assembly.
 - [x] Alpha 6 adds text-input convenience builders for common editor, search,
   password, single-line, multiline, and text-area configurations.
+- [x] Alpha 8 adds small, icon, image, toggle, and reset button convenience
+  builders.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

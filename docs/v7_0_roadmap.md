@@ -106,6 +106,8 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 7 has started generic drag/drop widget parity by adding reusable
   `dnd_drag_source` and `dnd_drop_zone` builders on top of the existing
   renderer-neutral drag/drop descriptors.
+- Alpha 8 has started button convenience parity by adding small, icon, image,
+  toggle, and reset button builders on top of the default button primitive.
 
 ### 1. Architecture And API Cleanup
 

@@ -37,6 +37,26 @@ impl ButtonOptions {
         self
     }
 
+    pub fn with_visual(mut self, visual: UiVisual) -> Self {
+        self.visual = visual;
+        self
+    }
+
+    pub fn with_text_style(mut self, text_style: TextStyle) -> Self {
+        self.text_style = text_style;
+        self
+    }
+
+    pub fn with_leading_image(mut self, image: impl Into<ImageContent>) -> Self {
+        self.leading_image = Some(image.into());
+        self
+    }
+
+    pub fn with_image_size(mut self, size: UiSize) -> Self {
+        self.image_size = size;
+        self
+    }
+
     pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
         self.action = Some(action.into());
         self
@@ -44,6 +64,31 @@ impl ButtonOptions {
 
     pub fn with_command(mut self, command: impl Into<CommandId>) -> Self {
         self.action = Some(WidgetActionBinding::command(command));
+        self
+    }
+
+    pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn with_accessibility_hint(mut self, hint: impl Into<String>) -> Self {
+        self.accessibility_hint = Some(hint.into());
+        self
+    }
+
+    pub const fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    pub const fn pressed(mut self, pressed: bool) -> Self {
+        self.pressed = pressed;
+        self
+    }
+
+    pub const fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
         self
     }
 }
@@ -233,22 +278,104 @@ pub fn button(
         }
         document.add_child(button, image_node);
     }
-    document.add_child(
-        button,
-        UiNode::text(
-            format!("{name}.label"),
-            label,
-            options.text_style,
-            LayoutStyle::from_taffy_style(Style {
-                size: TaffySize {
-                    width: Dimension::auto(),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-        ),
-    );
+    if !label.is_empty() || document.node(button).children.is_empty() {
+        document.add_child(
+            button,
+            UiNode::text(
+                format!("{name}.label"),
+                label,
+                options.text_style,
+                LayoutStyle::from_taffy_style(Style {
+                    size: TaffySize {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                }),
+            ),
+        );
+    }
     button
+}
+
+pub fn small_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    label: impl Into<String>,
+    options: ButtonOptions,
+) -> UiNodeId {
+    let mut options = options;
+    options.layout = options.layout.with_height(28.0).with_padding(6.0);
+    options.text_style = small_text_style();
+    button(document, parent, name, label, options)
+}
+
+pub fn icon_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    icon: ImageContent,
+    accessibility_label: impl Into<String>,
+    options: ButtonOptions,
+) -> UiNodeId {
+    let label = accessibility_label.into();
+    let mut options = options
+        .with_leading_image(icon)
+        .with_image_size(UiSize::new(18.0, 18.0))
+        .with_accessibility_label(label.clone());
+    if options.layout.style.size.width == Dimension::auto() {
+        options.layout = options.layout.with_width(36.0);
+    }
+    if options.layout.style.size.height == Dimension::auto() {
+        options.layout = options.layout.with_height(32.0);
+    }
+    button(document, parent, name, "", options)
+}
+
+pub fn image_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    image: ImageContent,
+    accessibility_label: impl Into<String>,
+    options: ButtonOptions,
+) -> UiNodeId {
+    let label = accessibility_label.into();
+    let mut options = options
+        .with_leading_image(image)
+        .with_image_size(UiSize::new(24.0, 24.0))
+        .with_accessibility_label(label.clone());
+    if options.layout.style.size.width == Dimension::auto() {
+        options.layout = options.layout.with_width(44.0);
+    }
+    if options.layout.style.size.height == Dimension::auto() {
+        options.layout = options.layout.with_height(40.0);
+    }
+    button(document, parent, name, "", options)
+}
+
+pub fn toggle_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    label: impl Into<String>,
+    selected: bool,
+    options: ButtonOptions,
+) -> UiNodeId {
+    button(document, parent, name, label, options.pressed(selected))
+}
+
+pub fn reset_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    dirty: bool,
+    options: ButtonOptions,
+) -> UiNodeId {
+    let mut options = options;
+    options.enabled = options.enabled && dirty;
+    button(document, parent, name, "Reset", options)
 }
 
 pub fn button_actions_from_input_result(

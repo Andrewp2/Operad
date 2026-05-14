@@ -122,6 +122,11 @@ Public document-building widget functions currently exported under `operad::widg
 - `hyperlink`
 - `selectable_label`
 - `button`
+- `small_button`
+- `icon_button`
+- `image_button`
+- `toggle_button`
+- `reset_button`
 - `checkbox`
 - `radio_button`
 - `radio_group`
@@ -200,9 +205,7 @@ Missing visual widgets:
 
 - Selectable value convenience helper
 - Compact color button
-- Image button, deprecated in egui
 - Generic scroll bar widget
-- Reset button / reset-to-default button
 - Angle drag controls
 
 Missing color-editing conveniences:
