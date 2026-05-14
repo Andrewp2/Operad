@@ -136,6 +136,17 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::dnd_drag_start_request`
 - `operad::widgets::drag_angle`
 - `operad::widgets::drag_angle_tau`
+- `operad::widgets::add_visible`
+- `operad::widgets::add_visible_ui`
+- `operad::widgets::add_enabled`
+- `operad::widgets::add_enabled_ui`
+- `operad::widgets::add_sized`
+- `operad::widgets::allocate_exact_size`
+- `operad::widgets::allocate_at_least`
+- `operad::widgets::allocate_painter`
+- `operad::widgets::scroll_to_cursor`
+- `operad::widgets::scroll_to_rect`
+- `operad::widgets::scroll_to_rect_with_options`
 
 `selectable_label` is a selectable/toggleable label control. It is intentionally
 separate from `selectable_text`, which remains a read-only text input variant
@@ -148,6 +159,11 @@ thin defaults for common cases rather than separate state models.
 `drag_angle` and `drag_angle_tau` share `DragValueOptions` with
 `drag_value_input`; they only provide degree and tau-fraction formatting
 defaults.
+
+The visible/enabled, allocation, painter, and programmatic scroll helpers are
+widget-adjacent convenience APIs. They wrap retained document primitives without
+changing ownership: applications still own whether content is shown, enabled, or
+scrolled into view.
 
 The form helpers build visual form rows, labels, help text, validation messages,
 and summaries around `FormState`, `FieldState`, and `ValidationMessage`.

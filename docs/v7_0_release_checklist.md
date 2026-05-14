@@ -57,6 +57,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   `Color32`-style color buttons, and standalone HSV 2D picker fields.
 - [x] Alpha 15 adds `area` and `scene` widget helpers for absolute regions and
   renderer-neutral scene primitives.
+- [x] Alpha 16 adds widget-level visible/enabled wrappers, fixed/minimum
+  allocation helpers, painter allocation, and programmatic scroll helpers.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

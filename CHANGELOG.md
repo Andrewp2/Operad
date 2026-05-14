@@ -48,6 +48,8 @@
   fields.
 - Added `area` and `scene` widget helpers so absolute-positioned regions and
   scene primitives can be built through the normal public widget API.
+- Added widget interaction helpers for visible/enabled UI blocks, fixed/minimum
+  allocations, scene painter allocations, and programmatic scrolling.
 
 ## 6.1.0
 

@@ -129,6 +129,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 15 has closed the basic `Area`/`Scene` container gap with public
   `area` and `scene` helpers for absolute regions and renderer-neutral scene
   primitives.
+- Alpha 16 has closed the basic interaction-helper gap with visible/enabled
+  UI blocks, exact/minimum allocation helpers, painter allocation, and
+  programmatic scroll helpers.
 
 ### 1. Architecture And API Cleanup
 
@@ -155,6 +158,9 @@ These are the items that should move from the v6 planning notes into v7 work.
   palette, tree views, and context menus.
 - Make every widget expose state/action helpers instead of asking examples to
   hand-roll editing, hit testing, hover, pressed, selection, or popup behavior.
+- Add widget-adjacent helpers for conditional visibility, disabled subtrees,
+  sized allocations, painter allocations, and programmatic scroll. Initial
+  helpers are now available through `operad::widgets`.
 - Add examples for all supported states: normal, hovered, pressed, toggled,
   disabled, focused, selected, error, loading, and reduced-motion.
 

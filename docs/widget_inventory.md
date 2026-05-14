@@ -241,6 +241,19 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 - `scrollbar_thumb`
 - `scrollbar_accessibility`
 - `path_breadcrumbs`
+- `add_visible`
+- `add_visible_ui`
+- `add_enabled`
+- `add_enabled_ui`
+- `set_subtree_visible`
+- `set_subtree_enabled`
+- `add_sized`
+- `allocate_exact_size`
+- `allocate_at_least`
+- `allocate_painter`
+- `scroll_to_cursor`
+- `scroll_to_rect`
+- `scroll_to_rect_with_options`
 - drag/drop descriptor, hit-testing, and platform drag-start helpers
 - popover and overlay processing helpers
 - menu hit-testing, placement, filtering, navigation, and selection helpers
@@ -250,12 +263,6 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 ## egui Features Missing In Operad
 
 This section lists egui widget and widget-adjacent features from the sources above that do not currently have an equivalent public Operad visual widget builder. Some lower-level Operad contracts may exist, but they are counted as missing here if customers cannot add the feature with a normal `operad::widgets::*` builder.
-
-Missing interaction helpers:
-
-- Widget-level visible/enabled wrappers like `add_visible`, `add_enabled`, `add_visible_ui`, and `add_enabled_ui`
-- Widget sizing helpers like `add_sized`, `allocate_exact_size`, `allocate_at_least`, and `allocate_painter`
-- Programmatic scroll helpers like `scroll_to_cursor`, `scroll_to_rect`, and animated variants
 
 Missing theme/demo helpers:
 
