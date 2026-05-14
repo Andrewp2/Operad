@@ -221,6 +221,7 @@ Public document-building widget functions currently exported under `operad::widg
 - `field_help_text`
 - `field_validation_message`
 - `form_error_summary`
+- `form_action_buttons`
 - `table_header`
 - `virtual_list`
 - `virtualized_data_table`
@@ -259,6 +260,9 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 - `scroll_to_cursor`
 - `scroll_to_rect`
 - `scroll_to_rect_with_options`
+- `form_field_order`
+- `next_form_field`
+- `previous_form_field`
 - drag/drop descriptor, hit-testing, and platform drag-start helpers
 - popover and overlay processing helpers
 - menu hit-testing, placement, filtering, navigation, and selection helpers
@@ -272,7 +276,7 @@ This section lists egui widget and widget-adjacent features from the sources abo
 Partially covered but not equivalent:
 
 - Text editing: Operad has single-line, multiline, text-area, code-editor, search, password, and selectable-text builders, but still needs richer editor-specific features.
-- Forms: Operad now has visual section, row, label, help, validation, and error-summary helpers plus form state contracts. It still needs higher-level submit/cancel/apply form composition and keyboard traversal helpers.
+- Forms: Operad now has visual section, row, label, help, validation, error-summary, action-button, and traversal helpers plus form state contracts. It still needs richer field-level composition for multi-step and wizard forms.
 - Tooltips: Operad now has `tooltip_box` plus tooltip contracts/resolution helpers, but still needs richer trigger wiring and animation policy.
 - Dialogs/modals: Operad now has `modal_dialog` plus dialog and overlay state contracts, but still needs focus-trap and dismissal helpers wired into the visual builder.
 - Drag and drop: Operad now has generic `dnd_drag_source` and `dnd_drop_zone` builders, plus descriptors and metadata on some complex widgets. It still needs fuller drop preview styling, drag-image policy, and platform adapter coverage.

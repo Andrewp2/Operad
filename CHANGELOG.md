@@ -52,6 +52,8 @@
   allocations, scene painter allocations, and programmatic scrolling.
 - Added global theme preference button-group and switch builders so applications
   can expose System/Light/Dark theme controls without showcase-specific code.
+- Added form action buttons plus field-order traversal helpers for
+  submit/apply/cancel/reset workflows.
 
 ## 6.1.0
 

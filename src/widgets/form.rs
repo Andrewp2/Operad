@@ -187,6 +187,321 @@ pub struct FormErrorSummaryNodes {
     pub messages: Vec<UiNodeId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FormActionKind {
+    Submit,
+    Apply,
+    Cancel,
+    Reset,
+}
+
+impl FormActionKind {
+    pub const ALL: [Self; 4] = [Self::Submit, Self::Apply, Self::Cancel, Self::Reset];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Submit => "submit",
+            Self::Apply => "apply",
+            Self::Cancel => "cancel",
+            Self::Reset => "reset",
+        }
+    }
+
+    pub const fn default_label(self) -> &'static str {
+        match self {
+            Self::Submit => "Submit",
+            Self::Apply => "Apply",
+            Self::Cancel => "Cancel",
+            Self::Reset => "Reset",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormActionLabels {
+    pub submit: String,
+    pub apply: String,
+    pub cancel: String,
+    pub reset: String,
+}
+
+impl FormActionLabels {
+    pub fn label(&self, action: FormActionKind) -> &str {
+        match action {
+            FormActionKind::Submit => &self.submit,
+            FormActionKind::Apply => &self.apply,
+            FormActionKind::Cancel => &self.cancel,
+            FormActionKind::Reset => &self.reset,
+        }
+    }
+}
+
+impl Default for FormActionLabels {
+    fn default() -> Self {
+        Self {
+            submit: FormActionKind::Submit.default_label().to_owned(),
+            apply: FormActionKind::Apply.default_label().to_owned(),
+            cancel: FormActionKind::Cancel.default_label().to_owned(),
+            reset: FormActionKind::Reset.default_label().to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormActionAvailability {
+    pub submit: bool,
+    pub apply: bool,
+    pub cancel: bool,
+    pub reset: bool,
+}
+
+impl FormActionAvailability {
+    pub fn from_form(form: &FormState) -> Self {
+        let has_errors = form_has_errors(form);
+        let busy = form.validating || form.pending;
+        Self {
+            submit: !has_errors && !busy,
+            apply: form.dirty && !has_errors && !busy,
+            cancel: form.dirty || form.pending || form.validating || form.submitted,
+            reset: !form.fields.is_empty()
+                && form
+                    .fields
+                    .values()
+                    .any(|field| !field.value.is_empty() || field.dirty || field.pending),
+        }
+    }
+
+    pub const fn is_available(self, action: FormActionKind) -> bool {
+        match action {
+            FormActionKind::Submit => self.submit,
+            FormActionKind::Apply => self.apply,
+            FormActionKind::Cancel => self.cancel,
+            FormActionKind::Reset => self.reset,
+        }
+    }
+
+    pub const fn enabled(self, enabled: bool) -> Self {
+        if enabled {
+            self
+        } else {
+            Self {
+                submit: false,
+                apply: false,
+                cancel: false,
+                reset: false,
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FormActionButtonsOptions {
+    pub layout: LayoutStyle,
+    pub button_options: ButtonOptions,
+    pub labels: FormActionLabels,
+    pub include_reset: bool,
+    pub enabled: bool,
+    pub action_prefix: Option<String>,
+    pub accessibility_label: Option<String>,
+}
+
+impl FormActionButtonsOptions {
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+
+    pub fn with_button_options(mut self, options: ButtonOptions) -> Self {
+        self.button_options = options;
+        self
+    }
+
+    pub fn with_labels(mut self, labels: FormActionLabels) -> Self {
+        self.labels = labels;
+        self
+    }
+
+    pub const fn include_reset(mut self, include_reset: bool) -> Self {
+        self.include_reset = include_reset;
+        self
+    }
+
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.action_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn without_actions(mut self) -> Self {
+        self.action_prefix = None;
+        self
+    }
+
+    pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    fn action_for(&self, action: FormActionKind) -> Option<WidgetActionBinding> {
+        self.action_prefix
+            .as_ref()
+            .map(|prefix| WidgetActionBinding::action(format!("{prefix}.{}", action.as_str())))
+    }
+}
+
+impl Default for FormActionButtonsOptions {
+    fn default() -> Self {
+        Self {
+            layout: LayoutStyle::from_taffy_style(Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::FlexEnd),
+                gap: TaffySize {
+                    width: taffy::prelude::LengthPercentage::length(8.0),
+                    height: taffy::prelude::LengthPercentage::length(8.0),
+                },
+                ..Default::default()
+            }),
+            button_options: ButtonOptions {
+                layout: LayoutStyle::from_taffy_style(Style {
+                    display: Display::Flex,
+                    align_items: Some(AlignItems::Center),
+                    justify_content: Some(JustifyContent::Center),
+                    size: TaffySize {
+                        width: length(88.0),
+                        height: length(32.0),
+                    },
+                    padding: taffy::prelude::Rect::length(8.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            labels: FormActionLabels::default(),
+            include_reset: false,
+            enabled: true,
+            action_prefix: Some("form".to_owned()),
+            accessibility_label: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormActionButtonNodes {
+    pub root: UiNodeId,
+    pub submit: UiNodeId,
+    pub apply: UiNodeId,
+    pub cancel: UiNodeId,
+    pub reset: Option<UiNodeId>,
+}
+
+impl FormActionButtonNodes {
+    pub fn node_for(self, action: FormActionKind) -> Option<UiNodeId> {
+        match action {
+            FormActionKind::Submit => Some(self.submit),
+            FormActionKind::Apply => Some(self.apply),
+            FormActionKind::Cancel => Some(self.cancel),
+            FormActionKind::Reset => self.reset,
+        }
+    }
+}
+
+pub fn form_action_buttons(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    form: &FormState,
+    options: FormActionButtonsOptions,
+) -> FormActionButtonNodes {
+    let name = name.into();
+    let availability = FormActionAvailability::from_form(form).enabled(options.enabled);
+    let root = document.add_child(
+        parent,
+        UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: options.layout.style.clone(),
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Group).label(
+                options
+                    .accessibility_label
+                    .clone()
+                    .unwrap_or_else(|| "Form actions".to_owned()),
+            ),
+        ),
+    );
+    let submit = form_action_button(
+        document,
+        root,
+        &name,
+        FormActionKind::Submit,
+        availability,
+        &options,
+    );
+    let apply = form_action_button(
+        document,
+        root,
+        &name,
+        FormActionKind::Apply,
+        availability,
+        &options,
+    );
+    let cancel = form_action_button(
+        document,
+        root,
+        &name,
+        FormActionKind::Cancel,
+        availability,
+        &options,
+    );
+    let reset = options.include_reset.then(|| {
+        form_action_button(
+            document,
+            root,
+            &name,
+            FormActionKind::Reset,
+            availability,
+            &options,
+        )
+    });
+    FormActionButtonNodes {
+        root,
+        submit,
+        apply,
+        cancel,
+        reset,
+    }
+}
+
+fn form_action_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: &str,
+    action: FormActionKind,
+    availability: FormActionAvailability,
+    options: &FormActionButtonsOptions,
+) -> UiNodeId {
+    let mut button_options = options.button_options.clone();
+    button_options.enabled = availability.is_available(action);
+    button_options.action = options.action_for(action);
+    button_options.accessibility_label = Some(options.labels.label(action).to_owned());
+    button(
+        document,
+        parent,
+        format!("{name}.{}", action.as_str()),
+        options.labels.label(action).to_owned(),
+        button_options,
+    )
+}
+
 pub fn form_section(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -431,6 +746,45 @@ pub fn validation_text_style(severity: ValidationSeverity) -> TextStyle {
     }
 }
 
+pub fn form_has_errors(form: &FormState) -> bool {
+    form.form_messages
+        .iter()
+        .any(|message| message.severity == ValidationSeverity::Error)
+        || form.fields.values().any(FieldState::has_errors)
+}
+
+pub fn form_field_order(form: &FormState) -> Vec<FieldId> {
+    form.fields.keys().cloned().collect()
+}
+
+pub fn next_form_field(fields: &[FieldId], current: Option<&FieldId>) -> Option<FieldId> {
+    if fields.is_empty() {
+        return None;
+    }
+    let start = current
+        .and_then(|id| fields.iter().position(|field| field == id))
+        .map(|index| (index + 1) % fields.len())
+        .unwrap_or(0);
+    fields.get(start).cloned()
+}
+
+pub fn previous_form_field(fields: &[FieldId], current: Option<&FieldId>) -> Option<FieldId> {
+    if fields.is_empty() {
+        return None;
+    }
+    let index = current
+        .and_then(|id| fields.iter().position(|field| field == id))
+        .map(|index| {
+            if index == 0 {
+                fields.len() - 1
+            } else {
+                index - 1
+            }
+        })
+        .unwrap_or(fields.len() - 1);
+    fields.get(index).cloned()
+}
+
 fn validation_severity_label(severity: ValidationSeverity) -> &'static str {
     match severity {
         ValidationSeverity::Info => "Info",
@@ -540,6 +894,62 @@ mod tests {
                 .value
                 .as_deref(),
             Some("1 errors")
+        );
+    }
+
+    #[test]
+    fn form_action_buttons_reflect_form_state() {
+        let mut document = UiDocument::new(root_style(420.0, 160.0));
+        let root = document.root;
+        let mut form = FormState::new("account").with_field("email", "old@example.com");
+        form.fields.get_mut(&FieldId::from("email")).unwrap().value = "new@example.com".to_owned();
+        form.fields.get_mut(&FieldId::from("email")).unwrap().dirty = true;
+        form.dirty = true;
+
+        let nodes = form_action_buttons(
+            &mut document,
+            root,
+            "account-actions",
+            &form,
+            FormActionButtonsOptions::default().include_reset(true),
+        );
+
+        assert_eq!(document.node(nodes.root).children.len(), 4);
+        assert_eq!(
+            document.node(nodes.submit).action.as_ref(),
+            Some(&WidgetActionBinding::action("form.submit"))
+        );
+        assert!(document
+            .node(nodes.apply)
+            .accessibility
+            .as_ref()
+            .is_some_and(|accessibility| accessibility.enabled));
+        assert!(document
+            .node(nodes.reset.unwrap())
+            .accessibility
+            .as_ref()
+            .is_some_and(|accessibility| accessibility.enabled));
+    }
+
+    #[test]
+    fn form_field_traversal_wraps_stable_field_order() {
+        let form = FormState::new("account")
+            .with_field("email", "")
+            .with_field("name", "")
+            .with_field("timezone", "");
+        let order = form_field_order(&form);
+
+        assert_eq!(
+            next_form_field(&order, Some(&FieldId::from("name"))),
+            Some(FieldId::from("timezone"))
+        );
+        assert_eq!(
+            next_form_field(&order, Some(&FieldId::from("timezone"))),
+            Some(FieldId::from("email"))
+        );
+        assert_eq!(
+            previous_form_field(&order, Some(&FieldId::from("email"))),
+            Some(FieldId::from("timezone"))
         );
     }
 }

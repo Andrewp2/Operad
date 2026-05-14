@@ -84,6 +84,10 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::field_help_text`
 - `operad::widgets::field_validation_message`
 - `operad::widgets::form_error_summary`
+- `operad::widgets::form_action_buttons`
+- `operad::widgets::form_field_order`
+- `operad::widgets::next_form_field`
+- `operad::widgets::previous_form_field`
 - `operad::widgets::central_panel`
 - `operad::widgets::top_panel`
 - `operad::widgets::bottom_panel`
@@ -173,8 +177,9 @@ actions; applications still own resolving System, Light, and Dark choices into a
 theme.
 
 The form helpers build visual form rows, labels, help text, validation messages,
-and summaries around `FormState`, `FieldState`, and `ValidationMessage`.
-Applications still own field values and submit/apply/cancel behavior.
+summaries, and action rows around `FormState`, `FieldState`, and
+`ValidationMessage`. Applications still own field values and the effects of
+submit/apply/cancel/reset actions.
 
 The container and panel helpers are convenience builders over the retained
 document tree. Existing `panel` and `UiNode::container` code keeps working, but

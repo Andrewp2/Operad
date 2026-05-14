@@ -134,6 +134,8 @@ These are the items that should move from the v6 planning notes into v7 work.
   programmatic scroll helpers.
 - Alpha 17 has closed the theme-preference helper gap with reusable
   System/Light/Dark preference buttons and a compact dark-theme switch.
+- Alpha 18 has closed the basic form action/traversal gap with reusable
+  submit/apply/cancel/reset buttons and stable field-order traversal helpers.
 
 ### 1. Architecture And API Cleanup
 
@@ -174,8 +176,8 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Add multiline text editing and a code editor convenience widget.
 - Add form primitives: field labels, help text, validation messages, field
   groups, dirty state, submit/cancel/apply actions, and keyboard traversal.
-  Initial section, row, field label, help, validation, and error-summary
-  widgets are now available; stateful submit/cancel/apply composition remains.
+  Section, row, field label, help, validation, error-summary, action-button,
+  and traversal helpers are now available.
 - Add numeric entry primitives: integer, decimal, stepper, drag value, unit
   suffixes, range editors, clamping modes, and transient invalid input.
 

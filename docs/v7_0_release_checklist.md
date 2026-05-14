@@ -60,6 +60,8 @@ These should pass on a normal Linux runner before every v7 milestone:
 - [x] Alpha 16 adds widget-level visible/enabled wrappers, fixed/minimum
   allocation helpers, painter allocation, and programmatic scroll helpers.
 - [x] Alpha 17 adds global theme preference buttons and a dark-theme switch.
+- [x] Alpha 18 adds form action buttons and field traversal helpers for
+  submit/apply/cancel/reset workflows.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.
