@@ -133,6 +133,8 @@ Public document-building widget functions currently exported under `operad::widg
 - `toggle_switch`
 - `slider`
 - `drag_value_input`
+- `drag_angle`
+- `drag_angle_tau`
 - `text_input`
 - `singleline_text_input`
 - `multiline_text_input`
@@ -141,6 +143,7 @@ Public document-building widget functions currently exported under `operad::widg
 - `search_input`
 - `password_input`
 - `selectable_text`
+- `selectable_value`
 - `combo_box`
 - `dropdown_select`
 - `select_menu`
@@ -235,11 +238,6 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 ## egui Features Missing In Operad
 
 This section lists egui widget and widget-adjacent features from the sources above that do not currently have an equivalent public Operad visual widget builder. Some lower-level Operad contracts may exist, but they are counted as missing here if customers cannot add the feature with a normal `operad::widgets::*` builder.
-
-Missing visual widgets:
-
-- Selectable value convenience helper
-- Angle drag controls
 
 Missing color-editing conveniences:
 

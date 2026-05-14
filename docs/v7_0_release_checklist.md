@@ -51,6 +51,8 @@ These should pass on a normal Linux runner before every v7 milestone:
 - [x] Alpha 12 adds menu-button state, trigger builders, image menu buttons,
   image-and-text menu buttons, submenu item helpers, and anchored submenu popup
   composition.
+- [x] Alpha 13 adds selectable-value and angle-drag helper builders over the
+  existing selectable-label and drag-value primitives.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

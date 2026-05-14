@@ -72,6 +72,7 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::link`
 - `operad::widgets::hyperlink`
 - `operad::widgets::selectable_label`
+- `operad::widgets::selectable_value`
 - `operad::widgets::small_button`
 - `operad::widgets::icon_button`
 - `operad::widgets::image_button`
@@ -125,13 +126,20 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::dnd_drag_source_descriptor`
 - `operad::widgets::dnd_drop_target_descriptor`
 - `operad::widgets::dnd_drag_start_request`
+- `operad::widgets::drag_angle`
+- `operad::widgets::drag_angle_tau`
 
 `selectable_label` is a selectable/toggleable label control. It is intentionally
 separate from `selectable_text`, which remains a read-only text input variant
-for copy and text-selection behavior.
+for copy and text-selection behavior. `selectable_value` is a thin helper that
+marks a label selected when an application-owned value equals the option value.
 
 The button convenience builders share `ButtonOptions` with `button`. They are
 thin defaults for common cases rather than separate state models.
+
+`drag_angle` and `drag_angle_tau` share `DragValueOptions` with
+`drag_value_input`; they only provide degree and tau-fraction formatting
+defaults.
 
 The form helpers build visual form rows, labels, help text, validation messages,
 and summaries around `FormState`, `FieldState`, and `ValidationMessage`.

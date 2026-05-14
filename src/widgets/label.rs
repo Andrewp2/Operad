@@ -457,6 +457,27 @@ pub fn selectable_label(
     label_node
 }
 
+pub fn selectable_value<T: PartialEq>(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    current: &T,
+    value: &T,
+    text: impl Into<String>,
+    options: SelectableLabelOptions,
+) -> UiNodeId {
+    selectable_label(
+        document,
+        parent,
+        name,
+        text,
+        SelectableLabelOptions {
+            selected: current == value,
+            ..options
+        },
+    )
+}
+
 pub fn selectable_label_actions_from_input_result(
     document: &UiDocument,
     label: UiNodeId,
@@ -587,5 +608,52 @@ mod tests {
                 selected: Some(false)
             }))
         ));
+    }
+
+    #[test]
+    fn selectable_value_sets_selected_state_from_current_value() {
+        let mut document = UiDocument::new(root_style(320.0, 120.0));
+        let root = document.root;
+        let compact = selectable_value(
+            &mut document,
+            root,
+            "density.compact",
+            &"compact",
+            &"compact",
+            "Compact",
+            SelectableLabelOptions::default().with_action("density.compact"),
+        );
+        let comfortable = selectable_value(
+            &mut document,
+            root,
+            "density.comfortable",
+            &"compact",
+            &"comfortable",
+            "Comfortable",
+            SelectableLabelOptions::default().with_action("density.comfortable"),
+        );
+
+        assert_eq!(
+            document
+                .node(compact)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .selected,
+            Some(true)
+        );
+        assert_eq!(
+            document
+                .node(comfortable)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .selected,
+            Some(false)
+        );
+        assert_eq!(
+            document.node(compact).action.as_ref(),
+            Some(&WidgetActionBinding::action("density.compact"))
+        );
     }
 }

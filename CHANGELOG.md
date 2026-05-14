@@ -41,6 +41,8 @@
 - Added menu-button state, trigger builders, image menu buttons,
   image-and-text menu buttons, submenu item helpers, and anchored submenu popup
   composition.
+- Added selectable-value and angle-drag helper builders over the existing
+  selectable-label and drag-value primitives.
 
 ## 6.1.0
 

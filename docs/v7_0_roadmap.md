@@ -120,6 +120,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 12 has started menu convenience parity by adding menu-button state,
   trigger builders, image menu buttons, image-and-text menu buttons, submenu
   item helpers, and anchored submenu popup composition.
+- Alpha 13 has started selection/numeric convenience parity by adding
+  `selectable_value`, `drag_angle`, and `drag_angle_tau` helpers over the
+  existing selectable-label and drag-value primitives.
 
 ### 1. Architecture And API Cleanup
 
@@ -261,7 +264,7 @@ make the missing surface area explicit so v7 work can be planned in batches.
 - `code`
 - `rich_text`
 - wrapped label
-- selectable label
+- selectable label and selectable value
 - hyperlink
 - link
 - keyboard shortcut label
@@ -294,7 +297,7 @@ make the missing surface area explicit so v7 work can be planned in batches.
 - decimal input
 - unit input
 - stepper
-- angle drag control
+- angle drag control: `drag_angle` and `drag_angle_tau` are now available.
 - two-dimensional drag pad
 - range slider
 - dual-thumb range slider

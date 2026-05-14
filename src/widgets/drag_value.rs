@@ -1,5 +1,7 @@
 use super::*;
 
+const TAU: f64 = std::f64::consts::TAU;
+
 #[derive(Debug, Clone)]
 pub struct DragValueOptions {
     pub layout: LayoutStyle,
@@ -160,6 +162,56 @@ pub fn drag_value_input(
     root
 }
 
+pub fn drag_angle(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    radians: f64,
+    options: DragValueOptions,
+) -> UiNodeId {
+    drag_value_input(
+        document,
+        parent,
+        name,
+        radians.to_degrees(),
+        angle_drag_options(options, NumericRange::new(0.0, 360.0), " deg", 1),
+    )
+}
+
+pub fn drag_angle_tau(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    radians: f64,
+    options: DragValueOptions,
+) -> UiNodeId {
+    drag_value_input(
+        document,
+        parent,
+        name,
+        radians / TAU,
+        angle_drag_options(options, NumericRange::new(0.0, 1.0), " tau", 3),
+    )
+}
+
+fn angle_drag_options(
+    mut options: DragValueOptions,
+    default_range: NumericRange,
+    default_suffix: &str,
+    default_decimals: u8,
+) -> DragValueOptions {
+    if options.range.is_none() {
+        options.range = Some(default_range);
+    }
+    if options.unit.is_empty() {
+        options.unit = NumericUnitFormat::default().suffix(default_suffix);
+    }
+    if options.precision == NumericPrecision::default() {
+        options.precision = NumericPrecision::decimals(default_decimals);
+    }
+    options
+}
+
 pub fn drag_value_input_actions_from_gesture_event(
     document: &UiDocument,
     node: UiNodeId,
@@ -222,6 +274,47 @@ mod tests {
         assert_eq!(
             document.node(node).action.as_ref(),
             Some(&WidgetActionBinding::action("angle.drag"))
+        );
+    }
+
+    #[test]
+    fn drag_angle_helpers_format_degrees_and_tau_fraction() {
+        let mut document = UiDocument::new(root_style(240.0, 120.0));
+        let root = document.root;
+        let degrees = drag_angle(
+            &mut document,
+            root,
+            "angle.degrees",
+            std::f64::consts::FRAC_PI_2,
+            DragValueOptions::default().with_action("angle.degrees.drag"),
+        );
+        let tau = drag_angle_tau(
+            &mut document,
+            root,
+            "angle.tau",
+            std::f64::consts::FRAC_PI_2,
+            DragValueOptions::default().with_action("angle.tau.drag"),
+        );
+
+        assert_eq!(
+            document
+                .node(degrees)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("90.0 deg")
+        );
+        assert_eq!(
+            document
+                .node(tau)
+                .accessibility
+                .as_ref()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("0.250 tau")
         );
     }
 }
