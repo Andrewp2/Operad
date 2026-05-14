@@ -118,6 +118,9 @@ Public document-building widget functions currently exported under `operad::widg
 - text-style label helpers: `heading_label`, `colored_label`, `code_label`,
   `monospace_label`, `strong_label`, `weak_label`, `small_label`,
   `wrapped_label`
+- `link`
+- `hyperlink`
+- `selectable_label`
 - `button`
 - `checkbox`
 - `radio_button`
@@ -186,9 +189,7 @@ This section lists egui widget and widget-adjacent features from the sources abo
 
 Missing visual widgets:
 
-- Link
-- Hyperlink
-- Selectable label / selectable value
+- Selectable value convenience helper
 - Compact color button
 - Image button, deprecated in egui
 - Generic scroll bar widget

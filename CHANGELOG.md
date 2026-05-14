@@ -24,6 +24,8 @@
 - Added v7 overlay/widget builders for collapsing headers, tooltip boxes, and
   modal dialogs so examples and applications can use normal Operad surfaces
   instead of hand-building those nodes from low-level containers.
+- Added link, hyperlink, and selectable-label builders so egui-style text
+  controls are available separately from selectable read-only text input.
 
 ## 6.1.0
 

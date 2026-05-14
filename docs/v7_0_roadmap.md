@@ -98,6 +98,8 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 4 has started overlay/widget parity by adding backend-neutral builders
   for collapsing headers, tooltip boxes, and modal dialog surfaces on top of the
   existing accessibility and overlay contracts.
+- Alpha 5 has started text/widget parity by adding link, hyperlink, and
+  selectable-label builders distinct from selectable read-only text.
 
 ### 1. Architecture And API Cleanup
 

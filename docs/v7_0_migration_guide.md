@@ -69,12 +69,19 @@ V7 adds normal widget builders for surfaces that previously required examples
 or applications to hand-build low-level document nodes:
 
 - `operad::widgets::collapsing_header`
+- `operad::widgets::link`
+- `operad::widgets::hyperlink`
+- `operad::widgets::selectable_label`
 - `operad::widgets::tooltip_box`
 - `operad::widgets::modal_dialog`
 
+`selectable_label` is a selectable/toggleable label control. It is intentionally
+separate from `selectable_text`, which remains a read-only text input variant
+for copy and text-selection behavior.
+
 The existing tooltip, dialog, and overlay contracts remain available for state,
-timing, dismissal, and focus policy. The new builders are the preferred way to
-create the visual document nodes.
+timing, dismissal, and focus policy. The new surface builders are the preferred
+way to create the visual document nodes.
 
 ## Current Public Path Status
 

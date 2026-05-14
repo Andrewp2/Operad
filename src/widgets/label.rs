@@ -164,6 +164,320 @@ pub fn wrapped_label(
     label(document, parent, name, text, style, layout)
 }
 
+#[derive(Debug, Clone)]
+pub struct LinkOptions {
+    pub layout: LayoutStyle,
+    pub visual: UiVisual,
+    pub hovered_visual: UiVisual,
+    pub focused_visual: UiVisual,
+    pub disabled_visual: UiVisual,
+    pub text_style: TextStyle,
+    pub enabled: bool,
+    pub url: Option<String>,
+    pub action: Option<WidgetActionBinding>,
+    pub accessibility_label: Option<String>,
+    pub accessibility_hint: Option<String>,
+}
+
+impl Default for LinkOptions {
+    fn default() -> Self {
+        Self {
+            layout: LayoutStyle::row()
+                .with_align_items(AlignItems::Center)
+                .with_padding(2.0),
+            visual: UiVisual::TRANSPARENT,
+            hovered_visual: UiVisual::panel(ColorRgba::new(33, 56, 84, 120), None, 3.0),
+            focused_visual: UiVisual::panel(
+                ColorRgba::TRANSPARENT,
+                Some(StrokeStyle::new(ColorRgba::new(112, 170, 230, 255), 1.0)),
+                3.0,
+            ),
+            disabled_visual: UiVisual::TRANSPARENT,
+            text_style: TextStyle {
+                color: ColorRgba::new(118, 183, 255, 255),
+                ..Default::default()
+            },
+            enabled: true,
+            url: None,
+            action: None,
+            accessibility_label: None,
+            accessibility_hint: None,
+        }
+    }
+}
+
+impl LinkOptions {
+    pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub fn with_command(mut self, command: impl Into<CommandId>) -> Self {
+        self.action = Some(WidgetActionBinding::command(command));
+        self
+    }
+
+    pub fn with_url(mut self, url: impl Into<String>) -> Self {
+        self.url = Some(url.into());
+        self
+    }
+
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+}
+
+pub fn link(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    text: impl Into<String>,
+    options: LinkOptions,
+) -> UiNodeId {
+    let name = name.into();
+    let text = text.into();
+    let hint = options
+        .accessibility_hint
+        .clone()
+        .or_else(|| options.url.as_ref().map(|url| format!("Opens {url}")));
+    let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Link)
+        .label(
+            options
+                .accessibility_label
+                .clone()
+                .unwrap_or_else(|| text.clone()),
+        )
+        .action(AccessibilityAction::new("activate", "Open"));
+    if let Some(url) = options.url.clone() {
+        accessibility = accessibility.value(url);
+    }
+    if let Some(hint) = hint {
+        accessibility = accessibility.hint(hint);
+    }
+    if options.enabled {
+        accessibility = accessibility.focusable();
+    } else {
+        accessibility = accessibility.disabled();
+    }
+
+    let interaction_visuals = InteractionVisuals::new(options.visual)
+        .hovered(options.hovered_visual)
+        .focused(options.focused_visual)
+        .pressed(options.hovered_visual)
+        .disabled(options.disabled_visual);
+    let mut node = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout: options.layout.style.clone(),
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
+    )
+    .with_interaction_visuals(interaction_visuals)
+    .with_accessibility(accessibility);
+    if options.enabled {
+        node = node.with_input(InputBehavior::BUTTON);
+    }
+    if let Some(action) = options.action.clone() {
+        node = node.with_action(action);
+    }
+    let link = document.add_child(parent, node);
+    document.add_child(
+        link,
+        UiNode::text(
+            format!("{name}.label"),
+            text,
+            options.text_style,
+            LayoutStyle::new(),
+        ),
+    );
+    link
+}
+
+pub fn hyperlink(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    text: impl Into<String>,
+    url: impl Into<String>,
+    options: LinkOptions,
+) -> UiNodeId {
+    link(document, parent, name, text, options.with_url(url))
+}
+
+pub fn link_actions_from_input_result(
+    document: &UiDocument,
+    link: UiNodeId,
+    options: &LinkOptions,
+    result: &UiInputResult,
+) -> WidgetActionQueue {
+    let mut queue = WidgetActionQueue::new();
+    let Some(clicked) = result.clicked else {
+        return queue;
+    };
+    if !document.node_is_descendant_or_self(link, clicked) || !action_target_enabled(document, link)
+    {
+        return queue;
+    }
+    if let Some(binding) = options.action.clone() {
+        queue.push(WidgetAction::pointer_activate(link, binding, 1));
+    }
+    queue
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectableLabelOptions {
+    pub layout: LayoutStyle,
+    pub visual: UiVisual,
+    pub hovered_visual: UiVisual,
+    pub selected_visual: UiVisual,
+    pub selected_hovered_visual: UiVisual,
+    pub focused_visual: UiVisual,
+    pub disabled_visual: UiVisual,
+    pub text_style: TextStyle,
+    pub selected: bool,
+    pub enabled: bool,
+    pub action: Option<WidgetActionBinding>,
+    pub accessibility_label: Option<String>,
+    pub accessibility_hint: Option<String>,
+}
+
+impl Default for SelectableLabelOptions {
+    fn default() -> Self {
+        Self {
+            layout: LayoutStyle::row()
+                .with_align_items(AlignItems::Center)
+                .with_padding(6.0),
+            visual: UiVisual::TRANSPARENT,
+            hovered_visual: UiVisual::panel(ColorRgba::new(39, 51, 66, 255), None, 4.0),
+            selected_visual: UiVisual::panel(ColorRgba::new(54, 84, 123, 255), None, 4.0),
+            selected_hovered_visual: UiVisual::panel(ColorRgba::new(68, 102, 148, 255), None, 4.0),
+            focused_visual: UiVisual::panel(
+                ColorRgba::TRANSPARENT,
+                Some(StrokeStyle::new(ColorRgba::new(112, 170, 230, 255), 1.0)),
+                4.0,
+            ),
+            disabled_visual: UiVisual::panel(ColorRgba::TRANSPARENT, None, 4.0),
+            text_style: TextStyle::default(),
+            selected: false,
+            enabled: true,
+            action: None,
+            accessibility_label: None,
+            accessibility_hint: None,
+        }
+    }
+}
+
+impl SelectableLabelOptions {
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+}
+
+pub fn selectable_label(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    text: impl Into<String>,
+    options: SelectableLabelOptions,
+) -> UiNodeId {
+    let name = name.into();
+    let text = text.into();
+    let mut accessibility = AccessibilityMeta::new(AccessibilityRole::ToggleButton)
+        .label(
+            options
+                .accessibility_label
+                .clone()
+                .unwrap_or_else(|| text.clone()),
+        )
+        .pressed(options.selected)
+        .selected(options.selected)
+        .action(AccessibilityAction::new("select", "Select"));
+    if options.enabled {
+        accessibility = accessibility.focusable();
+    } else {
+        accessibility = accessibility.disabled();
+    }
+    if let Some(hint) = options.accessibility_hint.clone() {
+        accessibility = accessibility.hint(hint);
+    }
+    let base_visual = if options.selected {
+        options.selected_visual
+    } else {
+        options.visual
+    };
+    let interaction_visuals = InteractionVisuals::new(base_visual)
+        .hovered(if options.selected {
+            options.selected_hovered_visual
+        } else {
+            options.hovered_visual
+        })
+        .pressed(options.selected_hovered_visual)
+        .pressed_hovered(options.selected_hovered_visual)
+        .focused(options.focused_visual)
+        .disabled(options.disabled_visual);
+    let mut node = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout: options.layout.style.clone(),
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
+    )
+    .with_interaction_visuals(interaction_visuals)
+    .with_accessibility(accessibility);
+    if options.enabled {
+        node = node.with_input(InputBehavior::BUTTON);
+    }
+    if let Some(action) = options.action.clone() {
+        node = node.with_action(action);
+    }
+    let label_node = document.add_child(parent, node);
+    document.add_child(
+        label_node,
+        UiNode::text(
+            format!("{name}.label"),
+            text,
+            options.text_style,
+            LayoutStyle::new(),
+        ),
+    );
+    label_node
+}
+
+pub fn selectable_label_actions_from_input_result(
+    document: &UiDocument,
+    label: UiNodeId,
+    options: &SelectableLabelOptions,
+    result: &UiInputResult,
+) -> WidgetActionQueue {
+    let mut queue = WidgetActionQueue::new();
+    let Some(clicked) = result.clicked else {
+        return queue;
+    };
+    if !document.node_is_descendant_or_self(label, clicked)
+        || !action_target_enabled(document, label)
+    {
+        return queue;
+    }
+    if let Some(binding) = options.action.clone() {
+        queue.select(label, binding, !options.selected);
+    }
+    queue
+}
+
 pub fn localized_label(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -215,5 +529,63 @@ mod tests {
         };
         assert_eq!(code_text.style.family, FontFamily::Monospace);
         assert_eq!(code_text.style.wrap, TextWrap::None);
+    }
+
+    #[test]
+    fn link_builds_focusable_accessible_link() {
+        let mut document = UiDocument::new(root_style(320.0, 120.0));
+        let root = document.root;
+        let options = LinkOptions::default()
+            .with_url("https://example.test")
+            .with_action("open.example");
+        let link = link(&mut document, root, "docs", "Docs", options.clone());
+        document
+            .compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let node = document.node(link);
+        let accessibility = node.accessibility.as_ref().unwrap();
+        assert_eq!(accessibility.role, AccessibilityRole::Link);
+        assert_eq!(accessibility.value.as_deref(), Some("https://example.test"));
+        assert!(node.input.pointer);
+
+        document.handle_input(UiInputEvent::PointerDown(UiPoint::new(3.0, 3.0)));
+        let result = document.handle_input(UiInputEvent::PointerUp(UiPoint::new(3.0, 3.0)));
+        let actions = link_actions_from_input_result(&document, link, &options, &result);
+        assert!(matches!(
+            actions.as_slice().first().map(|action| &action.kind),
+            Some(WidgetActionKind::Activate(_))
+        ));
+    }
+
+    #[test]
+    fn selectable_label_reports_selected_state_and_toggle_action() {
+        let mut document = UiDocument::new(root_style(320.0, 120.0));
+        let root = document.root;
+        let options = SelectableLabelOptions::default()
+            .selected(true)
+            .with_action("select.preview");
+        let label = selectable_label(&mut document, root, "preview", "Preview", options.clone());
+        document
+            .compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let node = document.node(label);
+        let accessibility = node.accessibility.as_ref().unwrap();
+        assert_eq!(accessibility.role, AccessibilityRole::ToggleButton);
+        assert_eq!(accessibility.selected, Some(true));
+        assert_eq!(accessibility.pressed, Some(true));
+        assert_eq!(node.visual, options.selected_visual);
+
+        document.handle_input(UiInputEvent::PointerDown(UiPoint::new(3.0, 3.0)));
+        let result = document.handle_input(UiInputEvent::PointerUp(UiPoint::new(3.0, 3.0)));
+        let actions =
+            selectable_label_actions_from_input_result(&document, label, &options, &result);
+        assert!(matches!(
+            actions.as_slice().first().map(|action| &action.kind),
+            Some(WidgetActionKind::Selection(WidgetSelection {
+                selected: Some(false)
+            }))
+        ));
     }
 }
