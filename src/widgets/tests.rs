@@ -1357,6 +1357,87 @@ fn widget_text_input_default_render_uses_scene_caret_at_text_end() {
 }
 #[cfg(feature = "widgets")]
 #[test]
+fn widget_text_input_convenience_builders_configure_common_modes() {
+    let mut doc = UiDocument::new(root_style(720.0, 320.0));
+    let root = doc.root;
+
+    let multiline_state = widgets::TextInputState::new("one\ntwo");
+    let area = widgets::text_area(
+        &mut doc,
+        root,
+        "notes",
+        &multiline_state,
+        widgets::TextInputOptions::default(),
+    );
+    assert_eq!(
+        doc.node(area).style.layout.size.height,
+        Dimension::length(120.0)
+    );
+
+    let code = widgets::code_editor(
+        &mut doc,
+        root,
+        "code",
+        &widgets::TextInputState::new("let answer = 42;"),
+        widgets::TextInputOptions::default(),
+    );
+    assert_eq!(
+        doc.node(code).style.layout.size.width,
+        Dimension::length(360.0)
+    );
+    let code_text = doc.node(code).children[0];
+    let UiContent::Scene(primitives) = &doc.node(code_text).content else {
+        panic!("code editor should render through a scene");
+    };
+    assert!(matches!(
+        &primitives[0],
+        ScenePrimitive::Text(text) if text.style.family == FontFamily::Monospace
+    ));
+
+    let search = widgets::search_input(
+        &mut doc,
+        root,
+        "find",
+        &widgets::TextInputState::new(""),
+        widgets::TextInputOptions::default(),
+    );
+    assert_eq!(
+        doc.node(search).accessibility.as_ref().unwrap().role,
+        AccessibilityRole::SearchBox
+    );
+
+    let mut password_state = widgets::TextInputState::new("secret");
+    password_state.caret = 3;
+    let password = widgets::password_input(
+        &mut doc,
+        root,
+        "password",
+        &password_state,
+        widgets::TextInputOptions {
+            focused: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        doc.node(password)
+            .accessibility
+            .as_ref()
+            .unwrap()
+            .value
+            .as_deref(),
+        Some("******")
+    );
+    let password_text = doc.node(password).children[0];
+    let UiContent::Scene(primitives) = &doc.node(password_text).content else {
+        panic!("password input should render masked text through a scene");
+    };
+    assert!(matches!(
+        &primitives[0],
+        ScenePrimitive::Text(text) if text.text == "******"
+    ));
+}
+#[cfg(feature = "widgets")]
+#[test]
 fn widget_text_input_accessibility_summarizes_caret_and_selection() {
     let mut doc = UiDocument::new(root_style(240.0, 80.0));
     let root = doc.root;

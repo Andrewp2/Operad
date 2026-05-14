@@ -72,12 +72,23 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::link`
 - `operad::widgets::hyperlink`
 - `operad::widgets::selectable_label`
+- `operad::widgets::singleline_text_input`
+- `operad::widgets::multiline_text_input`
+- `operad::widgets::text_area`
+- `operad::widgets::code_editor`
+- `operad::widgets::search_input`
+- `operad::widgets::password_input`
 - `operad::widgets::tooltip_box`
 - `operad::widgets::modal_dialog`
 
 `selectable_label` is a selectable/toggleable label control. It is intentionally
 separate from `selectable_text`, which remains a read-only text input variant
 for copy and text-selection behavior.
+
+The text-input convenience builders all use `TextInputState` and
+`TextInputOptions`; they configure common defaults without replacing the
+existing state/event handling model. `password_input` masks only the rendered
+document state. Applications should keep owning the real text state.
 
 The existing tooltip, dialog, and overlay contracts remain available for state,
 timing, dismissal, and focus policy. The new surface builders are the preferred

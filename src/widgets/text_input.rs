@@ -1014,6 +1014,16 @@ impl TextInputOptions {
         self
     }
 
+    pub fn with_text_style(mut self, style: TextStyle) -> Self {
+        self.text_style = style;
+        self
+    }
+
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
     pub fn with_edit_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
         self.edit_action = Some(action.into());
         self
@@ -1058,6 +1068,108 @@ impl TextInputOptions {
     pub const fn can_receive_focus(&self) -> bool {
         self.interaction_policy().can_receive_focus()
     }
+}
+
+pub fn singleline_text_input(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    state: &TextInputState,
+    options: TextInputOptions,
+) -> UiNodeId {
+    let mut state = state.clone();
+    state.multiline = false;
+    text_input(document, parent, name, &state, options)
+}
+
+pub fn multiline_text_input(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    state: &TextInputState,
+    options: TextInputOptions,
+) -> UiNodeId {
+    let mut state = state.clone();
+    state.multiline = true;
+    let mut options = options;
+    if text_input_dimension_is_default(options.layout.as_taffy_style().size.height, 30.0) {
+        options.layout = options.layout.with_height(120.0);
+    }
+    text_input(document, parent, name, &state, options)
+}
+
+pub fn text_area(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    state: &TextInputState,
+    options: TextInputOptions,
+) -> UiNodeId {
+    multiline_text_input(document, parent, name, state, options)
+}
+
+pub fn code_editor(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    state: &TextInputState,
+    mut options: TextInputOptions,
+) -> UiNodeId {
+    options.text_style = code_text_style();
+    options.placeholder_style = TextStyle {
+        color: ColorRgba::new(126, 139, 158, 255),
+        ..code_text_style()
+    };
+    if options.placeholder.is_empty() {
+        options.placeholder = "Type code".to_string();
+    }
+    if options.accessibility_label.is_none() {
+        options.accessibility_label = Some("Code editor".to_string());
+    }
+    if text_input_dimension_is_default(options.layout.as_taffy_style().size.width, 180.0) {
+        options.layout = options.layout.with_width(360.0);
+    }
+    if text_input_dimension_is_default(options.layout.as_taffy_style().size.height, 30.0) {
+        options.layout = options.layout.with_height(180.0);
+    }
+    multiline_text_input(document, parent, name, state, options)
+}
+
+pub fn search_input(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    state: &TextInputState,
+    mut options: TextInputOptions,
+) -> UiNodeId {
+    if options.placeholder.is_empty() {
+        options.placeholder = "Search".to_string();
+    }
+    if options.accessibility_label.is_none() {
+        options.accessibility_label = Some("Search".to_string());
+    }
+    let node = singleline_text_input(document, parent, name, state, options);
+    if let Some(accessibility) = document.node_mut(node).accessibility.as_mut() {
+        accessibility.role = AccessibilityRole::SearchBox;
+    }
+    node
+}
+
+pub fn password_input(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    state: &TextInputState,
+    mut options: TextInputOptions,
+) -> UiNodeId {
+    if options.placeholder.is_empty() {
+        options.placeholder = "Password".to_string();
+    }
+    if options.accessibility_label.is_none() {
+        options.accessibility_label = Some("Password".to_string());
+    }
+    let masked = password_display_state(state);
+    singleline_text_input(document, parent, name, &masked, options)
 }
 
 pub fn text_input(
@@ -1191,6 +1303,30 @@ pub fn text_input(
         ),
     );
     root
+}
+
+fn password_display_state(state: &TextInputState) -> TextInputState {
+    let mut masked = state.clone();
+    masked.text = "*".repeat(state.text.chars().count());
+    masked.caret = char_count_before_byte(&state.text, state.caret);
+    masked.selection_anchor = state
+        .selection_anchor
+        .map(|anchor| char_count_before_byte(&state.text, anchor));
+    masked.multiline = false;
+    masked.composing = state
+        .composing
+        .as_ref()
+        .map(|text| "*".repeat(text.chars().count()));
+    masked
+}
+
+fn char_count_before_byte(text: &str, index: usize) -> usize {
+    let index = clamp_to_char_boundary(text, index);
+    text[..index].chars().count()
+}
+
+fn text_input_dimension_is_default(dimension: Dimension, default: f32) -> bool {
+    dimension == Dimension::auto() || dimension == Dimension::length(default)
 }
 
 fn text_input_scene_text_rect(

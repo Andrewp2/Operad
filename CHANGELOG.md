@@ -26,6 +26,8 @@
   instead of hand-building those nodes from low-level containers.
 - Added link, hyperlink, and selectable-label builders so egui-style text
   controls are available separately from selectable read-only text input.
+- Added text-input convenience builders for single-line input, multiline input,
+  text areas, code editors, search boxes, and password fields.
 
 ## 6.1.0
 

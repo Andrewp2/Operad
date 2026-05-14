@@ -100,6 +100,9 @@ These are the items that should move from the v6 planning notes into v7 work.
   existing accessibility and overlay contracts.
 - Alpha 5 has started text/widget parity by adding link, hyperlink, and
   selectable-label builders distinct from selectable read-only text.
+- Alpha 6 has started text-editing convenience APIs by adding single-line,
+  multiline, text-area, code-editor, search, and password-input builders backed
+  by the existing text input state model.
 
 ### 1. Architecture And API Cleanup
 

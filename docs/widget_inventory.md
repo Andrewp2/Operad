@@ -129,6 +129,12 @@ Public document-building widget functions currently exported under `operad::widg
 - `slider`
 - `drag_value_input`
 - `text_input`
+- `singleline_text_input`
+- `multiline_text_input`
+- `text_area`
+- `code_editor`
+- `search_input`
+- `password_input`
 - `selectable_text`
 - `combo_box`
 - `dropdown_select`
@@ -240,7 +246,6 @@ Missing text-style conveniences:
 - Colored label
 - Heading
 - Code label
-- Code editor
 - Monospace label
 - Strong label
 - Weak label
@@ -261,7 +266,7 @@ Missing theme/demo helpers:
 
 Partially covered but not equivalent:
 
-- Text editing: Operad has `text_input` and `selectable_text`, but no `code_editor` convenience widget.
+- Text editing: Operad has single-line, multiline, text-area, code-editor, search, password, and selectable-text builders, but still needs richer validation/form wrappers and editor-specific features.
 - Tooltips: Operad now has `tooltip_box` plus tooltip contracts/resolution helpers, but still needs richer trigger wiring and animation policy.
 - Dialogs/modals: Operad now has `modal_dialog` plus dialog and overlay state contracts, but still needs focus-trap and dismissal helpers wired into the visual builder.
 - Drag and drop: Operad has drag/drop descriptors and metadata on some complex widgets, but no generic `dnd_drag_source` or `dnd_drop_zone` widget.

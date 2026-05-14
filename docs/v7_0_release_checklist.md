@@ -37,6 +37,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   toggle switches, visual drag values, generic grids, and panel containers.
 - [x] Alpha 5 adds backend-neutral link, hyperlink, and selectable-label
   builders so egui-style text controls no longer require manual node assembly.
+- [x] Alpha 6 adds text-input convenience builders for common editor, search,
+  password, single-line, multiline, and text-area configurations.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.
