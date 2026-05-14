@@ -66,6 +66,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   reduced-motion-aware animation presets.
 - [x] Alpha 20 adds modal dialog dismissal policy, focus-trap helpers, and
   overlay-frame event helpers.
+- [x] Alpha 21 adds drag-image policy and accepted/rejected drop-preview state
+  helpers.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

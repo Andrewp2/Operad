@@ -146,6 +146,8 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::dnd_drag_source_descriptor`
 - `operad::widgets::dnd_drop_target_descriptor`
 - `operad::widgets::dnd_drag_start_request`
+- `operad::widgets::dnd_drop_zone_preview_state`
+- `operad::widgets::dnd_apply_drop_zone_preview`
 - `operad::widgets::drag_angle`
 - `operad::widgets::drag_angle_tau`
 - `operad::widgets::add_visible`
@@ -193,6 +195,12 @@ focus-restore defaults in `ModalDialogOptions`. The modal helper functions map
 the visual dialog nodes into `DialogDescriptor`, `FocusTrap`, and
 `OverlayFrameEvent` values so examples and applications do not need to hand-wire
 normal open, Escape, outside-click, or close-button behavior.
+
+`DragSourceOptions` now includes a `DragImagePolicy`, and platform
+`DragDropRequest::Start` carries optional `DragImage` metadata for adapters that
+support custom drag images. `dnd_drop_zone_preview_state` and
+`dnd_apply_drop_zone_preview` provide the standard accepted, rejected, hovered,
+disabled, and idle drop-preview behavior.
 
 The form helpers build visual form rows, labels, help text, validation messages,
 summaries, and action rows around `FormState`, `FieldState`, and

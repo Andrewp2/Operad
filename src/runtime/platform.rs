@@ -866,6 +866,40 @@ impl DragId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragImage {
+    pub image_key: Option<String>,
+    pub label: Option<String>,
+    pub size: LogicalSize,
+    pub hotspot: LogicalPoint,
+}
+
+impl DragImage {
+    pub const fn new(size: LogicalSize) -> Self {
+        Self {
+            image_key: None,
+            label: None,
+            size,
+            hotspot: LogicalPoint::ZERO,
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn image_key(mut self, image_key: impl Into<String>) -> Self {
+        self.image_key = Some(image_key.into());
+        self
+    }
+
+    pub const fn hotspot(mut self, hotspot: LogicalPoint) -> Self {
+        self.hotspot = hotspot;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DragOperation {
     Copy,
@@ -932,6 +966,7 @@ pub enum DragDropRequest {
         payload: DragPayload,
         origin: LogicalPoint,
         allowed_operations: Vec<DragOperation>,
+        drag_image: Option<DragImage>,
     },
     SetAcceptedOperation {
         id: DragId,

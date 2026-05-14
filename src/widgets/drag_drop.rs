@@ -1,4 +1,6 @@
-use crate::platform::{DragDropRequest, DragOperation, DragPayload};
+use crate::platform::{
+    DragDropRequest, DragImage, DragOperation, DragPayload, LogicalPoint, LogicalSize,
+};
 
 use super::*;
 
@@ -8,6 +10,78 @@ fn all_drag_operations() -> Vec<DragOperation> {
         DragOperation::Move,
         DragOperation::Link,
     ]
+}
+
+const fn logical_point(point: UiPoint) -> LogicalPoint {
+    LogicalPoint::new(point.x, point.y)
+}
+
+const fn logical_size(size: UiSize) -> LogicalSize {
+    LogicalSize::new(size.width, size.height)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DragImagePolicy {
+    None,
+    Label {
+        size: UiSize,
+        hotspot: UiPoint,
+    },
+    ImageKey {
+        key: String,
+        size: UiSize,
+        hotspot: UiPoint,
+    },
+    Custom(DragImage),
+}
+
+impl DragImagePolicy {
+    pub const fn none() -> Self {
+        Self::None
+    }
+
+    pub const fn label(size: UiSize, hotspot: UiPoint) -> Self {
+        Self::Label { size, hotspot }
+    }
+
+    pub fn image_key(key: impl Into<String>, size: UiSize, hotspot: UiPoint) -> Self {
+        Self::ImageKey {
+            key: key.into(),
+            size,
+            hotspot,
+        }
+    }
+
+    pub fn custom(image: DragImage) -> Self {
+        Self::Custom(image)
+    }
+
+    pub fn resolve(&self, label: &str) -> Option<DragImage> {
+        match self {
+            Self::None => None,
+            Self::Label { size, hotspot } => Some(
+                DragImage::new(logical_size(*size))
+                    .label(label.to_string())
+                    .hotspot(logical_point(*hotspot)),
+            ),
+            Self::ImageKey { key, size, hotspot } => Some(
+                DragImage::new(logical_size(*size))
+                    .label(label.to_string())
+                    .image_key(key.clone())
+                    .hotspot(logical_point(*hotspot)),
+            ),
+            Self::Custom(image) => Some(image.clone()),
+        }
+    }
+}
+
+impl Default for DragImagePolicy {
+    fn default() -> Self {
+        Self::Label {
+            size: UiSize::new(160.0, 36.0),
+            hotspot: UiPoint::new(12.0, 12.0),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +94,7 @@ pub struct DragSourceOptions {
     pub text_style: TextStyle,
     pub kind: DragDropSurfaceKind,
     pub allowed_operations: Vec<DragOperation>,
+    pub drag_image: DragImagePolicy,
     pub enabled: bool,
     pub action: Option<WidgetActionBinding>,
     pub accessibility_label: Option<String>,
@@ -57,6 +132,7 @@ impl Default for DragSourceOptions {
             text_style: TextStyle::default(),
             kind: DragDropSurfaceKind::Custom("Drag source".to_string()),
             allowed_operations: all_drag_operations(),
+            drag_image: DragImagePolicy::default(),
             enabled: true,
             action: None,
             accessibility_label: None,
@@ -81,6 +157,16 @@ impl DragSourceOptions {
         operations: impl IntoIterator<Item = DragOperation>,
     ) -> Self {
         self.allowed_operations = operations.into_iter().collect();
+        self
+    }
+
+    pub fn with_drag_image_policy(mut self, policy: DragImagePolicy) -> Self {
+        self.drag_image = policy;
+        self
+    }
+
+    pub fn without_drag_image(mut self) -> Self {
+        self.drag_image = DragImagePolicy::None;
         self
     }
 
@@ -137,6 +223,7 @@ pub struct DropZoneOptions {
     pub visual: UiVisual,
     pub hovered_visual: Option<UiVisual>,
     pub active_visual: Option<UiVisual>,
+    pub rejected_visual: Option<UiVisual>,
     pub disabled_visual: Option<UiVisual>,
     pub text_style: TextStyle,
     pub kind: DragDropSurfaceKind,
@@ -170,6 +257,11 @@ impl Default for DropZoneOptions {
             active_visual: Some(UiVisual::panel(
                 ColorRgba::new(27, 50, 40, 255),
                 Some(StrokeStyle::new(ColorRgba::new(108, 184, 142, 255), 1.0)),
+                4.0,
+            )),
+            rejected_visual: Some(UiVisual::panel(
+                ColorRgba::new(58, 32, 36, 255),
+                Some(StrokeStyle::new(ColorRgba::new(210, 96, 106, 255), 1.0)),
                 4.0,
             )),
             disabled_visual: Some(UiVisual::panel(
@@ -211,6 +303,11 @@ impl DropZoneOptions {
         operations: impl IntoIterator<Item = DragOperation>,
     ) -> Self {
         self.accepted_operations = operations.into_iter().collect();
+        self
+    }
+
+    pub fn with_rejected_visual(mut self, visual: UiVisual) -> Self {
+        self.rejected_visual = Some(visual);
         self
     }
 
@@ -258,6 +355,28 @@ impl DropZoneOptions {
             .pressed(self.active_visual.unwrap_or(self.visual))
             .disabled(self.disabled_visual.unwrap_or(self.visual))
     }
+
+    pub fn preview_visual(&self, state: DropZonePreviewState) -> UiVisual {
+        match state {
+            DropZonePreviewState::Idle => self.visual,
+            DropZonePreviewState::Hovered => self.hovered_visual.unwrap_or(self.visual),
+            DropZonePreviewState::Accepted => self.active_visual.unwrap_or(self.visual),
+            DropZonePreviewState::Rejected => self
+                .rejected_visual
+                .or(self.hovered_visual)
+                .unwrap_or(self.visual),
+            DropZonePreviewState::Disabled => self.disabled_visual.unwrap_or(self.visual),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DropZonePreviewState {
+    Idle,
+    Hovered,
+    Accepted,
+    Rejected,
+    Disabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -433,12 +552,50 @@ pub fn dnd_drag_source_descriptor(
         payload,
     )
     .allowed_operations(options.allowed_operations.clone())
+    .drag_image(options.drag_image.resolve(&label))
     .disabled(!options.enabled)
     .label(label);
     if let Some(hint) = options.accessibility_hint.clone() {
         descriptor = descriptor.hint(hint);
     }
     descriptor
+}
+
+pub fn dnd_drop_zone_preview_state(
+    document: &UiDocument,
+    target: UiNodeId,
+    options: &DropZoneOptions,
+    payload: Option<&DragPayload>,
+    source_operations: &[DragOperation],
+    point: UiPoint,
+) -> DropZonePreviewState {
+    if !options.enabled || !action_target_enabled(document, target) {
+        return DropZonePreviewState::Disabled;
+    }
+    let descriptor = dnd_drop_target_descriptor(document, target, options);
+    if !descriptor.contains_point(point) {
+        return DropZonePreviewState::Idle;
+    }
+    let Some(payload) = payload else {
+        return DropZonePreviewState::Hovered;
+    };
+    if descriptor
+        .resolve_operation(payload, source_operations)
+        .is_some()
+    {
+        DropZonePreviewState::Accepted
+    } else {
+        DropZonePreviewState::Rejected
+    }
+}
+
+pub fn dnd_apply_drop_zone_preview(
+    document: &mut UiDocument,
+    target: UiNodeId,
+    options: &DropZoneOptions,
+    state: DropZonePreviewState,
+) {
+    document.set_node_visual(target, options.preview_visual(state));
 }
 
 pub fn dnd_drag_start_request(
@@ -588,6 +745,9 @@ mod tests {
             source_descriptor.accessibility_meta().label.as_deref(),
             Some("Asset clip")
         );
+        let drag_image = source_descriptor.drag_image.as_ref().expect("drag image");
+        assert_eq!(drag_image.label.as_deref(), Some("Asset clip"));
+        assert_eq!(drag_image.hotspot, LogicalPoint::new(12.0, 12.0));
 
         let start_request = dnd_drag_start_request(
             &document,
@@ -597,7 +757,13 @@ mod tests {
             UiPoint::new(24.0, 30.0),
         )
         .expect("drag request");
-        assert!(matches!(start_request, DragDropRequest::Start { .. }));
+        assert!(matches!(
+            start_request,
+            DragDropRequest::Start {
+                drag_image: Some(_),
+                ..
+            }
+        ));
 
         let target_descriptor = dnd_drop_target_descriptor(&document, target.root, &drop_options);
         assert_eq!(target_descriptor.id, DropTargetId::new("lane"));
@@ -608,6 +774,59 @@ mod tests {
         );
         let accessibility = document.node(target.root).accessibility.as_ref().unwrap();
         assert_eq!(accessibility.label.as_deref(), Some("Timeline lane"));
+    }
+
+    #[test]
+    fn dnd_drop_preview_state_applies_accepted_and_rejected_visuals() {
+        let mut document = UiDocument::new(root_style(420.0, 240.0));
+        let root = document.root;
+        let options = DropZoneOptions::default()
+            .with_accepted_payload(DropPayloadFilter::empty().text())
+            .with_accepted_operations([DragOperation::Move]);
+        let target = dnd_drop_zone(&mut document, root, "lane", "Drop here", options.clone());
+        document.node_mut(target.root).layout.rect = UiRect::new(0.0, 20.0, 320.0, 120.0);
+
+        let accepted = dnd_drop_zone_preview_state(
+            &document,
+            target.root,
+            &options,
+            Some(&DragPayload::text("clip")),
+            &[DragOperation::Move],
+            UiPoint::new(24.0, 40.0),
+        );
+        assert_eq!(accepted, DropZonePreviewState::Accepted);
+        dnd_apply_drop_zone_preview(&mut document, target.root, &options, accepted);
+        assert_eq!(
+            document.node(target.root).visual,
+            options.active_visual.unwrap()
+        );
+
+        let rejected = dnd_drop_zone_preview_state(
+            &document,
+            target.root,
+            &options,
+            Some(&DragPayload::files(["clip.wav"])),
+            &[DragOperation::Move],
+            UiPoint::new(24.0, 40.0),
+        );
+        assert_eq!(rejected, DropZonePreviewState::Rejected);
+        dnd_apply_drop_zone_preview(&mut document, target.root, &options, rejected);
+        assert_eq!(
+            document.node(target.root).visual,
+            options.rejected_visual.unwrap()
+        );
+
+        assert_eq!(
+            dnd_drop_zone_preview_state(
+                &document,
+                target.root,
+                &options,
+                None,
+                &[],
+                UiPoint::new(24.0, 40.0),
+            ),
+            DropZonePreviewState::Hovered
+        );
     }
 
     #[test]

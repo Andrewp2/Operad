@@ -58,6 +58,8 @@
   layer.
 - Added modal dialog dismissal policy, focus-trap helpers, and overlay-frame
   event helpers to the visual modal builder.
+- Added drag-image policy and drop-preview state helpers to the drag/drop widget
+  layer.
 
 ## 6.1.0
 

@@ -140,6 +140,9 @@ These are the items that should move from the v6 planning notes into v7 work.
   hover/focus trigger resolution and a reduced-motion-aware animation preset.
 - Alpha 20 has closed the basic modal helper gap with visual-builder dismissal
   policy, focus-trap generation, and overlay-frame open/dismiss event helpers.
+- Alpha 21 has closed the basic drag/drop preview gap with reusable drag-image
+  policy, platform drag-image metadata, and accepted/rejected drop-preview
+  states.
 
 ### 1. Architecture And API Cleanup
 
@@ -172,6 +175,8 @@ These are the items that should move from the v6 planning notes into v7 work.
   helpers are now available through `operad::widgets`.
 - Add examples for all supported states: normal, hovered, pressed, toggled,
   disabled, focused, selected, error, loading, and reduced-motion.
+- Drag/drop widgets now expose drag-image policy plus accepted/rejected
+  drop-preview state and visual helpers.
 
 ### 3. Text, Editing, And Forms
 

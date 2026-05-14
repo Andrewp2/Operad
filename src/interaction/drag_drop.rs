@@ -5,7 +5,7 @@
 //! they can expose to hit testing, accessibility, and platform-output routing.
 
 use crate::{
-    platform::{DragDropRequest, DragId, DragOperation, DragPayload, LogicalPoint},
+    platform::{DragDropRequest, DragId, DragImage, DragOperation, DragPayload, LogicalPoint},
     AccessibilityAction, AccessibilityMeta, AccessibilityRole, AccessibilitySummary, UiPoint,
     UiRect,
 };
@@ -174,6 +174,7 @@ pub struct DragSourceDescriptor {
     pub bounds: UiRect,
     pub payload: DragPayload,
     pub allowed_operations: Vec<DragOperation>,
+    pub drag_image: Option<DragImage>,
     pub disabled: bool,
     pub label: Option<String>,
     pub hint: Option<String>,
@@ -194,6 +195,7 @@ impl DragSourceDescriptor {
             bounds,
             payload,
             allowed_operations: ALL_OPERATIONS.to_vec(),
+            drag_image: None,
             disabled: false,
             label: None,
             hint: None,
@@ -210,6 +212,11 @@ impl DragSourceDescriptor {
         operations: impl IntoIterator<Item = DragOperation>,
     ) -> Self {
         self.allowed_operations = operations.into_iter().collect();
+        self
+    }
+
+    pub fn drag_image(mut self, drag_image: impl Into<Option<DragImage>>) -> Self {
+        self.drag_image = drag_image.into();
         self
     }
 
@@ -242,6 +249,7 @@ impl DragSourceDescriptor {
             payload: self.payload.clone(),
             origin: LogicalPoint::new(origin.x, origin.y),
             allowed_operations: self.allowed_operations.clone(),
+            drag_image: self.drag_image.clone(),
         })
     }
 
@@ -531,6 +539,7 @@ mod tests {
                 payload: DragPayload::text("clip"),
                 origin: LogicalPoint::new(12.0, 24.0),
                 allowed_operations: vec![DragOperation::Move],
+                drag_image: None,
             }
         );
         assert_eq!(
