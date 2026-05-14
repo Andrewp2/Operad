@@ -83,6 +83,20 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::field_help_text`
 - `operad::widgets::field_validation_message`
 - `operad::widgets::form_error_summary`
+- `operad::widgets::central_panel`
+- `operad::widgets::top_panel`
+- `operad::widgets::bottom_panel`
+- `operad::widgets::side_panel`
+- `operad::widgets::left_panel`
+- `operad::widgets::right_panel`
+- `operad::widgets::group_panel`
+- `operad::widgets::frame`
+- `operad::widgets::group`
+- `operad::widgets::sides`
+- `operad::widgets::columns`
+- `operad::widgets::indented_section`
+- `operad::widgets::resize_handle`
+- `operad::widgets::resize_container`
 - `operad::widgets::singleline_text_input`
 - `operad::widgets::multiline_text_input`
 - `operad::widgets::text_area`
@@ -107,6 +121,11 @@ thin defaults for common cases rather than separate state models.
 The form helpers build visual form rows, labels, help text, validation messages,
 and summaries around `FormState`, `FieldState`, and `ValidationMessage`.
 Applications still own field values and submit/apply/cancel behavior.
+
+The container and panel helpers are convenience builders over the retained
+document tree. Existing `panel` and `UiNode::container` code keeps working, but
+new examples should prefer the named helpers when building ordinary panels,
+frames, side-by-side sections, columns, indentation, or resizable regions.
 
 The text-input convenience builders all use `TextInputState` and
 `TextInputOptions`; they configure common defaults without replacing the

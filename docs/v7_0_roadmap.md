@@ -111,6 +111,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 9 has started form widget parity by adding form section, row, field
   label, help text, validation message, and error-summary builders backed by
   the existing form validation state model.
+- Alpha 10 has started container/layout parity by adding central, top, bottom,
+  side, left, right, group, frame, sides, columns, indented-section,
+  resize-handle, and resize-container builders.
 
 ### 1. Architecture And API Cleanup
 
@@ -162,7 +165,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Add resize, collapse, close, drag, minimum-size, focus, and keyboard behavior
   as reusable surface primitives.
 - Add panel primitives comparable to egui's central/side/top/bottom panels and
-  iced's pane grid/float/overlay concepts.
+  iced's pane grid/float/overlay concepts. Initial central, top, bottom, side,
+  left, right, group, frame, sides, columns, indented-section, resize-handle,
+  and resize-container helpers are now available.
 - Ensure opening a combo box, submenu, tooltip, or popup does not cause layout
   shifts unless the caller explicitly requests inline layout.
 

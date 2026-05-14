@@ -162,6 +162,20 @@ Public document-building widget functions currently exported under `operad::widg
 - `grid_row`
 - `grid_text_cell`
 - `panel`
+- `central_panel`
+- `top_panel`
+- `bottom_panel`
+- `side_panel`
+- `left_panel`
+- `right_panel`
+- `group_panel`
+- `frame`
+- `group`
+- `sides`
+- `columns`
+- `indented_section`
+- `resize_handle`
+- `resize_container`
 - `collapsing_header`
 - `tooltip_box`
 - `modal_dialog`
@@ -211,7 +225,6 @@ Missing visual widgets:
 
 - Selectable value convenience helper
 - Compact color button
-- Generic scroll bar widget
 - Angle drag controls
 
 Missing color-editing conveniences:
@@ -233,17 +246,7 @@ Missing color-editing conveniences:
 Missing containers and layout widgets:
 
 - Area
-- Frame
-- Group
-- Resize container
-- Resize handle
 - Scene
-- Sides
-- Central panel
-- Side panel
-- Top/bottom panel
-- Columns layout
-- Indented layout section
 
 Missing menu conveniences:
 

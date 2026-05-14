@@ -34,6 +34,8 @@
   of the default button primitive.
 - Added form section, row, field label, help text, validation message, and error
   summary widget helpers backed by the existing form validation contracts.
+- Added egui-style container helpers for panels, frames, groups, sides, columns,
+  indentation, resize handles, and resize containers.
 
 ## 6.1.0
 

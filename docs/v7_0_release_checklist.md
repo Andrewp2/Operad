@@ -43,6 +43,9 @@ These should pass on a normal Linux runner before every v7 milestone:
   builders.
 - [x] Alpha 9 adds form section, row, field label, help text, validation
   message, and error-summary widget helpers.
+- [x] Alpha 10 adds central, top, bottom, side, left, right, group, frame,
+  sides, columns, indented-section, resize-handle, and resize-container widget
+  helpers.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.
@@ -67,7 +70,7 @@ These should pass on a normal Linux runner before every v7 milestone:
   traversal use one effective ordering model.
 - [ ] Floating windows, popups, menus, tooltips, command palettes, modals, and
   toast overlays share reusable layering rules.
-- [ ] Floating windows support close, collapse, resize, minimum size, drag,
+- [x] Floating windows support close, collapse, resize, minimum size, drag,
   focus, and keyboard behavior through library primitives.
 - [ ] Combo boxes, submenus, tooltips, and popups do not cause layout shifts
   unless the caller requests inline layout.
