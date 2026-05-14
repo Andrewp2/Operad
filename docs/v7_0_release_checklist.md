@@ -115,11 +115,11 @@ These should pass on a normal Linux runner before every v7 milestone:
 
 ## Release Sign-Off
 
-- [ ] `Cargo.toml` and `Cargo.lock` both report the intended v7 release version.
-- [ ] `CHANGELOG.md` has a `7.0.0` entry covering breaking changes and migration
+- [x] `Cargo.toml` and `Cargo.lock` both report the intended v7 release version.
+- [x] `CHANGELOG.md` has a `7.0.0` entry covering breaking changes and migration
   paths.
-- [ ] README describes Operad as the current library, not as version archaeology.
-- [ ] Feature flags are documented and no-default builds stay backend-neutral.
-- [ ] Migration guide documents every intentionally changed public path.
+- [x] README describes Operad as the current library, not as version archaeology.
+- [x] Feature flags are documented and no-default builds stay backend-neutral.
+- [x] Migration guide documents every intentionally changed public path.
 - [x] Package contents do not include stale internal planning docs as current
   product guidance.

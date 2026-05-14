@@ -1,6 +1,6 @@
 # Changelog
 
-## 7.0.0 - In progress
+## 7.0.0 - 2026-05-14
 
 - Started the v7 source-organization pass by moving retained document
   primitives into `src/core/document.rs` and widget module wiring into
