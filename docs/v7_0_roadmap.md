@@ -149,6 +149,8 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 23 has closed the first release-grade performance diagnostics gap with
   required frame-stage coverage, required cache-domain coverage, and unified
   diagnostic report summaries for performance snapshots.
+- Alpha 24 has moved performance sign-off into documented stress probes outside
+  customer-facing examples, with repeatable widget and WGPU perf smoke commands.
 
 ### 1. Architecture And API Cleanup
 
@@ -275,10 +277,13 @@ These are the items that should move from the v6 planning notes into v7 work.
   release-required cache domains.
 - Add stress probes outside the showcase: button grids, text-heavy forms,
   scroll-heavy tables, overlapping overlays, animated progress, and canvas
-  scenes.
+  scenes. The v7 performance smoke suite is documented in
+  `docs/v7_0_performance.md` and lives in `tests/perf_smoke.rs`.
 - Avoid layout recomputation for pointer hover unless the hover state changes a
   layout-affecting property.
 - Add a performance budget for the showcase and for synthetic test scenes.
+  `docs/v7_0_performance.md` records the repeatable commands and budget
+  categories for v7 sign-off.
 
 ### 9. Accessibility And Input
 

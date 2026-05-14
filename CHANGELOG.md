@@ -64,6 +64,8 @@
   helpers.
 - Added required frame-stage and cache-domain performance diagnostics to the
   unified diagnostic report surface.
+- Documented v7 performance stress probes, budgets, and repeatable smoke
+  commands outside the showcase.
 
 ## 6.1.0
 

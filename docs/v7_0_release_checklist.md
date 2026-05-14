@@ -109,8 +109,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   testing, paint-list generation, batching, uploads, and backend draw time.
 - [x] Cache diagnostics report layout, shaped text, image, canvas texture, and
   display-list reuse.
-- [ ] Stress probes live outside customer-facing examples.
-- [ ] Showcase performance has a documented budget and a repeatable measurement
+- [x] Stress probes live outside customer-facing examples.
+- [x] Showcase performance has a documented budget and a repeatable measurement
   command.
 
 ## Release Sign-Off
