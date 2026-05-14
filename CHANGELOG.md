@@ -18,6 +18,9 @@
   separators/spacers, spinners, radio buttons/groups, toggle switches, visual
   drag values, generic grids, and panel containers so examples can use normal
   Operad primitives instead of hand-building those nodes.
+- Added renderer-neutral performance diagnostics that name frame pipeline stages
+  and aggregate cache hit, miss, and eviction rates from display-list reuse
+  reports.
 
 ## 6.1.0
 

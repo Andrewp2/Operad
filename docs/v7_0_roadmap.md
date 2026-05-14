@@ -92,6 +92,9 @@ These are the items that should move from the v6 planning notes into v7 work.
   for text-style labels, standalone images, separators/spacers, spinners, radio
   buttons/groups, toggle switches, visual drag values, generic grids, and panel
   containers.
+- Alpha 3 has started performance instrumentation with named frame pipeline
+  stages and cache diagnostics for hit, miss, eviction, and retained-byte
+  reporting.
 
 ### 1. Architecture And API Cleanup
 

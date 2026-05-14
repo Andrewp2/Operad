@@ -62,6 +62,8 @@ These should pass on a normal Linux runner before every v7 milestone:
 
 ## Performance Gates
 
+- [x] Alpha 3 starts performance diagnostics with named frame-pipeline stages
+  and cache hit/miss/eviction snapshots.
 - [ ] Frame diagnostics report tree rebuild, diffing, layout, text shaping, hit
   testing, paint-list generation, batching, uploads, and backend draw time.
 - [ ] Cache diagnostics report layout, shaped text, image, canvas texture, and

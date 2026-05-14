@@ -151,11 +151,12 @@ pub use debug::{
 };
 pub use diagnostics::{
     node_label, overlay_label, widget_action_label, AccessibilityOutputDiagnostic,
-    AccessibilityRequestDiagnostic, AccessibilityResponseDiagnostic, DiagnosticCategory,
-    DiagnosticMessage, DiagnosticRecord, DiagnosticReport, DiagnosticSeverity,
-    DiagnosticSummaryRecord, DirtyFlagsDiagnostic, GeometryHitDiagnostic, InputRoutingDiagnostic,
-    OverlayEntryDiagnostic, OverlayRoutingDiagnostic, OverlayStackDiagnostic,
-    RenderTimingDiagnostic, RenderTimingSectionDiagnostic, WidgetActionDiagnostic,
+    AccessibilityRequestDiagnostic, AccessibilityResponseDiagnostic, CacheDiagnostic,
+    DiagnosticCategory, DiagnosticMessage, DiagnosticRecord, DiagnosticReport, DiagnosticSeverity,
+    DiagnosticSummaryRecord, DirtyFlagsDiagnostic, FramePipelineSection, FramePipelineStage,
+    FramePipelineTiming, GeometryHitDiagnostic, InputRoutingDiagnostic, OverlayEntryDiagnostic,
+    OverlayRoutingDiagnostic, OverlayStackDiagnostic, PerformanceSnapshot, RenderTimingDiagnostic,
+    RenderTimingSectionDiagnostic, WidgetActionDiagnostic,
 };
 pub use display::{
     DisplayListId, DisplayListInvalidation, DisplayListInvalidationReport,
