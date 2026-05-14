@@ -197,8 +197,10 @@ Public document-building widget functions currently exported under `operad::widg
 - `left_panel`
 - `right_panel`
 - `group_panel`
+- `area`
 - `frame`
 - `group`
+- `scene`
 - `sides`
 - `columns`
 - `indented_section`
@@ -248,11 +250,6 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 ## egui Features Missing In Operad
 
 This section lists egui widget and widget-adjacent features from the sources above that do not currently have an equivalent public Operad visual widget builder. Some lower-level Operad contracts may exist, but they are counted as missing here if customers cannot add the feature with a normal `operad::widgets::*` builder.
-
-Missing containers and layout widgets:
-
-- Area
-- Scene
 
 Missing interaction helpers:
 

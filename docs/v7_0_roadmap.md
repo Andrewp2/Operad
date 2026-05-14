@@ -126,6 +126,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 14 has closed the remaining color-editing convenience gap with
   premultiplied/unmultiplied RGBA and SRGBA buttons, `Color32`-style buttons,
   and standalone HSV 2D picker fields.
+- Alpha 15 has closed the basic `Area`/`Scene` container gap with public
+  `area` and `scene` helpers for absolute regions and renderer-neutral scene
+  primitives.
 
 ### 1. Architecture And API Cleanup
 
@@ -179,7 +182,7 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Add panel primitives comparable to egui's central/side/top/bottom panels and
   iced's pane grid/float/overlay concepts. Initial central, top, bottom, side,
   left, right, group, frame, sides, columns, indented-section, resize-handle,
-  and resize-container helpers are now available.
+  resize-container, area, and scene helpers are now available.
 - Ensure opening a combo box, submenu, tooltip, or popup does not cause layout
   shifts unless the caller explicitly requests inline layout.
 

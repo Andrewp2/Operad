@@ -46,6 +46,8 @@
 - Added egui-style color conveniences for premultiplied/unmultiplied RGBA and
   SRGBA buttons, `Color32`-style color buttons, and standalone HSV 2D picker
   fields.
+- Added `area` and `scene` widget helpers so absolute-positioned regions and
+  scene primitives can be built through the normal public widget API.
 
 ## 6.1.0
 

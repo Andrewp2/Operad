@@ -55,6 +55,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   existing selectable-label and drag-value primitives.
 - [x] Alpha 14 adds premultiplied/unmultiplied RGBA and SRGBA color buttons,
   `Color32`-style color buttons, and standalone HSV 2D picker fields.
+- [x] Alpha 15 adds `area` and `scene` widget helpers for absolute regions and
+  renderer-neutral scene primitives.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

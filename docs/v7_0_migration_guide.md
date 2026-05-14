@@ -90,6 +90,8 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::side_panel`
 - `operad::widgets::left_panel`
 - `operad::widgets::right_panel`
+- `operad::widgets::area`
+- `operad::widgets::scene`
 - `operad::widgets::group_panel`
 - `operad::widgets::frame`
 - `operad::widgets::group`
@@ -154,7 +156,8 @@ Applications still own field values and submit/apply/cancel behavior.
 The container and panel helpers are convenience builders over the retained
 document tree. Existing `panel` and `UiNode::container` code keeps working, but
 new examples should prefer the named helpers when building ordinary panels,
-frames, side-by-side sections, columns, indentation, or resizable regions.
+frames, absolute areas, scene primitive blocks, side-by-side sections, columns,
+indentation, or resizable regions.
 
 The color button helpers use the existing color picker state and action model.
 They are compact trigger/display widgets for common color formats; applications

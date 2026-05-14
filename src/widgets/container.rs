@@ -95,6 +95,212 @@ pub fn group(document: &mut UiDocument, parent: UiNodeId, name: impl Into<String
 }
 
 #[derive(Debug, Clone)]
+pub struct AreaOptions {
+    pub rect: UiRect,
+    pub visual: UiVisual,
+    pub clip: ClipBehavior,
+    pub z_index: i16,
+    pub scroll_axes: ScrollAxes,
+    pub action: Option<WidgetActionBinding>,
+    pub action_mode: WidgetActionMode,
+    pub accessibility_label: Option<String>,
+}
+
+impl AreaOptions {
+    pub const fn new(rect: UiRect) -> Self {
+        Self {
+            rect,
+            visual: UiVisual::TRANSPARENT,
+            clip: ClipBehavior::Clip,
+            z_index: 0,
+            scroll_axes: ScrollAxes::NONE,
+            action: None,
+            action_mode: WidgetActionMode::Activate,
+            accessibility_label: None,
+        }
+    }
+
+    pub fn with_rect(mut self, rect: UiRect) -> Self {
+        self.rect = rect;
+        self
+    }
+
+    pub fn with_visual(mut self, visual: UiVisual) -> Self {
+        self.visual = visual;
+        self
+    }
+
+    pub fn with_clip(mut self, clip: ClipBehavior) -> Self {
+        self.clip = clip;
+        self
+    }
+
+    pub fn with_z_index(mut self, z_index: i16) -> Self {
+        self.z_index = z_index;
+        self
+    }
+
+    pub fn with_scroll(mut self, axes: ScrollAxes) -> Self {
+        self.scroll_axes = axes;
+        self.clip = ClipBehavior::Clip;
+        self
+    }
+
+    pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub fn with_action_mode(mut self, mode: WidgetActionMode) -> Self {
+        self.action_mode = mode;
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+}
+
+impl Default for AreaOptions {
+    fn default() -> Self {
+        Self::new(UiRect::new(0.0, 0.0, 160.0, 120.0))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaNodes {
+    pub root: UiNodeId,
+}
+
+pub fn area(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    options: AreaOptions,
+    build_content: impl FnOnce(&mut UiDocument, UiNodeId),
+) -> AreaNodes {
+    let name = name.into();
+    let mut layout = LayoutStyle::absolute_rect(options.rect);
+    {
+        let layout = layout.as_taffy_style_mut();
+        layout.display = Display::Flex;
+        layout.flex_direction = FlexDirection::Column;
+    }
+    let mut node = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout: layout.style,
+            clip: options.clip,
+            z_index: options.z_index,
+            ..Default::default()
+        },
+    )
+    .with_visual(options.visual)
+    .with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::Group).label(
+            options
+                .accessibility_label
+                .unwrap_or_else(|| format!("{name} area")),
+        ),
+    );
+    if options.scroll_axes != ScrollAxes::NONE {
+        node = node.with_scroll(options.scroll_axes);
+    }
+    if let Some(action) = options.action {
+        node = node
+            .with_input(InputBehavior::BUTTON)
+            .with_action(action)
+            .with_action_mode(options.action_mode);
+    }
+    let root = document.add_child(parent, node);
+    build_content(document, root);
+    AreaNodes { root }
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneOptions {
+    pub layout: LayoutStyle,
+    pub visual: UiVisual,
+    pub clip: ClipBehavior,
+    pub action: Option<WidgetActionBinding>,
+    pub action_mode: WidgetActionMode,
+    pub accessibility_label: Option<String>,
+}
+
+impl SceneOptions {
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+
+    pub fn with_visual(mut self, visual: UiVisual) -> Self {
+        self.visual = visual;
+        self
+    }
+
+    pub fn with_clip(mut self, clip: ClipBehavior) -> Self {
+        self.clip = clip;
+        self
+    }
+
+    pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub fn with_action_mode(mut self, mode: WidgetActionMode) -> Self {
+        self.action_mode = mode;
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+}
+
+impl Default for SceneOptions {
+    fn default() -> Self {
+        Self {
+            layout: LayoutStyle::size(160.0, 120.0),
+            visual: UiVisual::TRANSPARENT,
+            clip: ClipBehavior::Clip,
+            action: None,
+            action_mode: WidgetActionMode::Activate,
+            accessibility_label: None,
+        }
+    }
+}
+
+pub fn scene(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    primitives: impl Into<Vec<ScenePrimitive>>,
+    options: SceneOptions,
+) -> UiNodeId {
+    let name = name.into();
+    let mut node =
+        UiNode::scene(name.clone(), primitives.into(), options.layout).with_visual(options.visual);
+    node.style.clip = options.clip;
+    node = node.with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::Image).label(
+            options
+                .accessibility_label
+                .unwrap_or_else(|| format!("{name} scene")),
+        ),
+    );
+    if let Some(action) = options.action {
+        node = node
+            .with_input(InputBehavior::BUTTON)
+            .with_action(action)
+            .with_action_mode(options.action_mode);
+    }
+    document.add_child(parent, node)
+}
+
+#[derive(Debug, Clone)]
 pub struct SidesOptions {
     pub layout: LayoutStyle,
     pub gap: f32,
@@ -741,6 +947,36 @@ mod tests {
                 .with_scroll(ScrollAxes::VERTICAL),
         );
         let group_id = group(&mut document, root, "group");
+        let area_nodes = area(
+            &mut document,
+            root,
+            "floating_area",
+            AreaOptions::new(UiRect::new(20.0, 24.0, 180.0, 96.0))
+                .with_z_index(7)
+                .with_action("area.activate")
+                .with_action_mode(WidgetActionMode::PointerEdit),
+            |document, parent| {
+                label(
+                    document,
+                    parent,
+                    "floating_area.label",
+                    "Area",
+                    TextStyle::default(),
+                    LayoutStyle::new(),
+                );
+            },
+        );
+        let scene_id = scene(
+            &mut document,
+            root,
+            "scene",
+            vec![ScenePrimitive::Line {
+                from: UiPoint::new(0.0, 0.0),
+                to: UiPoint::new(24.0, 24.0),
+                stroke: StrokeStyle::new(ColorRgba::WHITE, 1.0),
+            }],
+            SceneOptions::default().with_action("scene.activate"),
+        );
         let sides_nodes = sides(
             &mut document,
             root,
@@ -820,6 +1056,23 @@ mod tests {
         assert_eq!(
             document.node(group_id).accessibility.as_ref().unwrap().role,
             AccessibilityRole::Group
+        );
+        assert_eq!(
+            document.node(area_nodes.root).style.layout.position,
+            taffy::prelude::Position::Absolute
+        );
+        assert_eq!(document.node(area_nodes.root).style.z_index, 7);
+        assert_eq!(
+            document.node(area_nodes.root).action.as_ref(),
+            Some(&WidgetActionBinding::action("area.activate"))
+        );
+        assert!(matches!(
+            document.node(scene_id).content,
+            UiContent::Scene(ref primitives) if primitives.len() == 1
+        ));
+        assert_eq!(
+            document.node(scene_id).action.as_ref(),
+            Some(&WidgetActionBinding::action("scene.activate"))
         );
         assert_eq!(document.node(sides_nodes.root).children.len(), 2);
         assert_eq!(columns_nodes.columns.len(), 3);
