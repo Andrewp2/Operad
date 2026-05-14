@@ -72,18 +72,18 @@ These should pass on a normal Linux runner before every v7 milestone:
   scrollbar helpers.
 - [x] Alpha 23 adds required frame-stage/cache-domain performance diagnostics
   and unified diagnostic report summaries.
-- [ ] Showcase code uses public Operad widget APIs only.
-- [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
+- [x] Showcase code uses public Operad widget APIs only.
+- [x] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.
-- [ ] Every shipped widget has normal, hovered, pressed, toggled, disabled,
+- [x] Every shipped widget has normal, hovered, pressed, toggled, disabled,
   focused, selected, min-size, max-size, and overlay-open visual coverage where
   applicable.
-- [ ] Widget defaults cover margins, alignment, hover, pressed, disabled, focus,
+- [x] Widget defaults cover margins, alignment, hover, pressed, disabled, focus,
   keyboard, clipboard, scrolling, and accessibility behavior without per-example
   patching.
-- [ ] Text input caret placement, selection, clipboard, deletion, placeholder
+- [x] Text input caret placement, selection, clipboard, deletion, placeholder
   sizing, keyboard navigation, and IME behavior are validated.
-- [ ] Scrollbars can be clicked, dragged, and kept visually aligned with the
+- [x] Scrollbars can be clicked, dragged, and kept visually aligned with the
   content they control.
 
 ## Overlay And Surface Gates
@@ -92,13 +92,13 @@ These should pass on a normal Linux runner before every v7 milestone:
   widget builders backed by shared accessibility and overlay contracts.
 - [x] Alpha 7 adds reusable drag source and drop zone widget builders backed by
   the shared drag/drop descriptors and platform drag-start contract.
-- [ ] Paint ordering, hit testing, focus, popups, drag capture, and accessibility
+- [x] Paint ordering, hit testing, focus, popups, drag capture, and accessibility
   traversal use one effective ordering model.
-- [ ] Floating windows, popups, menus, tooltips, command palettes, modals, and
+- [x] Floating windows, popups, menus, tooltips, command palettes, modals, and
   toast overlays share reusable layering rules.
 - [x] Floating windows support close, collapse, resize, minimum size, drag,
   focus, and keyboard behavior through library primitives.
-- [ ] Combo boxes, submenus, tooltips, and popups do not cause layout shifts
+- [x] Combo boxes, submenus, tooltips, and popups do not cause layout shifts
   unless the caller requests inline layout.
 
 ## Performance Gates

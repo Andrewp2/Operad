@@ -151,6 +151,9 @@ These are the items that should move from the v6 planning notes into v7 work.
   diagnostic report summaries for performance snapshots.
 - Alpha 24 has moved performance sign-off into documented stress probes outside
   customer-facing examples, with repeatable widget and WGPU perf smoke commands.
+- Alpha 25 has closed the showcase and overlay release gates by recording the
+  public-API showcase audit, widget state coverage, text/scrollbar validation,
+  and unified overlay ordering evidence.
 
 ### 1. Architecture And API Cleanup
 

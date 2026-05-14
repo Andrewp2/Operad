@@ -68,6 +68,8 @@
   commands outside the showcase.
 - Trimmed package contents so old internal planning docs are not shipped as
   current crate guidance.
+- Added a v7 showcase audit covering public API use, hidden harness removal,
+  widget state coverage, text input, scrollbar, and overlay validation.
 
 ## 6.1.0
 
