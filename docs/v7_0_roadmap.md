@@ -143,6 +143,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 21 has closed the basic drag/drop preview gap with reusable drag-image
   policy, platform drag-image metadata, and accepted/rejected drop-preview
   states.
+- Alpha 22 has closed the basic scrollbar integration gap with a composed
+  scroll area that builds aligned vertical and horizontal scrollbars from a
+  shared `ScrollState`.
 
 ### 1. Architecture And API Cleanup
 
@@ -177,6 +180,9 @@ These are the items that should move from the v6 planning notes into v7 work.
   disabled, focused, selected, error, loading, and reduced-motion.
 - Drag/drop widgets now expose drag-image policy plus accepted/rejected
   drop-preview state and visual helpers.
+- Scrollable widgets can now use `scroll_area_with_bars` and
+  `aligned_scrollbar_options` instead of hand-aligning viewport and scrollbar
+  dimensions.
 
 ### 3. Text, Editing, And Forms
 

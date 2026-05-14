@@ -148,6 +148,8 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::dnd_drag_start_request`
 - `operad::widgets::dnd_drop_zone_preview_state`
 - `operad::widgets::dnd_apply_drop_zone_preview`
+- `operad::widgets::scroll_area_with_bars`
+- `operad::widgets::aligned_scrollbar_options`
 - `operad::widgets::drag_angle`
 - `operad::widgets::drag_angle_tau`
 - `operad::widgets::add_visible`
@@ -201,6 +203,11 @@ normal open, Escape, outside-click, or close-button behavior.
 support custom drag images. `dnd_drop_zone_preview_state` and
 `dnd_apply_drop_zone_preview` provide the standard accepted, rejected, hovered,
 disabled, and idle drop-preview behavior.
+
+`scroll_area_with_bars` builds a scroll viewport plus optional vertical and
+horizontal scrollbar nodes from one `ScrollState`. `aligned_scrollbar_options`
+keeps standalone scrollbar tracks sized to the scroll viewport so custom
+scrollable widgets do not need per-widget alignment code.
 
 The form helpers build visual form rows, labels, help text, validation messages,
 summaries, and action rows around `FormState`, `FieldState`, and

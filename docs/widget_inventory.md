@@ -114,6 +114,8 @@ Common `Ui` shorthand/widget methods:
 - `dnd_drop_zone`
 - `dnd_drop_zone_preview_state`
 - `dnd_apply_drop_zone_preview`
+- `scroll_area_with_bars`
+- `aligned_scrollbar_options`
 - `drag_angle`
 - `drag_angle_tau`
 
@@ -227,6 +229,8 @@ Public document-building widget functions currently exported under `operad::widg
 - `dnd_drop_zone`
 - `dnd_drop_zone_preview_state`
 - `dnd_apply_drop_zone_preview`
+- `scroll_area_with_bars`
+- `aligned_scrollbar_options`
 - `form_section`
 - `form_row`
 - `field_label`
@@ -292,7 +296,7 @@ Partially covered but not equivalent:
 - Tooltips: Operad now has `tooltip_box`, hover/focus trigger resolution, timing policy, and a reduced-motion-aware animation preset. It still needs richer cross-overlay coordination for complex nested surfaces.
 - Dialogs/modals: Operad now has `modal_dialog`, dialog and overlay state contracts, focus-trap helpers, dismissal policy, and open/dismiss event helpers. It still needs richer multi-dialog composition patterns.
 - Drag and drop: Operad now has generic `dnd_drag_source` and `dnd_drop_zone` builders, drag-image policy, accepted/rejected drop-preview helpers, and descriptors/metadata on some complex widgets. It still needs fuller platform adapter coverage.
-- Scroll bars: Operad exposes a scrollbar widget and geometry/accessibility helpers, but still needs fuller integration coverage across every scrollable widget.
+- Scroll bars: Operad exposes a scrollbar widget, geometry/accessibility helpers, aligned scrollbar options, and a composed `scroll_area_with_bars` helper. It still needs adoption across every complex scrollable widget.
 - Panels: Operad has `central_panel`, `side_panel`, `top_panel`, `bottom_panel`,
   `left_panel`, `right_panel`, `dock_workspace`, `split_pane`, `scroll_area`,
   and generic containers. It still needs richer pane-grid docking and animated

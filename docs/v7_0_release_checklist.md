@@ -68,6 +68,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   overlay-frame event helpers.
 - [x] Alpha 21 adds drag-image policy and accepted/rejected drop-preview state
   helpers.
+- [x] Alpha 22 adds a composed scroll area with aligned vertical/horizontal
+  scrollbar helpers.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.
