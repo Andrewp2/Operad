@@ -62,6 +62,8 @@
   layer.
 - Added a composed scroll area with aligned vertical/horizontal scrollbar
   helpers.
+- Added required frame-stage and cache-domain performance diagnostics to the
+  unified diagnostic report surface.
 
 ## 6.1.0
 

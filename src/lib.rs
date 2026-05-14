@@ -150,12 +150,14 @@ pub use debug::{
     DebugThemeScopeInfo, DebugThemeSnapshot, DebugThemeToken, DebugThemeTokenKind,
 };
 pub use diagnostics::{
-    node_label, overlay_label, widget_action_label, AccessibilityOutputDiagnostic,
-    AccessibilityRequestDiagnostic, AccessibilityResponseDiagnostic, CacheDiagnostic,
-    DiagnosticCategory, DiagnosticMessage, DiagnosticRecord, DiagnosticReport, DiagnosticSeverity,
+    node_label, overlay_label, required_cache_diagnostic_kinds, required_pipeline_stages,
+    widget_action_label, AccessibilityOutputDiagnostic, AccessibilityRequestDiagnostic,
+    AccessibilityResponseDiagnostic, CacheDiagnostic, CacheDiagnosticKind, DiagnosticCategory,
+    DiagnosticMessage, DiagnosticRecord, DiagnosticReport, DiagnosticSeverity,
     DiagnosticSummaryRecord, DirtyFlagsDiagnostic, FramePipelineSection, FramePipelineStage,
     FramePipelineTiming, GeometryHitDiagnostic, InputRoutingDiagnostic, OverlayEntryDiagnostic,
-    OverlayRoutingDiagnostic, OverlayStackDiagnostic, PerformanceSnapshot, RenderTimingDiagnostic,
+    OverlayRoutingDiagnostic, OverlayStackDiagnostic, PerformanceCacheDiagnostic,
+    PerformanceSnapshot, PerformanceSnapshotDiagnostic, RenderTimingDiagnostic,
     RenderTimingSectionDiagnostic, WidgetActionDiagnostic,
 };
 pub use display::{

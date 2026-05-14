@@ -52,7 +52,7 @@ impl FramePipelineStage {
             "paint-list" | "paint_list" | "paint" => Self::PaintList,
             "batching" | "batch" => Self::Batching,
             "uploads" | "upload" => Self::Uploads,
-            "backend-draw" | "backend_draw" | "render" | "draw" => Self::BackendDraw,
+            "backend-draw" | "backend_draw" | "render" | "draw" | "gpu-render" => Self::BackendDraw,
             "canvas" => Self::Canvas,
             "accessibility" | "a11y" => Self::Accessibility,
             other => Self::Custom(other.to_string()),
@@ -149,8 +149,55 @@ pub fn required_pipeline_stages() -> Vec<FramePipelineStage> {
     ]
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CacheDiagnosticKind {
+    Layout,
+    ShapedText,
+    Image,
+    CanvasTexture,
+    DisplayList,
+    Custom(String),
+}
+
+impl CacheDiagnosticKind {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Layout => "layout",
+            Self::ShapedText => "shaped-text",
+            Self::Image => "image",
+            Self::CanvasTexture => "canvas-texture",
+            Self::DisplayList => "display-list",
+            Self::Custom(label) => label.as_str(),
+        }
+    }
+
+    pub fn from_label(label: impl Into<String>) -> Self {
+        match label.into().as_str() {
+            "layout" => Self::Layout,
+            "text" | "text-shaping" | "shaped-text" | "glyph" | "glyphon" => Self::ShapedText,
+            "image" | "images" | "texture" => Self::Image,
+            "canvas" | "canvas-texture" | "canvas_texture" => Self::CanvasTexture,
+            "display" | "display-list" | "display_list" | "retained-display-list" => {
+                Self::DisplayList
+            }
+            other => Self::Custom(other.to_string()),
+        }
+    }
+}
+
+pub fn required_cache_diagnostic_kinds() -> Vec<CacheDiagnosticKind> {
+    vec![
+        CacheDiagnosticKind::Layout,
+        CacheDiagnosticKind::ShapedText,
+        CacheDiagnosticKind::Image,
+        CacheDiagnosticKind::CanvasTexture,
+        CacheDiagnosticKind::DisplayList,
+    ]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheDiagnostic {
+    pub kind: CacheDiagnosticKind,
     pub name: String,
     pub lookups: usize,
     pub hits: usize,
@@ -161,14 +208,21 @@ pub struct CacheDiagnostic {
 
 impl CacheDiagnostic {
     pub fn new(name: impl Into<String>) -> Self {
+        let name = name.into();
         Self {
-            name: name.into(),
+            kind: CacheDiagnosticKind::from_label(name.clone()),
+            name,
             lookups: 0,
             hits: 0,
             misses: 0,
             evictions: 0,
             retained_bytes: None,
         }
+    }
+
+    pub fn with_kind(mut self, kind: CacheDiagnosticKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     pub fn lookup(mut self, hit: bool) -> Self {
@@ -249,8 +303,23 @@ impl PerformanceSnapshot {
             .and_then(CacheDiagnostic::hit_rate)
     }
 
+    pub fn cache_by_kind(&self, kind: &CacheDiagnosticKind) -> Option<&CacheDiagnostic> {
+        self.caches.iter().find(|cache| &cache.kind == kind)
+    }
+
     pub fn missing_required_stages(&self) -> Vec<FramePipelineStage> {
         self.pipeline.missing_required_stages()
+    }
+
+    pub fn missing_required_cache_kinds(&self) -> Vec<CacheDiagnosticKind> {
+        required_cache_diagnostic_kinds()
+            .into_iter()
+            .filter(|kind| self.cache_by_kind(kind).is_none())
+            .collect()
+    }
+
+    pub fn has_required_diagnostics(&self) -> bool {
+        self.missing_required_stages().is_empty() && self.missing_required_cache_kinds().is_empty()
     }
 }
 
@@ -281,6 +350,10 @@ mod tests {
                 .slowest_stage()
                 .map(|section| section.stage.label()),
             Some("backend-draw")
+        );
+        assert_eq!(
+            FramePipelineStage::from_label("gpu-render"),
+            FramePipelineStage::BackendDraw
         );
         assert!(pipeline
             .missing_required_stages()
@@ -322,5 +395,42 @@ mod tests {
         assert_eq!(diagnostic.misses, 1);
         assert_eq!(diagnostic.evictions, 1);
         assert_eq!(diagnostic.hit_rate(), Some(0.5));
+        assert_eq!(diagnostic.kind, CacheDiagnosticKind::DisplayList);
+    }
+
+    #[test]
+    fn performance_snapshot_reports_required_cache_coverage() {
+        let pipeline = required_pipeline_stages()
+            .into_iter()
+            .fold(FramePipelineTiming::new(), |pipeline, stage| {
+                pipeline.stage(stage, Duration::from_micros(1))
+            });
+        let complete = PerformanceSnapshot::new(4)
+            .pipeline(pipeline)
+            .cache(CacheDiagnostic::new("layout").lookup(true))
+            .cache(CacheDiagnostic::new("shaped-text").lookup(true))
+            .cache(CacheDiagnostic::new("image").lookup(false))
+            .cache(CacheDiagnostic::new("canvas-texture").lookup(true))
+            .cache(CacheDiagnostic::new("display-list").lookup(true));
+
+        assert!(complete.has_required_diagnostics());
+        assert_eq!(
+            complete
+                .cache_by_kind(&CacheDiagnosticKind::CanvasTexture)
+                .unwrap()
+                .name,
+            "canvas-texture"
+        );
+
+        let incomplete = PerformanceSnapshot::new(5).cache(CacheDiagnostic::new("display-list"));
+        assert_eq!(
+            incomplete.missing_required_cache_kinds(),
+            vec![
+                CacheDiagnosticKind::Layout,
+                CacheDiagnosticKind::ShapedText,
+                CacheDiagnosticKind::Image,
+                CacheDiagnosticKind::CanvasTexture,
+            ]
+        );
     }
 }

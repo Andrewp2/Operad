@@ -146,6 +146,9 @@ These are the items that should move from the v6 planning notes into v7 work.
 - Alpha 22 has closed the basic scrollbar integration gap with a composed
   scroll area that builds aligned vertical and horizontal scrollbars from a
   shared `ScrollState`.
+- Alpha 23 has closed the first release-grade performance diagnostics gap with
+  required frame-stage coverage, required cache-domain coverage, and unified
+  diagnostic report summaries for performance snapshots.
 
 ### 1. Architecture And API Cleanup
 
@@ -264,9 +267,12 @@ These are the items that should move from the v6 planning notes into v7 work.
 
 - Add a frame timeline that reports tree rebuild, diffing, layout, text
   shaping, hit testing, paint-list generation, batching, uploads, and backend
-  draw time.
+  draw time. `FramePipelineTiming`, `required_pipeline_stages`, and unified
+  performance diagnostics now cover these release-required stages.
 - Track allocations and cache hit rates for layout, shaped text, images,
-  canvas textures, and display-list reuse.
+  canvas textures, and display-list reuse. `CacheDiagnosticKind`,
+  `required_cache_diagnostic_kinds`, and `PerformanceSnapshot` now cover these
+  release-required cache domains.
 - Add stress probes outside the showcase: button grids, text-heavy forms,
   scroll-heavy tables, overlapping overlays, animated progress, and canvas
   scenes.

@@ -150,6 +150,8 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::dnd_apply_drop_zone_preview`
 - `operad::widgets::scroll_area_with_bars`
 - `operad::widgets::aligned_scrollbar_options`
+- `operad::required_pipeline_stages`
+- `operad::required_cache_diagnostic_kinds`
 - `operad::widgets::drag_angle`
 - `operad::widgets::drag_angle_tau`
 - `operad::widgets::add_visible`
@@ -208,6 +210,11 @@ disabled, and idle drop-preview behavior.
 horizontal scrollbar nodes from one `ScrollState`. `aligned_scrollbar_options`
 keeps standalone scrollbar tracks sized to the scroll viewport so custom
 scrollable widgets do not need per-widget alignment code.
+
+`PerformanceSnapshot` now reports both required frame pipeline stages and
+required cache diagnostic domains. Use `required_pipeline_stages`,
+`required_cache_diagnostic_kinds`, and `DiagnosticReport::performance_snapshot`
+when building local stress probes or explaining a slow frame.
 
 The form helpers build visual form rows, labels, help text, validation messages,
 summaries, and action rows around `FormState`, `FieldState`, and

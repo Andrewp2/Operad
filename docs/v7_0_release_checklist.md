@@ -70,6 +70,8 @@ These should pass on a normal Linux runner before every v7 milestone:
   helpers.
 - [x] Alpha 22 adds a composed scroll area with aligned vertical/horizontal
   scrollbar helpers.
+- [x] Alpha 23 adds required frame-stage/cache-domain performance diagnostics
+  and unified diagnostic report summaries.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.
@@ -103,9 +105,9 @@ These should pass on a normal Linux runner before every v7 milestone:
 
 - [x] Alpha 3 starts performance diagnostics with named frame-pipeline stages
   and cache hit/miss/eviction snapshots.
-- [ ] Frame diagnostics report tree rebuild, diffing, layout, text shaping, hit
+- [x] Frame diagnostics report tree rebuild, diffing, layout, text shaping, hit
   testing, paint-list generation, batching, uploads, and backend draw time.
-- [ ] Cache diagnostics report layout, shaped text, image, canvas texture, and
+- [x] Cache diagnostics report layout, shaped text, image, canvas texture, and
   display-list reuse.
 - [ ] Stress probes live outside customer-facing examples.
 - [ ] Showcase performance has a documented budget and a repeatable measurement

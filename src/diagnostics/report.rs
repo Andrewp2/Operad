@@ -12,8 +12,8 @@ use crate::{
     AccessibilityAdapterState, AccessibilityAnnouncement, AccessibilityPreferences,
     AccessibilityRequestKind, DirtyFlags, EffectiveGeometryRecord, EffectiveHitRejection,
     FocusRestoreTarget, FocusTrap, FrameTiming, OverlayEntry, OverlayHitTestDecision, OverlayId,
-    OverlayStack, UiInputResult, UiNodeId, WidgetAction, WidgetActionBinding, WidgetActionKind,
-    WidgetActionTrigger, WidgetDragPhase, WidgetValueEditPhase,
+    OverlayStack, PerformanceSnapshot, UiInputResult, UiNodeId, WidgetAction, WidgetActionBinding,
+    WidgetActionKind, WidgetActionTrigger, WidgetDragPhase, WidgetValueEditPhase,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -32,6 +32,7 @@ pub enum DiagnosticCategory {
     Accessibility,
     GeometryHit,
     RenderTiming,
+    Performance,
     DirtyState,
     Warning,
     Error,
@@ -307,6 +308,65 @@ impl From<&FrameTiming> for RenderTimingDiagnostic {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerformanceSnapshotDiagnostic {
+    pub frame: u64,
+    pub total: Duration,
+    pub slowest_stage: Option<String>,
+    pub missing_stage_labels: Vec<String>,
+    pub missing_cache_labels: Vec<String>,
+    pub caches: Vec<PerformanceCacheDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerformanceCacheDiagnostic {
+    pub kind_label: String,
+    pub name: String,
+    pub lookups: usize,
+    pub hits: usize,
+    pub misses: usize,
+    pub evictions: usize,
+    pub retained_bytes: Option<usize>,
+    pub hit_rate: Option<f32>,
+}
+
+impl From<&PerformanceSnapshot> for PerformanceSnapshotDiagnostic {
+    fn from(snapshot: &PerformanceSnapshot) -> Self {
+        Self {
+            frame: snapshot.frame,
+            total: snapshot.pipeline.total(),
+            slowest_stage: snapshot
+                .pipeline
+                .slowest_stage()
+                .map(|section| section.stage.label().to_string()),
+            missing_stage_labels: snapshot
+                .missing_required_stages()
+                .into_iter()
+                .map(|stage| stage.label().to_string())
+                .collect(),
+            missing_cache_labels: snapshot
+                .missing_required_cache_kinds()
+                .into_iter()
+                .map(|kind| kind.label().to_string())
+                .collect(),
+            caches: snapshot
+                .caches
+                .iter()
+                .map(|cache| PerformanceCacheDiagnostic {
+                    kind_label: cache.kind.label().to_string(),
+                    name: cache.name.clone(),
+                    lookups: cache.lookups,
+                    hits: cache.hits,
+                    misses: cache.misses,
+                    evictions: cache.evictions,
+                    retained_bytes: cache.retained_bytes,
+                    hit_rate: cache.hit_rate(),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirtyFlagsDiagnostic {
     pub flags: DirtyFlags,
@@ -336,6 +396,7 @@ pub enum DiagnosticRecord {
     AccessibilityOutput(AccessibilityOutputDiagnostic),
     GeometryHit(GeometryHitDiagnostic),
     RenderTiming(RenderTimingDiagnostic),
+    PerformanceSnapshot(PerformanceSnapshotDiagnostic),
     DirtyFlags(DirtyFlagsDiagnostic),
     Message(DiagnosticMessage),
 }
@@ -345,6 +406,12 @@ impl DiagnosticRecord {
         match self {
             Self::AccessibilityResponse(response) => response.severity,
             Self::GeometryHit(hit) if !hit.rejected_by.is_empty() => DiagnosticSeverity::Trace,
+            Self::PerformanceSnapshot(performance)
+                if !performance.missing_stage_labels.is_empty()
+                    || !performance.missing_cache_labels.is_empty() =>
+            {
+                DiagnosticSeverity::Warning
+            }
             Self::DirtyFlags(dirty) if dirty.flags.any() => DiagnosticSeverity::Info,
             Self::Message(message) => message.severity,
             _ => DiagnosticSeverity::Info,
@@ -361,6 +428,7 @@ impl DiagnosticRecord {
             | Self::AccessibilityOutput(_) => DiagnosticCategory::Accessibility,
             Self::GeometryHit(_) => DiagnosticCategory::GeometryHit,
             Self::RenderTiming(_) => DiagnosticCategory::RenderTiming,
+            Self::PerformanceSnapshot(_) => DiagnosticCategory::Performance,
             Self::DirtyFlags(_) => DiagnosticCategory::DirtyState,
             Self::Message(message) => message.category,
         }
@@ -440,6 +508,12 @@ impl DiagnosticRecord {
                     timing.section_count,
                     duration_label(timing.total)
                 ),
+            ),
+            Self::PerformanceSnapshot(performance) => DiagnosticSummaryRecord::new(
+                self.severity(),
+                self.category(),
+                "performance",
+                performance_snapshot_summary(performance),
             ),
             Self::DirtyFlags(dirty) => DiagnosticSummaryRecord::new(
                 self.severity(),
@@ -548,6 +622,10 @@ impl DiagnosticReport {
 
     pub fn render_timing(&mut self, timing: &FrameTiming) -> &mut Self {
         self.push(DiagnosticRecord::RenderTiming(timing.into()))
+    }
+
+    pub fn performance_snapshot(&mut self, snapshot: &PerformanceSnapshot) -> &mut Self {
+        self.push(DiagnosticRecord::PerformanceSnapshot(snapshot.into()))
     }
 
     pub fn dirty_flags(&mut self, flags: DirtyFlags) -> &mut Self {
@@ -794,6 +872,28 @@ fn geometry_hit_summary(hit: &GeometryHitDiagnostic) -> String {
     }
 }
 
+fn performance_snapshot_summary(performance: &PerformanceSnapshotDiagnostic) -> String {
+    let slowest = performance.slowest_stage.as_deref().unwrap_or("none");
+    if performance.missing_stage_labels.is_empty() && performance.missing_cache_labels.is_empty() {
+        format!(
+            "frame {}, total {}, slowest {}, {} caches",
+            performance.frame,
+            duration_label(performance.total),
+            slowest,
+            performance.caches.len()
+        )
+    } else {
+        format!(
+            "frame {}, missing {} stages and {} caches, total {}, slowest {}",
+            performance.frame,
+            performance.missing_stage_labels.len(),
+            performance.missing_cache_labels.len(),
+            duration_label(performance.total),
+            slowest
+        )
+    }
+}
+
 fn dirty_flags_summary(flags: DirtyFlags) -> String {
     let labels = dirty_flag_labels(flags);
     if labels.is_empty() {
@@ -832,6 +932,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::diagnostics::{required_pipeline_stages, CacheDiagnostic, FramePipelineTiming};
     use crate::{
         AccessibilityAnnouncement, AccessibilityCapabilities, AccessibilityLiveRegion,
         AccessibilityTree, EffectiveClip, EffectiveGeometry, FrameTiming, OverlayEntry,
@@ -967,6 +1068,44 @@ mod tests {
             summary.category == DiagnosticCategory::DirtyState
                 && summary.summary == "dirty layout, paint"
         }));
+    }
+
+    #[test]
+    fn summarizes_performance_snapshot_diagnostics() {
+        let pipeline = required_pipeline_stages()
+            .into_iter()
+            .fold(FramePipelineTiming::new(), |pipeline, stage| {
+                pipeline.stage(stage, Duration::from_micros(2))
+            });
+        let complete = PerformanceSnapshot::new(9)
+            .pipeline(pipeline)
+            .cache(CacheDiagnostic::new("layout").lookup(true))
+            .cache(CacheDiagnostic::new("shaped-text").lookup(true))
+            .cache(CacheDiagnostic::new("image").lookup(true))
+            .cache(CacheDiagnostic::new("canvas-texture").lookup(false))
+            .cache(CacheDiagnostic::new("display-list").lookup(true));
+
+        let mut report = DiagnosticReport::new();
+        report.performance_snapshot(&complete);
+
+        assert_eq!(report.highest_severity(), Some(DiagnosticSeverity::Info));
+        assert!(report.summaries.iter().any(|summary| {
+            summary.category == DiagnosticCategory::Performance
+                && summary.summary.contains("frame 9")
+                && summary.summary.contains("5 caches")
+        }));
+
+        let incomplete = PerformanceSnapshot::new(10).cache(CacheDiagnostic::new("display-list"));
+        let mut report = DiagnosticReport::new();
+        report.performance_snapshot(&incomplete);
+
+        assert_eq!(report.highest_severity(), Some(DiagnosticSeverity::Warning));
+        assert!(matches!(
+            &report.records[0],
+            DiagnosticRecord::PerformanceSnapshot(performance)
+                if performance.missing_stage_labels.contains(&"tree-build".to_string())
+                    && performance.missing_cache_labels.contains(&"layout".to_string())
+        ));
     }
 
     #[test]
