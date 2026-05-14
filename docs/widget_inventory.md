@@ -115,9 +115,16 @@ Public document-building widget functions currently exported under `operad::widg
 
 - `label`
 - `localized_label`
+- text-style label helpers: `heading_label`, `colored_label`, `code_label`,
+  `monospace_label`, `strong_label`, `weak_label`, `small_label`,
+  `wrapped_label`
 - `button`
 - `checkbox`
+- `radio_button`
+- `radio_group`
+- `toggle_switch`
 - `slider`
+- `drag_value_input`
 - `text_input`
 - `selectable_text`
 - `combo_box`
@@ -132,7 +139,15 @@ Public document-building widget functions currently exported under `operad::widg
 - `color_picker`
 - `date_picker`
 - `canvas`
+- `image`
+- `separator`
+- `spacer`
+- `spinner`
 - `progress_indicator`
+- `grid`
+- `grid_row`
+- `grid_text_cell`
+- `panel`
 - `table_header`
 - `virtual_list`
 - `virtualized_data_table`
@@ -153,7 +168,7 @@ Public widget-adjacent contracts and helpers exposed by `operad::widgets`, but n
 - `floating_window_layout`
 - `searchable_select_contract`
 - `editable_form_contract`
-- `drag_value`
+- numeric drag model helper `drag_value`
 - `scrollbar_thumb`
 - `scrollbar_accessibility`
 - `path_breadcrumbs`
@@ -170,16 +185,9 @@ Missing visual widgets:
 
 - Link
 - Hyperlink
-- Radio button
-- Radio group
 - Selectable label / selectable value
-- Toggle switch / toggle value
-- Visual numeric drag value
 - Compact color button
-- Standalone image widget
 - Image button, deprecated in egui
-- Spinner
-- Separator
 - Collapsing header
 - Generic scroll bar widget
 - Reset button / reset-to-default button
@@ -215,7 +223,6 @@ Missing containers and layout widgets:
 - Central panel
 - Side panel
 - Top/bottom panel
-- Generic grid layout
 - Columns layout
 - Indented layout section
 

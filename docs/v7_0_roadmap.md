@@ -84,6 +84,15 @@ These are the items that should move from the v6 planning notes into v7 work.
 
 ## V7 Themes
 
+### Alpha Progress
+
+- Alpha 1 moved the retained document implementation out of `src/lib.rs`, added
+  `operad::prelude`, and recorded the public path policy.
+- Alpha 2 has started widget normalization by adding backend-neutral builders
+  for text-style labels, standalone images, separators/spacers, spinners, radio
+  buttons/groups, toggle switches, visual drag values, generic grids, and panel
+  containers.
+
 ### 1. Architecture And API Cleanup
 
 - Move the remaining inline implementation out of `src/lib.rs`.

@@ -14,6 +14,10 @@
   and `glyphon` 0.11.0.
 - Moved widget-gated tests out of `core::document` and into the widget module
   so the first source split also moves module ownership for widget behavior.
+- Added v7 widget builders for text-style labels, standalone images,
+  separators/spacers, spinners, radio buttons/groups, toggle switches, visual
+  drag values, generic grids, and panel containers so examples can use normal
+  Operad primitives instead of hand-building those nodes.
 
 ## 6.1.0
 

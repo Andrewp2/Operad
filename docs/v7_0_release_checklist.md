@@ -32,6 +32,9 @@ These should pass on a normal Linux runner before every v7 milestone:
 
 ## Widget And Showcase Gates
 
+- [x] Alpha 2 starts widget normalization with public builders for text-style
+  labels, standalone images, separators/spacers, spinners, radio controls,
+  toggle switches, visual drag values, generic grids, and panel containers.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.
