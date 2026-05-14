@@ -9,7 +9,10 @@ use std::fmt;
 
 use crate::commands::CommandId;
 use crate::input::{DragGesture, GestureEvent, GesturePhase, PointerButton};
-use crate::{EditPhase, KeyCode, KeyModifiers, UiDocument, UiInputResult, UiNodeId, UiPoint};
+use crate::{
+    EditPhase, KeyCode, KeyModifiers, ScrollState, UiDocument, UiInputEvent, UiInputResult,
+    UiNodeId, UiPoint, UiRect,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WidgetActionId(String);
@@ -97,6 +100,18 @@ impl From<WidgetActionId> for WidgetActionBinding {
 impl From<CommandId> for WidgetActionBinding {
     fn from(value: CommandId) -> Self {
         Self::Command(value)
+    }
+}
+
+impl From<&str> for WidgetActionBinding {
+    fn from(value: &str) -> Self {
+        Self::action(value)
+    }
+}
+
+impl From<String> for WidgetActionBinding {
+    fn from(value: String) -> Self {
+        Self::action(value)
     }
 }
 
@@ -248,6 +263,77 @@ impl WidgetFocusChange {
     pub const LOST: Self = Self { focused: false };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WidgetPointerEdit {
+    pub phase: WidgetValueEditPhase,
+    pub position: UiPoint,
+    pub local_position: UiPoint,
+    pub target_rect: UiRect,
+}
+
+impl WidgetPointerEdit {
+    pub const fn new(
+        phase: WidgetValueEditPhase,
+        position: UiPoint,
+        local_position: UiPoint,
+        target_rect: UiRect,
+    ) -> Self {
+        Self {
+            phase,
+            position,
+            local_position,
+            target_rect,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WidgetTextEdit {
+    pub event: UiInputEvent,
+    pub phase: WidgetValueEditPhase,
+    pub position: Option<UiPoint>,
+    pub local_position: Option<UiPoint>,
+    pub target_rect: Option<UiRect>,
+    pub selecting: bool,
+}
+
+impl WidgetTextEdit {
+    pub fn new(event: UiInputEvent) -> Self {
+        Self {
+            event,
+            phase: WidgetValueEditPhase::Preview,
+            position: None,
+            local_position: None,
+            target_rect: None,
+            selecting: false,
+        }
+    }
+
+    pub fn pointer(
+        event: UiInputEvent,
+        phase: WidgetValueEditPhase,
+        position: UiPoint,
+        local_position: UiPoint,
+        target_rect: UiRect,
+        selecting: bool,
+    ) -> Self {
+        Self {
+            event,
+            phase,
+            position: Some(position),
+            local_position: Some(local_position),
+            target_rect: Some(target_rect),
+            selecting,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WidgetActionMode {
+    Activate,
+    PointerEdit,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WidgetActionKind {
     Activate(WidgetActivation),
@@ -256,6 +342,9 @@ pub enum WidgetActionKind {
     Open,
     Close,
     Drag(WidgetDrag),
+    PointerEdit(WidgetPointerEdit),
+    TextEdit(WidgetTextEdit),
+    Scroll(ScrollState),
     Focus(WidgetFocusChange),
 }
 
@@ -362,6 +451,58 @@ impl WidgetAction {
         Self::new(target, binding, WidgetActionKind::Drag(drag))
     }
 
+    pub fn pointer_edit(
+        target: UiNodeId,
+        binding: impl Into<WidgetActionBinding>,
+        edit: WidgetPointerEdit,
+    ) -> Self {
+        Self::new(target, binding, WidgetActionKind::PointerEdit(edit))
+    }
+
+    pub fn text_edit(
+        target: UiNodeId,
+        binding: impl Into<WidgetActionBinding>,
+        event: UiInputEvent,
+    ) -> Self {
+        Self::new(
+            target,
+            binding,
+            WidgetActionKind::TextEdit(WidgetTextEdit::new(event)),
+        )
+    }
+
+    pub fn text_pointer_edit(
+        target: UiNodeId,
+        binding: impl Into<WidgetActionBinding>,
+        event: UiInputEvent,
+        phase: impl Into<WidgetValueEditPhase>,
+        position: UiPoint,
+        target_rect: UiRect,
+        selecting: bool,
+    ) -> Self {
+        let local_position = UiPoint::new(position.x - target_rect.x, position.y - target_rect.y);
+        Self::new(
+            target,
+            binding,
+            WidgetActionKind::TextEdit(WidgetTextEdit::pointer(
+                event,
+                phase.into(),
+                position,
+                local_position,
+                target_rect,
+                selecting,
+            )),
+        )
+    }
+
+    pub fn scroll(
+        target: UiNodeId,
+        binding: impl Into<WidgetActionBinding>,
+        scroll: ScrollState,
+    ) -> Self {
+        Self::new(target, binding, WidgetActionKind::Scroll(scroll))
+    }
+
     pub fn drag_from_gesture(
         gesture: &DragGesture,
         binding: impl Into<WidgetActionBinding>,
@@ -397,7 +538,10 @@ impl WidgetAction {
         binding_for: impl FnMut(UiNodeId) -> Option<WidgetActionBinding>,
     ) -> Option<Self> {
         let target = result.clicked?;
-        let (target, binding) = resolve_action_target(document, target, binding_for)?;
+        let (target, binding, mode) = resolve_action_target(document, target, binding_for)?;
+        if mode != WidgetActionMode::Activate {
+            return None;
+        }
         Some(Self::pointer_activate(target, binding, 1))
     }
 
@@ -434,15 +578,38 @@ impl WidgetAction {
     ) -> Option<Self> {
         match event {
             GestureEvent::Click(click) if click.button == PointerButton::Primary => {
-                let (target, binding) = resolve_action_target(document, click.target, binding_for)?;
-                Some(Self::pointer_activate(target, binding, click.count))
+                let (target, binding, mode) =
+                    resolve_action_target(document, click.target, binding_for)?;
+                match mode {
+                    WidgetActionMode::Activate => {
+                        Some(Self::pointer_activate(target, binding, click.count))
+                    }
+                    WidgetActionMode::PointerEdit => Some(pointer_edit_action(
+                        document,
+                        target,
+                        binding,
+                        WidgetValueEditPhase::Commit,
+                        click.position,
+                    )),
+                }
             }
             GestureEvent::Drag(gesture) => {
-                let (target, binding) =
+                let (target, binding, mode) =
                     resolve_action_target(document, gesture.target, binding_for)?;
-                let mut gesture = *gesture;
-                gesture.target = target;
-                Self::drag_from_gesture(&gesture, binding)
+                match mode {
+                    WidgetActionMode::Activate => {
+                        let mut gesture = *gesture;
+                        gesture.target = target;
+                        Self::drag_from_gesture(&gesture, binding)
+                    }
+                    WidgetActionMode::PointerEdit => Some(pointer_edit_action(
+                        document,
+                        target,
+                        binding,
+                        WidgetValueEditPhase::from(gesture.phase),
+                        gesture.current,
+                    )),
+                }
             }
             _ => None,
         }
@@ -453,16 +620,40 @@ fn resolve_action_target(
     document: &UiDocument,
     target: UiNodeId,
     mut binding_for: impl FnMut(UiNodeId) -> Option<WidgetActionBinding>,
-) -> Option<(UiNodeId, WidgetActionBinding)> {
+) -> Option<(UiNodeId, WidgetActionBinding, WidgetActionMode)> {
     let mut current = Some(target);
     while let Some(candidate) = current {
         let node = document.nodes().get(candidate.0)?;
         if let Some(binding) = binding_for(candidate) {
-            return action_target_enabled(document, candidate).then_some((candidate, binding));
+            return action_target_enabled(document, candidate).then_some((
+                candidate,
+                binding,
+                node.action_mode,
+            ));
         }
         current = node.parent;
     }
     None
+}
+
+fn pointer_edit_action(
+    document: &UiDocument,
+    target: UiNodeId,
+    binding: WidgetActionBinding,
+    phase: WidgetValueEditPhase,
+    position: UiPoint,
+) -> WidgetAction {
+    let target_rect = document
+        .nodes()
+        .get(target.0)
+        .map(|node| node.layout.rect)
+        .unwrap_or_else(|| UiRect::new(0.0, 0.0, 0.0, 0.0));
+    let local_position = UiPoint::new(position.x - target_rect.x, position.y - target_rect.y);
+    WidgetAction::pointer_edit(
+        target,
+        binding,
+        WidgetPointerEdit::new(phase, position, local_position, target_rect),
+    )
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -683,7 +874,8 @@ mod tests {
     use super::*;
     use crate::input::PointerId;
     use crate::{
-        AccessibilityMeta, AccessibilityRole, InputBehavior, LayoutStyle, UiInputResult, UiNode,
+        AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer, InputBehavior, LayoutStyle,
+        UiInputResult, UiNode, UiSize,
     };
 
     fn fixed_doc() -> UiDocument {
@@ -770,6 +962,44 @@ mod tests {
         queue.push_input_result_for_document(&document, &result, binding("disabled.action"));
 
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn pointer_edit_action_carries_local_position_and_target_rect() {
+        let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
+        let target = document.add_child(
+            document.root,
+            UiNode::container("field", LayoutStyle::size(100.0, 20.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_pointer_edit_action("color.field"),
+        );
+        document
+            .compute_layout(UiSize::new(200.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let click = GestureEvent::Click(crate::PointerClick {
+            pointer_id: PointerId::MOUSE,
+            target,
+            position: UiPoint::new(25.0, 8.0),
+            button: PointerButton::Primary,
+            count: 1,
+            modifiers: KeyModifiers::NONE,
+            timestamp_millis: 5,
+        });
+
+        let action = WidgetAction::from_gesture_event_for_document(&document, &click, |id| {
+            document.nodes()[id.0].action.clone()
+        })
+        .expect("pointer edit action");
+
+        assert_eq!(action.target, target);
+        assert_eq!(action.binding, WidgetActionBinding::action("color.field"));
+        let WidgetActionKind::PointerEdit(edit) = action.kind else {
+            panic!("expected pointer edit");
+        };
+        assert_eq!(edit.phase, WidgetValueEditPhase::Commit);
+        assert_eq!(edit.local_position, UiPoint::new(25.0, 8.0));
+        assert_eq!(edit.target_rect.width, 100.0);
+        assert_eq!(edit.target_rect.height, 20.0);
     }
 
     #[test]

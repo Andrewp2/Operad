@@ -161,18 +161,17 @@ Grouped facades were added for `operad::core`, `operad::interaction`,
 `operad::diagnostics`, and `operad::domain` so new code can start using the v6
 shape without forcing every downstream consumer to migrate at once.
 
-## Direct GPU Canvas Contexts
+## GPU Canvas Rendering
 
-V6 also makes shader-driven canvases first-class for WGPU consumers. A canvas can
-declare a texture-backed GPU context with `CanvasContent::gpu_context()` or
-`UiNode::gpu_canvas(...)`; the WGPU renderer exposes that texture through
-`get_gpu_context(...)`.
+V6 makes WGPU canvases first-class render targets. A canvas can declare a
+texture-backed GPU context with `CanvasContent::gpu_context()` or
+`UiNode::gpu_canvas(...)`; native-window apps can register app-owned rendering
+with `NativeWgpuCanvasRenderRegistry`.
 
-Consumers can then call `WgpuCanvasContext::render_pass(...)` with a
-`WgpuCanvasRenderPass` descriptor to shade directly into the canvas surface.
-The normal UI render pass samples that same texture when it paints the canvas
-item, so shader canvases no longer need to be modeled as keyed callbacks or
-resource-update uploads.
+The registered renderer receives a `WgpuCanvasContext`, so it can create command
+encoders, begin render passes, use its own pipelines, and submit any number of
+WGPU passes into the canvas texture. The normal UI render pass samples that same
+texture when it paints the canvas item.
 
 ## Public API Shape
 

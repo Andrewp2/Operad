@@ -974,6 +974,8 @@ pub fn process_document_frame(
     );
     let mut render_options = render_options;
     render_options.accessibility_preferences = accessibility_preferences;
+    render_options.scale_factor =
+        normalized_host_scale(render_options.scale_factor) * document.dpi_scale();
 
     let render_request = RenderFrameRequest::new(target, viewport, paint)
         .node_interactions(node_interactions)
@@ -995,6 +997,14 @@ pub fn process_document_frame(
         accessibility_state,
         canvas_host_capture_transition,
     })
+}
+
+fn normalized_host_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
 }
 
 #[cfg(test)]
@@ -1590,6 +1600,34 @@ mod tests {
             frame.accessibility_requests[2],
             AccessibilityAdapterRequest::Announce(_)
         ));
+    }
+
+    #[test]
+    fn document_frame_combines_document_dpi_with_render_scale() {
+        let viewport = UiSize::new(120.0, 80.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(120.0, 80.0));
+        document.set_dpi_scale(2.0);
+        document
+            .compute_layout(viewport, &mut measurer)
+            .expect("layout");
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            )
+            .render_options(RenderOptions {
+                scale_factor: 1.5,
+                ..Default::default()
+            }),
+        )
+        .expect("document frame");
+
+        assert_eq!(frame.render_request.options.scale_factor, 3.0);
     }
 
     #[test]

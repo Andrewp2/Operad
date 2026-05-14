@@ -9,6 +9,9 @@ use std::time::Duration;
 
 pub use crate::{host, platform, windows};
 
+#[cfg(feature = "native-window")]
+pub mod native;
+
 use crate::input::RawInputEvent;
 use crate::platform::{
     PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,

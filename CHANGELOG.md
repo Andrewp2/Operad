@@ -2,19 +2,27 @@
 
 ## 6.0.0
 
-- Added direct GPU canvas contexts so applications can attach a canvas texture,
-  obtain a WGPU-backed context, and call `render_pass(...)` to run shaders
-  directly into the canvas surface.
-- Added `WgpuCanvasContext` and `WgpuCanvasRenderPass` under the `wgpu` feature,
-  including a fullscreen fragment-shader helper for common canvas effects.
-- Added `CanvasRenderMode::AttachedContext`, `CanvasContent::gpu_context()`, and
-  `UiNode::gpu_canvas(...)` as the customer-facing canvas construction path.
-- Removed the transient WebGL/WebGL2 naming from the new canvas API; the public
-  surface is backend-accurate GPU context terminology.
+- Added a native window runner so simple apps can open a window with
+  `run_ui_document` or `run_app` instead of wiring winit and WGPU by hand.
+- Added a widget library for common controls, including buttons, checkboxes,
+  sliders, text input, selection controls, menus, date and color pickers,
+  lists, tables, trees, floating windows, toasts, popup panels, and canvas
+  surfaces.
+- Added app-owned WGPU canvas rendering. Applications can declare a GPU canvas
+  in the UI tree, register a renderer with `NativeWgpuCanvasRenderRegistry`,
+  and record their own WGPU work into the canvas texture before Operad
+  composites the UI.
+- Added `WgpuCanvasContext` and `WgpuCanvasRenderPass` under the `wgpu` feature.
+  `WgpuCanvasContext::render_pass` remains a convenience helper for simple WGSL
+  passes; apps can also create command encoders and render passes directly.
+- Added OKLCH support to the color picker and fixed hue endpoint handling so
+  dragging hue to the far right no longer snaps the control back to the left.
+- Removed the transient WebGL/WebGL2 naming from the canvas API; the public
+  surface uses native GPU and WGPU terminology.
 - Moved the source tree toward the v6 module organization while preserving
   common v5 public compatibility paths for downstream consumers.
-- Updated README, migration notes, and release validation guidance so customers
-  can consume `6.0.0` immediately with `features = ["widgets", "wgpu"]`.
+- Updated README, migration notes, and release validation guidance for the v6
+  public API.
 
 ## 5.0.0
 

@@ -1,8 +1,8 @@
 # Operad 6.0 Migration Guide
 
-Operad `6.0.0` promotes direct GPU canvas contexts and starts the v6 module
-organization while keeping common v5 public paths available for downstream
-consumers.
+Operad `6.0.0` adds the native runner, built-in widgets, app-owned GPU canvas
+rendering, and the v6 module organization while keeping common v5 public paths
+available for downstream consumers.
 
 ## Upgrade from `5.0.0` to `6.0.0`
 
@@ -14,25 +14,35 @@ operad = { version = "6.0.0", default-features = false, features = ["widgets", "
 
 Use a local path dependency while validating unreleased downstream changes.
 
-2. Move custom GPU canvas drawing to attached contexts.
+2. Move custom GPU canvas drawing to app-owned canvas renderers.
 
-The preferred canvas path is now a texture-backed GPU context. Applications can
-obtain the context and run a shader pass directly against the canvas surface:
+Applications declare a canvas in the UI tree and register a renderer for that
+canvas key:
+
+```rust
+let mut canvases = operad::NativeWgpuCanvasRenderRegistry::new();
+canvases.register(
+    "app.viewport",
+    |state: &mut AppState, context: operad::NativeWgpuCanvasRenderContext<'_>| {
+        state.renderer.render(&context.surface)?;
+        Ok(operad::CanvasRenderOutput::new())
+    },
+);
+
+operad::run_app_with_canvas_renderers(options, state, update, view, canvases)?;
+```
+
+In the view, declare a GPU canvas:
 
 ```rust
 let canvas = operad::CanvasContent::new("app.viewport").gpu_context();
-let context = renderer.get_gpu_context(&canvas, operad::PixelSize::new(640, 360))?;
-context.render_pass(operad::WgpuCanvasRenderPass::fragment(r#"
-@fragment
-fn fs_main(input: OperadCanvasVertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(input.uv, 0.4, 1.0);
-}
-"#))?;
 ```
 
-The WGPU renderer samples that same texture when it paints the canvas item.
-Consumers no longer need to model shader-driven canvas drawing as a keyed
-canvas callback or a resource-update upload.
+The registered renderer receives a `WgpuCanvasContext`. It can create command
+encoders, begin render passes, use its own pipelines, and submit any number of
+WGPU passes into the canvas texture. Operad samples that texture when it
+composites the UI. `WgpuCanvasContext::render_pass` remains a convenience helper
+for a single WGSL pass; it is not the primary canvas model.
 
 3. Use the generic GPU naming.
 
@@ -59,10 +69,12 @@ should prefer the grouped v6 paths when they make ownership clearer.
 ## Compatibility Notes
 
 - `CanvasContent::new(key)` still exists for retained canvas paint items.
-- `CanvasRenderRegistry` remains available for app-owned callback-style canvas
-  integrations.
+- `NativeWgpuCanvasRenderRegistry` is the native-window path for app-owned WGPU
+  canvas renderers.
+- `CanvasRenderRegistry` remains available for renderer-neutral callback-style
+  canvas integrations.
 - `CanvasContent::gpu_context()` and `UiNode::gpu_canvas(...)` are the preferred
-  construction helpers for WGPU-backed shader canvas work.
+  construction helpers for WGPU-backed canvas work.
 - `WgpuCanvasContext::begin_render_pass(...)` still exposes the lower-level
   render-pass handle when a consumer needs a custom pipeline.
 - `WgpuCanvasContext::render_pass(...)` is the convenience path for simple

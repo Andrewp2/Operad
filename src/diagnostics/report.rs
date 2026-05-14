@@ -637,6 +637,15 @@ fn widget_action_kind_label(kind: &WidgetActionKind) -> &'static str {
             WidgetDragPhase::Commit => "drag.commit",
             WidgetDragPhase::Cancel => "drag.cancel",
         },
+        WidgetActionKind::PointerEdit(edit) => match edit.phase {
+            WidgetValueEditPhase::Preview => "pointer.value.preview",
+            WidgetValueEditPhase::Begin => "pointer.value.begin",
+            WidgetValueEditPhase::Update => "pointer.value.update",
+            WidgetValueEditPhase::Commit => "pointer.value.commit",
+            WidgetValueEditPhase::Cancel => "pointer.value.cancel",
+        },
+        WidgetActionKind::TextEdit(_) => "text.edit",
+        WidgetActionKind::Scroll(_) => "scroll",
         WidgetActionKind::Focus(focus) if focus.focused => "focus.gained",
         WidgetActionKind::Focus(_) => "focus.lost",
     }

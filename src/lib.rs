@@ -13,8 +13,9 @@ use cosmic_text::{
     Style as CosmicFontStyle, Weight as CosmicWeight, Wrap as CosmicWrap,
 };
 use taffy::prelude::{
-    AvailableSpace, Dimension, Display, FlexDirection, NodeId as TaffyNodeId, Size as TaffySize,
-    Style, TaffyTree,
+    AlignItems, AvailableSpace, CompactLength, Dimension, Display, FlexDirection, JustifyContent,
+    LengthPercentage, LengthPercentageAuto, NodeId as TaffyNodeId, Rect as TaffyRect,
+    Size as TaffySize, Style, TaffyTree,
 };
 
 pub mod accessibility;
@@ -123,8 +124,9 @@ pub use accesskit_winit_adapter::{
 };
 pub use actions::{
     action_target_enabled, keyboard_activation_key, WidgetAction, WidgetActionBinding,
-    WidgetActionId, WidgetActionKind, WidgetActionQueue, WidgetActionTrigger, WidgetActivation,
-    WidgetDrag, WidgetDragPhase, WidgetFocusChange, WidgetSelection, WidgetValueEditPhase,
+    WidgetActionId, WidgetActionKind, WidgetActionMode, WidgetActionQueue, WidgetActionTrigger,
+    WidgetActivation, WidgetDrag, WidgetDragPhase, WidgetFocusChange, WidgetPointerEdit,
+    WidgetSelection, WidgetTextEdit, WidgetValueEditPhase,
 };
 pub use assets::{
     AssetRegistry, BuiltInIcon, IconAsset, IconButtonAsset, IconDescriptor, ImageDescriptor,
@@ -286,6 +288,13 @@ pub use resource_cache::{
     CachedResource, ResourceCache, ResourceCachePolicy, ResourceEvictionCandidate,
     ResourceEvictionPlan, ResourceEvictionReason, ResourceEvictionReport, ResourceLifecycleOutcome,
     ResourceUpdateIssue, ResourceUpdateKind, ResourceUpdateReport, ResourceUpdateValidation,
+};
+#[cfg(feature = "native-window")]
+pub use runtime::native::{
+    run_app, run_app_with, run_app_with_canvas_renderers, run_ui_document, run_ui_document_with,
+    run_ui_document_with_canvas_renderers, NativeWgpuCanvasRenderContext,
+    NativeWgpuCanvasRenderHandler, NativeWgpuCanvasRenderRegistry, NativeWindowOptions,
+    NativeWindowResult,
 };
 pub use runtime::{
     coalesce_repaint_requests, collect_repaint_requests, completed_platform_response,
@@ -599,6 +608,7 @@ pub struct InteractionVisuals {
     pub normal: UiVisual,
     pub hovered: Option<UiVisual>,
     pub pressed: Option<UiVisual>,
+    pub pressed_hovered: Option<UiVisual>,
     pub focused: Option<UiVisual>,
     pub disabled: Option<UiVisual>,
 }
@@ -609,6 +619,7 @@ impl InteractionVisuals {
             normal,
             hovered: None,
             pressed: None,
+            pressed_hovered: None,
             focused: None,
             disabled: None,
         }
@@ -621,6 +632,11 @@ impl InteractionVisuals {
 
     pub const fn pressed(mut self, pressed: UiVisual) -> Self {
         self.pressed = Some(pressed);
+        self
+    }
+
+    pub const fn pressed_hovered(mut self, pressed_hovered: UiVisual) -> Self {
+        self.pressed_hovered = Some(pressed_hovered);
         self
     }
 
@@ -646,19 +662,27 @@ impl InteractionVisuals {
                 Some(disabled) => disabled,
                 None => self.normal,
             }
+        } else if pressed && hovered {
+            match self.pressed_hovered {
+                Some(pressed_hovered) => pressed_hovered,
+                None => match self.pressed {
+                    Some(pressed) => pressed,
+                    None => self.normal,
+                },
+            }
         } else if pressed {
             match self.pressed {
                 Some(pressed) => pressed,
                 None => self.normal,
             }
-        } else if focused {
-            match self.focused {
-                Some(focused) => focused,
-                None => self.normal,
-            }
         } else if hovered {
             match self.hovered {
                 Some(hovered) => hovered,
+                None => self.normal,
+            }
+        } else if focused {
+            match self.focused {
+                Some(focused) => focused,
                 None => self.normal,
             }
         } else {
@@ -816,6 +840,7 @@ pub struct CanvasContent {
     pub render_mode: CanvasRenderMode,
     pub context: CanvasContextDescriptor,
     pub interaction: CanvasInteractionPolicy,
+    pub program: Option<CanvasRenderProgram>,
 }
 
 impl CanvasContent {
@@ -826,6 +851,7 @@ impl CanvasContent {
             key,
             render_mode: CanvasRenderMode::Callback,
             interaction: CanvasInteractionPolicy::default(),
+            program: None,
         }
     }
 
@@ -835,6 +861,7 @@ impl CanvasContent {
             context,
             render_mode: CanvasRenderMode::AttachedContext,
             interaction: CanvasInteractionPolicy::default(),
+            program: None,
         }
     }
 
@@ -872,6 +899,16 @@ impl CanvasContent {
 
     pub fn gpu_context(self) -> Self {
         self.attached_context().context_kind(CanvasContextKind::Gpu)
+    }
+
+    pub fn wgsl(mut self, shader: impl Into<String>) -> Self {
+        self.program = Some(CanvasRenderProgram::wgsl(shader));
+        self.gpu_context()
+    }
+
+    pub fn program(mut self, program: CanvasRenderProgram) -> Self {
+        self.program = Some(program);
+        self.gpu_context()
     }
 
     pub fn two_d_context(self) -> Self {
@@ -927,6 +964,69 @@ impl CanvasContent {
 
     pub const fn requires_host_input_capture(&self) -> bool {
         self.interaction.requires_host_capture()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasRenderProgram {
+    pub label: Option<String>,
+    pub wgsl: String,
+    pub vertex_entry_point: String,
+    pub fragment_entry_point: String,
+    pub clear_color: Option<ColorRgba>,
+    pub constants: Vec<CanvasShaderConstant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasShaderConstant {
+    pub name: String,
+    pub value: f64,
+}
+
+impl CanvasShaderConstant {
+    pub fn new(name: impl Into<String>, value: f64) -> Self {
+        Self {
+            name: name.into(),
+            value,
+        }
+    }
+}
+
+impl CanvasRenderProgram {
+    pub fn wgsl(shader: impl Into<String>) -> Self {
+        Self {
+            label: Some("canvas-render-pass".to_string()),
+            wgsl: shader.into(),
+            vertex_entry_point: "vs_main".to_string(),
+            fragment_entry_point: "fs_main".to_string(),
+            clear_color: None,
+            constants: Vec::new(),
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn vertex_entry_point(mut self, entry_point: impl Into<String>) -> Self {
+        self.vertex_entry_point = entry_point.into();
+        self
+    }
+
+    pub fn fragment_entry_point(mut self, entry_point: impl Into<String>) -> Self {
+        self.fragment_entry_point = entry_point.into();
+        self
+    }
+
+    pub const fn clear_color(mut self, clear_color: Option<ColorRgba>) -> Self {
+        self.clear_color = clear_color;
+        self
+    }
+
+    pub fn constant(mut self, name: impl Into<String>, value: f64) -> Self {
+        self.constants.push(CanvasShaderConstant::new(name, value));
+        self
     }
 }
 
@@ -1528,6 +1628,7 @@ pub enum UiContent {
     Text(TextContent),
     Canvas(CanvasContent),
     Image(ImageContent),
+    PaintRect(PaintRect),
     Scene(Vec<ScenePrimitive>),
 }
 
@@ -1643,6 +1744,118 @@ impl LayoutStyle {
     pub fn is_absolute(&self) -> bool {
         self.style.position == taffy::prelude::Position::Absolute
     }
+
+    pub fn row() -> Self {
+        Self::from_taffy_style(Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            ..Default::default()
+        })
+    }
+
+    pub fn column() -> Self {
+        Self::from_taffy_style(Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            ..Default::default()
+        })
+    }
+
+    pub fn toolbar() -> Self {
+        Self::row()
+            .with_align_items(AlignItems::Center)
+            .with_width_percent(1.0)
+    }
+
+    pub fn size(width: f32, height: f32) -> Self {
+        Self::new().with_size(width, height)
+    }
+
+    pub fn absolute_rect(rect: UiRect) -> Self {
+        Self::from_taffy_style(Style {
+            position: taffy::prelude::Position::Absolute,
+            inset: taffy::prelude::Rect {
+                left: taffy::prelude::LengthPercentageAuto::length(rect.x),
+                top: taffy::prelude::LengthPercentageAuto::length(rect.y),
+                right: taffy::prelude::LengthPercentageAuto::auto(),
+                bottom: taffy::prelude::LengthPercentageAuto::auto(),
+            },
+            size: TaffySize {
+                width: length(rect.width),
+                height: length(rect.height),
+            },
+            ..Default::default()
+        })
+    }
+
+    pub fn with_size(mut self, width: f32, height: f32) -> Self {
+        self.style.size = TaffySize {
+            width: length(width),
+            height: length(height),
+        };
+        self
+    }
+
+    pub fn with_width(mut self, width: f32) -> Self {
+        self.style.size.width = length(width);
+        self
+    }
+
+    pub fn with_height(mut self, height: f32) -> Self {
+        self.style.size.height = length(height);
+        self
+    }
+
+    pub fn with_width_percent(mut self, width: f32) -> Self {
+        self.style.size.width = Dimension::percent(width);
+        self
+    }
+
+    pub fn with_height_percent(mut self, height: f32) -> Self {
+        self.style.size.height = Dimension::percent(height);
+        self
+    }
+
+    pub fn with_flex_grow(mut self, grow: f32) -> Self {
+        self.style.flex_grow = grow;
+        self
+    }
+
+    pub fn with_flex_shrink(mut self, shrink: f32) -> Self {
+        self.style.flex_shrink = shrink;
+        self
+    }
+
+    pub fn with_align_items(mut self, align_items: AlignItems) -> Self {
+        self.style.align_items = Some(align_items);
+        self
+    }
+
+    pub fn with_justify_content(mut self, justify_content: JustifyContent) -> Self {
+        self.style.justify_content = Some(justify_content);
+        self
+    }
+
+    pub fn with_padding(mut self, value: f32) -> Self {
+        self.style.padding = taffy::prelude::Rect::length(value);
+        self
+    }
+
+    pub fn padding(self, value: f32) -> Self {
+        self.with_padding(value)
+    }
+
+    pub fn with_gap(mut self, value: f32) -> Self {
+        self.style.gap = TaffySize {
+            width: taffy::prelude::LengthPercentage::length(value),
+            height: taffy::prelude::LengthPercentage::length(value),
+        };
+        self
+    }
+
+    pub fn gap(self, value: f32) -> Self {
+        self.with_gap(value)
+    }
 }
 
 impl From<Style> for LayoutStyle {
@@ -1703,6 +1916,8 @@ pub struct UiNode {
     pub layer: Option<platform::UiLayer>,
     pub visual: UiVisual,
     pub interaction_visuals: Option<InteractionVisuals>,
+    pub action: Option<actions::WidgetActionBinding>,
+    pub action_mode: actions::WidgetActionMode,
     pub content: UiContent,
     pub input: InputBehavior,
     pub scroll: Option<ScrollState>,
@@ -1722,6 +1937,8 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            action: None,
+            action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Empty,
             input: InputBehavior::NONE,
             scroll: None,
@@ -1750,6 +1967,8 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            action: None,
+            action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Text(TextContent::new(text, text_style)),
             input: InputBehavior::NONE,
             scroll: None,
@@ -1779,6 +1998,8 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            action: None,
+            action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Text(
                 TextContent::new(label.fallback.clone(), text_style)
                     .with_dynamic_label(label, policy),
@@ -1810,6 +2031,8 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            action: None,
+            action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Canvas(CanvasContent::new(key)),
             input: InputBehavior {
                 pointer: true,
@@ -1859,6 +2082,8 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            action: None,
+            action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Image(image),
             input: InputBehavior::NONE,
             scroll: None,
@@ -1867,6 +2092,48 @@ impl UiNode {
             shader: None,
             layout: ComputedLayout::default(),
         }
+    }
+
+    pub fn paint_rect(
+        name: impl Into<String>,
+        rect: PaintRect,
+        layout: impl Into<LayoutStyle>,
+    ) -> Self {
+        let layout = layout.into();
+        Self {
+            name: name.into(),
+            parent: None,
+            children: Vec::new(),
+            style: UiNodeStyle {
+                layout: layout.style,
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+            layer: None,
+            visual: UiVisual::default(),
+            interaction_visuals: None,
+            action: None,
+            action_mode: actions::WidgetActionMode::Activate,
+            content: UiContent::PaintRect(rect),
+            input: InputBehavior::NONE,
+            scroll: None,
+            animation: None,
+            accessibility: None,
+            shader: None,
+            layout: ComputedLayout::default(),
+        }
+    }
+
+    pub fn paint_fill(
+        name: impl Into<String>,
+        fill: impl Into<PaintBrush>,
+        layout: impl Into<LayoutStyle>,
+    ) -> Self {
+        Self::paint_rect(
+            name,
+            PaintRect::new(UiRect::new(0.0, 0.0, 0.0, 0.0), fill),
+            layout,
+        )
     }
 
     pub fn scene(
@@ -1887,6 +2154,8 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            action: None,
+            action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Scene(primitives),
             input: InputBehavior::NONE,
             scroll: None,
@@ -1915,6 +2184,25 @@ impl UiNode {
     pub fn with_interaction_visuals(mut self, visuals: InteractionVisuals) -> Self {
         self.interaction_visuals = Some(visuals);
         self.visual = visuals.normal;
+        self
+    }
+
+    pub fn with_action(mut self, action: impl Into<actions::WidgetActionBinding>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub fn with_action_mode(mut self, mode: actions::WidgetActionMode) -> Self {
+        self.action_mode = mode;
+        self
+    }
+
+    pub fn with_pointer_edit_action(
+        mut self,
+        action: impl Into<actions::WidgetActionBinding>,
+    ) -> Self {
+        self.action = Some(action.into());
+        self.action_mode = actions::WidgetActionMode::PointerEdit;
         self
     }
 
@@ -2292,13 +2580,45 @@ pub struct UiFocusState {
 struct LayoutCacheKey {
     width_bits: u32,
     height_bits: u32,
+    ui_scale_bits: u32,
     revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiDocumentScale {
+    pub ui_scale: f32,
+    pub dpi_scale: f32,
+}
+
+impl UiDocumentScale {
+    pub const DEFAULT: Self = Self {
+        ui_scale: 1.0,
+        dpi_scale: 1.0,
+    };
+
+    pub fn new(ui_scale: f32, dpi_scale: f32) -> Self {
+        Self {
+            ui_scale: normalized_scale(ui_scale),
+            dpi_scale: normalized_scale(dpi_scale),
+        }
+    }
+
+    pub fn effective_scale(self) -> f32 {
+        normalized_scale(self.ui_scale) * normalized_scale(self.dpi_scale)
+    }
+}
+
+impl Default for UiDocumentScale {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 #[derive(Debug)]
 pub struct UiDocument {
     pub root: UiNodeId,
     pub focus: UiFocusState,
+    pub scale: UiDocumentScale,
     nodes: Vec<UiNode>,
     layout_revision: u64,
     layout_cache_key: Option<LayoutCacheKey>,
@@ -2312,9 +2632,43 @@ impl UiDocument {
             root,
             nodes: vec![UiNode::container("root", root_style)],
             focus: UiFocusState::default(),
+            scale: UiDocumentScale::default(),
             layout_revision: 0,
             layout_cache_key: None,
         }
+    }
+
+    pub fn with_scale(mut self, scale: UiDocumentScale) -> Self {
+        self.set_scale(scale);
+        self
+    }
+
+    pub fn set_scale(&mut self, scale: UiDocumentScale) {
+        let scale = UiDocumentScale::new(scale.ui_scale, scale.dpi_scale);
+        if self.scale != scale {
+            self.scale = scale;
+            self.invalidate_layout();
+        }
+    }
+
+    pub fn set_ui_scale(&mut self, ui_scale: f32) {
+        self.set_scale(UiDocumentScale::new(ui_scale, self.scale.dpi_scale));
+    }
+
+    pub fn set_dpi_scale(&mut self, dpi_scale: f32) {
+        self.set_scale(UiDocumentScale::new(self.scale.ui_scale, dpi_scale));
+    }
+
+    pub fn ui_scale(&self) -> f32 {
+        normalized_scale(self.scale.ui_scale)
+    }
+
+    pub fn dpi_scale(&self) -> f32 {
+        normalized_scale(self.scale.dpi_scale)
+    }
+
+    pub fn effective_scale(&self) -> f32 {
+        self.scale.effective_scale()
     }
 
     pub fn add_child(&mut self, parent: UiNodeId, mut node: UiNode) -> UiNodeId {
@@ -2383,6 +2737,14 @@ impl UiDocument {
         self.nodes[id.0].visual = visual;
     }
 
+    pub fn set_node_action(
+        &mut self,
+        id: UiNodeId,
+        action: impl Into<actions::WidgetActionBinding>,
+    ) {
+        self.nodes[id.0].action = Some(action.into());
+    }
+
     pub fn set_node_interaction_visuals(&mut self, id: UiNodeId, visuals: InteractionVisuals) {
         self.nodes[id.0].interaction_visuals = Some(visuals);
         self.refresh_interaction_visual(id);
@@ -2390,6 +2752,14 @@ impl UiDocument {
 
     pub fn clear_node_interaction_visuals(&mut self, id: UiNodeId) {
         self.nodes[id.0].interaction_visuals = None;
+    }
+
+    pub fn set_focus_state(&mut self, focus: UiFocusState) {
+        let previous_hovered = self.focus.hovered;
+        let previous_pressed = self.focus.pressed;
+        let previous_focused = self.focus.focused;
+        self.focus = focus;
+        self.refresh_interaction_visuals_for(previous_hovered, previous_pressed, previous_focused);
     }
 
     fn refresh_interaction_visuals_for(
@@ -2453,6 +2823,24 @@ impl UiDocument {
         true
     }
 
+    pub fn clamp_scroll_offsets(&mut self) -> bool {
+        let mut changed = false;
+        for node in &mut self.nodes {
+            let Some(scroll) = &mut node.scroll else {
+                continue;
+            };
+            let offset = scroll.clamp_offset(scroll.offset);
+            if scroll.offset != offset {
+                scroll.offset = offset;
+                changed = true;
+            }
+        }
+        if changed {
+            self.invalidate_layout();
+        }
+        changed
+    }
+
     pub fn scroll_by(&mut self, id: UiNodeId, delta: UiPoint) -> bool {
         let Some(scroll) = self.scroll_state(id) else {
             return false;
@@ -2509,6 +2897,7 @@ impl UiDocument {
         let cache_key = LayoutCacheKey {
             width_bits: viewport.width.to_bits(),
             height_bits: viewport.height.to_bits(),
+            ui_scale_bits: self.ui_scale().to_bits(),
             revision: self.layout_revision,
         };
         if self.layout_cache_key == Some(cache_key) {
@@ -2564,16 +2953,20 @@ impl UiDocument {
         mapping: &mut HashMap<UiNodeId, TaffyNodeId>,
     ) -> Result<TaffyNodeId, taffy::TaffyError> {
         let node = &self.nodes[id.0];
+        let layout_scale = self.ui_scale();
         let taffy_node = if node.children.is_empty() {
             match &node.content {
                 UiContent::Text(text) => taffy.new_leaf_with_context(
-                    node.style.layout.clone(),
-                    MeasureContext::Text(text.clone()),
+                    scaled_taffy_style(&node.style.layout, layout_scale),
+                    MeasureContext::Text(scaled_text_content(text, layout_scale)),
                 )?,
                 UiContent::Empty
                 | UiContent::Canvas(_)
                 | UiContent::Image(_)
-                | UiContent::Scene(_) => taffy.new_leaf(node.style.layout.clone())?,
+                | UiContent::PaintRect(_)
+                | UiContent::Scene(_) => {
+                    taffy.new_leaf(scaled_taffy_style(&node.style.layout, layout_scale))?
+                }
             }
         } else {
             let children = node
@@ -2581,7 +2974,10 @@ impl UiDocument {
                 .iter()
                 .map(|child| self.build_taffy_subtree(*child, taffy, mapping))
                 .collect::<Result<Vec<_>, _>>()?;
-            taffy.new_with_children(node.style.layout.clone(), &children)?
+            taffy.new_with_children(
+                scaled_taffy_style(&node.style.layout, layout_scale),
+                &children,
+            )?
         };
         mapping.insert(id, taffy_node);
         Ok(taffy_node)
@@ -2665,7 +3061,15 @@ impl UiDocument {
     }
 
     pub fn hit_test(&self, point: UiPoint) -> Option<UiNodeId> {
-        topmost_effective_hit(&self.effective_geometries(), point).map(|hit| hit.node)
+        let layer_orders = self.effective_layer_orders();
+        let visual_order = self.visual_order_with_layer(&layer_orders);
+        for (order, index) in visual_order.into_iter().enumerate().rev() {
+            let geometry = self.effective_geometry_for_index(index, order, layer_orders[index]);
+            if geometry.contains_point(point) {
+                return Some(geometry.node);
+            }
+        }
+        None
     }
 
     pub fn effective_geometries(&self) -> Vec<EffectiveGeometry> {
@@ -2674,18 +3078,27 @@ impl UiDocument {
             .into_iter()
             .enumerate()
             .map(|(order, index)| {
-                let id = UiNodeId(index);
-                let node = &self.nodes[index];
-                EffectiveGeometry::new(id, node.layout.rect)
-                    .paint_transform(Self::node_paint_transform(node))
-                    .clip_rect(node.layout.clip_rect)
-                    .layer_order(layer_orders[index])
-                    .order(order)
-                    .visible(node.layout.visible)
-                    .hit_testable(node.input.pointer)
-                    .accessibility_rect(node.layout.rect)
+                self.effective_geometry_for_index(index, order, layer_orders[index])
             })
             .collect()
+    }
+
+    fn effective_geometry_for_index(
+        &self,
+        index: usize,
+        order: usize,
+        layer_order: platform::LayerOrder,
+    ) -> EffectiveGeometry {
+        let id = UiNodeId(index);
+        let node = &self.nodes[index];
+        EffectiveGeometry::new(id, node.layout.rect)
+            .paint_transform(Self::node_paint_transform(node))
+            .clip_rect(node.layout.clip_rect)
+            .layer_order(layer_order)
+            .order(order)
+            .visible(node.layout.visible)
+            .hit_testable(node.input.pointer)
+            .accessibility_rect(node.layout.rect)
     }
 
     pub fn handle_input(&mut self, event: UiInputEvent) -> UiInputResult {
@@ -2736,25 +3149,28 @@ impl UiDocument {
         if !wheel.scrolls_document() {
             return None;
         }
-        let targets = self
-            .visual_order()
-            .into_iter()
-            .rev()
-            .filter_map(|index| {
+        for index in self.visual_order().into_iter().rev() {
+            let target = {
                 let node = &self.nodes[index];
-                (node.layout.visible
+                if node.layout.visible
                     && node.layout.clip_rect.contains_point(wheel.position)
                     && self.node_paint_rect(index).contains_point(wheel.position)
                     && node
                         .scroll
-                        .is_some_and(|scroll| scroll.axes.horizontal || scroll.axes.vertical))
-                .then_some(UiNodeId(index))
-            })
-            .collect::<Vec<_>>();
-
-        targets
-            .into_iter()
-            .find(|&target| self.scroll_by(target, wheel.delta))
+                        .is_some_and(|scroll| scroll.axes.horizontal || scroll.axes.vertical)
+                {
+                    Some(UiNodeId(index))
+                } else {
+                    None
+                }
+            };
+            if let Some(target) = target {
+                if self.scroll_by(target, wheel.delta) {
+                    return Some(target);
+                }
+            }
+        }
+        None
     }
 
     fn next_focus(&self, current: Option<UiNodeId>, direction: FocusDirection) -> Option<UiNodeId> {
@@ -2848,7 +3264,9 @@ impl UiDocument {
     }
 
     pub fn paint_list(&self) -> PaintList {
-        let mut list = PaintList::default();
+        let mut list = PaintList {
+            items: Vec::with_capacity(self.nodes.len()),
+        };
         let layer_orders = self.effective_layer_orders();
         for index in self.visual_order_with_layer(&layer_orders) {
             let id = UiNodeId(index);
@@ -2863,7 +3281,7 @@ impl UiDocument {
             let z_index = layer_order.local_z;
             let animation_values = Self::node_animation_values(node);
             let opacity = node.layout.opacity * animation_values.opacity;
-            let transform = Self::node_paint_transform(node);
+            let transform = Self::paint_transform_from_values(animation_values);
             if node.visual.fill.a > 0
                 || node
                     .visual
@@ -2897,7 +3315,7 @@ impl UiDocument {
                     opacity,
                     transform,
                     shader: node.shader.clone(),
-                    kind: PaintKind::Text(text.clone()),
+                    kind: PaintKind::Text(scaled_text_content(text, self.ui_scale())),
                 }),
                 UiContent::Canvas(canvas) => list.items.push(PaintItem {
                     node: id,
@@ -2923,6 +3341,17 @@ impl UiDocument {
                         key: image.key.clone(),
                         tint: image.tint,
                     },
+                }),
+                UiContent::PaintRect(rect) => list.items.push(PaintItem {
+                    node: id,
+                    rect: node.layout.rect,
+                    clip_rect: node.layout.clip_rect,
+                    z_index,
+                    layer_order,
+                    opacity,
+                    transform,
+                    shader: node.shader.clone(),
+                    kind: PaintKind::RichRect(paint_rect_for_node(rect, node.layout.rect)),
                 }),
                 UiContent::Scene(primitives) => {
                     let context = ScenePaintContext {
@@ -2953,7 +3382,10 @@ impl UiDocument {
     }
 
     fn node_paint_transform(node: &UiNode) -> PaintTransform {
-        let values = Self::node_animation_values(node);
+        Self::paint_transform_from_values(Self::node_animation_values(node))
+    }
+
+    fn paint_transform_from_values(values: AnimatedValues) -> PaintTransform {
         PaintTransform {
             translation: values.translate,
             scale: values.scale,
@@ -2972,7 +3404,9 @@ impl UiDocument {
 
     fn visual_order_with_layer(&self, layer_orders: &[platform::LayerOrder]) -> Vec<usize> {
         let mut order = (0..self.nodes.len()).collect::<Vec<_>>();
-        order.sort_by_key(|index| (layer_orders[*index], *index));
+        if !layer_orders.windows(2).all(|pair| pair[0] <= pair[1]) {
+            order.sort_by_key(|index| (layer_orders[*index], *index));
+        }
         order
     }
 
@@ -4175,6 +4609,114 @@ fn rect_is_finite(rect: UiRect) -> bool {
     rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()
 }
 
+fn normalized_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+fn scaled_text_content(text: &TextContent, scale: f32) -> TextContent {
+    let scale = normalized_scale(scale);
+    if (scale - 1.0).abs() <= f32::EPSILON {
+        return text.clone();
+    }
+    let mut text = text.clone();
+    text.style.font_size = (text.style.font_size * scale).max(1.0);
+    text.style.line_height = (text.style.line_height * scale).max(text.style.font_size);
+    text
+}
+
+fn scaled_taffy_style(style: &Style, scale: f32) -> Style {
+    let scale = normalized_scale(scale);
+    if (scale - 1.0).abs() <= f32::EPSILON {
+        return style.clone();
+    }
+    let mut style = style.clone();
+    style.scrollbar_width *= scale;
+    style.inset = scale_taffy_rect_auto(style.inset, scale);
+    style.size = TaffySize {
+        width: scale_dimension(style.size.width, scale),
+        height: scale_dimension(style.size.height, scale),
+    };
+    style.min_size = TaffySize {
+        width: scale_dimension(style.min_size.width, scale),
+        height: scale_dimension(style.min_size.height, scale),
+    };
+    style.max_size = TaffySize {
+        width: scale_dimension(style.max_size.width, scale),
+        height: scale_dimension(style.max_size.height, scale),
+    };
+    style.margin = scale_taffy_rect_auto(style.margin, scale);
+    style.padding = scale_taffy_rect(style.padding, scale);
+    style.border = scale_taffy_rect(style.border, scale);
+    style.gap = TaffySize {
+        width: scale_length_percentage(style.gap.width, scale),
+        height: scale_length_percentage(style.gap.height, scale),
+    };
+    style.flex_basis = scale_dimension(style.flex_basis, scale);
+    style
+}
+
+fn scale_dimension(value: Dimension, scale: f32) -> Dimension {
+    let raw = value.into_raw();
+    if raw.tag() == CompactLength::LENGTH_TAG {
+        Dimension::length(raw.value() * scale)
+    } else {
+        value
+    }
+}
+
+fn scale_length_percentage(value: LengthPercentage, scale: f32) -> LengthPercentage {
+    let raw = value.into_raw();
+    if raw.tag() == CompactLength::LENGTH_TAG {
+        LengthPercentage::length(raw.value() * scale)
+    } else {
+        value
+    }
+}
+
+fn scale_length_percentage_auto(value: LengthPercentageAuto, scale: f32) -> LengthPercentageAuto {
+    let raw = value.into_raw();
+    if raw.tag() == CompactLength::LENGTH_TAG {
+        LengthPercentageAuto::length(raw.value() * scale)
+    } else {
+        value
+    }
+}
+
+fn scale_taffy_rect(rect: TaffyRect<LengthPercentage>, scale: f32) -> TaffyRect<LengthPercentage> {
+    TaffyRect {
+        left: scale_length_percentage(rect.left, scale),
+        right: scale_length_percentage(rect.right, scale),
+        top: scale_length_percentage(rect.top, scale),
+        bottom: scale_length_percentage(rect.bottom, scale),
+    }
+}
+
+fn scale_taffy_rect_auto(
+    rect: TaffyRect<LengthPercentageAuto>,
+    scale: f32,
+) -> TaffyRect<LengthPercentageAuto> {
+    TaffyRect {
+        left: scale_length_percentage_auto(rect.left, scale),
+        right: scale_length_percentage_auto(rect.right, scale),
+        top: scale_length_percentage_auto(rect.top, scale),
+        bottom: scale_length_percentage_auto(rect.bottom, scale),
+    }
+}
+
+fn paint_rect_for_node(rect: &PaintRect, node_rect: UiRect) -> PaintRect {
+    let mut rect = rect.clone();
+    if rect.rect.width <= f32::EPSILON || rect.rect.height <= f32::EPSILON {
+        rect.rect = node_rect;
+        rect.fill = rect.fill.translated(UiPoint::new(node_rect.x, node_rect.y));
+        return rect;
+    }
+    rect.translated(UiPoint::new(node_rect.x, node_rect.y))
+}
+
 #[cfg(feature = "widgets")]
 #[path = "widgets/ext/mod.rs"]
 mod widget_ext;
@@ -4194,3231 +4736,31 @@ pub mod widgets {
     pub use crate::widget_ext::*;
 
     pub mod button;
-
-    #[derive(Debug, Clone)]
-    pub struct ButtonOptions {
-        pub layout: LayoutStyle,
-        pub visual: UiVisual,
-        pub hovered_visual: Option<UiVisual>,
-        pub pressed_visual: Option<UiVisual>,
-        pub focused_visual: Option<UiVisual>,
-        pub disabled_visual: Option<UiVisual>,
-        pub text_style: TextStyle,
-        pub leading_image: Option<ImageContent>,
-        pub image_size: UiSize,
-        pub image_shader: Option<ShaderEffect>,
-        pub shader: Option<ShaderEffect>,
-        pub animation: Option<AnimationMachine>,
-        pub enabled: bool,
-        pub pressed: bool,
-        pub focused: bool,
-        pub action: Option<WidgetActionBinding>,
-        pub accessibility_label: Option<String>,
-        pub accessibility_hint: Option<String>,
-    }
-
-    impl ButtonOptions {
-        pub fn new(layout: impl Into<LayoutStyle>) -> Self {
-            let layout = layout.into();
-            Self {
-                layout,
-                ..Default::default()
-            }
-        }
-
-        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
-            self.layout = layout.into();
-            self
-        }
-
-        pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
-            self.action = Some(action.into());
-            self
-        }
-
-        pub fn with_command(mut self, command: impl Into<CommandId>) -> Self {
-            self.action = Some(WidgetActionBinding::command(command));
-            self
-        }
-    }
-
-    impl Default for ButtonOptions {
-        fn default() -> Self {
-            Self {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    display: Display::Flex,
-                    align_items: Some(AlignItems::Center),
-                    justify_content: Some(JustifyContent::Center),
-                    size: TaffySize {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
-                }),
-                visual: UiVisual::panel(
-                    ColorRgba::new(36, 42, 52, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(74, 85, 104, 255), 1.0)),
-                    4.0,
-                ),
-                hovered_visual: Some(UiVisual::panel(
-                    ColorRgba::new(50, 61, 74, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(116, 137, 162, 255), 1.0)),
-                    4.0,
-                )),
-                pressed_visual: Some(UiVisual::panel(
-                    ColorRgba::new(12, 16, 22, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(42, 52, 66, 255), 1.0)),
-                    3.0,
-                )),
-                focused_visual: Some(UiVisual::panel(
-                    ColorRgba::new(40, 49, 61, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(120, 170, 230, 255), 1.5)),
-                    4.0,
-                )),
-                disabled_visual: Some(UiVisual::panel(
-                    ColorRgba::new(30, 34, 40, 180),
-                    Some(StrokeStyle::new(ColorRgba::new(64, 72, 84, 180), 1.0)),
-                    4.0,
-                )),
-                text_style: TextStyle::default(),
-                leading_image: None,
-                image_size: UiSize::new(18.0, 18.0),
-                image_shader: None,
-                shader: None,
-                animation: None,
-                enabled: true,
-                pressed: false,
-                focused: false,
-                action: None,
-                accessibility_label: None,
-                accessibility_hint: None,
-            }
-        }
-    }
-
-    impl ButtonOptions {
-        fn resolved_visual(&self) -> UiVisual {
-            if !self.enabled {
-                self.disabled_visual.unwrap_or(self.visual)
-            } else if self.pressed {
-                self.pressed_visual.unwrap_or(self.visual)
-            } else if self.focused {
-                self.focused_visual.unwrap_or(self.visual)
-            } else {
-                self.visual
-            }
-        }
-
-        fn interaction_visuals(&self) -> InteractionVisuals {
-            InteractionVisuals::new(self.resolved_visual())
-                .hovered(self.hovered_visual.unwrap_or(self.visual))
-                .pressed(self.pressed_visual.unwrap_or(self.visual))
-                .focused(self.focused_visual.unwrap_or(self.visual))
-                .disabled(self.disabled_visual.unwrap_or(self.visual))
-        }
-
-        fn resolved_visual_for_interaction(
-            &self,
-            hovered: bool,
-            pressed: bool,
-            focused: bool,
-        ) -> UiVisual {
-            self.interaction_visuals()
-                .resolve(self.enabled, hovered, pressed, focused)
-        }
-    }
-
-    impl ButtonOptions {
-        fn update_document_interaction_visual(&self, document: &mut UiDocument, button: UiNodeId) {
-            document.set_node_interaction_visuals(button, self.interaction_visuals());
-            let hovered = document.focus.hovered == Some(button);
-            let pressed = document.focus.pressed == Some(button) || self.pressed;
-            let focused = document.focus.focused == Some(button) || self.focused;
-            let visual = self.resolved_visual_for_interaction(hovered, pressed, focused);
-            document.set_node_visual(button, visual);
-        }
-    }
-
-    pub fn button(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        label: impl Into<String>,
-        options: ButtonOptions,
-    ) -> UiNodeId {
-        let name = name.into();
-        let label = label.into();
-        let accessibility_label = options
-            .accessibility_label
-            .clone()
-            .unwrap_or_else(|| label.clone());
-        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Button)
-            .label(accessibility_label)
-            .pressed(options.pressed)
-            .action(AccessibilityAction::new("activate", "Activate"));
-        if let Some(hint) = options.accessibility_hint.clone() {
-            accessibility = accessibility.hint(hint);
-        }
-        if options.enabled {
-            accessibility = accessibility.focusable();
-        } else {
-            accessibility = accessibility.disabled();
-        }
-        let mut node = UiNode::container(
-            name.clone(),
-            UiNodeStyle {
-                layout: options.layout.style.clone(),
-                clip: ClipBehavior::Clip,
-                ..Default::default()
-            },
-        )
-        .with_input(if options.enabled {
-            InputBehavior::BUTTON
-        } else {
-            InputBehavior::NONE
-        })
-        .with_interaction_visuals(options.interaction_visuals())
-        .with_accessibility(accessibility);
-        if let Some(shader) = options.shader.clone() {
-            node = node.with_shader(shader);
-        }
-        if let Some(animation) = options.animation.clone() {
-            node = node.with_animation(animation);
-        }
-        let button = document.add_child(parent, node);
-        options.update_document_interaction_visual(document, button);
-        if let Some(image) = options.leading_image {
-            let mut image_node = UiNode::image(
-                format!("{name}.image"),
-                image,
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(options.image_size.width),
-                        height: length(options.image_size.height),
-                    },
-                    margin: taffy::prelude::Rect {
-                        right: taffy::prelude::LengthPercentageAuto::length(6.0),
-                        ..taffy::prelude::Rect::length(0.0)
-                    },
-                    ..Default::default()
-                }),
-            )
-            .with_accessibility(
-                AccessibilityMeta::new(AccessibilityRole::Image).label(label.clone()),
-            );
-            if let Some(shader) = options.image_shader {
-                image_node = image_node.with_shader(shader);
-            }
-            document.add_child(button, image_node);
-        }
-        document.add_child(
-            button,
-            UiNode::text(
-                format!("{name}.label"),
-                label,
-                options.text_style,
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
-        button
-    }
-
-    pub fn button_actions_from_input_result(
-        document: &UiDocument,
-        button: UiNodeId,
-        options: &ButtonOptions,
-        result: &UiInputResult,
-    ) -> WidgetActionQueue {
-        let mut queue = WidgetActionQueue::new();
-        push_button_input_result_actions(&mut queue, document, button, options, result);
-        queue
-    }
-
-    pub fn push_button_input_result_actions<'a>(
-        queue: &'a mut WidgetActionQueue,
-        document: &UiDocument,
-        button: UiNodeId,
-        options: &ButtonOptions,
-        result: &UiInputResult,
-    ) -> &'a mut WidgetActionQueue {
-        let Some(clicked) = result.clicked else {
-            return queue;
-        };
-        if !document.node_is_descendant_or_self(button, clicked)
-            || !action_target_enabled(document, button)
-        {
-            return queue;
-        }
-        if let Some(binding) = options.action.clone() {
-            queue.push(WidgetAction::pointer_activate(button, binding, 1));
-        }
-        queue
-    }
-
-    pub fn button_actions_from_key_event(
-        document: &UiDocument,
-        button: UiNodeId,
-        options: &ButtonOptions,
-        event: &UiInputEvent,
-    ) -> WidgetActionQueue {
-        let mut queue = WidgetActionQueue::new();
-        push_button_key_event_actions(&mut queue, document, button, options, event);
-        queue
-    }
-
-    pub fn push_button_key_event_actions<'a>(
-        queue: &'a mut WidgetActionQueue,
-        document: &UiDocument,
-        button: UiNodeId,
-        options: &ButtonOptions,
-        event: &UiInputEvent,
-    ) -> &'a mut WidgetActionQueue {
-        let UiInputEvent::Key { key, modifiers } = event else {
-            return queue;
-        };
-        if document.focus.focused != Some(button) || !action_target_enabled(document, button) {
-            return queue;
-        }
-        if let Some(binding) = options.action.clone() {
-            queue.push_key_activation(button, binding, *key, *modifiers);
-        }
-        queue
-    }
-
-    pub fn button_actions_from_gesture_event(
-        document: &UiDocument,
-        button: UiNodeId,
-        options: &ButtonOptions,
-        event: &GestureEvent,
-    ) -> WidgetActionQueue {
-        let mut queue = WidgetActionQueue::new();
-        push_button_gesture_event_actions(&mut queue, document, button, options, event);
-        queue
-    }
-
-    pub fn push_button_gesture_event_actions<'a>(
-        queue: &'a mut WidgetActionQueue,
-        document: &UiDocument,
-        button: UiNodeId,
-        options: &ButtonOptions,
-        event: &GestureEvent,
-    ) -> &'a mut WidgetActionQueue {
-        let GestureEvent::Click(click) = event else {
-            return queue;
-        };
-        if click.button != PointerButton::Primary
-            || !document.node_is_descendant_or_self(button, click.target)
-        {
-            return queue;
-        }
-        if !action_target_enabled(document, button) {
-            return queue;
-        }
-        if let Some(binding) = options.action.clone() {
-            queue.push(WidgetAction::pointer_activate(button, binding, click.count));
-        }
-        queue
-    }
-
-    pub fn label(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        text: impl Into<String>,
-        style: TextStyle,
-        layout: impl Into<LayoutStyle>,
-    ) -> UiNodeId {
-        let layout = layout.into();
-        let text = text.into();
-        document.add_child(
-            parent,
-            UiNode::text(name, text.clone(), style, layout)
-                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label(text)),
-        )
-    }
-
-    pub fn localized_label(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        label: DynamicLabelMeta,
-        policy: Option<&LocalizationPolicy>,
-        style: TextStyle,
-        layout: impl Into<LayoutStyle>,
-    ) -> UiNodeId {
-        let text = label.fallback.clone();
-        document.add_child(
-            parent,
-            UiNode::localized_text(name, label, policy, style, layout)
-                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label(text)),
-        )
-    }
-
-    pub fn scroll_area(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        axes: ScrollAxes,
-        layout: impl Into<LayoutStyle>,
-    ) -> UiNodeId {
-        let name = name.into();
-        let layout = layout.into();
-        document.add_child(
-            parent,
-            UiNode::container(
-                name.clone(),
-                UiNodeStyle {
-                    layout: layout.style,
-                    clip: ClipBehavior::Clip,
-                    ..Default::default()
-                },
-            )
-            .with_scroll(axes)
-            .with_accessibility(
-                AccessibilityMeta::new(AccessibilityRole::List)
-                    .label(name)
-                    .value(scroll_axes_value(axes)),
-            ),
-        )
-    }
-
-    fn scroll_axes_value(axes: ScrollAxes) -> &'static str {
-        match axes {
-            ScrollAxes {
-                horizontal: false,
-                vertical: false,
-            } => "not scrollable",
-            ScrollAxes {
-                horizontal: true,
-                vertical: false,
-            } => "horizontal",
-            ScrollAxes {
-                horizontal: false,
-                vertical: true,
-            } => "vertical",
-            ScrollAxes {
-                horizontal: true,
-                vertical: true,
-            } => "horizontal and vertical",
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct CheckboxOptions {
-        pub layout: LayoutStyle,
-        pub box_visual: UiVisual,
-        pub checked_box_visual: Option<UiVisual>,
-        pub disabled_box_visual: Option<UiVisual>,
-        pub check_color: ColorRgba,
-        pub check_image: Option<ImageContent>,
-        pub check_shader: Option<ShaderEffect>,
-        pub text_style: TextStyle,
-        pub shader: Option<ShaderEffect>,
-        pub animation: Option<AnimationMachine>,
-        pub enabled: bool,
-        pub action: Option<WidgetActionBinding>,
-        pub accessibility_label: Option<String>,
-        pub accessibility_hint: Option<String>,
-    }
-
-    impl Default for CheckboxOptions {
-        fn default() -> Self {
-            Self {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    align_items: Some(AlignItems::Center),
-                    size: TaffySize {
-                        width: Dimension::auto(),
-                        height: length(28.0),
-                    },
-                    ..Default::default()
-                }),
-                box_visual: UiVisual::panel(
-                    ColorRgba::new(29, 35, 43, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(98, 113, 135, 255), 1.0)),
-                    3.0,
-                ),
-                checked_box_visual: Some(UiVisual::panel(
-                    ColorRgba::new(21, 58, 92, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(108, 180, 255, 255), 1.0)),
-                    3.0,
-                )),
-                disabled_box_visual: Some(UiVisual::panel(
-                    ColorRgba::new(28, 32, 38, 160),
-                    Some(StrokeStyle::new(ColorRgba::new(67, 75, 88, 160), 1.0)),
-                    3.0,
-                )),
-                check_color: ColorRgba::new(108, 180, 255, 255),
-                check_image: None,
-                check_shader: None,
-                text_style: TextStyle::default(),
-                shader: None,
-                animation: None,
-                enabled: true,
-                action: None,
-                accessibility_label: None,
-                accessibility_hint: None,
-            }
-        }
-    }
-
-    impl CheckboxOptions {
-        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
-            self.layout = layout.into();
-            self
-        }
-
-        pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
-            self.action = Some(action.into());
-            self
-        }
-
-        pub fn with_command(mut self, command: impl Into<CommandId>) -> Self {
-            self.action = Some(WidgetActionBinding::command(command));
-            self
-        }
-    }
-
-    pub fn checkbox(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        label_text: impl Into<String>,
-        checked: bool,
-        options: CheckboxOptions,
-    ) -> UiNodeId {
-        let name = name.into();
-        let label_text = label_text.into();
-        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Checkbox)
-            .label(
-                options
-                    .accessibility_label
-                    .clone()
-                    .unwrap_or_else(|| label_text.clone()),
-            )
-            .value(if checked { "checked" } else { "unchecked" })
-            .checked(checked)
-            .action(AccessibilityAction::new("toggle", "Toggle"));
-        if let Some(hint) = options.accessibility_hint.clone() {
-            accessibility = accessibility.hint(hint);
-        }
-        if options.enabled {
-            accessibility = accessibility.focusable();
-        } else {
-            accessibility = accessibility.disabled();
-        }
-        let mut root_node = UiNode::container(
-            name.clone(),
-            UiNodeStyle {
-                layout: options.layout.style,
-                clip: ClipBehavior::Clip,
-                ..Default::default()
-            },
-        )
-        .with_input(if options.enabled {
-            InputBehavior::BUTTON
-        } else {
-            InputBehavior::NONE
-        })
-        .with_accessibility(accessibility);
-        if let Some(shader) = options.shader {
-            root_node = root_node.with_shader(shader);
-        }
-        if let Some(animation) = options.animation {
-            root_node = root_node.with_animation(animation);
-        }
-        let root = document.add_child(parent, root_node);
-        let box_visual = if !options.enabled {
-            options.disabled_box_visual.unwrap_or(options.box_visual)
-        } else if checked {
-            options.checked_box_visual.unwrap_or(options.box_visual)
-        } else {
-            options.box_visual
-        };
-        let box_node = document.add_child(
-            root,
-            UiNode::container(
-                format!("{name}.box"),
-                UiNodeStyle {
-                    layout: LayoutStyle::from_taffy_style(Style {
-                        size: TaffySize {
-                            width: length(16.0),
-                            height: length(16.0),
-                        },
-                        margin: taffy::prelude::Rect {
-                            left: taffy::prelude::LengthPercentageAuto::length(0.0),
-                            right: taffy::prelude::LengthPercentageAuto::length(8.0),
-                            top: taffy::prelude::LengthPercentageAuto::length(0.0),
-                            bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
-                        },
-                        ..Default::default()
-                    })
-                    .style,
-                    ..Default::default()
-                },
-            )
-            .with_visual(box_visual),
-        );
-        if checked {
-            if let Some(image) = options.check_image {
-                let mut check_node = UiNode::image(
-                    format!("{name}.check"),
-                    image,
-                    LayoutStyle::from_taffy_style(Style {
-                        size: TaffySize {
-                            width: length(16.0),
-                            height: length(16.0),
-                        },
-                        ..Default::default()
-                    }),
-                );
-                if let Some(shader) = options.check_shader {
-                    check_node = check_node.with_shader(shader);
-                }
-                document.add_child(box_node, check_node);
-            } else {
-                let mut check_node = UiNode::scene(
-                    format!("{name}.check"),
-                    vec![
-                        ScenePrimitive::Line {
-                            from: UiPoint::new(3.0, 8.0),
-                            to: UiPoint::new(6.5, 11.5),
-                            stroke: StrokeStyle::new(options.check_color, 2.0),
-                        },
-                        ScenePrimitive::Line {
-                            from: UiPoint::new(6.5, 11.5),
-                            to: UiPoint::new(13.0, 4.0),
-                            stroke: StrokeStyle::new(options.check_color, 2.0),
-                        },
-                    ],
-                    LayoutStyle::from_taffy_style(Style {
-                        size: TaffySize {
-                            width: length(16.0),
-                            height: length(16.0),
-                        },
-                        ..Default::default()
-                    }),
-                );
-                if let Some(shader) = options.check_shader {
-                    check_node = check_node.with_shader(shader);
-                }
-                document.add_child(box_node, check_node);
-            }
-        }
-        label(
-            document,
-            root,
-            format!("{name}.label"),
-            label_text,
-            options.text_style,
-            LayoutStyle::from_taffy_style(Style {
-                size: TaffySize {
-                    width: Dimension::auto(),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-        );
-        root
-    }
-
-    pub fn checkbox_actions_from_input_result(
-        document: &UiDocument,
-        checkbox: UiNodeId,
-        checked: bool,
-        options: &CheckboxOptions,
-        result: &UiInputResult,
-    ) -> WidgetActionQueue {
-        let mut queue = WidgetActionQueue::new();
-        push_checkbox_input_result_actions(
-            &mut queue, document, checkbox, checked, options, result,
-        );
-        queue
-    }
-
-    pub fn push_checkbox_input_result_actions<'a>(
-        queue: &'a mut WidgetActionQueue,
-        document: &UiDocument,
-        checkbox: UiNodeId,
-        checked: bool,
-        options: &CheckboxOptions,
-        result: &UiInputResult,
-    ) -> &'a mut WidgetActionQueue {
-        if !result
-            .clicked
-            .is_some_and(|target| document.node_is_descendant_or_self(checkbox, target))
-            || !action_target_enabled(document, checkbox)
-        {
-            return queue;
-        }
-        if let Some(binding) = options.action.clone() {
-            queue.select(checkbox, binding, !checked);
-        }
-        queue
-    }
-
-    pub fn checkbox_actions_from_key_event(
-        document: &UiDocument,
-        checkbox: UiNodeId,
-        checked: bool,
-        options: &CheckboxOptions,
-        event: &UiInputEvent,
-    ) -> WidgetActionQueue {
-        let mut queue = WidgetActionQueue::new();
-        push_checkbox_key_event_actions(&mut queue, document, checkbox, checked, options, event);
-        queue
-    }
-
-    pub fn push_checkbox_key_event_actions<'a>(
-        queue: &'a mut WidgetActionQueue,
-        document: &UiDocument,
-        checkbox: UiNodeId,
-        checked: bool,
-        options: &CheckboxOptions,
-        event: &UiInputEvent,
-    ) -> &'a mut WidgetActionQueue {
-        let UiInputEvent::Key { key, modifiers } = event else {
-            return queue;
-        };
-        if document.focus.focused != Some(checkbox) || !action_target_enabled(document, checkbox) {
-            return queue;
-        }
-        if let Some(binding) = options.action.clone() {
-            if keyboard_activation_key(*key, *modifiers) {
-                queue.select(checkbox, binding, !checked);
-            }
-        }
-        queue
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct SliderOptions {
-        pub layout: LayoutStyle,
-        pub track_visual: UiVisual,
-        pub fill_color: ColorRgba,
-        pub thumb_visual: UiVisual,
-        pub disabled_track_visual: Option<UiVisual>,
-        pub disabled_fill_color: Option<ColorRgba>,
-        pub disabled_thumb_visual: Option<UiVisual>,
-        pub track_shader: Option<ShaderEffect>,
-        pub fill_shader: Option<ShaderEffect>,
-        pub thumb_shader: Option<ShaderEffect>,
-        pub shader: Option<ShaderEffect>,
-        pub animation: Option<AnimationMachine>,
-        pub enabled: bool,
-        pub drag_action: Option<WidgetActionBinding>,
-        pub value_edit_action: Option<WidgetActionBinding>,
-        pub accessibility_label: Option<String>,
-        pub accessibility_value: Option<String>,
-        pub accessibility_hint: Option<String>,
-    }
-
-    impl Default for SliderOptions {
-        fn default() -> Self {
-            Self {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    align_items: Some(AlignItems::Center),
-                    size: TaffySize {
-                        width: length(160.0),
-                        height: length(28.0),
-                    },
-                    ..Default::default()
-                }),
-                track_visual: UiVisual::panel(ColorRgba::new(42, 49, 58, 255), None, 3.0),
-                fill_color: ColorRgba::new(108, 180, 255, 255),
-                thumb_visual: UiVisual::panel(
-                    ColorRgba::new(235, 240, 247, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(79, 93, 113, 255), 1.0)),
-                    6.0,
-                ),
-                disabled_track_visual: Some(UiVisual::panel(
-                    ColorRgba::new(35, 39, 45, 180),
-                    None,
-                    3.0,
-                )),
-                disabled_fill_color: Some(ColorRgba::new(92, 101, 114, 180)),
-                disabled_thumb_visual: Some(UiVisual::panel(
-                    ColorRgba::new(150, 158, 170, 180),
-                    Some(StrokeStyle::new(ColorRgba::new(81, 90, 104, 180), 1.0)),
-                    6.0,
-                )),
-                track_shader: None,
-                fill_shader: None,
-                thumb_shader: None,
-                shader: None,
-                animation: None,
-                enabled: true,
-                drag_action: None,
-                value_edit_action: None,
-                accessibility_label: None,
-                accessibility_value: None,
-                accessibility_hint: None,
-            }
-        }
-    }
-
-    impl SliderOptions {
-        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
-            self.layout = layout.into();
-            self
-        }
-
-        pub fn with_drag_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
-            self.drag_action = Some(action.into());
-            self
-        }
-
-        pub fn with_value_edit_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
-            self.value_edit_action = Some(action.into());
-            self
-        }
-    }
-
-    pub fn slider(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        value: f32,
-        range: Range<f32>,
-        options: SliderOptions,
-    ) -> UiNodeId {
-        let name = name.into();
-        let t = normalized_value(value, range.clone());
-        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::Slider)
-            .label(
-                options
-                    .accessibility_label
-                    .clone()
-                    .unwrap_or_else(|| name.clone()),
-            )
-            .value(
-                options
-                    .accessibility_value
-                    .clone()
-                    .unwrap_or_else(|| slider_accessibility_value(value, range.clone())),
-            )
-            .value_range(AccessibilityValueRange::new(
-                range.start as f64,
-                range.end as f64,
-            ))
-            .action(AccessibilityAction::new("increase", "Increase"))
-            .action(AccessibilityAction::new("decrease", "Decrease"));
-        if let Some(hint) = options.accessibility_hint.clone() {
-            accessibility = accessibility.hint(hint);
-        }
-        if options.enabled {
-            accessibility = accessibility.focusable();
-        } else {
-            accessibility = accessibility.disabled();
-        }
-        let mut root_node = UiNode::container(
-            name.clone(),
-            UiNodeStyle {
-                layout: options.layout.style,
-                clip: ClipBehavior::Clip,
-                ..Default::default()
-            },
-        )
-        .with_input(if options.enabled {
-            InputBehavior::BUTTON
-        } else {
-            InputBehavior::NONE
-        })
-        .with_accessibility(accessibility);
-        if let Some(shader) = options.shader {
-            root_node = root_node.with_shader(shader);
-        }
-        if let Some(animation) = options.animation {
-            root_node = root_node.with_animation(animation);
-        }
-        let root = document.add_child(parent, root_node);
-        let track_visual = if options.enabled {
-            options.track_visual
-        } else {
-            options
-                .disabled_track_visual
-                .unwrap_or(options.track_visual)
-        };
-        let fill_color = if options.enabled {
-            options.fill_color
-        } else {
-            options.disabled_fill_color.unwrap_or(options.fill_color)
-        };
-        let thumb_visual = if options.enabled {
-            options.thumb_visual
-        } else {
-            options
-                .disabled_thumb_visual
-                .unwrap_or(options.thumb_visual)
-        };
-        let mut track_node = UiNode::container(
-            format!("{name}.track"),
-            UiNodeStyle {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: length(6.0),
-                    },
-                    ..Default::default()
-                })
-                .style,
-                clip: ClipBehavior::Clip,
-                ..Default::default()
-            },
-        )
-        .with_visual(track_visual);
-        if let Some(shader) = options.track_shader {
-            track_node = track_node.with_shader(shader);
-        }
-        let track = document.add_child(root, track_node);
-        let mut fill_node = UiNode::container(
-            format!("{name}.fill"),
-            UiNodeStyle {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: Dimension::percent(t),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                })
-                .style,
-                ..Default::default()
-            },
-        )
-        .with_visual(UiVisual::panel(fill_color, None, 3.0));
-        if let Some(shader) = options.fill_shader {
-            fill_node = fill_node.with_shader(shader);
-        }
-        document.add_child(track, fill_node);
-        let mut thumb_node = UiNode::container(
-            format!("{name}.thumb"),
-            UiNodeStyle {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(12.0),
-                        height: length(12.0),
-                    },
-                    margin: taffy::prelude::Rect {
-                        left: taffy::prelude::LengthPercentageAuto::length(-6.0),
-                        right: taffy::prelude::LengthPercentageAuto::length(0.0),
-                        top: taffy::prelude::LengthPercentageAuto::length(0.0),
-                        bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
-                    },
-                    ..Default::default()
-                })
-                .style,
-                z_index: 1,
-                ..Default::default()
-            },
-        )
-        .with_visual(thumb_visual);
-        if let Some(shader) = options.thumb_shader {
-            thumb_node = thumb_node.with_shader(shader);
-        }
-        document.add_child(root, thumb_node);
-        root
-    }
-
-    fn slider_accessibility_value(value: f32, range: Range<f32>) -> String {
-        let percent = normalized_value(value, range) * 100.0;
-        format!("{value} ({percent:.0}%)")
-    }
-
-    pub fn normalized_value(value: f32, range: Range<f32>) -> f32 {
-        let span = range.end - range.start;
-        if span.abs() <= f32::EPSILON {
-            return 0.0;
-        }
-        ((value - range.start) / span).clamp(0.0, 1.0)
-    }
-
-    pub fn slider_value_from_point(track: UiRect, point: UiPoint, range: Range<f32>) -> f32 {
-        let t = ((point.x - track.x) / track.width.max(1.0)).clamp(0.0, 1.0);
-        range.start + (range.end - range.start) * t
-    }
-
-    pub fn slider_actions_from_gesture_event(
-        document: &UiDocument,
-        slider: UiNodeId,
-        options: &SliderOptions,
-        event: &GestureEvent,
-    ) -> WidgetActionQueue {
-        let mut queue = WidgetActionQueue::new();
-        push_slider_gesture_event_actions(&mut queue, document, slider, options, event);
-        queue
-    }
-
-    pub fn push_slider_gesture_event_actions<'a>(
-        queue: &'a mut WidgetActionQueue,
-        document: &UiDocument,
-        slider: UiNodeId,
-        options: &SliderOptions,
-        event: &GestureEvent,
-    ) -> &'a mut WidgetActionQueue {
-        let GestureEvent::Drag(gesture) = event else {
-            return queue;
-        };
-        if !document.node_is_descendant_or_self(slider, gesture.target)
-            || !action_target_enabled(document, slider)
-        {
-            return queue;
-        }
-        let mut gesture = *gesture;
-        gesture.target = slider;
-        if let Some(binding) = options.drag_action.clone() {
-            if let Some(action) = WidgetAction::drag_from_gesture(&gesture, binding) {
-                queue.push(action);
-            }
-        }
-        if let Some(binding) = options.value_edit_action.clone() {
-            queue.push(WidgetAction::value_edit_from_drag(&gesture, binding));
-        }
-        queue
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct TextInputState {
-        pub text: String,
-        pub caret: usize,
-        pub selection_anchor: Option<usize>,
-        pub multiline: bool,
-        pub composing: Option<String>,
-        pub history: TextEditHistory,
-        pub history_sequence: u64,
-    }
-
-    impl TextInputState {
-        pub fn new(text: impl Into<String>) -> Self {
-            let text = text.into();
-            Self {
-                caret: text.len(),
-                text,
-                selection_anchor: None,
-                multiline: false,
-                composing: None,
-                history: TextEditHistory::new(),
-                history_sequence: 0,
-            }
-        }
-
-        pub fn multiline(mut self, multiline: bool) -> Self {
-            self.multiline = multiline;
-            self
-        }
-
-        pub fn selected_range(&self) -> Option<Range<usize>> {
-            let anchor = clamp_to_char_boundary(&self.text, self.selection_anchor?);
-            let caret = clamp_to_char_boundary(&self.text, self.caret);
-            if anchor == caret {
-                return None;
-            }
-            Some(anchor.min(caret)..anchor.max(caret))
-        }
-
-        pub fn selected_text(&self) -> Option<&str> {
-            self.selected_range().map(|range| &self.text[range])
-        }
-
-        pub fn caret_position(&self) -> TextInputPosition {
-            text_position_at(&self.text, self.caret)
-        }
-
-        pub fn caret_line_range(&self) -> Range<usize> {
-            line_range_at(&self.text, self.caret)
-        }
-
-        pub fn caret_info(&self) -> TextInputCaretInfo {
-            TextInputCaretInfo {
-                position: self.caret_position(),
-                line_range: self.caret_line_range(),
-                selected_range: self.selected_range(),
-            }
-        }
-
-        pub fn caret_rect(&self, metrics: TextInputLayoutMetrics) -> TextInputCaretRect {
-            text_input_caret_rect(&self.text, self.caret, metrics)
-        }
-
-        pub fn normalized_caret(&self) -> usize {
-            clamp_to_char_boundary(&self.text, self.caret)
-        }
-
-        pub fn position_at_point(
-            &self,
-            metrics: TextInputLayoutMetrics,
-            point: UiPoint,
-        ) -> TextInputPosition {
-            text_position_at(
-                &self.text,
-                text_input_byte_index_at_point(&self.text, self.multiline, metrics, point),
-            )
-        }
-
-        pub fn byte_index_at_point(
-            &self,
-            metrics: TextInputLayoutMetrics,
-            point: UiPoint,
-        ) -> usize {
-            text_input_byte_index_at_point(&self.text, self.multiline, metrics, point)
-        }
-
-        pub fn move_caret_to_point(
-            &mut self,
-            metrics: TextInputLayoutMetrics,
-            point: UiPoint,
-            selecting: bool,
-        ) {
-            self.normalize_selection();
-            let anchor = self.selection_anchor.unwrap_or(self.caret);
-            self.caret = self.byte_index_at_point(metrics, point);
-            self.selection_anchor = selecting.then_some(anchor);
-        }
-
-        pub fn selection_rects(
-            &self,
-            metrics: TextInputLayoutMetrics,
-        ) -> Vec<TextInputSelectionRect> {
-            text_input_selection_rects(&self.text, self.selected_range(), metrics)
-        }
-
-        pub fn render_plan(
-            &self,
-            metrics: TextInputLayoutMetrics,
-            text_style: TextStyle,
-            paint: TextInputPaintOptions,
-        ) -> TextInputRenderPlan {
-            TextInputRenderPlan::new(self, metrics, text_style, paint)
-        }
-
-        pub fn ime_session(&self, context: TextInputPlatformContext) -> TextImeSession {
-            TextImeSession::new(context.input, context.cursor_rect)
-                .surrounding_text(self.text.clone(), self.platform_selection_range())
-                .multiline(self.multiline)
-        }
-
-        pub fn activate_ime_request(&self, context: TextInputPlatformContext) -> TextImeRequest {
-            TextImeRequest::Activate(self.ime_session(context))
-        }
-
-        pub fn update_ime_request(&self, context: TextInputPlatformContext) -> TextImeRequest {
-            TextImeRequest::Update(self.ime_session(context))
-        }
-
-        pub fn deactivate_ime_request(input: TextInputId) -> TextImeRequest {
-            TextImeRequest::Deactivate { input }
-        }
-
-        pub fn show_keyboard_request(input: TextInputId) -> TextImeRequest {
-            TextImeRequest::ShowKeyboard { input }
-        }
-
-        pub fn hide_keyboard_request(input: TextInputId) -> TextImeRequest {
-            TextImeRequest::HideKeyboard { input }
-        }
-
-        pub fn apply_ime_response(&mut self, response: &TextImeResponse) -> TextInputOutcome {
-            self.apply_ime_response_for_target(response, TransactionTarget::none())
-        }
-
-        pub fn apply_ime_response_with_policy(
-            &mut self,
-            response: &TextImeResponse,
-            policy: TextInputInteractionPolicy,
-        ) -> TextInputOutcome {
-            self.apply_ime_response_for_target_with_policy(
-                response,
-                TransactionTarget::none(),
-                policy,
-            )
-        }
-
-        pub fn apply_ime_response_for_target(
-            &mut self,
-            response: &TextImeResponse,
-            target: TransactionTarget,
-        ) -> TextInputOutcome {
-            self.apply_ime_response_for_target_with_policy(
-                response,
-                target,
-                TextInputInteractionPolicy::default(),
-            )
-        }
-
-        pub fn apply_ime_response_for_target_with_policy(
-            &mut self,
-            response: &TextImeResponse,
-            target: TransactionTarget,
-            policy: TextInputInteractionPolicy,
-        ) -> TextInputOutcome {
-            if !policy.can_edit() {
-                if matches!(response, TextImeResponse::Deactivated { .. }) {
-                    self.composing = None;
-                }
-                return TextInputOutcome::new(EditPhase::Preview, false, None);
-            }
-            let before = self.text.clone();
-            let mut phase = EditPhase::Preview;
-            match response {
-                TextImeResponse::Commit { text, .. } => {
-                    self.composing = None;
-                    self.insert_text(text);
-                    phase = EditPhase::UpdateEdit;
-                }
-                TextImeResponse::Preedit { text, .. } => {
-                    self.composing = (!text.is_empty()).then_some(text.clone());
-                }
-                TextImeResponse::DeleteSurrounding {
-                    before_chars,
-                    after_chars,
-                    ..
-                } => {
-                    if self.delete_surrounding_chars(*before_chars, *after_chars) {
-                        phase = EditPhase::UpdateEdit;
-                    }
-                }
-                TextImeResponse::Deactivated { .. } => {
-                    self.composing = None;
-                }
-                TextImeResponse::Activated { .. }
-                | TextImeResponse::Unsupported
-                | TextImeResponse::Error(_) => {}
-            }
-            let changed = before != self.text;
-            let transaction = (phase == EditPhase::UpdateEdit)
-                .then(|| self.record_text_history(before, target))
-                .flatten();
-            TextInputOutcome::new(phase, changed, None).with_transaction(transaction)
-        }
-
-        pub fn apply_ime_response_for_input(
-            &mut self,
-            input: &TextInputId,
-            response: &TextImeResponse,
-        ) -> Option<TextInputOutcome> {
-            response
-                .is_for_input(input)
-                .then(|| self.apply_ime_response(response))
-        }
-
-        pub fn apply_ime_response_for_input_with_policy(
-            &mut self,
-            input: &TextInputId,
-            response: &TextImeResponse,
-            policy: TextInputInteractionPolicy,
-        ) -> Option<TextInputOutcome> {
-            response
-                .is_for_input(input)
-                .then(|| self.apply_ime_response_with_policy(response, policy))
-        }
-
-        pub fn apply_ime_response_for_input_and_target(
-            &mut self,
-            input: &TextInputId,
-            response: &TextImeResponse,
-            target: TransactionTarget,
-        ) -> Option<TextInputOutcome> {
-            response
-                .is_for_input(input)
-                .then(|| self.apply_ime_response_for_target(response, target))
-        }
-
-        pub fn apply_ime_response_for_input_and_target_with_policy(
-            &mut self,
-            input: &TextInputId,
-            response: &TextImeResponse,
-            target: TransactionTarget,
-            policy: TextInputInteractionPolicy,
-        ) -> Option<TextInputOutcome> {
-            response
-                .is_for_input(input)
-                .then(|| self.apply_ime_response_for_target_with_policy(response, target, policy))
-        }
-
-        pub fn select_all(&mut self) {
-            self.selection_anchor = Some(0);
-            self.caret = self.text.len();
-        }
-
-        pub fn clear_selection(&mut self) {
-            self.selection_anchor = None;
-        }
-
-        pub fn insert_text(&mut self, text: &str) {
-            let filtered = filter_text_input(text, self.multiline);
-            self.replace_selection(&filtered);
-        }
-
-        pub fn copy_selection(&self) -> Option<String> {
-            self.selected_range()
-                .map(|range| self.text[range].to_string())
-        }
-
-        pub fn cut_selection(&mut self) -> Option<String> {
-            let copied = self.copy_selection()?;
-            self.replace_selection("");
-            Some(copied)
-        }
-
-        pub fn paste_text(&mut self, text: &str) {
-            let filtered = filter_text_input(text, self.multiline);
-            self.replace_selection(&filtered);
-        }
-
-        pub fn paste_text_with_outcome(&mut self, text: &str) -> TextInputOutcome {
-            self.paste_text_with_outcome_for_target(text, TransactionTarget::none())
-        }
-
-        pub fn paste_text_with_outcome_for_target(
-            &mut self,
-            text: &str,
-            target: TransactionTarget,
-        ) -> TextInputOutcome {
-            let before = self.text.clone();
-            self.paste_text(text);
-            let transaction = self.record_text_history(before.clone(), target);
-            TextInputOutcome::new(EditPhase::UpdateEdit, before != self.text, None)
-                .with_transaction(transaction)
-        }
-
-        pub fn replace_selection(&mut self, text: &str) {
-            self.normalize_selection();
-            if let Some(range) = self.selected_range() {
-                self.text.replace_range(range.clone(), text);
-                self.caret = range.start + text.len();
-            } else {
-                self.text.insert_str(self.caret, text);
-                self.caret += text.len();
-            }
-            self.caret = clamp_to_char_boundary(&self.text, self.caret);
-            self.selection_anchor = None;
-        }
-
-        pub fn backspace(&mut self) -> bool {
-            self.normalize_selection();
-            if self.selected_range().is_some() {
-                self.replace_selection("");
-                return true;
-            }
-            if self.caret == 0 {
-                return false;
-            }
-            let previous = previous_char_boundary(&self.text, self.caret);
-            self.text.replace_range(previous..self.caret, "");
-            self.caret = previous;
-            true
-        }
-
-        pub fn delete(&mut self) -> bool {
-            self.normalize_selection();
-            if self.selected_range().is_some() {
-                self.replace_selection("");
-                return true;
-            }
-            if self.caret >= self.text.len() {
-                return false;
-            }
-            let next = next_char_boundary(&self.text, self.caret);
-            self.text.replace_range(self.caret..next, "");
-            true
-        }
-
-        pub fn move_caret(&mut self, movement: CaretMovement, selecting: bool) {
-            self.normalize_selection();
-            let anchor = self.selection_anchor.unwrap_or(self.caret);
-            self.caret = match movement {
-                CaretMovement::Start => 0,
-                CaretMovement::End => self.text.len(),
-                CaretMovement::LineStart => line_range_at(&self.text, self.caret).start,
-                CaretMovement::LineEnd => line_range_at(&self.text, self.caret).end,
-                CaretMovement::Left => previous_char_boundary(&self.text, self.caret),
-                CaretMovement::Right => next_char_boundary(&self.text, self.caret),
-                CaretMovement::Up => move_caret_vertically(&self.text, self.caret, -1),
-                CaretMovement::Down => move_caret_vertically(&self.text, self.caret, 1),
-            };
-            self.caret = clamp_to_char_boundary(&self.text, self.caret);
-            self.selection_anchor = selecting.then_some(anchor);
-        }
-
-        pub fn handle_event(&mut self, event: &UiInputEvent) -> TextInputOutcome {
-            self.handle_event_for_target(event, TransactionTarget::none())
-        }
-
-        pub fn handle_event_with_policy(
-            &mut self,
-            event: &UiInputEvent,
-            policy: TextInputInteractionPolicy,
-        ) -> TextInputOutcome {
-            self.handle_event_for_target_with_policy(event, TransactionTarget::none(), policy)
-        }
-
-        pub fn handle_event_for_target(
-            &mut self,
-            event: &UiInputEvent,
-            target: TransactionTarget,
-        ) -> TextInputOutcome {
-            self.handle_event_for_target_with_policy(
-                event,
-                target,
-                TextInputInteractionPolicy::default(),
-            )
-        }
-
-        pub fn handle_event_for_target_with_policy(
-            &mut self,
-            event: &UiInputEvent,
-            target: TransactionTarget,
-            policy: TextInputInteractionPolicy,
-        ) -> TextInputOutcome {
-            if !policy.enabled {
-                return TextInputOutcome::new(EditPhase::Preview, false, None);
-            }
-            if !policy.selectable {
-                self.clear_selection();
-            }
-            let before = self.text.clone();
-            let mut phase = EditPhase::Preview;
-            let mut clipboard = None;
-            let mut history_apply = None;
-            match event {
-                UiInputEvent::TextInput(text) if policy.can_edit() => {
-                    self.insert_text(text);
-                    phase = EditPhase::UpdateEdit;
-                }
-                UiInputEvent::Key { key, modifiers } => match key {
-                    KeyCode::Character(character) if modifiers.ctrl || modifiers.meta => {
-                        match character.to_ascii_lowercase() {
-                            'a' if policy.can_select() => self.select_all(),
-                            'c' => {
-                                if policy.can_copy() {
-                                    clipboard =
-                                        self.copy_selection().map(TextInputClipboardAction::Copy);
-                                }
-                            }
-                            'x' if policy.can_edit() => {
-                                if policy.can_copy() {
-                                    clipboard =
-                                        self.cut_selection().map(TextInputClipboardAction::Cut);
-                                }
-                                if clipboard.is_some() {
-                                    phase = EditPhase::UpdateEdit;
-                                }
-                            }
-                            'v' if policy.can_edit() => {
-                                clipboard = Some(TextInputClipboardAction::Paste);
-                            }
-                            'y' if policy.can_edit() => {
-                                history_apply = self.redo_text_edit();
-                                if history_apply.is_some() {
-                                    phase = EditPhase::UpdateEdit;
-                                }
-                            }
-                            'z' if modifiers.shift && policy.can_edit() => {
-                                history_apply = self.redo_text_edit();
-                                if history_apply.is_some() {
-                                    phase = EditPhase::UpdateEdit;
-                                }
-                            }
-                            'z' if policy.can_edit() => {
-                                history_apply = self.undo_text_edit();
-                                if history_apply.is_some() {
-                                    phase = EditPhase::UpdateEdit;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    KeyCode::Backspace if policy.can_edit() => {
-                        if self.backspace() {
-                            phase = EditPhase::UpdateEdit;
-                        }
-                    }
-                    KeyCode::Delete if policy.can_edit() => {
-                        if self.delete() {
-                            phase = EditPhase::UpdateEdit;
-                        }
-                    }
-                    KeyCode::ArrowLeft if policy.can_move_caret() => {
-                        self.move_caret(
-                            CaretMovement::Left,
-                            modifiers.shift && policy.can_select(),
-                        );
-                    }
-                    KeyCode::ArrowRight if policy.can_move_caret() => {
-                        self.move_caret(
-                            CaretMovement::Right,
-                            modifiers.shift && policy.can_select(),
-                        );
-                    }
-                    KeyCode::ArrowUp if self.multiline && policy.can_move_caret() => {
-                        self.move_caret(CaretMovement::Up, modifiers.shift && policy.can_select());
-                    }
-                    KeyCode::ArrowDown if self.multiline && policy.can_move_caret() => {
-                        self.move_caret(
-                            CaretMovement::Down,
-                            modifiers.shift && policy.can_select(),
-                        );
-                    }
-                    KeyCode::Home if policy.can_move_caret() => {
-                        let movement = if self.multiline {
-                            CaretMovement::LineStart
-                        } else {
-                            CaretMovement::Start
-                        };
-                        self.move_caret(movement, modifiers.shift && policy.can_select());
-                    }
-                    KeyCode::End if policy.can_move_caret() => {
-                        let movement = if self.multiline {
-                            CaretMovement::LineEnd
-                        } else {
-                            CaretMovement::End
-                        };
-                        self.move_caret(movement, modifiers.shift && policy.can_select());
-                    }
-                    KeyCode::Enter if self.multiline && policy.can_edit() => {
-                        self.insert_text("\n");
-                        phase = EditPhase::UpdateEdit;
-                    }
-                    KeyCode::Enter => phase = EditPhase::CommitEdit,
-                    KeyCode::Escape => phase = EditPhase::CancelEdit,
-                    _ => {}
-                },
-                _ => {}
-            }
-            let transaction = (phase == EditPhase::UpdateEdit && history_apply.is_none())
-                .then(|| self.record_text_history(before.clone(), target))
-                .flatten();
-            TextInputOutcome::new(phase, before != self.text, clipboard)
-                .with_transaction(transaction)
-                .with_history_apply(history_apply)
-        }
-
-        pub fn undo_text_edit(&mut self) -> Option<TextEditHistoryApply> {
-            let apply = self.history.undo()?;
-            self.apply_history_text(apply.text.clone());
-            Some(apply)
-        }
-
-        pub fn redo_text_edit(&mut self) -> Option<TextEditHistoryApply> {
-            let apply = self.history.redo()?;
-            self.apply_history_text(apply.text.clone());
-            Some(apply)
-        }
-
-        fn platform_selection_range(&self) -> TextRange {
-            self.selected_range()
-                .map(|range| TextRange::new(range.start, range.end))
-                .unwrap_or_else(|| TextRange::caret(clamp_to_char_boundary(&self.text, self.caret)))
-        }
-
-        fn delete_surrounding_chars(&mut self, before_chars: usize, after_chars: usize) -> bool {
-            self.normalize_selection();
-            let mut start = self.caret;
-            for _ in 0..before_chars {
-                if start == 0 {
-                    break;
-                }
-                start = previous_char_boundary(&self.text, start);
-            }
-            let mut end = self.caret;
-            for _ in 0..after_chars {
-                if end >= self.text.len() {
-                    break;
-                }
-                end = next_char_boundary(&self.text, end);
-            }
-            if start == end {
-                return false;
-            }
-            self.text.replace_range(start..end, "");
-            self.caret = start;
-            self.selection_anchor = None;
-            true
-        }
-
-        fn normalize_selection(&mut self) {
-            self.caret = clamp_to_char_boundary(&self.text, self.caret);
-            self.selection_anchor = self
-                .selection_anchor
-                .map(|anchor| clamp_to_char_boundary(&self.text, anchor));
-        }
-
-        fn apply_history_text(&mut self, text: String) {
-            self.text = text;
-            self.caret = self.text.len();
-            self.selection_anchor = None;
-            self.composing = None;
-        }
-
-        fn record_text_history(
-            &mut self,
-            before: String,
-            target: TransactionTarget,
-        ) -> Option<EditTransaction<TextEditChange>> {
-            if before == self.text {
-                return None;
-            }
-            let id = TransactionId::new(format!("text-input:{}", self.history_sequence));
-            self.history_sequence = self.history_sequence.wrapping_add(1);
-            self.history
-                .record_committed(
-                    TextEditTransaction::new(id, before, self.text.clone()).target(target),
-                )
-                .ok()
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum CaretMovement {
-        Start,
-        End,
-        LineStart,
-        LineEnd,
-        Left,
-        Right,
-        Up,
-        Down,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct TextInputPosition {
-        pub byte_index: usize,
-        pub line: usize,
-        pub column: usize,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct TextInputCaretInfo {
-        pub position: TextInputPosition,
-        pub line_range: Range<usize>,
-        pub selected_range: Option<Range<usize>>,
-    }
-
-    impl TextInputCaretInfo {
-        pub fn accessibility_summary(&self, title: impl Into<String>) -> AccessibilitySummary {
-            let mut summary = AccessibilitySummary::new(title)
-                .item("Line", (self.position.line + 1).to_string())
-                .item("Column", (self.position.column + 1).to_string())
-                .item("Byte", self.position.byte_index.to_string());
-            if let Some(range) = &self.selected_range {
-                summary = summary.item(
-                    "Selection",
-                    format!("bytes {} to {}", range.start, range.end),
-                );
-            }
-            summary
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct TextInputPlatformContext {
-        pub input: TextInputId,
-        pub cursor_rect: LogicalRect,
-        pub target: Option<UiNodeId>,
-    }
-
-    impl TextInputPlatformContext {
-        pub fn new(input: TextInputId, cursor_rect: LogicalRect) -> Self {
-            Self {
-                input,
-                cursor_rect,
-                target: None,
-            }
-        }
-
-        pub fn from_caret_rect(input: TextInputId, caret: TextInputCaretRect) -> Self {
-            Self::new(input, logical_rect_from_ui_rect(caret.rect))
-        }
-
-        pub fn for_node(node: UiNodeId, caret: TextInputCaretRect) -> Self {
-            Self::from_caret_rect(text_input_id_for_node(node), caret).target(node)
-        }
-
-        pub const fn target(mut self, target: UiNodeId) -> Self {
-            self.target = Some(target);
-            self
-        }
-
-        pub const fn cursor_rect(mut self, cursor_rect: LogicalRect) -> Self {
-            self.cursor_rect = cursor_rect;
-            self
-        }
-
-        pub fn with_caret_rect(self, caret: TextInputCaretRect) -> Self {
-            self.cursor_rect(logical_rect_from_ui_rect(caret.rect))
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub struct TextInputLayoutMetrics {
-        pub text_rect: UiRect,
-        pub char_width: f32,
-        pub line_height: f32,
-        pub caret_width: f32,
-        pub scroll_offset: UiPoint,
-    }
-
-    impl TextInputLayoutMetrics {
-        pub fn new(text_rect: UiRect, char_width: f32, line_height: f32) -> Self {
-            Self {
-                text_rect,
-                char_width: sanitize_positive_dimension(char_width, 1.0),
-                line_height: sanitize_positive_dimension(line_height, 1.0),
-                caret_width: 1.0,
-                scroll_offset: UiPoint::new(0.0, 0.0),
-            }
-        }
-
-        pub fn from_style(text_rect: UiRect, style: &TextStyle) -> Self {
-            Self::new(
-                text_rect,
-                style.font_size * 0.55,
-                style.line_height.max(1.0),
-            )
-        }
-
-        pub fn caret_width(mut self, caret_width: f32) -> Self {
-            self.caret_width = sanitize_positive_dimension(caret_width, self.caret_width);
-            self
-        }
-
-        pub const fn scroll_offset(mut self, scroll_offset: UiPoint) -> Self {
-            self.scroll_offset = scroll_offset;
-            self
-        }
-
-        pub fn point_for_position(self, position: TextInputPosition) -> UiPoint {
-            UiPoint::new(
-                self.text_rect.x - self.scroll_offset.x + position.column as f32 * self.char_width,
-                self.text_rect.y - self.scroll_offset.y + position.line as f32 * self.line_height,
-            )
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub struct TextInputCaretRect {
-        pub position: TextInputPosition,
-        pub rect: UiRect,
-    }
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct TextInputSelectionRect {
-        pub byte_range: Range<usize>,
-        pub line: usize,
-        pub rect: UiRect,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct TextInputPaintOptions {
-        pub selection_fill: ColorRgba,
-        pub caret_fill: ColorRgba,
-        pub selection_corner_radius: u8,
-        pub show_caret: bool,
-    }
-
-    impl Default for TextInputPaintOptions {
-        fn default() -> Self {
-            Self {
-                selection_fill: ColorRgba::new(64, 128, 255, 96),
-                caret_fill: ColorRgba::WHITE,
-                selection_corner_radius: 2,
-                show_caret: true,
-            }
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct TextInputRenderPlan {
-        pub text: PaintText,
-        pub caret: Option<TextInputCaretRect>,
-        pub selection_rects: Vec<TextInputSelectionRect>,
-        pub caret_paint: Option<PaintRect>,
-        pub selection_paint: Vec<PaintRect>,
-    }
-
-    impl TextInputRenderPlan {
-        pub fn new(
-            state: &TextInputState,
-            metrics: TextInputLayoutMetrics,
-            text_style: TextStyle,
-            paint: TextInputPaintOptions,
-        ) -> Self {
-            let text = PaintText::new(state.text.clone(), metrics.text_rect, text_style)
-                .multiline(state.multiline)
-                .overflow(TextOverflow::Clip);
-            let caret = paint.show_caret.then(|| state.caret_rect(metrics));
-            let selection_rects = state.selection_rects(metrics);
-            let selection_paint = selection_rects
-                .iter()
-                .map(|selection| {
-                    PaintRect::solid(selection.rect, paint.selection_fill)
-                        .corner_radii(CornerRadii::uniform(paint.selection_corner_radius as f32))
-                })
-                .collect::<Vec<_>>();
-            let caret_paint = caret.map(|caret| PaintRect::solid(caret.rect, paint.caret_fill));
-            Self {
-                text,
-                caret,
-                selection_rects,
-                caret_paint,
-                selection_paint,
-            }
-        }
-
-        pub fn overlay_primitives(&self) -> Vec<ScenePrimitive> {
-            self.selection_paint
-                .iter()
-                .cloned()
-                .map(ScenePrimitive::Rect)
-                .chain(self.caret_paint.iter().cloned().map(ScenePrimitive::Rect))
-                .collect()
-        }
-
-        pub fn scene_primitives(&self) -> Vec<ScenePrimitive> {
-            self.selection_paint
-                .iter()
-                .cloned()
-                .map(ScenePrimitive::Rect)
-                .chain(std::iter::once(ScenePrimitive::Text(self.text.clone())))
-                .chain(self.caret_paint.iter().cloned().map(ScenePrimitive::Rect))
-                .collect()
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct TextInputInteractionPolicy {
-        pub enabled: bool,
-        pub read_only: bool,
-        pub selectable: bool,
-        pub allow_copy: bool,
-    }
-
-    impl TextInputInteractionPolicy {
-        pub const EDITABLE: Self = Self {
-            enabled: true,
-            read_only: false,
-            selectable: true,
-            allow_copy: true,
-        };
-
-        pub const fn disabled() -> Self {
-            Self {
-                enabled: false,
-                read_only: false,
-                selectable: false,
-                allow_copy: false,
-            }
-        }
-
-        pub const fn read_only() -> Self {
-            Self {
-                enabled: true,
-                read_only: true,
-                selectable: true,
-                allow_copy: true,
-            }
-        }
-
-        pub const fn can_edit(self) -> bool {
-            self.enabled && !self.read_only
-        }
-
-        pub const fn can_select(self) -> bool {
-            self.enabled && self.selectable
-        }
-
-        pub const fn can_copy(self) -> bool {
-            self.can_select() && self.allow_copy
-        }
-
-        pub const fn can_move_caret(self) -> bool {
-            self.can_edit() || self.can_select()
-        }
-
-        pub const fn can_receive_focus(self) -> bool {
-            self.can_edit() || self.can_select()
-        }
-    }
-
-    impl Default for TextInputInteractionPolicy {
-        fn default() -> Self {
-            Self::EDITABLE
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum TextInputClipboardAction {
-        Copy(String),
-        Cut(String),
-        Paste,
-    }
-
-    impl TextInputClipboardAction {
-        pub fn clipboard_request(&self) -> ClipboardRequest {
-            match self {
-                Self::Copy(text) | Self::Cut(text) => ClipboardRequest::WriteText(text.clone()),
-                Self::Paste => ClipboardRequest::ReadText,
-            }
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct TextInputOutcome {
-        pub phase: EditPhase,
-        pub changed: bool,
-        pub committed: bool,
-        pub canceled: bool,
-        pub clipboard: Option<TextInputClipboardAction>,
-        pub transaction: Option<EditTransaction<TextEditChange>>,
-        pub history_apply: Option<TextEditHistoryApply>,
-    }
-
-    impl TextInputOutcome {
-        fn new(
-            phase: EditPhase,
-            changed: bool,
-            clipboard: Option<TextInputClipboardAction>,
-        ) -> Self {
-            Self {
-                phase,
-                changed,
-                committed: phase == EditPhase::CommitEdit,
-                canceled: phase == EditPhase::CancelEdit,
-                clipboard,
-                transaction: None,
-                history_apply: None,
-            }
-        }
-
-        pub fn clipboard_request(&self) -> Option<ClipboardRequest> {
-            self.clipboard
-                .as_ref()
-                .map(TextInputClipboardAction::clipboard_request)
-        }
-
-        fn with_transaction(
-            mut self,
-            transaction: Option<EditTransaction<TextEditChange>>,
-        ) -> Self {
-            self.transaction = transaction;
-            self
-        }
-
-        fn with_history_apply(mut self, history_apply: Option<TextEditHistoryApply>) -> Self {
-            self.history_apply = history_apply;
-            self
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct TextInputEventOutcome {
-        pub input: UiInputResult,
-        pub edit: Option<TextInputOutcome>,
-        pub focused: bool,
-        pub platform_requests: Vec<PlatformRequest>,
-    }
-
-    impl TextInputEventOutcome {
-        pub fn did_edit(&self) -> bool {
-            self.edit.as_ref().is_some_and(|edit| edit.changed)
-        }
-
-        pub fn committed(&self) -> bool {
-            self.edit.as_ref().is_some_and(|edit| edit.committed)
-        }
-
-        pub fn canceled(&self) -> bool {
-            self.edit.as_ref().is_some_and(|edit| edit.canceled)
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct TextInputOptions {
-        pub layout: LayoutStyle,
-        pub visual: UiVisual,
-        pub focused_visual: Option<UiVisual>,
-        pub disabled_visual: Option<UiVisual>,
-        pub text_style: TextStyle,
-        pub placeholder_style: TextStyle,
-        pub placeholder: String,
-        pub shader: Option<ShaderEffect>,
-        pub animation: Option<AnimationMachine>,
-        pub enabled: bool,
-        pub read_only: bool,
-        pub selectable: bool,
-        pub allow_copy: bool,
-        pub focused: bool,
-        pub edit_action: Option<WidgetActionBinding>,
-        pub accessibility_label: Option<String>,
-        pub accessibility_hint: Option<String>,
-    }
-
-    impl Default for TextInputOptions {
-        fn default() -> Self {
-            let placeholder_style = TextStyle {
-                color: ColorRgba::new(144, 156, 174, 255),
-                ..Default::default()
-            };
-            Self {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(180.0),
-                        height: length(30.0),
-                    },
-                    padding: taffy::prelude::Rect::length(6.0),
-                    ..Default::default()
-                }),
-                visual: UiVisual::panel(
-                    ColorRgba::new(18, 22, 28, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(72, 84, 104, 255), 1.0)),
-                    4.0,
-                ),
-                focused_visual: Some(UiVisual::panel(
-                    ColorRgba::new(20, 27, 36, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(120, 170, 230, 255), 1.5)),
-                    4.0,
-                )),
-                disabled_visual: Some(UiVisual::panel(
-                    ColorRgba::new(25, 28, 34, 170),
-                    Some(StrokeStyle::new(ColorRgba::new(58, 66, 78, 170), 1.0)),
-                    4.0,
-                )),
-                text_style: TextStyle::default(),
-                placeholder_style,
-                placeholder: String::new(),
-                shader: None,
-                animation: None,
-                enabled: true,
-                read_only: false,
-                selectable: true,
-                allow_copy: true,
-                focused: false,
-                edit_action: None,
-                accessibility_label: None,
-                accessibility_hint: None,
-            }
-        }
-    }
-
-    impl TextInputOptions {
-        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
-            self.layout = layout.into();
-            self
-        }
-
-        pub fn with_edit_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
-            self.edit_action = Some(action.into());
-            self
-        }
-
-        pub const fn read_only(mut self) -> Self {
-            self.read_only = true;
-            self
-        }
-
-        pub const fn selectable(mut self, selectable: bool) -> Self {
-            self.selectable = selectable;
-            self
-        }
-
-        pub const fn allow_copy(mut self, allow_copy: bool) -> Self {
-            self.allow_copy = allow_copy;
-            self
-        }
-
-        pub const fn interaction_policy(&self) -> TextInputInteractionPolicy {
-            TextInputInteractionPolicy {
-                enabled: self.enabled,
-                read_only: self.read_only,
-                selectable: self.selectable,
-                allow_copy: self.allow_copy,
-            }
-        }
-
-        pub const fn can_edit(&self) -> bool {
-            self.interaction_policy().can_edit()
-        }
-
-        pub const fn can_select(&self) -> bool {
-            self.interaction_policy().can_select()
-        }
-
-        pub const fn can_copy(&self) -> bool {
-            self.interaction_policy().can_copy()
-        }
-
-        pub const fn can_receive_focus(&self) -> bool {
-            self.interaction_policy().can_receive_focus()
-        }
-    }
-
-    pub fn text_input(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        state: &TextInputState,
-        options: TextInputOptions,
-    ) -> UiNodeId {
-        let name = name.into();
-        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::TextBox)
-            .label(
-                options
-                    .accessibility_label
-                    .clone()
-                    .unwrap_or_else(|| name.clone()),
-            )
-            .value(state.text.clone())
-            .summary(
-                state
-                    .caret_info()
-                    .accessibility_summary(format!("{name} caret")),
-            );
-        if options.can_select() {
-            accessibility = accessibility
-                .shortcut("Ctrl+A")
-                .action(AccessibilityAction::new("select_all", "Select all").shortcut("Ctrl+A"));
-        }
-        if options.can_copy() {
-            accessibility = accessibility
-                .shortcut("Ctrl+C")
-                .action(AccessibilityAction::new("copy", "Copy").shortcut("Ctrl+C"));
-        }
-        if options.can_edit() {
-            accessibility = accessibility
-                .shortcut("Ctrl+X")
-                .shortcut("Ctrl+V")
-                .action(AccessibilityAction::new("cut", "Cut").shortcut("Ctrl+X"))
-                .action(AccessibilityAction::new("paste", "Paste").shortcut("Ctrl+V"));
-        }
-        let hint = options
-            .accessibility_hint
-            .clone()
-            .or_else(|| (!options.placeholder.is_empty()).then(|| options.placeholder.clone()));
-        if let Some(hint) = hint {
-            accessibility = accessibility.hint(hint);
-        }
-        if options.read_only {
-            accessibility = accessibility.read_only();
-        }
-        if options.enabled {
-            if options.can_receive_focus() {
-                accessibility = accessibility.focusable();
-            }
-        } else {
-            accessibility = accessibility.disabled();
-        }
-        let visual = if !options.enabled {
-            options.disabled_visual.unwrap_or(options.visual)
-        } else if options.focused {
-            options.focused_visual.unwrap_or(options.visual)
-        } else {
-            options.visual
-        };
-        let input_behavior = if options.can_receive_focus() {
-            InputBehavior::BUTTON
-        } else {
-            InputBehavior::NONE
-        };
-        let show_caret = options.focused && options.interaction_policy().can_move_caret();
-        let mut root_node = UiNode::container(
-            name.clone(),
-            UiNodeStyle {
-                layout: options.layout.style,
-                clip: ClipBehavior::Clip,
-                ..Default::default()
-            },
-        )
-        .with_input(input_behavior)
-        .with_visual(visual)
-        .with_accessibility(accessibility);
-        if let Some(shader) = options.shader {
-            root_node = root_node.with_shader(shader);
-        }
-        if let Some(animation) = options.animation {
-            root_node = root_node.with_animation(animation);
-        }
-        let root = document.add_child(parent, root_node);
-        let display_text = if state.text.is_empty() {
-            options.placeholder
-        } else {
-            state.text.clone()
-        };
-        let style = if state.text.is_empty() {
-            options.placeholder_style
-        } else {
-            options.text_style
-        };
-        let text_metrics = TextInputLayoutMetrics::from_style(
-            text_input_scene_text_rect(state, &display_text, &style),
-            &style,
-        );
-        let paint = TextInputPaintOptions {
-            show_caret,
-            ..TextInputPaintOptions::default()
-        };
-        let primitives =
-            text_input_scene_primitives(state, display_text, style, text_metrics, paint);
-        document.add_child(
-            root,
-            UiNode::scene(
-                format!("{name}.text"),
-                primitives,
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
-        root
-    }
-
-    fn text_input_scene_text_rect(
-        state: &TextInputState,
-        display_text: &str,
-        style: &TextStyle,
-    ) -> UiRect {
-        let line_count = if state.multiline {
-            display_text
-                .chars()
-                .filter(|character| *character == '\n')
-                .count()
-                + 1
-        } else {
-            1
-        };
-        let column_count = display_text
-            .lines()
-            .map(|line| line.chars().count())
-            .max()
-            .unwrap_or(0)
-            .max(state.caret_position().column);
-        let char_width = sanitize_positive_dimension(style.font_size * 0.55, 1.0);
-        let line_height = sanitize_positive_dimension(style.line_height, style.font_size.max(1.0));
-        UiRect::new(
-            0.0,
-            0.0,
-            (column_count as f32 * char_width + char_width).max(1.0),
-            (line_count as f32 * line_height).max(line_height),
-        )
-    }
-
-    fn text_input_scene_primitives(
-        state: &TextInputState,
-        display_text: String,
-        style: TextStyle,
-        metrics: TextInputLayoutMetrics,
-        paint: TextInputPaintOptions,
-    ) -> Vec<ScenePrimitive> {
-        let text = PaintText::new(display_text, metrics.text_rect, style)
-            .multiline(state.multiline)
-            .overflow(TextOverflow::Clip);
-        let mut primitives = state
-            .selection_rects(metrics)
-            .into_iter()
-            .map(|selection| {
-                ScenePrimitive::Rect(
-                    PaintRect::solid(selection.rect, paint.selection_fill)
-                        .corner_radii(CornerRadii::uniform(paint.selection_corner_radius as f32)),
-                )
-            })
-            .collect::<Vec<_>>();
-        primitives.push(ScenePrimitive::Text(text));
-        if paint.show_caret {
-            primitives.push(ScenePrimitive::Rect(PaintRect::solid(
-                state.caret_rect(metrics).rect,
-                paint.caret_fill,
-            )));
-        }
-        primitives
-    }
-
-    fn text_input_layout_metrics_from_document(
-        document: &UiDocument,
-        node: UiNodeId,
-        options: &TextInputOptions,
-    ) -> Option<TextInputLayoutMetrics> {
-        let node = document.nodes.get(node.0)?;
-        let rect = node
-            .children
-            .first()
-            .and_then(|child| document.nodes.get(child.0))
-            .map(|child| child.layout.rect)
-            .unwrap_or(node.layout.rect);
-        if !rect_is_finite(rect) || rect.width <= 0.0 || rect.height <= 0.0 {
-            return None;
-        }
-        Some(TextInputLayoutMetrics::from_style(
-            rect,
-            &options.text_style,
-        ))
-    }
-
-    pub fn selectable_text(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        state: &TextInputState,
-        mut options: TextInputOptions,
-    ) -> UiNodeId {
-        options.read_only = true;
-        options.selectable = true;
-        options.allow_copy = true;
-        options.edit_action = None;
-        text_input(document, parent, name, state, options)
-    }
-
-    pub fn handle_text_input_event(
-        document: &mut UiDocument,
-        node: UiNodeId,
-        state: &mut TextInputState,
-        event: UiInputEvent,
-        platform_context: Option<TextInputPlatformContext>,
-    ) -> TextInputEventOutcome {
-        handle_text_input_event_with_metrics(document, node, state, event, platform_context, None)
-    }
-
-    pub fn handle_text_input_event_with_options(
-        document: &mut UiDocument,
-        node: UiNodeId,
-        state: &mut TextInputState,
-        options: &TextInputOptions,
-        event: UiInputEvent,
-        platform_context: Option<TextInputPlatformContext>,
-    ) -> TextInputEventOutcome {
-        handle_text_input_event_with_metrics_and_options(
-            document,
-            node,
-            state,
-            options,
-            event,
-            platform_context,
-            None,
-        )
-    }
-
-    pub fn handle_text_input_event_with_metrics(
-        document: &mut UiDocument,
-        node: UiNodeId,
-        state: &mut TextInputState,
-        event: UiInputEvent,
-        platform_context: Option<TextInputPlatformContext>,
-        layout_metrics: Option<TextInputLayoutMetrics>,
-    ) -> TextInputEventOutcome {
-        let options = TextInputOptions::default();
-        handle_text_input_event_with_metrics_and_options(
-            document,
-            node,
-            state,
-            &options,
-            event,
-            platform_context,
-            layout_metrics,
-        )
-    }
-
-    pub fn handle_text_input_event_with_metrics_and_options(
-        document: &mut UiDocument,
-        node: UiNodeId,
-        state: &mut TextInputState,
-        options: &TextInputOptions,
-        event: UiInputEvent,
-        platform_context: Option<TextInputPlatformContext>,
-        layout_metrics: Option<TextInputLayoutMetrics>,
-    ) -> TextInputEventOutcome {
-        let policy = options.interaction_policy();
-        let was_focused = document.focus.focused == Some(node);
-        let text_event = matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. });
-        let input = if text_event {
-            UiInputResult {
-                hovered: document.focus.hovered,
-                focused: document.focus.focused,
-                pressed: document.focus.pressed,
-                clicked: None,
-                scrolled: None,
-            }
-        } else {
-            document.handle_input(event.clone())
-        };
-        let focused = document.focus.focused == Some(node);
-        let mut platform_requests = Vec::new();
-        let mut state_changed = false;
-        let mut edit = None;
-        let layout_metrics = layout_metrics
-            .or_else(|| text_input_layout_metrics_from_document(document, node, options));
-
-        if focused && text_event {
-            let before_text = state.text.clone();
-            let before_caret = state.caret;
-            let before_selection = state.selection_anchor;
-            let before_composing = state.composing.clone();
-            let outcome = state.handle_event_for_target_with_policy(
-                &event,
-                TransactionTarget::node(node),
-                policy,
-            );
-            if let Some(request) = outcome.clipboard_request() {
-                platform_requests.push(PlatformRequest::Clipboard(request));
-            }
-            state_changed = before_text != state.text
-                || before_caret != state.caret
-                || before_selection != state.selection_anchor
-                || before_composing != state.composing;
-            edit = Some(outcome);
-        } else if focused && policy.can_move_caret() {
-            if let Some((point, selecting)) =
-                text_input_pointer_edit(&event, input.pressed == Some(node) && policy.can_select())
-            {
-                if let Some(metrics) = layout_metrics {
-                    let before_caret = state.caret;
-                    let before_selection = state.selection_anchor;
-                    state.move_caret_to_point(metrics, point, selecting);
-                    state_changed =
-                        before_caret != state.caret || before_selection != state.selection_anchor;
-                    edit = Some(TextInputOutcome::new(EditPhase::Preview, false, None));
-                }
-            }
-        }
-
-        let platform_context = platform_context.map(|context| {
-            if let Some(metrics) = layout_metrics {
-                context.with_caret_rect(state.caret_rect(metrics))
-            } else {
-                context
-            }
-        });
-
-        if !was_focused && focused && policy.can_edit() {
-            if let Some(context) = platform_context.clone() {
-                platform_requests.push(PlatformRequest::TextIme(
-                    state.activate_ime_request(context.clone()),
-                ));
-                platform_requests.push(PlatformRequest::TextIme(
-                    TextInputState::show_keyboard_request(context.input),
-                ));
-            }
-        } else if was_focused && !focused && policy.can_edit() {
-            if let Some(context) = platform_context.clone() {
-                platform_requests.push(PlatformRequest::TextIme(
-                    TextInputState::hide_keyboard_request(context.input.clone()),
-                ));
-                platform_requests.push(PlatformRequest::TextIme(
-                    TextInputState::deactivate_ime_request(context.input),
-                ));
-            }
-        }
-
-        if focused && policy.can_edit() {
-            if let (Some(context), Some(outcome)) = (platform_context, edit.as_ref()) {
-                if outcome.committed || outcome.canceled {
-                    platform_requests.push(PlatformRequest::TextIme(
-                        TextInputState::hide_keyboard_request(context.input.clone()),
-                    ));
-                    platform_requests.push(PlatformRequest::TextIme(
-                        TextInputState::deactivate_ime_request(context.input),
-                    ));
-                } else if state_changed {
-                    platform_requests
-                        .push(PlatformRequest::TextIme(state.update_ime_request(context)));
-                }
-            }
-        }
-
-        TextInputEventOutcome {
-            input,
-            edit,
-            focused,
-            platform_requests,
-        }
-    }
-
-    pub fn handle_selectable_text_event(
-        document: &mut UiDocument,
-        node: UiNodeId,
-        state: &mut TextInputState,
-        options: &TextInputOptions,
-        event: UiInputEvent,
-        platform_context: Option<TextInputPlatformContext>,
-    ) -> TextInputEventOutcome {
-        handle_selectable_text_event_with_metrics(
-            document,
-            node,
-            state,
-            options,
-            event,
-            platform_context,
-            None,
-        )
-    }
-
-    pub fn handle_selectable_text_event_with_metrics(
-        document: &mut UiDocument,
-        node: UiNodeId,
-        state: &mut TextInputState,
-        options: &TextInputOptions,
-        event: UiInputEvent,
-        platform_context: Option<TextInputPlatformContext>,
-        layout_metrics: Option<TextInputLayoutMetrics>,
-    ) -> TextInputEventOutcome {
-        let mut options = options.clone();
-        options.read_only = true;
-        options.selectable = true;
-        options.allow_copy = true;
-        options.edit_action = None;
-        handle_text_input_event_with_metrics_and_options(
-            document,
-            node,
-            state,
-            &options,
-            event,
-            platform_context,
-            layout_metrics,
-        )
-    }
-
-    pub fn text_input_actions_from_outcome(
-        document: &UiDocument,
-        input: UiNodeId,
-        options: &TextInputOptions,
-        outcome: &TextInputOutcome,
-    ) -> WidgetActionQueue {
-        let mut queue = WidgetActionQueue::new();
-        push_text_input_outcome_actions(&mut queue, document, input, options, outcome);
-        queue
-    }
-
-    pub fn push_text_input_outcome_actions<'a>(
-        queue: &'a mut WidgetActionQueue,
-        document: &UiDocument,
-        input: UiNodeId,
-        options: &TextInputOptions,
-        outcome: &TextInputOutcome,
-    ) -> &'a mut WidgetActionQueue {
-        if !options.can_edit() || !action_target_enabled(document, input) {
-            return queue;
-        }
-        if let Some(binding) = options.edit_action.clone() {
-            queue.value_edit(input, binding, outcome.phase);
-        }
-        queue
-    }
-
-    fn text_input_pointer_edit(event: &UiInputEvent, pressed: bool) -> Option<(UiPoint, bool)> {
-        match event {
-            UiInputEvent::PointerDown(point) => Some((*point, false)),
-            UiInputEvent::PointerMove(point) if pressed => Some((*point, true)),
-            _ => None,
-        }
-    }
-
-    fn filter_text_input(text: &str, multiline: bool) -> String {
-        if multiline {
-            let mut filtered = String::with_capacity(text.len());
-            let mut chars = text.chars().peekable();
-            while let Some(character) = chars.next() {
-                if character == '\r' {
-                    if chars.peek() == Some(&'\n') {
-                        chars.next();
-                    }
-                    filtered.push('\n');
-                } else {
-                    filtered.push(character);
-                }
-            }
-            return filtered;
-        }
-
-        let mut filtered = String::with_capacity(text.len());
-        let mut in_line_break = false;
-        for character in text.chars() {
-            if character == '\r' || character == '\n' {
-                if !in_line_break {
-                    filtered.push(' ');
-                    in_line_break = true;
-                }
-            } else {
-                filtered.push(character);
-                in_line_break = false;
-            }
-        }
-        filtered
-    }
-
-    fn previous_char_boundary(text: &str, index: usize) -> usize {
-        text[..index]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0)
-    }
-
-    fn next_char_boundary(text: &str, index: usize) -> usize {
-        text[index..]
-            .char_indices()
-            .nth(1)
-            .map(|(offset, _)| index + offset)
-            .unwrap_or(text.len())
-    }
-
-    fn text_position_at(text: &str, index: usize) -> TextInputPosition {
-        let index = clamp_to_char_boundary(text, index);
-        let mut line = 0;
-        let mut line_start = 0;
-        for (byte_index, character) in text.char_indices() {
-            if byte_index >= index {
-                break;
-            }
-            if character == '\n' {
-                line += 1;
-                line_start = byte_index + character.len_utf8();
-            }
-        }
-        let column = text[line_start..index].chars().count();
-        TextInputPosition {
-            byte_index: index,
-            line,
-            column,
-        }
-    }
-
-    fn line_range_at(text: &str, index: usize) -> Range<usize> {
-        let index = clamp_to_char_boundary(text, index);
-        let start = text[..index]
-            .rfind('\n')
-            .map(|offset| offset + '\n'.len_utf8())
-            .unwrap_or(0);
-        let end = text[index..]
-            .find('\n')
-            .map(|offset| index + offset)
-            .unwrap_or(text.len());
-        start..end
-    }
-
-    fn byte_index_for_line_column(text: &str, line: usize, column: usize) -> usize {
-        let mut current_line = 0;
-        let mut line_start = 0;
-        for (byte_index, character) in text.char_indices() {
-            if current_line == line {
-                break;
-            }
-            if character == '\n' {
-                current_line += 1;
-                line_start = byte_index + character.len_utf8();
-            }
-        }
-        if current_line != line {
-            return text.len();
-        }
-
-        text[line_start..]
-            .char_indices()
-            .take_while(|(_, character)| *character != '\n')
-            .nth(column)
-            .map(|(offset, _)| line_start + offset)
-            .unwrap_or_else(|| line_range_at(text, line_start).end)
-    }
-
-    fn move_caret_vertically(text: &str, index: usize, line_delta: isize) -> usize {
-        let position = text_position_at(text, index);
-        let last_line = text.chars().filter(|character| *character == '\n').count();
-        let target_line = match line_delta {
-            delta if delta < 0 => position.line.checked_sub(delta.unsigned_abs()),
-            delta => Some(position.line + delta as usize),
-        };
-        target_line
-            .filter(|line| *line <= last_line)
-            .map(|line| byte_index_for_line_column(text, line, position.column))
-            .unwrap_or(index)
-    }
-
-    fn text_input_caret_rect(
-        text: &str,
-        caret: usize,
-        metrics: TextInputLayoutMetrics,
-    ) -> TextInputCaretRect {
-        let position = text_position_at(text, caret);
-        let origin = metrics.point_for_position(position);
-        TextInputCaretRect {
-            position,
-            rect: UiRect::new(origin.x, origin.y, metrics.caret_width, metrics.line_height),
-        }
-    }
-
-    fn text_input_byte_index_at_point(
-        text: &str,
-        multiline: bool,
-        metrics: TextInputLayoutMetrics,
-        point: UiPoint,
-    ) -> usize {
-        let line_ranges = text_line_ranges(text);
-        if line_ranges.is_empty() {
-            return 0;
-        }
-        let relative_y = point.y - metrics.text_rect.y + metrics.scroll_offset.y;
-        let requested_line = if multiline && relative_y.is_finite() {
-            (relative_y / metrics.line_height).floor().max(0.0) as usize
-        } else {
-            0
-        };
-        let line = requested_line.min(line_ranges.len().saturating_sub(1));
-        let line_start = line_ranges[line].1.start;
-        let relative_x = point.x - metrics.text_rect.x + metrics.scroll_offset.x;
-        let column = if relative_x.is_finite() {
-            (relative_x / metrics.char_width).round().max(0.0) as usize
-        } else {
-            0
-        };
-        byte_index_for_line_column(text, line, column).max(line_start)
-    }
-
-    fn text_input_selection_rects(
-        text: &str,
-        selected_range: Option<Range<usize>>,
-        metrics: TextInputLayoutMetrics,
-    ) -> Vec<TextInputSelectionRect> {
-        let Some(selected_range) = selected_range else {
-            return Vec::new();
-        };
-        text_line_ranges(text)
-            .into_iter()
-            .filter_map(|(line, line_range)| {
-                let start = selected_range.start.max(line_range.start);
-                let end = selected_range.end.min(line_range.end);
-                let newline_selected = selected_range.start <= line_range.end
-                    && selected_range.end > line_range.end
-                    && line_range.end <= text.len();
-                if start >= end && !newline_selected {
-                    return None;
-                }
-                let start = start.min(line_range.end);
-                let end = end.max(start).min(line_range.end);
-                let start_column = text[line_range.start..start].chars().count();
-                let end_column = text[line_range.start..end].chars().count();
-                let position = TextInputPosition {
-                    byte_index: start,
-                    line,
-                    column: start_column,
-                };
-                let origin = metrics.point_for_position(position);
-                let selected_columns = end_column.saturating_sub(start_column);
-                let width = if selected_columns == 0 {
-                    metrics.caret_width
-                } else {
-                    selected_columns as f32 * metrics.char_width
-                };
-                Some(TextInputSelectionRect {
-                    byte_range: start..end,
-                    line,
-                    rect: UiRect::new(origin.x, origin.y, width, metrics.line_height),
-                })
-            })
-            .collect()
-    }
-
-    fn text_line_ranges(text: &str) -> Vec<(usize, Range<usize>)> {
-        let mut ranges = Vec::new();
-        let mut line = 0;
-        let mut start = 0;
-        for (byte_index, character) in text.char_indices() {
-            if character == '\n' {
-                ranges.push((line, start..byte_index));
-                line += 1;
-                start = byte_index + character.len_utf8();
-            }
-        }
-        ranges.push((line, start..text.len()));
-        ranges
-    }
-
-    fn sanitize_positive_dimension(value: f32, fallback: f32) -> f32 {
-        if value.is_finite() && value > 0.0 {
-            value
-        } else {
-            fallback.max(1.0)
-        }
-    }
-
-    fn logical_rect_from_ui_rect(rect: UiRect) -> LogicalRect {
-        LogicalRect::new(rect.x, rect.y, rect.width, rect.height)
-    }
-
-    fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
-        index = index.min(text.len());
-        while index > 0 && !text.is_char_boundary(index) {
-            index -= 1;
-        }
-        index
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct ComboBoxOptions {
-        pub layout: LayoutStyle,
-        pub visual: UiVisual,
-        pub open_visual: Option<UiVisual>,
-        pub disabled_visual: Option<UiVisual>,
-        pub text_style: TextStyle,
-        pub leading_image: Option<ImageContent>,
-        pub image_size: UiSize,
-        pub shader: Option<ShaderEffect>,
-        pub animation: Option<AnimationMachine>,
-        pub enabled: bool,
-        pub accessibility_label: Option<String>,
-        pub accessibility_hint: Option<String>,
-    }
-
-    impl Default for ComboBoxOptions {
-        fn default() -> Self {
-            Self {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    align_items: Some(AlignItems::Center),
-                    size: TaffySize {
-                        width: length(180.0),
-                        height: length(30.0),
-                    },
-                    padding: taffy::prelude::Rect::length(6.0),
-                    ..Default::default()
-                }),
-                visual: UiVisual::panel(
-                    ColorRgba::new(31, 37, 46, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(84, 98, 121, 255), 1.0)),
-                    4.0,
-                ),
-                open_visual: Some(UiVisual::panel(
-                    ColorRgba::new(38, 48, 62, 255),
-                    Some(StrokeStyle::new(ColorRgba::new(120, 170, 230, 255), 1.5)),
-                    4.0,
-                )),
-                disabled_visual: Some(UiVisual::panel(
-                    ColorRgba::new(29, 33, 40, 170),
-                    Some(StrokeStyle::new(ColorRgba::new(65, 73, 87, 170), 1.0)),
-                    4.0,
-                )),
-                text_style: TextStyle::default(),
-                leading_image: None,
-                image_size: UiSize::new(18.0, 18.0),
-                shader: None,
-                animation: None,
-                enabled: true,
-                accessibility_label: None,
-                accessibility_hint: None,
-            }
-        }
-    }
-
-    impl ComboBoxOptions {
-        pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
-            self.layout = layout.into();
-            self
-        }
-    }
-
-    pub fn combo_box(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        selected_label: impl Into<String>,
-        open: bool,
-        options: ComboBoxOptions,
-    ) -> UiNodeId {
-        let name = name.into();
-        let selected_label = selected_label.into();
-        let accessibility_label = options
-            .accessibility_label
-            .clone()
-            .unwrap_or_else(|| name.clone());
-        let accessibility_hint = options.accessibility_hint.clone();
-        let root = button(
-            document,
-            parent,
-            name.clone(),
-            selected_label.clone(),
-            ButtonOptions {
-                layout: options.layout,
-                visual: options.visual,
-                hovered_visual: None,
-                pressed_visual: options.open_visual,
-                focused_visual: None,
-                disabled_visual: options.disabled_visual,
-                text_style: options.text_style,
-                leading_image: options.leading_image,
-                image_size: options.image_size,
-                image_shader: None,
-                shader: options.shader,
-                animation: options.animation,
-                enabled: options.enabled,
-                pressed: open,
-                focused: false,
-                action: None,
-                accessibility_label: Some(accessibility_label.clone()),
-                accessibility_hint: accessibility_hint.clone(),
-            },
-        );
-        let mut accessibility = AccessibilityMeta::new(AccessibilityRole::ComboBox)
-            .label(accessibility_label)
-            .value(if open {
-                format!("{selected_label} (open)")
-            } else {
-                selected_label
-            })
-            .expanded(open)
-            .action(if open {
-                AccessibilityAction::new("close", "Close")
-            } else {
-                AccessibilityAction::new("open", "Open")
-            });
-        if let Some(hint) = accessibility_hint {
-            accessibility = accessibility.hint(hint);
-        }
-        if options.enabled {
-            accessibility = accessibility.focusable();
-        } else {
-            accessibility = accessibility.disabled();
-        }
-        document.node_mut(root).accessibility = Some(accessibility);
-        if open {
-            document.node_mut(root).style.z_index = 20;
-        }
-        root
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub struct VirtualListSpec {
-        pub row_count: usize,
-        pub row_height: f32,
-        pub viewport_height: f32,
-        pub scroll_offset: f32,
-        pub overscan: usize,
-    }
-
-    impl VirtualListSpec {
-        pub fn visible_range(self) -> Range<usize> {
-            if self.row_count == 0 || self.row_height <= f32::EPSILON {
-                return 0..0;
-            }
-            let first = (self.scroll_offset.max(0.0) / self.row_height).floor() as usize;
-            let visible = (self.viewport_height / self.row_height).ceil() as usize + 1;
-            let start = first.saturating_sub(self.overscan).min(self.row_count);
-            let end = (first + visible + self.overscan).min(self.row_count);
-            start..end
-        }
-
-        pub fn total_height(self) -> f32 {
-            self.row_count as f32 * self.row_height
-        }
-    }
-
-    pub fn virtual_list(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        spec: VirtualListSpec,
-        mut build_row: impl FnMut(&mut UiDocument, UiNodeId, usize),
-    ) -> UiNodeId {
-        let name = name.into();
-        let list = scroll_area(
-            document,
-            parent,
-            name.clone(),
-            ScrollAxes::VERTICAL,
-            LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: length(spec.viewport_height),
-                },
-                ..Default::default()
-            }),
-        );
-        document.node_mut(list).accessibility = Some(
-            AccessibilityMeta::new(AccessibilityRole::List)
-                .label(name.clone())
-                .value(format!("{} items", spec.row_count)),
-        );
-        if let Some(scroll) = &mut document.nodes[list.0].scroll {
-            scroll.offset.y = spec.scroll_offset.max(0.0);
-        }
-        let range = spec.visible_range();
-        let top = range.start as f32 * spec.row_height;
-        if top > 0.0 {
-            document.add_child(list, spacer(format!("{name}.top_spacer"), top));
-        }
-        for row in range.clone() {
-            build_row(document, list, row);
-        }
-        let bottom = (spec.row_count.saturating_sub(range.end)) as f32 * spec.row_height;
-        if bottom > 0.0 {
-            document.add_child(list, spacer(format!("{name}.bottom_spacer"), bottom));
-        }
-        list
-    }
-
-    fn spacer(name: impl Into<String>, height: f32) -> UiNode {
-        UiNode::container(
-            name,
-            UiNodeStyle {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: length(height),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                })
-                .style,
-                ..Default::default()
-            },
-        )
-    }
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct TableColumn {
-        pub id: String,
-        pub label: String,
-        pub width: f32,
-    }
-
-    pub fn table_header(
-        document: &mut UiDocument,
-        parent: UiNodeId,
-        name: impl Into<String>,
-        columns: &[TableColumn],
-    ) -> UiNodeId {
-        let name = name.into();
-        let row = document.add_child(
-            parent,
-            UiNode::container(
-                name.clone(),
-                UiNodeStyle {
-                    layout: LayoutStyle::from_taffy_style(Style {
-                        display: Display::Flex,
-                        flex_direction: FlexDirection::Row,
-                        size: TaffySize {
-                            width: Dimension::percent(1.0),
-                            height: length(28.0),
-                        },
-                        ..Default::default()
-                    })
-                    .style,
-                    clip: ClipBehavior::Clip,
-                    ..Default::default()
-                },
-            )
-            .with_visual(UiVisual::panel(
-                ColorRgba::new(34, 41, 50, 255),
-                Some(StrokeStyle::new(ColorRgba::new(67, 78, 95, 255), 1.0)),
-                0.0,
-            ))
-            .with_accessibility(
-                AccessibilityMeta::new(AccessibilityRole::Grid)
-                    .label(name.clone())
-                    .value(format!("{} columns", columns.len())),
-            ),
-        );
-        for column in columns {
-            let cell = label(
-                document,
-                row,
-                format!("{name}.{}", column.id),
-                &column.label,
-                TextStyle::default(),
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(column.width),
-                        height: Dimension::percent(1.0),
-                    },
-                    padding: taffy::prelude::Rect::length(4.0),
-                    ..Default::default()
-                }),
-            );
-            document.node_mut(cell).accessibility = Some(
-                AccessibilityMeta::new(AccessibilityRole::GridCell)
-                    .label(column.label.clone())
-                    .value(column.id.clone()),
-            );
-        }
-        row
-    }
-
-    pub fn scrollbar_thumb(scroll: ScrollState, track: UiRect, axis: ScrollAxis) -> UiRect {
-        match axis {
-            ScrollAxis::Vertical => {
-                if track.height <= f32::EPSILON || track.width <= f32::EPSILON {
-                    return UiRect::new(track.x, track.y, 0.0, 0.0);
-                }
-                let ratio = scrollbar_viewport_ratio(
-                    scroll.viewport_size.height,
-                    scroll.content_size.height,
-                );
-                let height = track.height * ratio;
-                let max_offset = scroll.max_offset().y;
-                let offset_ratio = if max_offset <= f32::EPSILON {
-                    0.0
-                } else {
-                    (scroll.offset.y / max_offset).clamp(0.0, 1.0)
-                };
-                let y = track.y + (track.height - height) * offset_ratio;
-                UiRect::new(track.x, y, track.width, height)
-            }
-            ScrollAxis::Horizontal => {
-                if track.width <= f32::EPSILON || track.height <= f32::EPSILON {
-                    return UiRect::new(track.x, track.y, 0.0, 0.0);
-                }
-                let ratio =
-                    scrollbar_viewport_ratio(scroll.viewport_size.width, scroll.content_size.width);
-                let width = track.width * ratio;
-                let max_offset = scroll.max_offset().x;
-                let offset_ratio = if max_offset <= f32::EPSILON {
-                    0.0
-                } else {
-                    (scroll.offset.x / max_offset).clamp(0.0, 1.0)
-                };
-                let x = track.x + (track.width - width) * offset_ratio;
-                UiRect::new(x, track.y, width, track.height)
-            }
-        }
-    }
-
-    pub fn scrollbar_accessibility(
-        label: impl Into<String>,
-        scroll: ScrollState,
-        axis: ScrollAxis,
-    ) -> AccessibilityMeta {
-        let (offset, max_offset) = match axis {
-            ScrollAxis::Vertical => (scroll.offset.y, scroll.max_offset().y),
-            ScrollAxis::Horizontal => (scroll.offset.x, scroll.max_offset().x),
-        };
-        let percent = if max_offset <= f32::EPSILON {
-            100.0
-        } else {
-            (offset / max_offset * 100.0).clamp(0.0, 100.0)
-        };
-        let accessibility = AccessibilityMeta::new(AccessibilityRole::Slider)
-            .label(label)
-            .value(format!("{percent:.0}%"))
-            .value_range(AccessibilityValueRange::new(
-                0.0,
-                max_offset.max(0.0) as f64,
-            ))
-            .action(AccessibilityAction::new(
-                "scroll_backward",
-                "Scroll backward",
-            ))
-            .action(AccessibilityAction::new("scroll_forward", "Scroll forward"));
-        if max_offset <= f32::EPSILON {
-            accessibility.disabled()
-        } else {
-            accessibility.focusable()
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub struct ScrollbarDragState {
-        pub axis: ScrollAxis,
-        pub track: UiRect,
-        pub thumb: UiRect,
-        pub pointer_start: UiPoint,
-        pub offset_start: UiPoint,
-        pub max_offset: UiPoint,
-    }
-
-    impl ScrollbarDragState {
-        pub fn new(
-            scroll: ScrollState,
-            track: UiRect,
-            axis: ScrollAxis,
-            pointer_start: UiPoint,
-        ) -> Option<Self> {
-            let thumb = scrollbar_thumb(scroll, track, axis);
-            let max_offset = scroll.max_offset();
-            let travel = scrollbar_thumb_travel(track, thumb, axis);
-            let axis_max_offset = axis.value(max_offset);
-            (travel > f32::EPSILON && axis_max_offset > f32::EPSILON).then_some(Self {
-                axis,
-                track,
-                thumb,
-                pointer_start,
-                offset_start: scroll.offset,
-                max_offset,
-            })
-        }
-
-        pub fn offset_for_pointer(self, pointer: UiPoint) -> UiPoint {
-            let travel = scrollbar_thumb_travel(self.track, self.thumb, self.axis);
-            if travel <= f32::EPSILON {
-                return self.offset_start;
-            }
-            let pointer_delta = self.axis.value(pointer) - self.axis.value(self.pointer_start);
-            let max_axis_offset = self.axis.value(self.max_offset);
-            let offset_delta = pointer_delta / travel * max_axis_offset;
-            let offset = self.axis.with_value(
-                self.offset_start,
-                self.axis.value(self.offset_start) + offset_delta,
-            );
-            UiPoint::new(
-                offset.x.clamp(0.0, self.max_offset.x),
-                offset.y.clamp(0.0, self.max_offset.y),
-            )
-        }
-
-        pub fn scroll_state_for_pointer(
-            self,
-            mut scroll: ScrollState,
-            pointer: UiPoint,
-        ) -> ScrollState {
-            scroll.offset = scroll.clamp_offset(self.offset_for_pointer(pointer));
-            scroll
-        }
-    }
-
-    fn scrollbar_thumb_travel(track: UiRect, thumb: UiRect, axis: ScrollAxis) -> f32 {
-        match axis {
-            ScrollAxis::Vertical => (track.height - thumb.height).max(0.0),
-            ScrollAxis::Horizontal => (track.width - thumb.width).max(0.0),
-        }
-    }
-
-    fn scrollbar_viewport_ratio(viewport: f32, content: f32) -> f32 {
-        if viewport <= f32::EPSILON || content <= viewport {
-            1.0
-        } else {
-            (viewport / content).clamp(0.05, 1.0)
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ScrollAxis {
-        Vertical,
-        Horizontal,
-    }
-
-    impl ScrollAxis {
-        pub const fn value(self, point: UiPoint) -> f32 {
-            match self {
-                Self::Vertical => point.y,
-                Self::Horizontal => point.x,
-            }
-        }
-
-        pub const fn with_value(self, point: UiPoint, value: f32) -> UiPoint {
-            match self {
-                Self::Vertical => UiPoint::new(point.x, value),
-                Self::Horizontal => UiPoint::new(value, point.y),
-            }
-        }
-    }
+    pub mod canvas;
+    pub mod checkbox;
+    pub mod combo_box;
+    pub mod label;
+    pub mod scroll_area;
+    pub mod scrollbar;
+    pub mod slider;
+    pub mod table;
+    pub mod text_input;
+    pub mod virtual_list;
+
+    pub use button::*;
+    pub use canvas::*;
+    pub use checkbox::*;
+    pub use combo_box::*;
+    pub use label::*;
+    pub use scroll_area::*;
+    pub use scrollbar::{
+        scrollbar, scrollbar_accessibility, scrollbar_thumb, ScrollAxis, ScrollbarControllerState,
+        ScrollbarDragState, ScrollbarOptions,
+    };
+    pub use slider::*;
+    pub use table::*;
+    pub use text_input::*;
+    pub use virtual_list::*;
 }
 
 fn available_space_to_option(value: AvailableSpace) -> Option<f32> {
@@ -8415,6 +5757,48 @@ mod tests {
         let rect = doc.node(text).layout.rect;
         assert!(rect.width > 0.0);
         assert!(rect.height > 0.0);
+    }
+
+    #[test]
+    fn document_ui_scale_applies_to_layout_and_text_paint() {
+        let mut doc = UiDocument::new(
+            LayoutStyle::column()
+                .with_width_percent(1.0)
+                .with_height_percent(1.0),
+        );
+        doc.set_ui_scale(1.5);
+        let text = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "scaled",
+                "Zoom",
+                TextStyle {
+                    font_size: 12.0,
+                    line_height: 14.0,
+                    ..Default::default()
+                },
+                LayoutStyle::size(100.0, 20.0),
+            ),
+        );
+
+        doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let rect = doc.node(text).layout.rect;
+        assert!((rect.width - 150.0).abs() < 0.01, "{rect:?}");
+        assert!((rect.height - 30.0).abs() < 0.01, "{rect:?}");
+
+        let paint = doc.paint_list();
+        let Some(PaintKind::Text(text)) = paint
+            .items
+            .iter()
+            .find(|item| item.node == text)
+            .map(|item| &item.kind)
+        else {
+            panic!("missing scaled text paint");
+        };
+        assert!((text.style.font_size - 18.0).abs() < 0.01);
+        assert!((text.style.line_height - 21.0).abs() < 0.01);
     }
 
     #[test]
@@ -10567,20 +7951,24 @@ mod tests {
             pressed_visual.fill.relative_luminance() < hover_visual.fill.relative_luminance(),
             "pressed button defaults should read as a sunken state"
         );
-        assert!(
-            pressed_visual.corner_radius < hover_visual.corner_radius,
-            "pressed button defaults should tighten the radius for pushdown feedback"
+        assert_eq!(
+            pressed_visual.corner_radius, hover_visual.corner_radius,
+            "pressed button defaults should not change shape while the pointer is down"
         );
 
         let up = doc.handle_input(UiInputEvent::PointerUp(UiPoint::new(20.0, 16.0)));
         assert_eq!(up.clicked, Some(button));
-        let focused_visual = doc.node(button).visual;
-        assert_ne!(focused_visual, hover_visual);
-        assert_ne!(focused_visual, normal);
+        assert_eq!(
+            doc.node(button).visual,
+            hover_visual,
+            "hover should remain visible on a focused button while the cursor is still over it"
+        );
 
         let away = doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(160.0, 16.0)));
         assert_eq!(away.hovered, None);
-        assert_eq!(doc.node(button).visual, focused_visual);
+        let focused_visual = doc.node(button).visual;
+        assert_ne!(focused_visual, hover_visual);
+        assert_ne!(focused_visual, normal);
 
         let focused = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
         assert_eq!(focused.focused, Some(button));
@@ -10749,6 +8137,13 @@ mod tests {
 
         let command_options = widgets::ButtonOptions::default().with_command("file.save");
         let save = widgets::button(&mut doc, root, "save", "Save", command_options.clone());
+        assert_eq!(
+            doc.node(save)
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::command_id),
+            Some(&CommandId::from("file.save"))
+        );
         let save_result = UiInputResult {
             clicked: Some(save),
             ..Default::default()
@@ -11703,7 +9098,7 @@ mod tests {
                 .caret_width(2.0);
 
         let caret = state.caret_rect(metrics);
-        assert_eq!(caret.rect, UiRect::new(4.0 + 5.5, 6.0 + 14.0, 2.0, 14.0));
+        assert_eq!(caret.rect, UiRect::new(7.6000004, 6.0 + 14.0, 2.0, 14.0));
         assert_eq!(
             caret.position,
             widgets::TextInputPosition {
@@ -11716,9 +9111,9 @@ mod tests {
         let selection = state.selection_rects(metrics);
         assert_eq!(selection.len(), 2);
         assert_eq!(selection[0].byte_range, 1.."one".len());
-        assert_eq!(selection[0].rect, UiRect::new(9.5, 6.0, 11.0, 14.0));
+        assert_eq!(selection[0].rect, UiRect::new(9.0, 6.0, 10.0, 14.0));
         assert_eq!(selection[1].byte_range, "one\n".len().."one\nt".len());
-        assert_eq!(selection[1].rect, UiRect::new(4.0, 20.0, 5.5, 14.0));
+        assert_eq!(selection[1].rect, UiRect::new(4.0, 20.0, 3.6000001, 14.0));
 
         let plan = state.render_plan(metrics, style, widgets::TextInputPaintOptions::default());
         assert_eq!(plan.selection_rects, selection);
@@ -11760,7 +9155,7 @@ mod tests {
         assert!(matches!(
             primitives.last(),
             Some(ScenePrimitive::Rect(rect))
-                if rect.rect.x == 4.0 * TextStyle::default().font_size * 0.55
+                if rect.rect.x == 6.0 + TextStyle::default().font_size * 1.78
                     && rect.rect.width == 1.0
         ));
     }
@@ -11943,7 +9338,8 @@ mod tests {
             .expect("layout");
 
         let text_rect = doc.node(doc.node(input).children[0]).layout.rect;
-        let char_width = TextStyle::default().font_size * 0.55;
+        let char_width = TextStyle::default().font_size * 0.50;
+        let text_inset = 6.0;
         let context = widgets::TextInputPlatformContext::for_node(
             input,
             widgets::TextInputCaretRect {
@@ -11956,7 +9352,7 @@ mod tests {
             input,
             &mut state,
             UiInputEvent::PointerDown(UiPoint::new(
-                text_rect.x + 3.1 * char_width,
+                text_rect.x + text_inset + 3.1 * char_width,
                 text_rect.y + 2.0,
             )),
             Some(context),
@@ -11968,7 +9364,7 @@ mod tests {
             focused.platform_requests.last(),
             Some(platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(update)))
                 if update.selection == platform::TextRange::caret(3)
-                    && update.cursor_rect.origin.x == text_rect.x + 3.0 * char_width
+                    && update.cursor_rect.origin.x == text_rect.x + text_inset + 3.0 * char_width
         ));
     }
 
@@ -12086,7 +9482,7 @@ mod tests {
         let thumb = widgets::scrollbar_thumb(
             scroll,
             UiRect::new(0.0, 0.0, 10.0, 100.0),
-            widgets::ScrollAxis::Vertical,
+            widgets::scrollbar::ScrollAxis::Vertical,
         );
         assert!((thumb.y - 66.66667).abs() < 0.01, "{thumb:?}");
         assert!((thumb.height - 33.33333).abs() < 0.01, "{thumb:?}");
@@ -12094,7 +9490,7 @@ mod tests {
         let accessibility = widgets::scrollbar_accessibility(
             "Events scrollbar",
             scroll,
-            widgets::ScrollAxis::Vertical,
+            widgets::scrollbar::ScrollAxis::Vertical,
         );
         assert_eq!(accessibility.role, AccessibilityRole::Slider);
         assert_eq!(accessibility.value.as_deref(), Some("100%"));
@@ -12108,7 +9504,7 @@ mod tests {
                 viewport_size: UiSize::new(10.0, 100.0),
                 content_size: UiSize::new(10.0, 100.0),
             },
-            widgets::ScrollAxis::Vertical,
+            widgets::scrollbar::ScrollAxis::Vertical,
         );
         assert!(!disabled_accessibility.enabled);
         assert!(!disabled_accessibility.focusable);
@@ -12127,7 +9523,7 @@ mod tests {
         let drag = widgets::ScrollbarDragState::new(
             vertical,
             track,
-            widgets::ScrollAxis::Vertical,
+            widgets::scrollbar::ScrollAxis::Vertical,
             UiPoint::new(5.0, 20.0),
         )
         .expect("vertical drag");
@@ -12152,7 +9548,7 @@ mod tests {
         let drag = widgets::ScrollbarDragState::new(
             horizontal,
             UiRect::new(0.0, 0.0, 100.0, 10.0),
-            widgets::ScrollAxis::Horizontal,
+            widgets::scrollbar::ScrollAxis::Horizontal,
             UiPoint::new(20.0, 5.0),
         )
         .expect("horizontal drag");
@@ -12168,7 +9564,7 @@ mod tests {
                 content_size: UiSize::new(10.0, 100.0),
             },
             track,
-            widgets::ScrollAxis::Vertical,
+            widgets::scrollbar::ScrollAxis::Vertical,
             UiPoint::new(0.0, 0.0),
         )
         .is_none());

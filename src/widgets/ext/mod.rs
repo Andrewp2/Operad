@@ -14,6 +14,7 @@ pub mod dialog;
 pub mod dock_workspace;
 pub mod dropdown;
 pub mod editable_form;
+pub mod floating_window;
 pub mod menu_bar;
 pub mod menu_list;
 pub mod numeric_input;
@@ -29,10 +30,52 @@ pub mod toggle_control;
 pub mod tree_view;
 
 #[allow(unused_imports)]
+pub use color_picker::*;
+#[allow(unused_imports)]
+pub use command_palette::*;
+#[allow(unused_imports)]
+pub use context_menu::*;
+#[allow(unused_imports)]
 pub use data::*;
+#[allow(unused_imports)]
+pub use data_table::*;
+#[allow(unused_imports)]
+pub use date_picker::*;
+#[allow(unused_imports)]
+pub use dialog::*;
+#[allow(unused_imports)]
+pub use dock_workspace::*;
+#[allow(unused_imports)]
+pub use dropdown::*;
+#[allow(unused_imports)]
+pub use editable_form::*;
+#[allow(unused_imports)]
+pub use floating_window::*;
 #[allow(unused_imports)]
 pub use menu::*;
 #[allow(unused_imports)]
+pub use menu_bar::*;
+#[allow(unused_imports)]
+pub use menu_list::*;
+#[allow(unused_imports)]
 pub use pickers::*;
 #[allow(unused_imports)]
+pub use popover::*;
+#[allow(unused_imports)]
+pub use progress_indicator::*;
+#[allow(unused_imports)]
+pub use property_inspector::*;
+#[allow(unused_imports)]
+pub use split_pane::*;
+#[allow(unused_imports)]
 pub use surfaces::*;
+#[allow(unused_imports)]
+pub use tab_group::*;
+#[allow(unused_imports)]
+pub use timeline_ruler::*;
+#[allow(unused_imports)]
+pub use toast::*;
+#[allow(unused_imports)]
+pub use toggle_control::*;
+#[allow(unused_imports)]
+pub use tree_view::*;
