@@ -66,6 +66,8 @@
   unified diagnostic report surface.
 - Documented v7 performance stress probes, budgets, and repeatable smoke
   commands outside the showcase.
+- Trimmed package contents so old internal planning docs are not shipped as
+  current crate guidance.
 
 ## 6.1.0
 

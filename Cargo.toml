@@ -9,6 +9,19 @@ repository = "https://github.com/Andrewp2/Operad"
 readme = "README.md"
 keywords = ["ui", "widgets", "rendering", "wgpu", "accessibility"]
 categories = ["gui", "rendering", "development-tools::testing"]
+include = [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+    "docs/v7_0_migration_guide.md",
+    "docs/v7_0_performance.md",
+    "docs/widget_inventory.md",
+    "examples/**",
+    "src/**",
+    "tests/**",
+]
 
 [lib]
 name = "operad"

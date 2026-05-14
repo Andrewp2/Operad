@@ -121,5 +121,5 @@ These should pass on a normal Linux runner before every v7 milestone:
 - [ ] README describes Operad as the current library, not as version archaeology.
 - [ ] Feature flags are documented and no-default builds stay backend-neutral.
 - [ ] Migration guide documents every intentionally changed public path.
-- [ ] Package contents do not include stale internal planning docs as current
+- [x] Package contents do not include stale internal planning docs as current
   product guidance.
