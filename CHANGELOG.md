@@ -54,6 +54,8 @@
   can expose System/Light/Dark theme controls without showcase-specific code.
 - Added form action buttons plus field-order traversal helpers for
   submit/apply/cancel/reset workflows.
+- Added tooltip trigger resolution and tooltip animation presets to the widget
+  layer.
 
 ## 6.1.0
 

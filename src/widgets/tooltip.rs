@@ -7,6 +7,7 @@ pub struct TooltipBoxOptions {
     pub title_text_style: TextStyle,
     pub body_text_style: TextStyle,
     pub shortcut_text_style: TextStyle,
+    pub animation: Option<AnimationMachine>,
     pub z_index: i16,
     pub layer: crate::platform::UiLayer,
     pub accessibility_label: Option<String>,
@@ -42,6 +43,7 @@ impl Default for TooltipBoxOptions {
                 color: ColorRgba::new(154, 168, 188, 255),
                 ..Default::default()
             },
+            animation: Some(tooltip_fade_slide_animation(true, false)),
             z_index: 100,
             layer: crate::platform::UiLayer::AppOverlay,
             accessibility_label: None,
@@ -59,6 +61,158 @@ impl TooltipBoxOptions {
         self.layout = layout.into();
         self
     }
+
+    pub fn with_animation(mut self, animation: impl Into<Option<AnimationMachine>>) -> Self {
+        self.animation = animation.into();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TooltipTriggerMode {
+    Hover,
+    Focus,
+    HoverOrFocus,
+}
+
+impl TooltipTriggerMode {
+    pub const fn allows_hover(self) -> bool {
+        matches!(self, Self::Hover | Self::HoverOrFocus)
+    }
+
+    pub const fn allows_focus(self) -> bool {
+        matches!(self, Self::Focus | Self::HoverOrFocus)
+    }
+}
+
+impl Default for TooltipTriggerMode {
+    fn default() -> Self {
+        Self::HoverOrFocus
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TooltipTriggerOptions {
+    pub mode: TooltipTriggerMode,
+    pub placement: TooltipPlacement,
+    pub timing: HelpTimingPolicy,
+    pub item_state: HelpItemState,
+}
+
+impl TooltipTriggerOptions {
+    pub const fn hover_only(mut self) -> Self {
+        self.mode = TooltipTriggerMode::Hover;
+        self
+    }
+
+    pub const fn focus_only(mut self) -> Self {
+        self.mode = TooltipTriggerMode::Focus;
+        self
+    }
+
+    pub const fn placement(mut self, placement: TooltipPlacement) -> Self {
+        self.placement = placement;
+        self
+    }
+
+    pub const fn timing(mut self, timing: HelpTimingPolicy) -> Self {
+        self.timing = timing;
+        self
+    }
+
+    pub const fn immediate(mut self) -> Self {
+        self.timing = HelpTimingPolicy::immediate();
+        self
+    }
+
+    pub const fn item_state(mut self, item_state: HelpItemState) -> Self {
+        self.item_state = item_state;
+        self
+    }
+}
+
+impl Default for TooltipTriggerOptions {
+    fn default() -> Self {
+        Self {
+            mode: TooltipTriggerMode::HoverOrFocus,
+            placement: TooltipPlacement::default(),
+            timing: HelpTimingPolicy::default(),
+            item_state: HelpItemState::ENABLED,
+        }
+    }
+}
+
+pub const TOOLTIP_SHOW_TRIGGER: &str = "tooltip.show";
+pub const TOOLTIP_HIDE_TRIGGER: &str = "tooltip.hide";
+
+pub fn tooltip_fade_slide_animation(
+    initially_visible: bool,
+    reduced_motion: bool,
+) -> AnimationMachine {
+    let show_duration = if reduced_motion { 0.0 } else { 0.12 };
+    let hide_duration = if reduced_motion { 0.0 } else { 0.08 };
+    AnimationMachine::new(
+        vec![
+            AnimationState::new(
+                "hidden",
+                AnimatedValues::new(0.0, UiPoint::new(0.0, 4.0), 0.99),
+            ),
+            AnimationState::new(
+                "visible",
+                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+            ),
+        ],
+        vec![
+            AnimationTransition::new(
+                "hidden",
+                "visible",
+                AnimationTrigger::Custom(TOOLTIP_SHOW_TRIGGER.to_owned()),
+                show_duration,
+            ),
+            AnimationTransition::new(
+                "visible",
+                "hidden",
+                AnimationTrigger::Custom(TOOLTIP_HIDE_TRIGGER.to_owned()),
+                hide_duration,
+            ),
+        ],
+        if initially_visible {
+            "visible"
+        } else {
+            "hidden"
+        },
+    )
+    .expect("tooltip animation preset should be internally valid")
+}
+
+pub fn tooltip_trigger_resolution(
+    document: &UiDocument,
+    target: UiNodeId,
+    content: TooltipContent,
+    input: &UiInputResult,
+    now_ms: u64,
+    options: TooltipTriggerOptions,
+) -> TooltipResolution {
+    let anchor = TooltipAnchor::new(target, document.node(target).layout.rect);
+    let hover = (options.mode.allows_hover()
+        && input
+            .hovered
+            .is_some_and(|node| document.node_is_descendant_or_self(target, node)))
+    .then(|| {
+        TooltipRequest::new(anchor, content.clone())
+            .placement(options.placement)
+            .invocation(TooltipInvocationKind::Hover)
+    });
+    let focus = (options.mode.allows_focus()
+        && input
+            .focused
+            .is_some_and(|node| document.node_is_descendant_or_self(target, node)))
+    .then(|| {
+        TooltipRequest::new(anchor, content)
+            .placement(options.placement)
+            .invocation(TooltipInvocationKind::Focus)
+    });
+    resolve_tooltip_request(hover, focus, options.item_state, options.timing, now_ms)
 }
 
 pub fn tooltip_rect(
@@ -116,25 +270,26 @@ pub fn tooltip_box(
 ) -> UiNodeId {
     let name = name.into();
     let text = content.text();
-    let tooltip = document.add_child(
-        parent,
-        UiNode::container(
-            name.clone(),
-            UiNodeStyle {
-                layout: options.layout.style.clone(),
-                clip: ClipBehavior::Clip,
-                z_index: options.z_index,
-                ..Default::default()
-            },
-        )
-        .with_layer(options.layer)
-        .with_visual(options.visual)
-        .with_accessibility(
-            AccessibilityMeta::new(AccessibilityRole::Tooltip)
-                .label(options.accessibility_label.unwrap_or(content.title.clone()))
-                .hint(text),
-        ),
+    let mut tooltip_node = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout: options.layout.style.clone(),
+            clip: ClipBehavior::Clip,
+            z_index: options.z_index,
+            ..Default::default()
+        },
+    )
+    .with_layer(options.layer)
+    .with_visual(options.visual)
+    .with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::Tooltip)
+            .label(options.accessibility_label.unwrap_or(content.title.clone()))
+            .hint(text),
     );
+    if let Some(animation) = options.animation {
+        tooltip_node = tooltip_node.with_animation(animation);
+    }
+    let tooltip = document.add_child(parent, tooltip_node);
 
     label(
         document,
@@ -250,5 +405,51 @@ mod tests {
             AccessibilityRole::Tooltip
         );
         assert_eq!(node.children.len(), 3);
+        assert_eq!(
+            node.animation.as_ref().unwrap().current_state_name(),
+            "visible"
+        );
+    }
+
+    #[test]
+    fn tooltip_trigger_resolution_prefers_focus_and_respects_timing() {
+        let mut document = UiDocument::new(root_style(300.0, 180.0));
+        let root = document.root;
+        let trigger = button(
+            &mut document,
+            root,
+            "save",
+            "Save",
+            ButtonOptions::default(),
+        );
+        let input = UiInputResult {
+            hovered: Some(trigger),
+            focused: Some(trigger),
+            ..Default::default()
+        };
+
+        let resolution = tooltip_trigger_resolution(
+            &document,
+            trigger,
+            TooltipContent::new("Save").body("Write changes"),
+            &input,
+            100,
+            TooltipTriggerOptions::default().placement(TooltipPlacement::Below),
+        );
+
+        assert_eq!(resolution.visibility, TooltipVisibility::Visible);
+        let request = resolution.request.expect("request");
+        assert_eq!(request.invocation, TooltipInvocationKind::Focus);
+        assert_eq!(request.placement, TooltipPlacement::Below);
+        assert_eq!(resolution.show_at_ms, Some(100));
+    }
+
+    #[test]
+    fn tooltip_animation_policy_can_disable_motion() {
+        let mut animation = tooltip_fade_slide_animation(false, true);
+        assert_eq!(animation.current_state_name(), "hidden");
+        assert!(animation.trigger(AnimationTrigger::Custom(TOOLTIP_SHOW_TRIGGER.to_owned())));
+        animation.tick(0.0);
+        assert_eq!(animation.current_state_name(), "visible");
     }
 }

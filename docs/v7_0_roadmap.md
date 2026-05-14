@@ -136,6 +136,8 @@ These are the items that should move from the v6 planning notes into v7 work.
   System/Light/Dark preference buttons and a compact dark-theme switch.
 - Alpha 18 has closed the basic form action/traversal gap with reusable
   submit/apply/cancel/reset buttons and stable field-order traversal helpers.
+- Alpha 19 has closed the basic tooltip trigger/animation gap with widget-level
+  hover/focus trigger resolution and a reduced-motion-aware animation preset.
 
 ### 1. Architecture And API Cleanup
 
@@ -161,7 +163,8 @@ These are the items that should move from the v6 planning notes into v7 work.
   customer-facing, for example scrollbars, property inspectors, command
   palette, tree views, and context menus.
 - Make every widget expose state/action helpers instead of asking examples to
-  hand-roll editing, hit testing, hover, pressed, selection, or popup behavior.
+  hand-roll editing, hit testing, hover, focus, pressed, selection, tooltip, or
+  popup behavior.
 - Add widget-adjacent helpers for conditional visibility, disabled subtrees,
   sized allocations, painter allocations, and programmatic scroll. Initial
   helpers are now available through `operad::widgets`.
@@ -187,6 +190,8 @@ These are the items that should move from the v6 planning notes into v7 work.
   accessibility traversal agree.
 - Make floating windows, popups, menus, tooltips, command palettes, modals, and
   toast overlays use the same layering rules.
+- Tooltip hover/focus trigger resolution and reduced-motion animation policy
+  are now reusable widget helpers.
 - Add resize, collapse, close, drag, minimum-size, focus, and keyboard behavior
   as reusable surface primitives.
 - Add panel primitives comparable to egui's central/side/top/bottom panels and

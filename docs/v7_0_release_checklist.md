@@ -62,6 +62,8 @@ These should pass on a normal Linux runner before every v7 milestone:
 - [x] Alpha 17 adds global theme preference buttons and a dark-theme switch.
 - [x] Alpha 18 adds form action buttons and field traversal helpers for
   submit/apply/cancel/reset workflows.
+- [x] Alpha 19 adds tooltip hover/focus trigger resolution and
+  reduced-motion-aware animation presets.
 - [ ] Showcase code uses public Operad widget APIs only.
 - [ ] Showcase contains no test harness, screenshot, stress, or hidden diagnostic
   code.

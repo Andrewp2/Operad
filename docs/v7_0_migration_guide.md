@@ -132,6 +132,8 @@ or applications to hand-build low-level document nodes:
 - `operad::widgets::search_input`
 - `operad::widgets::password_input`
 - `operad::widgets::tooltip_box`
+- `operad::widgets::tooltip_trigger_resolution`
+- `operad::widgets::tooltip_fade_slide_animation`
 - `operad::widgets::modal_dialog`
 - `operad::widgets::dnd_drag_source`
 - `operad::widgets::dnd_drop_zone`
@@ -175,6 +177,10 @@ scrolled into view.
 builders for exposing application-owned theme preferences. They emit widget
 actions; applications still own resolving System, Light, and Dark choices into a
 theme.
+
+`tooltip_trigger_resolution` maps hover/focus input state into `TooltipRequest`
+values using `HelpTimingPolicy`. `tooltip_fade_slide_animation` provides the
+default tooltip animation preset and accepts a reduced-motion flag.
 
 The form helpers build visual form rows, labels, help text, validation messages,
 summaries, and action rows around `FormState`, `FieldState`, and

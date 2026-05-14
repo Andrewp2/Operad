@@ -212,6 +212,8 @@ Public document-building widget functions currently exported under `operad::widg
 - `resize_container`
 - `collapsing_header`
 - `tooltip_box`
+- `tooltip_trigger_resolution`
+- `tooltip_fade_slide_animation`
 - `modal_dialog`
 - `dnd_drag_source`
 - `dnd_drop_zone`
@@ -277,7 +279,7 @@ Partially covered but not equivalent:
 
 - Text editing: Operad has single-line, multiline, text-area, code-editor, search, password, and selectable-text builders, but still needs richer editor-specific features.
 - Forms: Operad now has visual section, row, label, help, validation, error-summary, action-button, and traversal helpers plus form state contracts. It still needs richer field-level composition for multi-step and wizard forms.
-- Tooltips: Operad now has `tooltip_box` plus tooltip contracts/resolution helpers, but still needs richer trigger wiring and animation policy.
+- Tooltips: Operad now has `tooltip_box`, hover/focus trigger resolution, timing policy, and a reduced-motion-aware animation preset. It still needs richer cross-overlay coordination for complex nested surfaces.
 - Dialogs/modals: Operad now has `modal_dialog` plus dialog and overlay state contracts, but still needs focus-trap and dismissal helpers wired into the visual builder.
 - Drag and drop: Operad now has generic `dnd_drag_source` and `dnd_drop_zone` builders, plus descriptors and metadata on some complex widgets. It still needs fuller drop preview styling, drag-image policy, and platform adapter coverage.
 - Scroll bars: Operad exposes a scrollbar widget and geometry/accessibility helpers, but still needs fuller integration coverage across every scrollable widget.
