@@ -1,17 +1,20 @@
 use super::*;
 
 #[derive(Debug, Clone)]
-pub struct ScrollAreaWithBarsOptions {
+pub struct ScrollContainerOptions {
     pub layout: LayoutStyle,
     pub axes: ScrollAxes,
     pub vertical_scrollbar: ScrollbarOptions,
     pub horizontal_scrollbar: ScrollbarOptions,
     pub scrollbar_thickness: f32,
     pub gap: f32,
+    pub scrollbar_visibility: ScrollbarVisibility,
+    pub auto_actions: bool,
+    pub action_prefix: Option<String>,
     pub accessibility_label: Option<String>,
 }
 
-impl Default for ScrollAreaWithBarsOptions {
+impl Default for ScrollContainerOptions {
     fn default() -> Self {
         Self {
             layout: LayoutStyle::column()
@@ -25,12 +28,17 @@ impl Default for ScrollAreaWithBarsOptions {
                 .with_track_size(UiSize::new(120.0, 8.0)),
             scrollbar_thickness: 8.0,
             gap: 4.0,
+            scrollbar_visibility: ScrollbarVisibility::Always,
+            auto_actions: true,
+            action_prefix: None,
             accessibility_label: None,
         }
     }
 }
 
-impl ScrollAreaWithBarsOptions {
+pub type ScrollAreaWithBarsOptions = ScrollContainerOptions;
+
+impl ScrollContainerOptions {
     pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
         self.layout = layout.into();
         self
@@ -61,6 +69,22 @@ impl ScrollAreaWithBarsOptions {
         self
     }
 
+    pub const fn with_scrollbar_visibility(mut self, visibility: ScrollbarVisibility) -> Self {
+        self.scrollbar_visibility = visibility;
+        self
+    }
+
+    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.action_prefix = Some(prefix.into());
+        self.auto_actions = true;
+        self
+    }
+
+    pub const fn without_actions(mut self) -> Self {
+        self.auto_actions = false;
+        self
+    }
+
     pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
         self.accessibility_label = Some(label.into());
         self
@@ -68,7 +92,7 @@ impl ScrollAreaWithBarsOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScrollAreaWithBarsNodes {
+pub struct ScrollContainerNodes {
     pub root: UiNodeId,
     pub row: UiNodeId,
     pub viewport: UiNodeId,
@@ -76,6 +100,8 @@ pub struct ScrollAreaWithBarsNodes {
     pub horizontal_row: Option<UiNodeId>,
     pub horizontal_scrollbar: Option<UiNodeId>,
 }
+
+pub type ScrollAreaWithBarsNodes = ScrollContainerNodes;
 
 pub fn scroll_area(
     document: &mut UiDocument,
@@ -105,20 +131,41 @@ pub fn scroll_area(
     )
 }
 
-pub fn scroll_area_with_bars(
+pub fn scroll_container(
     document: &mut UiDocument,
     parent: UiNodeId,
     name: impl Into<String>,
     scroll: ScrollState,
-    options: ScrollAreaWithBarsOptions,
-) -> ScrollAreaWithBarsNodes {
+    options: ScrollContainerOptions,
+    build_content: impl FnOnce(&mut UiDocument, UiNodeId),
+) -> ScrollContainerNodes {
+    let nodes = scroll_container_shell(document, parent, name, scroll, options);
+    build_content(document, nodes.viewport);
+    nodes
+}
+
+pub fn scroll_container_shell(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    scroll: ScrollState,
+    options: ScrollContainerOptions,
+) -> ScrollContainerNodes {
     let name = name.into();
+    let action_prefix = options
+        .action_prefix
+        .clone()
+        .unwrap_or_else(|| name.clone());
+    let mut root_layout = options.layout.style.clone();
+    root_layout.display = Display::Flex;
+    root_layout.flex_direction = FlexDirection::Column;
+    root_layout.gap = LayoutStyle::new().with_gap(options.gap).style.gap;
     let root = document.add_child(
         parent,
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: options.layout.style.clone(),
+                layout: root_layout,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -153,26 +200,53 @@ pub fn scroll_area_with_bars(
         format!("{name}.viewport"),
         options.axes,
         LayoutStyle::new()
-            .with_width_percent(1.0)
+            .with_width(0.0)
             .with_height_percent(1.0)
-            .with_flex_grow(1.0),
+            .with_flex_grow(1.0)
+            .with_flex_shrink(1.0),
     );
-    let vertical_scrollbar = options.axes.vertical.then(|| {
+    document.node_mut(viewport).action = options
+        .auto_actions
+        .then(|| WidgetActionBinding::from(format!("{action_prefix}.scroll")));
+    if let Some(viewport_scroll) = document.node_mut(viewport).scroll.as_mut() {
+        *viewport_scroll = ScrollState {
+            axes: options.axes,
+            offset: scroll.offset,
+            viewport_size: scroll.viewport_size,
+            content_size: scroll.content_size,
+        };
+    }
+    let vertical_scrollbar = show_scrollbar(
+        options.scrollbar_visibility,
+        options.axes,
+        scroll,
+        ScrollAxis::Vertical,
+    )
+    .then(|| {
+        let mut scrollbar_options = aligned_scrollbar_options(
+            scroll,
+            ScrollAxis::Vertical,
+            options.scrollbar_thickness,
+            options.vertical_scrollbar.clone(),
+        );
+        if options.auto_actions && scrollbar_options.action.is_none() {
+            scrollbar_options.action = Some(format!("{action_prefix}.vertical-scrollbar").into());
+        }
         scrollbar(
             document,
             row,
             format!("{name}.vertical-scrollbar"),
             scroll,
             ScrollAxis::Vertical,
-            aligned_scrollbar_options(
-                scroll,
-                ScrollAxis::Vertical,
-                options.scrollbar_thickness,
-                options.vertical_scrollbar.clone(),
-            ),
+            scrollbar_options,
         )
     });
-    let (horizontal_row, horizontal_scrollbar) = if options.axes.horizontal {
+    let (horizontal_row, horizontal_scrollbar) = if show_scrollbar(
+        options.scrollbar_visibility,
+        options.axes,
+        scroll,
+        ScrollAxis::Horizontal,
+    ) {
         let horizontal_row = document.add_child(
             root,
             UiNode::container(
@@ -189,24 +263,30 @@ pub fn scroll_area_with_bars(
                 },
             ),
         );
+        let mut horizontal_options = aligned_scrollbar_options(
+            scroll,
+            ScrollAxis::Horizontal,
+            options.scrollbar_thickness,
+            options.horizontal_scrollbar.clone(),
+        )
+        .with_layout(
+            LayoutStyle::new()
+                .with_width(0.0)
+                .with_height(options.scrollbar_thickness)
+                .with_flex_grow(1.0)
+                .with_flex_shrink(1.0),
+        );
+        if options.auto_actions && horizontal_options.action.is_none() {
+            horizontal_options.action =
+                Some(format!("{action_prefix}.horizontal-scrollbar").into());
+        }
         let horizontal_scrollbar = scrollbar(
             document,
             horizontal_row,
             format!("{name}.horizontal-scrollbar"),
             scroll,
             ScrollAxis::Horizontal,
-            aligned_scrollbar_options(
-                scroll,
-                ScrollAxis::Horizontal,
-                options.scrollbar_thickness,
-                options.horizontal_scrollbar.clone(),
-            )
-            .with_layout(
-                LayoutStyle::new()
-                    .with_width_percent(1.0)
-                    .with_height(options.scrollbar_thickness)
-                    .with_flex_grow(1.0),
-            ),
+            horizontal_options,
         );
         if options.axes.vertical {
             document.add_child(
@@ -231,13 +311,46 @@ pub fn scroll_area_with_bars(
         (None, None)
     };
 
-    ScrollAreaWithBarsNodes {
+    ScrollContainerNodes {
         root,
         row,
         viewport,
         vertical_scrollbar,
         horizontal_row,
         horizontal_scrollbar,
+    }
+}
+
+pub fn scroll_area_with_bars(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    scroll: ScrollState,
+    options: ScrollAreaWithBarsOptions,
+) -> ScrollAreaWithBarsNodes {
+    scroll_container_shell(document, parent, name, scroll, options)
+}
+
+fn show_scrollbar(
+    visibility: ScrollbarVisibility,
+    axes: ScrollAxes,
+    scroll: ScrollState,
+    axis: ScrollAxis,
+) -> bool {
+    if !scroll_axis_enabled(axis, axes) {
+        return false;
+    }
+    match visibility {
+        ScrollbarVisibility::Always => true,
+        ScrollbarVisibility::Auto => axis.value(scroll.max_offset()) > f32::EPSILON,
+        ScrollbarVisibility::Hidden => false,
+    }
+}
+
+fn scroll_axis_enabled(axis: ScrollAxis, axes: ScrollAxes) -> bool {
+    match axis {
+        ScrollAxis::Vertical => axes.vertical,
+        ScrollAxis::Horizontal => axes.horizontal,
     }
 }
 
@@ -361,6 +474,19 @@ mod tests {
             ScrollAxes::BOTH
         );
         assert_eq!(
+            document.node(nodes.viewport).scroll.unwrap().offset,
+            scroll.offset
+        );
+        assert_eq!(
+            document
+                .node(nodes.viewport)
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("results.scroll")
+        );
+        assert_eq!(
             document
                 .node(nodes.root)
                 .accessibility
@@ -372,6 +498,24 @@ mod tests {
         );
         let vertical = nodes.vertical_scrollbar.expect("vertical scrollbar");
         let horizontal = nodes.horizontal_scrollbar.expect("horizontal scrollbar");
+        assert_eq!(
+            document
+                .node(vertical)
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("results.vertical-scrollbar")
+        );
+        assert_eq!(
+            document
+                .node(horizontal)
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("results.horizontal-scrollbar")
+        );
         assert_eq!(
             document
                 .node(vertical)
@@ -395,5 +539,78 @@ mod tests {
         assert!(nodes.horizontal_row.is_some());
         assert_eq!(document.node(vertical).children.len(), 1);
         assert_eq!(document.node(horizontal).children.len(), 1);
+    }
+
+    #[test]
+    fn scroll_container_builds_content_and_uses_one_action_prefix() {
+        let mut document = UiDocument::new(root_style(320.0, 220.0));
+        let root = document.root;
+        let nodes = scroll_container(
+            &mut document,
+            root,
+            "events",
+            scroll_state(),
+            ScrollContainerOptions::default()
+                .with_axes(ScrollAxes::VERTICAL)
+                .with_action_prefix("timeline.events"),
+            |document, viewport| {
+                label(
+                    document,
+                    viewport,
+                    "events.row",
+                    "Row",
+                    TextStyle::default(),
+                    LayoutStyle::new().with_width_percent(1.0),
+                );
+            },
+        );
+
+        assert_eq!(document.node(nodes.viewport).children.len(), 1);
+        assert!(nodes.vertical_scrollbar.is_some());
+        assert!(nodes.horizontal_scrollbar.is_none());
+        assert_eq!(
+            document
+                .node(nodes.viewport)
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("timeline.events.scroll")
+        );
+        let vertical = nodes.vertical_scrollbar.expect("vertical scrollbar");
+        assert_eq!(
+            document
+                .node(vertical)
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("timeline.events.vertical-scrollbar")
+        );
+    }
+
+    #[test]
+    fn scroll_container_can_auto_hide_unneeded_scrollbars() {
+        let mut document = UiDocument::new(root_style(320.0, 220.0));
+        let root = document.root;
+        let scroll = ScrollState {
+            axes: ScrollAxes::BOTH,
+            offset: UiPoint::new(0.0, 0.0),
+            viewport_size: UiSize::new(200.0, 100.0),
+            content_size: UiSize::new(200.0, 260.0),
+        };
+        let nodes = scroll_container_shell(
+            &mut document,
+            root,
+            "auto",
+            scroll,
+            ScrollContainerOptions::default()
+                .with_axes(ScrollAxes::BOTH)
+                .with_scrollbar_visibility(ScrollbarVisibility::Auto),
+        );
+
+        assert!(nodes.vertical_scrollbar.is_some());
+        assert!(nodes.horizontal_scrollbar.is_none());
+        assert!(nodes.horizontal_row.is_none());
     }
 }

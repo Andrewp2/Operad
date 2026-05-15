@@ -190,6 +190,74 @@ pub enum ClipBehavior {
     Clip,
 }
 
+/// Controls which ancestor clip a node inherits during layout and hit testing.
+///
+/// `Viewport` keeps the node's normal layout parent and coordinate space, but
+/// treats the document viewport as the inherited clip. This is intended for
+/// floating overlay roots such as popups, tooltips, and modal scrims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipScope {
+    Parent,
+    Viewport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UiPortalId(String);
+
+impl UiPortalId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for UiPortalId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for UiPortalId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl AsRef<str> for UiPortalId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+pub const APP_OVERLAY_PORTAL: &str = "app-overlay";
+
+/// Controls where a node is mounted in the document tree.
+///
+/// Portal children still use the coordinates supplied by their layout style.
+/// Use `AppOverlay` for viewport-positioned floating surfaces, `Named` for
+/// application-provided hosts, and `Parent` for inline/preview surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiPortalTarget {
+    Parent,
+    AppOverlay,
+    Named(UiPortalId),
+}
+
+impl UiPortalTarget {
+    pub fn named(id: impl Into<UiPortalId>) -> Self {
+        Self::Named(id.into())
+    }
+}
+
+impl Default for UiPortalTarget {
+    fn default() -> Self {
+        Self::Parent
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StrokeStyle {
     pub color: ColorRgba,
@@ -1611,6 +1679,7 @@ pub struct UiNode {
     pub children: Vec<UiNodeId>,
     pub style: UiNodeStyle,
     pub layer: Option<platform::UiLayer>,
+    pub clip_scope: ClipScope,
     pub visual: UiVisual,
     pub interaction_visuals: Option<InteractionVisuals>,
     pub interaction_text_styles: Option<TextInteractionStyles>,
@@ -1634,6 +1703,7 @@ impl UiNode {
             children: Vec::new(),
             style: style.into(),
             layer: None,
+            clip_scope: ClipScope::Parent,
             visual: UiVisual::default(),
             interaction_visuals: None,
             interaction_text_styles: None,
@@ -1666,6 +1736,7 @@ impl UiNode {
                 ..Default::default()
             },
             layer: None,
+            clip_scope: ClipScope::Parent,
             visual: UiVisual::default(),
             interaction_visuals: None,
             interaction_text_styles: None,
@@ -1699,6 +1770,7 @@ impl UiNode {
                 ..Default::default()
             },
             layer: None,
+            clip_scope: ClipScope::Parent,
             visual: UiVisual::default(),
             interaction_visuals: None,
             interaction_text_styles: None,
@@ -1734,6 +1806,7 @@ impl UiNode {
                 ..Default::default()
             },
             layer: None,
+            clip_scope: ClipScope::Parent,
             visual: UiVisual::default(),
             interaction_visuals: None,
             interaction_text_styles: None,
@@ -1787,6 +1860,7 @@ impl UiNode {
                 ..Default::default()
             },
             layer: None,
+            clip_scope: ClipScope::Parent,
             visual: UiVisual::default(),
             interaction_visuals: None,
             interaction_text_styles: None,
@@ -1819,6 +1893,7 @@ impl UiNode {
                 ..Default::default()
             },
             layer: None,
+            clip_scope: ClipScope::Parent,
             visual: UiVisual::default(),
             interaction_visuals: None,
             interaction_text_styles: None,
@@ -1863,6 +1938,7 @@ impl UiNode {
                 ..Default::default()
             },
             layer: None,
+            clip_scope: ClipScope::Parent,
             visual: UiVisual::default(),
             interaction_visuals: None,
             interaction_text_styles: None,
@@ -1886,6 +1962,11 @@ impl UiNode {
 
     pub fn with_layer(mut self, layer: platform::UiLayer) -> Self {
         self.layer = Some(layer);
+        self
+    }
+
+    pub fn with_clip_scope(mut self, clip_scope: ClipScope) -> Self {
+        self.clip_scope = clip_scope;
         self
     }
 
@@ -2498,6 +2579,7 @@ pub struct UiDocument {
     pub focus: UiFocusState,
     pub scale: UiDocumentScale,
     pub(crate) nodes: Vec<UiNode>,
+    portal_hosts: HashMap<UiPortalId, UiNodeId>,
     layout_revision: u64,
     layout_cache_key: Option<LayoutCacheKey>,
 }
@@ -2511,6 +2593,7 @@ impl UiDocument {
             nodes: vec![UiNode::container("root", root_style)],
             focus: UiFocusState::default(),
             scale: UiDocumentScale::default(),
+            portal_hosts: HashMap::new(),
             layout_revision: 0,
             layout_cache_key: None,
         }
@@ -2556,6 +2639,74 @@ impl UiDocument {
         self.nodes.push(node);
         self.nodes[parent.0].children.push(id);
         id
+    }
+
+    /// Registers an existing node as a portal host for future portal children.
+    pub fn register_portal_host(
+        &mut self,
+        id: impl Into<UiPortalId>,
+        host: UiNodeId,
+    ) -> Option<UiNodeId> {
+        self.portal_hosts.insert(id.into(), host)
+    }
+
+    /// Returns the node currently registered as a named portal host.
+    pub fn portal_host(&self, id: impl Into<UiPortalId>) -> Option<UiNodeId> {
+        self.portal_hosts.get(&id.into()).copied()
+    }
+
+    /// Adds a child to a portal target, falling back to `parent` when needed.
+    pub fn add_portal_child(
+        &mut self,
+        parent: UiNodeId,
+        target: UiPortalTarget,
+        node: UiNode,
+    ) -> UiNodeId {
+        let portal_parent = match target {
+            UiPortalTarget::Parent => parent,
+            UiPortalTarget::AppOverlay => self.ensure_app_overlay_portal(),
+            UiPortalTarget::Named(id) => self.portal_hosts.get(&id).copied().unwrap_or(parent),
+        };
+        self.add_child(portal_parent, node)
+    }
+
+    /// Ensures the built-in viewport-sized app overlay portal exists.
+    pub fn ensure_app_overlay_portal(&mut self) -> UiNodeId {
+        let portal_id = UiPortalId::from(APP_OVERLAY_PORTAL);
+        if let Some(host) = self.portal_hosts.get(&portal_id).copied() {
+            if self.nodes.get(host.0).is_some() {
+                return host;
+            }
+        }
+
+        let mut style = Style {
+            display: Display::Flex,
+            position: taffy::prelude::Position::Absolute,
+            inset: taffy::prelude::Rect::length(0.0),
+            size: TaffySize {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        style.flex_direction = FlexDirection::Column;
+
+        let host = self.add_child(
+            self.root,
+            UiNode::container(
+                "portal.app_overlay",
+                UiNodeStyle {
+                    layout: style,
+                    clip: ClipBehavior::None,
+                    ..Default::default()
+                },
+            )
+            .with_layer(platform::UiLayer::AppOverlay)
+            .with_clip_scope(ClipScope::Viewport)
+            .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Group).hidden()),
+        );
+        self.portal_hosts.insert(portal_id, host);
+        host
     }
 
     pub fn node(&self, id: UiNodeId) -> &UiNode {
@@ -2812,6 +2963,7 @@ impl UiDocument {
             root,
             &taffy,
             UiPoint::new(0.0, 0.0),
+            viewport_rect,
             viewport_rect,
             &mapping,
             &measured_content,
@@ -3108,6 +3260,7 @@ impl UiDocument {
         taffy: &TaffyTree<MeasureContext>,
         parent_origin: UiPoint,
         parent_clip: UiRect,
+        viewport_clip: UiRect,
         mapping: &HashMap<UiNodeId, TaffyNodeId>,
         measured_content: &HashMap<TaffyNodeId, UiSize>,
     ) -> Result<(), taffy::TaffyError> {
@@ -3128,17 +3281,21 @@ impl UiDocument {
             .scroll
             .map(|scroll| scroll.offset)
             .unwrap_or(UiPoint::new(0.0, 0.0));
+        let inherited_clip = match self.nodes[id.0].clip_scope {
+            ClipScope::Parent => parent_clip,
+            ClipScope::Viewport => viewport_clip,
+        };
         let clip_rect = if has_scroll || self.nodes[id.0].style.clip == ClipBehavior::Clip {
-            parent_clip
+            inherited_clip
                 .intersection(rect)
                 .unwrap_or(UiRect::new(rect.x, rect.y, 0.0, 0.0))
         } else {
-            parent_clip
+            inherited_clip
         };
         self.nodes[id.0].layout = ComputedLayout {
             rect,
             clip_rect,
-            visible: rect.intersects(parent_clip),
+            visible: rect.intersects(inherited_clip),
             opacity: self.nodes[id.0].style.opacity,
             content_size: measured_content.get(&taffy_node).copied(),
         };
@@ -3156,6 +3313,7 @@ impl UiDocument {
                 taffy,
                 child_origin,
                 clip_rect,
+                viewport_clip,
                 mapping,
                 measured_content,
             )?;
@@ -3180,6 +3338,9 @@ impl UiDocument {
         content_size: &mut UiSize,
     ) {
         for child in &self.nodes[id.0].children {
+            if self.nodes[child.0].clip_scope == ClipScope::Viewport {
+                continue;
+            }
             let child_rect = self.nodes[child.0].layout.rect;
             if rect_is_finite(child_rect) {
                 content_size.width = content_size
@@ -4441,9 +4602,16 @@ impl UiDocument {
     }
 
     fn has_scroll_ancestor(&self, mut id: UiNodeId) -> bool {
+        if self.nodes[id.0].clip_scope == ClipScope::Viewport {
+            return false;
+        }
         while let Some(parent) = self.nodes[id.0].parent {
-            if self.nodes[parent.0].scroll.is_some() {
+            let parent_node = &self.nodes[parent.0];
+            if parent_node.scroll.is_some() {
                 return true;
+            }
+            if parent_node.clip_scope == ClipScope::Viewport {
+                return false;
             }
             id = parent;
         }
@@ -4455,6 +4623,9 @@ impl UiDocument {
         mut id: UiNodeId,
         fallback_bounds: UiRect,
     ) -> (ScrollAxes, UiRect) {
+        if self.nodes[id.0].clip_scope == ClipScope::Viewport {
+            return (ScrollAxes::NONE, fallback_bounds);
+        }
         let mut axes = ScrollAxes::NONE;
         let mut horizontal_bounds = None;
         let mut vertical_bounds = None;
@@ -4477,6 +4648,9 @@ impl UiDocument {
                         parent_node.layout.rect.bottom(),
                     );
                 }
+            }
+            if parent_node.clip_scope == ClipScope::Viewport {
+                break;
             }
             id = parent;
         }
@@ -6522,6 +6696,177 @@ mod tests {
             platform::LayerOrder::new(platform::UiLayer::DebugOverlay, platform::LAYER_LOCAL_Z_MIN)
         );
         assert!(paint.items[0].layer_order < paint.items[1].layer_order);
+    }
+
+    #[test]
+    fn viewport_clip_scope_escapes_ancestor_clipping() {
+        let mut doc = UiDocument::new(root_style(240.0, 160.0));
+        let scroll = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 120.0, 60.0)).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        let clipped = doc.add_child(
+            scroll,
+            UiNode::container(
+                "clipped",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(12.0, 84.0, 80.0, 32.0)).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        let overlay = doc.add_child(
+            scroll,
+            UiNode::container(
+                "overlay",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(12.0, 84.0, 80.0, 32.0)).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_layer(platform::UiLayer::AppOverlay)
+            .with_clip_scope(ClipScope::Viewport)
+            .with_input(InputBehavior::BUTTON),
+        );
+
+        doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let clipped_layout = doc.node(clipped).layout;
+        assert!(!clipped_layout.visible);
+        assert!(clipped_layout.clip_rect.width <= f32::EPSILON);
+        assert!(clipped_layout.clip_rect.height <= f32::EPSILON);
+
+        let overlay_layout = doc.node(overlay).layout;
+        assert!(overlay_layout.visible);
+        assert_eq!(overlay_layout.clip_rect, overlay_layout.rect);
+        assert_eq!(doc.hit_test(UiPoint::new(40.0, 112.0)), Some(overlay));
+    }
+
+    #[test]
+    fn viewport_clip_scope_does_not_expand_scroll_content() {
+        let mut doc = UiDocument::new(root_style(240.0, 160.0));
+        let scroll = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 120.0, 60.0)).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll,
+            UiNode::container(
+                "overlay",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(12.0, 140.0, 80.0, 32.0)).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_layer(platform::UiLayer::AppOverlay)
+            .with_clip_scope(ClipScope::Viewport),
+        );
+
+        doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let scroll = doc.scroll_state(scroll).expect("scroll state");
+        assert_eq!(scroll.viewport_size, UiSize::new(120.0, 60.0));
+        assert_eq!(scroll.content_size, UiSize::new(120.0, 60.0));
+    }
+
+    #[test]
+    fn app_overlay_portal_host_is_created_once_and_receives_children() {
+        let mut doc = UiDocument::new(root_style(240.0, 160.0));
+        let first = doc.add_portal_child(
+            doc.root,
+            UiPortalTarget::AppOverlay,
+            UiNode::container(
+                "first.overlay",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 30.0, 20.0)).style,
+                    ..Default::default()
+                },
+            ),
+        );
+        let second = doc.add_portal_child(
+            doc.root,
+            UiPortalTarget::AppOverlay,
+            UiNode::container(
+                "second.overlay",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(40.0, 10.0, 30.0, 20.0)).style,
+                    ..Default::default()
+                },
+            ),
+        );
+
+        let host = doc
+            .portal_host(APP_OVERLAY_PORTAL)
+            .expect("app overlay portal host");
+        assert_eq!(doc.node(host).parent, Some(doc.root));
+        assert_eq!(doc.node(host).layer, Some(platform::UiLayer::AppOverlay));
+        assert_eq!(doc.node(host).clip_scope, ClipScope::Viewport);
+        assert_eq!(doc.node(first).parent, Some(host));
+        assert_eq!(doc.node(second).parent, Some(host));
+        assert_eq!(doc.node(host).children, vec![first, second]);
+    }
+
+    #[test]
+    fn named_portal_targets_registered_hosts_and_falls_back_to_parent() {
+        let mut doc = UiDocument::new(root_style(240.0, 160.0));
+        let local_parent = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "local",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 120.0, 80.0)).style,
+                    ..Default::default()
+                },
+            ),
+        );
+        let host = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "menu.portal",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 240.0, 160.0)).style,
+                    ..Default::default()
+                },
+            )
+            .with_clip_scope(ClipScope::Viewport),
+        );
+        doc.register_portal_host("menus", host);
+
+        let routed = doc.add_portal_child(
+            local_parent,
+            UiPortalTarget::named("menus"),
+            UiNode::container("routed", LayoutStyle::size(20.0, 20.0)),
+        );
+        let fallback = doc.add_portal_child(
+            local_parent,
+            UiPortalTarget::named("missing"),
+            UiNode::container("fallback", LayoutStyle::size(20.0, 20.0)),
+        );
+
+        assert_eq!(doc.node(routed).parent, Some(host));
+        assert_eq!(doc.node(fallback).parent, Some(local_parent));
     }
 
     #[test]

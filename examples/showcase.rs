@@ -8,7 +8,7 @@ use operad::{
     NativeWgpuCanvasRenderContext, NativeWgpuCanvasRenderRegistry, NativeWindowOptions,
     NativeWindowResult, PaintEffect, PaintRect, PaintText, RenderError, ScenePrimitive, ScrollAxes,
     StrokeStyle, TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, TooltipContent,
-    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual,
     ValidationMessage, WgpuCanvasContext, WgpuCanvasRenderPass, WidgetAction, WidgetActionBinding,
     WidgetActionKind, WidgetDrag, WidgetDragPhase, WidgetTextEdit,
 };
@@ -4589,17 +4589,8 @@ fn container_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
         state.containers_scroll,
         widgets::ScrollAreaWithBarsOptions::default()
             .with_axes(ScrollAxes::BOTH)
-            .with_vertical_scrollbar(
-                widgets::ScrollbarOptions::default()
-                    .with_action("containers.scroll_area_with_bars.vertical-scrollbar"),
-            )
-            .with_horizontal_scrollbar(
-                widgets::ScrollbarOptions::default()
-                    .with_action("containers.scroll_area_with_bars.horizontal-scrollbar"),
-            )
             .with_layout(LayoutStyle::column().with_width(300.0).with_height(116.0)),
     );
-    ui.node_mut(scroll.viewport).action = Some("containers.scroll_area_with_bars.scroll".into());
     for index in 0..5 {
         widgets::label(
             ui,
@@ -4824,6 +4815,7 @@ fn overlay_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
             UiRect::new(0.0, 20.0, 160.0, 96.0),
             widgets::PopupOptions {
                 z_index: 20,
+                portal: UiPortalTarget::Parent,
                 accessibility: Some(
                     AccessibilityMeta::new(AccessibilityRole::Dialog).label("Popup"),
                 ),
@@ -5103,6 +5095,7 @@ fn popup_controls(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) 
             UiRect::new(0.0, 20.0, 160.0, 104.0),
             widgets::PopupOptions {
                 z_index: 4,
+                portal: UiPortalTarget::Parent,
                 accessibility: Some(
                     AccessibilityMeta::new(AccessibilityRole::Dialog).label("Popup preview"),
                 ),

@@ -14,6 +14,7 @@ pub struct ModalDialogOptions {
     pub trap_focus: bool,
     pub focus_restore: FocusRestoreTarget,
     pub focus_wrap: bool,
+    pub portal: UiPortalTarget,
     pub dismissal: DialogDismissal,
     pub show_close_button: bool,
     pub close_action: Option<WidgetActionBinding>,
@@ -63,6 +64,7 @@ impl Default for ModalDialogOptions {
             trap_focus: true,
             focus_restore: FocusRestoreTarget::Previous,
             focus_wrap: true,
+            portal: UiPortalTarget::AppOverlay,
             dismissal: DialogDismissal::MODAL,
             show_close_button: true,
             close_action: None,
@@ -100,6 +102,11 @@ impl ModalDialogOptions {
 
     pub const fn with_focus_wrap(mut self, wrap: bool) -> Self {
         self.focus_wrap = wrap;
+        self
+    }
+
+    pub fn with_portal(mut self, portal: UiPortalTarget) -> Self {
+        self.portal = portal;
         self
     }
 
@@ -143,8 +150,9 @@ pub fn modal_dialog(
     if let Some(hint) = options.accessibility_hint.clone() {
         accessibility.hint = Some(hint);
     }
-    let overlay = document.add_child(
+    let overlay = document.add_portal_child(
         parent,
+        options.portal.clone(),
         UiNode::container(
             name.clone(),
             UiNodeStyle {
@@ -155,6 +163,7 @@ pub fn modal_dialog(
             },
         )
         .with_layer(crate::platform::UiLayer::AppOverlay)
+        .with_clip_scope(ClipScope::Viewport)
         .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Group).hidden()),
     );
 
@@ -422,6 +431,11 @@ mod tests {
             document.node(nodes.overlay).layer,
             Some(crate::platform::UiLayer::AppOverlay)
         );
+        let portal = document
+            .portal_host(APP_OVERLAY_PORTAL)
+            .expect("app overlay portal");
+        assert_eq!(document.node(nodes.overlay).parent, Some(portal));
+        assert_eq!(document.node(nodes.overlay).clip_scope, ClipScope::Viewport);
         assert_eq!(document.node(nodes.overlay).style.z_index, 200);
         assert_eq!(document.node(nodes.scrim).style.z_index, 0);
         assert_eq!(document.node(nodes.dialog).style.z_index, 1);

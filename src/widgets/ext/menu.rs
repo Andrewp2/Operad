@@ -9,10 +9,11 @@ use super::menu_list::{menu_list_popup, MenuListNodes, MenuListOptions};
 
 use crate::{
     layout, length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta,
-    AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba, CommandId, CommandRegistry,
-    CommandScope, CommandTooltipResolver, ImageContent, InputBehavior, KeyCode, KeyModifiers,
-    LayoutStyle, ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument,
-    UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiRect, UiSize, UiVisual, WidgetActionBinding,
+    AccessibilityRole, AnimationMachine, ClipBehavior, ClipScope, ColorRgba, CommandId,
+    CommandRegistry, CommandScope, CommandTooltipResolver, ImageContent, InputBehavior, KeyCode,
+    KeyModifiers, LayoutStyle, ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle,
+    UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiPortalTarget, UiRect, UiSize,
+    UiVisual, WidgetActionBinding,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +120,9 @@ pub struct PopupOptions {
     pub visual: UiVisual,
     pub z_index: i16,
     pub clip: ClipBehavior,
+    pub clip_scope: ClipScope,
+    pub layer: Option<crate::platform::UiLayer>,
+    pub portal: UiPortalTarget,
     pub scroll_axes: ScrollAxes,
     pub accessibility: Option<AccessibilityMeta>,
     pub shader: Option<ShaderEffect>,
@@ -135,6 +139,9 @@ impl Default for PopupOptions {
             ),
             z_index: 100,
             clip: ClipBehavior::Clip,
+            clip_scope: ClipScope::Viewport,
+            layer: Some(crate::platform::UiLayer::AppOverlay),
+            portal: UiPortalTarget::AppOverlay,
             scroll_axes: ScrollAxes::NONE,
             accessibility: Some(AccessibilityMeta::new(AccessibilityRole::Dialog)),
             shader: None,
@@ -203,6 +210,9 @@ pub fn popup_panel(
         visual,
         z_index,
         clip,
+        clip_scope,
+        layer,
+        portal,
         scroll_axes,
         accessibility,
         shader,
@@ -217,7 +227,11 @@ pub fn popup_panel(
             ..Default::default()
         },
     )
+    .with_clip_scope(clip_scope)
     .with_visual(visual);
+    if let Some(layer) = layer {
+        node = node.with_layer(layer);
+    }
 
     if scroll_axes != ScrollAxes::NONE {
         node = node.with_scroll(scroll_axes);
@@ -232,7 +246,7 @@ pub fn popup_panel(
         node = node.with_animation(animation);
     }
 
-    document.add_child(parent, node)
+    document.add_portal_child(parent, portal, node)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1999,6 +2013,7 @@ mod tests {
         CommandId, CommandMeta, CommandRegistry, CommandScope, ContextMenuSuppressedReason,
         HelpItemState, KeyModifiers, PointerButton, PointerEventKind, RawPointerEvent,
         ShaderEffect, Shortcut, ShortcutFormatter, UiContent, UiPoint, WidgetActionBinding,
+        APP_OVERLAY_PORTAL,
     };
 
     fn test_animation() -> AnimationMachine {
@@ -2058,7 +2073,36 @@ mod tests {
         let node = document.node(popup);
         assert_eq!(node.style.layout.position, Position::Absolute);
         assert_eq!(node.style.z_index, 100);
+        assert_eq!(node.clip_scope, ClipScope::Viewport);
+        assert_eq!(node.layer, Some(crate::platform::UiLayer::AppOverlay));
         assert!(node.scroll.is_some());
+        let portal = document
+            .portal_host(APP_OVERLAY_PORTAL)
+            .expect("app overlay portal");
+        assert_eq!(node.parent, Some(portal));
+    }
+
+    #[test]
+    fn popup_panel_can_stay_in_parent_tree_for_inline_previews() {
+        let mut document = UiDocument::new(root_style(300.0, 200.0));
+        let root = document.root;
+        let parent = document.add_child(
+            root,
+            UiNode::container("parent", LayoutStyle::column().with_width(200.0)),
+        );
+        let popup = popup_panel(
+            &mut document,
+            parent,
+            "popup",
+            UiRect::new(16.0, 20.0, 120.0, 80.0),
+            PopupOptions {
+                portal: UiPortalTarget::Parent,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(document.node(popup).parent, Some(parent));
+        assert!(document.portal_host(APP_OVERLAY_PORTAL).is_none());
     }
 
     #[test]

@@ -19,8 +19,8 @@ use crate::input::{
     RawPointerEvent, RawTextInputEvent, RawWheelEvent,
 };
 use crate::platform::{
-    BackendAdapterKind, BackendCapabilities, ClipboardRequest, CursorRequest, CursorShape,
-    LayerCapabilities, PlatformRequest, PlatformRequestIdAllocator, PlatformResponse,
+    BackendAdapterKind, BackendCapabilities, ClipboardRequest, CursorGrabMode, CursorRequest,
+    CursorShape, LayerCapabilities, PlatformRequest, PlatformRequestIdAllocator, PlatformResponse,
     PlatformServiceCapabilities, PlatformServiceRequest, PlatformServiceResponse,
     RenderingCapabilities, RepaintRequest, ResourceCapabilities, ResourceDomain, ResourceHandle,
     ResourceKind,
@@ -469,6 +469,11 @@ impl EguiPlatformOutputPlan {
                     .push(egui::ViewportCommand::CursorVisible(*visible));
                 true
             }
+            PlatformRequest::Cursor(CursorRequest::SetGrab(mode)) => {
+                self.viewport_commands
+                    .push(egui::ViewportCommand::CursorGrab(egui_cursor_grab(*mode)));
+                true
+            }
             PlatformRequest::Cursor(CursorRequest::Confine(_)) => {
                 self.viewport_commands
                     .push(egui::ViewportCommand::CursorGrab(
@@ -602,6 +607,14 @@ pub fn egui_cursor_icon(shape: CursorShape) -> egui::CursorIcon {
         CursorShape::ResizeNorthWestSouthEast => egui::CursorIcon::ResizeNwSe,
         CursorShape::ZoomIn => egui::CursorIcon::ZoomIn,
         CursorShape::ZoomOut => egui::CursorIcon::ZoomOut,
+    }
+}
+
+pub fn egui_cursor_grab(mode: CursorGrabMode) -> egui::CursorGrab {
+    match mode {
+        CursorGrabMode::None => egui::CursorGrab::None,
+        CursorGrabMode::Confined => egui::CursorGrab::Confined,
+        CursorGrabMode::Locked => egui::CursorGrab::Locked,
     }
 }
 
@@ -1366,7 +1379,7 @@ mod tests {
         assert_eq!(
             plan.viewport_commands,
             vec![
-                egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined),
+                egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked),
                 egui::ViewportCommand::CursorVisible(false),
             ]
         );
@@ -1439,11 +1452,18 @@ mod tests {
 
     #[test]
     fn egui_platform_output_plan_maps_cursor_confinement_to_viewport_commands() {
+        assert_eq!(
+            egui_cursor_grab(CursorGrabMode::Locked),
+            egui::CursorGrab::Locked
+        );
+
         let requests = [
+            PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
             PlatformRequest::Cursor(CursorRequest::Confine(crate::platform::LogicalRect::new(
                 0.0, 0.0, 100.0, 80.0,
             ))),
             PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+            PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::None)),
         ];
 
         let plan = EguiPlatformOutputPlan::from_requests(requests.iter());
@@ -1452,7 +1472,9 @@ mod tests {
         assert_eq!(
             plan.viewport_commands,
             vec![
+                egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked),
                 egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined),
+                egui::ViewportCommand::CursorGrab(egui::CursorGrab::None),
                 egui::ViewportCommand::CursorGrab(egui::CursorGrab::None),
             ]
         );

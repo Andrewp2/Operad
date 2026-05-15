@@ -512,6 +512,7 @@ pub fn command_palette(
                 )),
                 shader: options.panel_shader.clone(),
                 animation: options.panel_animation.clone(),
+                ..Default::default()
             },
         )
     } else {

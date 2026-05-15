@@ -10,14 +10,19 @@ use crate::input::{
     PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
     RawPointerEvent, RawTextInputEvent, RawWheelEvent,
 };
-use crate::platform::PixelSize;
+use crate::platform::{
+    CursorGrabMode, CursorRequest, CursorResponse, CursorShape, PixelSize, PlatformErrorCode,
+    PlatformRequest, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceRequest,
+    PlatformServiceResponse, RepaintRequest, RepaintResponse,
+};
 use crate::{
-    process_document_frame, AccessibilityRole, CanvasRenderOutput, CanvasRenderReport,
-    CanvasRenderRequest, CosmicTextMeasurer, DirtyRegionSet, EmptyResourceResolver,
-    HostDocumentFrameState, HostFrameOutput, HostNodeInteraction, KeyCode, KeyModifiers,
-    RenderError, RenderTarget, RendererAdapter, UiDocument, UiFocusState, UiInputEvent, UiNodeId,
-    UiPoint, UiSize, WgpuCanvasContext, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase,
-    WidgetAction, WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
+    process_document_frame, AccessibilityRole, CanvasContent, CanvasRenderOutput,
+    CanvasRenderReport, CanvasRenderRequest, CosmicTextMeasurer, DirtyRegionSet,
+    EmptyResourceResolver, HostDocumentFrameState, HostFrameOutput, HostNodeInteraction, KeyCode,
+    KeyModifiers, RenderError, RenderTarget, RendererAdapter, UiContent, UiDocument, UiFocusState,
+    UiInputEvent, UiNodeId, UiPoint, UiRect, UiSize, WgpuCanvasContext, WgpuSurfaceRenderer,
+    WheelDeltaUnit, WheelPhase, WidgetAction, WidgetActionBinding, WidgetActionQueue,
+    WidgetValueEditPhase,
 };
 
 pub type NativeWindowResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -33,8 +38,29 @@ pub struct NativeWindowMetrics {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeKeyboardInput {
     pub logical_key: winit::keyboard::Key,
+    pub physical_key: winit::keyboard::PhysicalKey,
+    pub key_code: Option<KeyCode>,
     pub modifiers: winit::keyboard::ModifiersState,
+    pub state: winit::event::ElementState,
+    pub pressed: bool,
     pub repeat: bool,
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NativeRawMouseMotion {
+    pub device_id: winit::event::DeviceId,
+    pub delta: (f64, f64),
+    pub timestamp_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeCanvasInput {
+    pub node: UiNodeId,
+    pub key: String,
+    pub rect: UiRect,
+    pub local_position: Option<UiPoint>,
+    pub input: RawInputEvent,
 }
 
 type InitialSizeHook = Box<dyn Fn(&winit::event_loop::ActiveEventLoop) -> UiSize>;
@@ -42,6 +68,10 @@ type TitleHook<State> = Box<dyn Fn(&State) -> String>;
 type ScaleFactorHook<State> = Box<dyn Fn(&State, NativeWindowMetrics) -> f32>;
 type CloseHook<State> = Box<dyn FnMut(&mut State) -> bool>;
 type KeyboardHook<State> = Box<dyn FnMut(&mut State, NativeKeyboardInput) -> bool>;
+type RawMouseMotionHook<State> = Box<dyn FnMut(&mut State, NativeRawMouseMotion) -> bool>;
+type CanvasInputHook<State> = Box<dyn FnMut(&mut State, NativeCanvasInput) -> bool>;
+type PlatformRequestsHook<State> =
+    Box<dyn FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformRequest>>;
 type BeforeRenderHook<State> = Box<dyn FnMut(&mut State, NativeWindowMetrics)>;
 type IdleRedrawHook<State> = Box<dyn Fn(&State) -> bool>;
 
@@ -51,6 +81,9 @@ pub struct NativeWindowHooks<State> {
     pub scale_factor: Option<ScaleFactorHook<State>>,
     pub close_requested: Option<CloseHook<State>>,
     pub keyboard_input: Option<KeyboardHook<State>>,
+    pub raw_mouse_motion: Option<RawMouseMotionHook<State>>,
+    pub canvas_input: Option<CanvasInputHook<State>>,
+    pub platform_requests: Option<PlatformRequestsHook<State>>,
     pub before_render: Option<BeforeRenderHook<State>>,
     pub idle_redraw: Option<IdleRedrawHook<State>>,
 }
@@ -97,6 +130,30 @@ impl<State> NativeWindowHooks<State> {
         self
     }
 
+    pub fn with_raw_mouse_motion(
+        mut self,
+        raw_mouse_motion: impl FnMut(&mut State, NativeRawMouseMotion) -> bool + 'static,
+    ) -> Self {
+        self.raw_mouse_motion = Some(Box::new(raw_mouse_motion));
+        self
+    }
+
+    pub fn with_canvas_input(
+        mut self,
+        canvas_input: impl FnMut(&mut State, NativeCanvasInput) -> bool + 'static,
+    ) -> Self {
+        self.canvas_input = Some(Box::new(canvas_input));
+        self
+    }
+
+    pub fn with_platform_requests(
+        mut self,
+        platform_requests: impl FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformRequest> + 'static,
+    ) -> Self {
+        self.platform_requests = Some(Box::new(platform_requests));
+        self
+    }
+
     pub fn with_before_render(
         mut self,
         before_render: impl FnMut(&mut State, NativeWindowMetrics) + 'static,
@@ -119,6 +176,9 @@ impl<State> Default for NativeWindowHooks<State> {
             scale_factor: None,
             close_requested: None,
             keyboard_input: None,
+            raw_mouse_motion: None,
+            canvas_input: None,
+            platform_requests: None,
             before_render: None,
             idle_redraw: None,
         }
@@ -445,12 +505,16 @@ struct NativeWindowApp<State, Update, View> {
     canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
     hooks: NativeWindowHooks<State>,
     frame_state: HostDocumentFrameState,
+    platform_request_ids: PlatformRequestIdAllocator,
+    pending_platform_responses: Vec<PlatformServiceResponse>,
     scroll_offsets: HashMap<String, UiPoint>,
     text_measurer: CosmicTextMeasurer,
     pending_input: Vec<RawInputEvent>,
     cursor: Option<UiPoint>,
     modifiers: KeyModifiers,
     buttons: PointerButtons,
+    scheduled_redraw_at: Option<Instant>,
+    continuous_redraw: bool,
     start: Instant,
     last_tick: Instant,
     error: Option<String>,
@@ -476,12 +540,16 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             canvas_renderers,
             hooks,
             frame_state: HostDocumentFrameState::new(),
+            platform_request_ids: PlatformRequestIdAllocator::default(),
+            pending_platform_responses: Vec::new(),
             scroll_offsets: HashMap::new(),
             text_measurer: CosmicTextMeasurer::new(),
             pending_input: Vec::new(),
             cursor: None,
             modifiers: KeyModifiers::NONE,
             buttons: PointerButtons::NONE,
+            scheduled_redraw_at: None,
+            continuous_redraw: false,
             start: Instant::now(),
             last_tick: Instant::now(),
             error: None,
@@ -619,6 +687,143 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         self.request_redraw();
     }
 
+    fn dispatch_canvas_input_hooks(
+        &mut self,
+        document: &UiDocument,
+        raw_input: Vec<RawInputEvent>,
+    ) -> Vec<RawInputEvent> {
+        if self.hooks.canvas_input.is_none() {
+            return raw_input;
+        }
+
+        let mut remaining = Vec::with_capacity(raw_input.len());
+        for event in raw_input {
+            let handled =
+                native_canvas_input_for_raw_event(document, &self.frame_state.interaction, &event)
+                    .is_some_and(|canvas_input| {
+                        self.hooks
+                            .canvas_input
+                            .as_mut()
+                            .is_some_and(|hook| hook(&mut self.state, canvas_input))
+                    });
+            if handled {
+                self.request_redraw();
+            } else {
+                remaining.push(event);
+            }
+        }
+        remaining
+    }
+
+    fn apply_platform_service_requests(&mut self, frame: &crate::HostDocumentFrameOutput) {
+        let requests = frame.platform_service_requests(&mut self.platform_request_ids);
+        if requests.is_empty() {
+            return;
+        }
+        let responses = requests
+            .into_iter()
+            .map(|request| self.apply_platform_service_request(request))
+            .collect::<Vec<_>>();
+        self.pending_platform_responses.extend(responses);
+    }
+
+    fn apply_platform_service_request(
+        &mut self,
+        request: PlatformServiceRequest,
+    ) -> PlatformServiceResponse {
+        let PlatformServiceRequest { id, request } = request;
+        let response = self.apply_platform_request(request);
+        PlatformServiceResponse::new(id, response)
+    }
+
+    fn apply_platform_request(&mut self, request: PlatformRequest) -> PlatformResponse {
+        match request {
+            PlatformRequest::Cursor(request) => {
+                PlatformResponse::Cursor(self.apply_cursor_request(request))
+            }
+            PlatformRequest::Repaint(request) => {
+                PlatformResponse::Repaint(self.apply_repaint_request(request))
+            }
+            request => PlatformResponse::unsupported(request.kind()),
+        }
+    }
+
+    fn apply_hook_platform_requests(&mut self, metrics: NativeWindowMetrics) {
+        let Some(platform_requests) = self.hooks.platform_requests.as_mut() else {
+            return;
+        };
+        let requests = platform_requests(&mut self.state, metrics);
+        for request in requests {
+            self.apply_platform_request(request);
+        }
+    }
+
+    fn apply_cursor_request(&self, request: CursorRequest) -> CursorResponse {
+        let Some(window) = self.window.as_ref() else {
+            return CursorResponse::Unsupported;
+        };
+        match request {
+            CursorRequest::SetShape(shape) => {
+                window.set_cursor(native_cursor_icon(shape));
+                CursorResponse::Applied
+            }
+            CursorRequest::SetVisible(visible) => {
+                window.set_cursor_visible(visible);
+                CursorResponse::Applied
+            }
+            CursorRequest::SetPosition(point) => window
+                .set_cursor_position(winit::dpi::LogicalPosition::new(
+                    point.x as f64,
+                    point.y as f64,
+                ))
+                .map(|_| CursorResponse::Applied)
+                .unwrap_or_else(cursor_error),
+            CursorRequest::SetGrab(mode) => {
+                set_cursor_grab(window, mode).unwrap_or_else(cursor_error)
+            }
+            CursorRequest::Confine(_) => window
+                .set_cursor_grab(winit::window::CursorGrabMode::Confined)
+                .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Locked))
+                .map(|_| CursorResponse::Applied)
+                .unwrap_or_else(cursor_error),
+            CursorRequest::ReleaseConfine => window
+                .set_cursor_grab(winit::window::CursorGrabMode::None)
+                .map(|_| CursorResponse::Applied)
+                .unwrap_or_else(cursor_error),
+        }
+    }
+
+    fn apply_repaint_request(&mut self, request: RepaintRequest) -> RepaintResponse {
+        match request {
+            RepaintRequest::NextFrame | RepaintRequest::Area(_) => {
+                self.request_redraw();
+                RepaintResponse::Scheduled {
+                    delay: Duration::ZERO,
+                }
+            }
+            RepaintRequest::After(delay) => {
+                let wake_at = Instant::now() + delay;
+                self.scheduled_redraw_at = Some(
+                    self.scheduled_redraw_at
+                        .map(|scheduled| scheduled.min(wake_at))
+                        .unwrap_or(wake_at),
+                );
+                RepaintResponse::Scheduled { delay }
+            }
+            RepaintRequest::Continuous { active } => {
+                self.continuous_redraw = active;
+                if active {
+                    self.request_redraw();
+                    RepaintResponse::Scheduled {
+                        delay: Duration::ZERO,
+                    }
+                } else {
+                    RepaintResponse::Coalesced
+                }
+            }
+        }
+    }
+
     fn render(&mut self) -> NativeWindowResult
     where
         Update: FnMut(&mut State, WidgetAction),
@@ -634,11 +839,14 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         if let (Some(window), Some(title)) = (self.window.as_ref(), self.hooks.title.as_ref()) {
             window.set_title(&title(&self.state));
         }
+        self.apply_hook_platform_requests(metrics);
         self.dispatch_tick_if_due();
         let raw_input = std::mem::take(&mut self.pending_input);
         let mut document = self.build_document(viewport)?;
+        let raw_input = self.dispatch_canvas_input_hooks(&document, raw_input);
         let mut host_request = self.frame_state.host_frame_request(viewport);
         host_request.raw_input = raw_input;
+        host_request.platform_responses = std::mem::take(&mut self.pending_platform_responses);
         let host_output =
             process_host_frame_input_with_target_resolver(host_request, |event, state| {
                 resolve_target(event, state, &document)
@@ -652,6 +860,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         self.capture_scroll_offsets(&document);
         let actions = collect_widget_actions(&document, &frame);
         self.frame_state.apply_document_frame_output(&frame);
+        self.apply_platform_service_requests(&frame);
 
         let frame = if actions.is_empty() {
             frame
@@ -669,6 +878,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
                 process_document_frame(&mut document, &mut self.text_measurer, frame_request)?;
             self.capture_scroll_offsets(&document);
             self.frame_state.apply_document_frame_output(&frame);
+            self.apply_platform_service_requests(&frame);
             frame
         };
 
@@ -879,9 +1089,7 @@ where
                 self.modifiers = key_modifiers(modifiers.state());
             }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != winit::event::ElementState::Pressed {
-                    return;
-                }
+                let key = key_code(&event, self.modifiers);
                 let handled = self
                     .hooks
                     .keyboard_input
@@ -891,8 +1099,13 @@ where
                             &mut self.state,
                             NativeKeyboardInput {
                                 logical_key: event.logical_key.clone(),
+                                physical_key: event.physical_key,
+                                key_code: key,
                                 modifiers: winit_modifiers(self.modifiers),
+                                state: event.state,
+                                pressed: matches!(event.state, winit::event::ElementState::Pressed),
                                 repeat: event.repeat,
+                                text: event.text.as_ref().map(|text| text.to_string()),
                             },
                         )
                     });
@@ -900,13 +1113,22 @@ where
                     self.request_redraw();
                     return;
                 }
-                if let Some(key) = key_code(&event, self.modifiers) {
-                    self.push_input(RawInputEvent::Keyboard(
-                        RawKeyboardEvent::press(key, self.modifiers, self.timestamp_millis())
-                            .repeat(event.repeat),
-                    ));
+                if let Some(key) = key {
+                    let event = match event.state {
+                        winit::event::ElementState::Pressed => {
+                            RawKeyboardEvent::press(key, self.modifiers, self.timestamp_millis())
+                                .repeat(event.repeat)
+                        }
+                        winit::event::ElementState::Released => {
+                            RawKeyboardEvent::release(key, self.modifiers, self.timestamp_millis())
+                        }
+                    };
+                    self.push_input(RawInputEvent::Keyboard(event));
                 }
-                if !self.modifiers.ctrl && !self.modifiers.meta {
+                if event.state == winit::event::ElementState::Pressed
+                    && !self.modifiers.ctrl
+                    && !self.modifiers.meta
+                {
                     if let Some(text) = event.text.as_ref().filter(|text| !text.is_empty()) {
                         self.push_input(RawInputEvent::Text(RawTextInputEvent::new(
                             text.as_str(),
@@ -927,6 +1149,35 @@ where
         }
     }
 
+    fn device_event(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        let winit::event::DeviceEvent::MouseMotion { delta } = event else {
+            return;
+        };
+        let timestamp_millis = self.timestamp_millis();
+        let handled = self
+            .hooks
+            .raw_mouse_motion
+            .as_mut()
+            .is_some_and(|raw_mouse_motion| {
+                raw_mouse_motion(
+                    &mut self.state,
+                    NativeRawMouseMotion {
+                        device_id,
+                        delta,
+                        timestamp_millis,
+                    },
+                )
+            });
+        if handled {
+            self.request_redraw();
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self
             .hooks
@@ -937,15 +1188,38 @@ where
             self.request_redraw();
             return;
         }
-        if self.options.tick_action.is_none() {
+
+        if self.continuous_redraw {
+            self.request_redraw();
             return;
         }
-        let next_tick = self.last_tick + self.options.tick_interval;
+
         let now = Instant::now();
-        if now >= next_tick {
+        if self
+            .scheduled_redraw_at
+            .is_some_and(|scheduled| now >= scheduled)
+        {
+            self.scheduled_redraw_at = None;
             self.request_redraw();
-        } else {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_tick));
+            return;
+        }
+
+        let mut wake_at = self.scheduled_redraw_at;
+        if self.options.tick_action.is_some() {
+            let next_tick = self.last_tick + self.options.tick_interval;
+            if now >= next_tick {
+                self.request_redraw();
+                return;
+            }
+            wake_at = Some(
+                wake_at
+                    .map(|wake_at| wake_at.min(next_tick))
+                    .unwrap_or(next_tick),
+            );
+        }
+
+        if let Some(wake_at) = wake_at {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(wake_at));
         }
     }
 }
@@ -1116,8 +1390,136 @@ fn resolve_target(
     }
 }
 
+fn native_canvas_input_for_raw_event(
+    document: &UiDocument,
+    state: &crate::HostInteractionState,
+    event: &RawInputEvent,
+) -> Option<NativeCanvasInput> {
+    match event {
+        RawInputEvent::Pointer(pointer) => {
+            let target = resolve_target(event, state, document)?;
+            let (node, canvas, rect) = canvas_target(document, target)?;
+            (canvas.interaction.pointer_capture || canvas.interaction.pointer_lock).then(|| {
+                native_canvas_input(node, canvas, rect, Some(pointer.position), event.clone())
+            })
+        }
+        RawInputEvent::Wheel(wheel) => resolve_target(event, state, document)
+            .and_then(|target| canvas_target(document, target))
+            .filter(|(_, canvas, _)| canvas.interaction.wheel_capture)
+            .or_else(|| {
+                active_canvas_capture(document, state, |plan| plan.wheel_capture)
+                    .map(|(node, canvas, rect)| (node, canvas, rect))
+            })
+            .map(|(node, canvas, rect)| {
+                native_canvas_input(node, canvas, rect, Some(wheel.position), event.clone())
+            }),
+        RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) => state
+            .focused
+            .and_then(|focused| canvas_target(document, focused))
+            .filter(|(_, canvas, _)| canvas.interaction.keyboard_capture)
+            .or_else(|| {
+                active_canvas_capture(document, state, |plan| plan.keyboard_capture)
+                    .map(|(node, canvas, rect)| (node, canvas, rect))
+            })
+            .map(|(node, canvas, rect)| {
+                native_canvas_input(node, canvas, rect, None, event.clone())
+            }),
+        RawInputEvent::Focus(_) => None,
+    }
+}
+
+fn canvas_target(
+    document: &UiDocument,
+    target: UiNodeId,
+) -> Option<(UiNodeId, &CanvasContent, UiRect)> {
+    let mut current = Some(target);
+    while let Some(id) = current {
+        let node = document.nodes().get(id.0)?;
+        if let UiContent::Canvas(canvas) = &node.content {
+            return Some((id, canvas, node.layout.rect));
+        }
+        current = node.parent;
+    }
+    None
+}
+
+fn active_canvas_capture<'a>(
+    document: &'a UiDocument,
+    state: &crate::HostInteractionState,
+    accepts: impl Fn(&crate::CanvasHostCapturePlan) -> bool,
+) -> Option<(UiNodeId, &'a CanvasContent, UiRect)> {
+    state
+        .canvas_host_capture
+        .active_plans()
+        .iter()
+        .find(|plan| accepts(plan))
+        .and_then(|plan| canvas_target(document, plan.node))
+}
+
+fn native_canvas_input(
+    node: UiNodeId,
+    canvas: &CanvasContent,
+    rect: UiRect,
+    position: Option<UiPoint>,
+    input: RawInputEvent,
+) -> NativeCanvasInput {
+    NativeCanvasInput {
+        node,
+        key: canvas.key.clone(),
+        rect,
+        local_position: position
+            .map(|position| UiPoint::new(position.x - rect.x, position.y - rect.y)),
+        input,
+    }
+}
+
 fn logical_size(size: UiSize) -> winit::dpi::LogicalSize<f64> {
     winit::dpi::LogicalSize::new(size.width.max(1.0) as f64, size.height.max(1.0) as f64)
+}
+
+fn native_cursor_icon(shape: CursorShape) -> winit::window::CursorIcon {
+    match shape {
+        CursorShape::Default => winit::window::CursorIcon::Default,
+        CursorShape::Pointer => winit::window::CursorIcon::Pointer,
+        CursorShape::Text => winit::window::CursorIcon::Text,
+        CursorShape::Crosshair => winit::window::CursorIcon::Crosshair,
+        CursorShape::Grab => winit::window::CursorIcon::Grab,
+        CursorShape::Grabbing => winit::window::CursorIcon::Grabbing,
+        CursorShape::Move => winit::window::CursorIcon::Move,
+        CursorShape::NotAllowed => winit::window::CursorIcon::NotAllowed,
+        CursorShape::Wait => winit::window::CursorIcon::Wait,
+        CursorShape::Progress => winit::window::CursorIcon::Progress,
+        CursorShape::ResizeHorizontal => winit::window::CursorIcon::EwResize,
+        CursorShape::ResizeVertical => winit::window::CursorIcon::NsResize,
+        CursorShape::ResizeNorthEastSouthWest => winit::window::CursorIcon::NeswResize,
+        CursorShape::ResizeNorthWestSouthEast => winit::window::CursorIcon::NwseResize,
+        CursorShape::ZoomIn => winit::window::CursorIcon::ZoomIn,
+        CursorShape::ZoomOut => winit::window::CursorIcon::ZoomOut,
+    }
+}
+
+fn set_cursor_grab(
+    window: &winit::window::Window,
+    mode: CursorGrabMode,
+) -> Result<CursorResponse, winit::error::ExternalError> {
+    window
+        .set_cursor_grab(native_cursor_grab_mode(mode))
+        .map(|_| CursorResponse::Applied)
+}
+
+fn native_cursor_grab_mode(mode: CursorGrabMode) -> winit::window::CursorGrabMode {
+    match mode {
+        CursorGrabMode::None => winit::window::CursorGrabMode::None,
+        CursorGrabMode::Confined => winit::window::CursorGrabMode::Confined,
+        CursorGrabMode::Locked => winit::window::CursorGrabMode::Locked,
+    }
+}
+
+fn cursor_error(error: impl ToString) -> CursorResponse {
+    CursorResponse::Error(crate::platform::PlatformServiceError::new(
+        PlatformErrorCode::Failed,
+        error.to_string(),
+    ))
 }
 
 fn canvas_pixel_size(width: f32, height: f32, scale: f32) -> Option<PixelSize> {
@@ -1363,6 +1765,100 @@ mod tests {
         ));
         assert_eq!(pixel_unit, WheelDeltaUnit::Pixel);
         assert_eq!(pixel_delta, UiPoint::new(0.0, 48.0));
+    }
+
+    #[test]
+    fn native_cursor_helpers_map_public_cursor_contracts_to_winit() {
+        assert_eq!(
+            native_cursor_icon(CursorShape::Pointer),
+            winit::window::CursorIcon::Pointer
+        );
+        assert_eq!(
+            native_cursor_icon(CursorShape::ResizeNorthEastSouthWest),
+            winit::window::CursorIcon::NeswResize
+        );
+        assert_eq!(
+            native_cursor_grab_mode(CursorGrabMode::None),
+            winit::window::CursorGrabMode::None
+        );
+        assert_eq!(
+            native_cursor_grab_mode(CursorGrabMode::Locked),
+            winit::window::CursorGrabMode::Locked
+        );
+    }
+
+    #[test]
+    fn native_canvas_input_resolves_local_pointer_wheel_and_keyboard_events() {
+        let mut document = UiDocument::new(crate::LayoutStyle::size(200.0, 160.0));
+        let root = document.root;
+        let mut canvas = crate::UiNode::canvas(
+            "viewport",
+            "viewport",
+            crate::LayoutStyle::size(100.0, 80.0),
+        );
+        canvas.content = UiContent::Canvas(
+            CanvasContent::new("viewport").interaction(crate::CanvasInteractionPolicy::EDITOR),
+        );
+        let canvas_id = document.add_child(root, canvas);
+
+        let mut measurer = ApproxTextMeasurer;
+        document
+            .compute_layout(UiSize::new(200.0, 160.0), &mut measurer)
+            .unwrap();
+
+        let state = crate::HostInteractionState::default();
+        let pointer = RawInputEvent::Pointer(RawPointerEvent::new(
+            PointerEventKind::Move,
+            UiPoint::new(20.0, 12.0),
+            1,
+        ));
+        let pointer_input = native_canvas_input_for_raw_event(&document, &state, &pointer).unwrap();
+        assert_eq!(pointer_input.node, canvas_id);
+        assert_eq!(pointer_input.key, "viewport");
+        assert_eq!(pointer_input.local_position, Some(UiPoint::new(20.0, 12.0)));
+        assert_eq!(pointer_input.input, pointer);
+
+        let wheel = RawInputEvent::Wheel(RawWheelEvent::pixels(
+            UiPoint::new(24.0, 18.0),
+            UiPoint::new(0.0, 10.0),
+            2,
+        ));
+        let wheel_input = native_canvas_input_for_raw_event(&document, &state, &wheel).unwrap();
+        assert_eq!(wheel_input.node, canvas_id);
+        assert_eq!(wheel_input.local_position, Some(UiPoint::new(24.0, 18.0)));
+
+        let keyboard = RawInputEvent::Keyboard(RawKeyboardEvent::press(
+            KeyCode::Character('w'),
+            KeyModifiers::NONE,
+            3,
+        ));
+        assert!(native_canvas_input_for_raw_event(&document, &state, &keyboard).is_none());
+
+        let mut state = crate::HostInteractionState {
+            focused: Some(canvas_id),
+            ..Default::default()
+        };
+        let keyboard_input =
+            native_canvas_input_for_raw_event(&document, &state, &keyboard).unwrap();
+        assert_eq!(keyboard_input.node, canvas_id);
+        assert_eq!(keyboard_input.local_position, None);
+
+        state.focused = None;
+        state
+            .canvas_host_capture
+            .sync([crate::CanvasHostCapturePlan {
+                node: canvas_id,
+                key: "viewport".to_string(),
+                rect: document.node(canvas_id).layout.rect,
+                pointer_capture: true,
+                keyboard_capture: true,
+                wheel_capture: true,
+                pointer_lock: false,
+                domain_hit_testing: true,
+            }]);
+        let keyboard_input =
+            native_canvas_input_for_raw_event(&document, &state, &keyboard).unwrap();
+        assert_eq!(keyboard_input.node, canvas_id);
     }
 
     #[test]

@@ -1038,8 +1038,16 @@ pub enum CursorRequest {
     SetShape(CursorShape),
     SetVisible(bool),
     SetPosition(LogicalPoint),
+    SetGrab(CursorGrabMode),
     Confine(LogicalRect),
     ReleaseConfine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CursorGrabMode {
+    None,
+    Confined,
+    Locked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1365,7 +1373,9 @@ impl PlatformServiceCapabilities {
             PlatformRequest::Cursor(request) => match request {
                 CursorRequest::SetShape(_) | CursorRequest::SetVisible(_) => self.cursor_shape,
                 CursorRequest::SetPosition(_) => self.cursor_position,
-                CursorRequest::Confine(_) | CursorRequest::ReleaseConfine => self.cursor_confine,
+                CursorRequest::SetGrab(_)
+                | CursorRequest::Confine(_)
+                | CursorRequest::ReleaseConfine => self.cursor_confine,
             },
             PlatformRequest::Repaint(_) => self.repaint,
         }

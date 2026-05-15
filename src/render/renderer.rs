@@ -11,8 +11,9 @@ use std::collections::HashMap;
 use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
 use crate::platform::{
-    BackendCapabilities, CursorRequest, LayerOrder, LogicalRect, PixelSize, PlatformRequest,
-    PlatformRequestIdAllocator, PlatformServiceRequest, ResourceHandle, ResourceId, ResourceKind,
+    BackendCapabilities, CursorGrabMode, CursorRequest, LayerOrder, LogicalRect, PixelSize,
+    PlatformRequest, PlatformRequestIdAllocator, PlatformServiceRequest, ResourceHandle,
+    ResourceId, ResourceKind,
 };
 use crate::{
     AccessibilityMeta, AccessibilityRole, AccessibilitySummary, CanvasContent, ColorRgba,
@@ -466,11 +467,11 @@ impl CanvasHostCapturePlan {
     }
 
     pub fn platform_requests(&self) -> Vec<PlatformRequest> {
-        let Some(rect) = self.cursor_confine_rect() else {
+        let Some(_rect) = self.cursor_confine_rect() else {
             return Vec::new();
         };
         vec![
-            PlatformRequest::Cursor(CursorRequest::Confine(rect)),
+            PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
             PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
         ]
     }
@@ -478,7 +479,7 @@ impl CanvasHostCapturePlan {
     pub fn release_platform_requests(&self) -> Vec<PlatformRequest> {
         if self.pointer_lock {
             vec![
-                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::None)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
             ]
         } else {
@@ -1970,16 +1971,14 @@ mod tests {
         assert_eq!(
             request.canvas_platform_requests(),
             vec![
-                PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
-                    12.0, 16.0, 320.0, 180.0
-                ))),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
             ]
         );
         assert_eq!(
             plans[0].release_platform_requests(),
             vec![
-                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::None)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
             ]
         );
@@ -2054,9 +2053,7 @@ mod tests {
         assert_eq!(
             transition.platform_requests(),
             vec![
-                PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
-                    12.0, 16.0, 320.0, 180.0
-                ))),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
             ]
         );
@@ -2120,11 +2117,9 @@ mod tests {
         assert_eq!(
             transition.platform_requests(),
             vec![
-                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::None)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
-                PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
-                    24.0, 32.0, 400.0, 220.0
-                ))),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
             ]
         );
@@ -2150,7 +2145,7 @@ mod tests {
         assert_eq!(
             transition.platform_requests(),
             vec![
-                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::None)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
             ]
         );

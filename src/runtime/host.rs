@@ -1021,7 +1021,7 @@ mod tests {
         RawTextInputEvent, RawWheelEvent, WheelPhase,
     };
     use crate::platform::{
-        BackendAdapterKind, CursorRequest, LogicalRect, PlatformRequestId,
+        BackendAdapterKind, CursorGrabMode, CursorRequest, LogicalRect, PlatformRequestId,
         PlatformRequestIdAllocator, PlatformServiceCapabilities, RepaintResponse, TextRange,
     };
     use crate::{
@@ -2113,9 +2113,7 @@ mod tests {
         assert_eq!(
             first.canvas_host_capture_transition.platform_requests(),
             vec![
-                PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
-                    0.0, 0.0, 160.0, 96.0
-                ))),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
             ]
         );
@@ -2177,9 +2175,7 @@ mod tests {
         );
         assert_eq!(
             requests[1].request,
-            PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
-                0.0, 0.0, 160.0, 96.0
-            )))
+            PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked))
         );
         assert_eq!(
             requests[2].request,
@@ -2225,7 +2221,7 @@ mod tests {
         assert_eq!(
             released.canvas_host_capture_transition.platform_requests(),
             vec![
-                PlatformRequest::Cursor(CursorRequest::ReleaseConfine),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::None)),
                 PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
             ]
         );

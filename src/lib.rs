@@ -187,9 +187,9 @@ pub use effective_geometry::{
 };
 #[cfg(feature = "egui")]
 pub use egui_host::{
-    egui_cursor_icon, egui_host_capabilities, egui_key, egui_modifiers, egui_pointer_button,
-    egui_texture_id_for_resource, EguiAccessibilityOutputPlan, EguiHostAdapter, EguiInputAdapter,
-    EguiPlatformOutputPlan, EguiTextureDeltaPlan,
+    egui_cursor_grab, egui_cursor_icon, egui_host_capabilities, egui_key, egui_modifiers,
+    egui_pointer_button, egui_texture_id_for_resource, EguiAccessibilityOutputPlan,
+    EguiHostAdapter, EguiInputAdapter, EguiPlatformOutputPlan, EguiTextureDeltaPlan,
 };
 pub use errors::{
     classify_platform_error, classify_render_error, ErrorContext, ErrorDomain, ErrorKind,
@@ -268,6 +268,10 @@ pub use paint::{
     PathStrokeOptions, PathVerb, PixelSnapPolicy, StrokeAlignment, StrokeLineCap, StrokeLineJoin,
     TextHorizontalAlign, TextOverflow, TextVerticalAlign,
 };
+pub use platform::{
+    CursorGrabMode, CursorRequest, CursorResponse, CursorShape, LogicalPoint, LogicalRect,
+    LogicalSize, PlatformRequest, RepaintRequest,
+};
 pub use renderer::{
     CanvasHitCollection, CanvasHitTarget, CanvasHostCaptureChange, CanvasHostCaptureChangeKind,
     CanvasHostCaptureId, CanvasHostCapturePlan, CanvasHostCaptureState,
@@ -290,9 +294,9 @@ pub use resource_cache::{
 pub use runtime::native::{
     run_app, run_app_with, run_app_with_canvas_renderers, run_app_with_canvas_renderers_and_hooks,
     run_ui_document, run_ui_document_with, run_ui_document_with_canvas_renderers,
-    NativeKeyboardInput, NativeWgpuCanvasRenderContext, NativeWgpuCanvasRenderHandler,
-    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowMetrics, NativeWindowOptions,
-    NativeWindowResult,
+    NativeCanvasInput, NativeKeyboardInput, NativeRawMouseMotion, NativeWgpuCanvasRenderContext,
+    NativeWgpuCanvasRenderHandler, NativeWgpuCanvasRenderRegistry, NativeWindowHooks,
+    NativeWindowMetrics, NativeWindowOptions, NativeWindowResult,
 };
 pub use runtime::{
     coalesce_repaint_requests, collect_repaint_requests, completed_platform_response,
@@ -332,16 +336,17 @@ pub use tasks::{
     TaskProgress, TaskRegistry, TaskResultDisposition, TaskState, TaskStatus,
 };
 pub use testing::{
-    diff_rgba8, AccessibilityAssertions, AccessibilityRequestAssertions, AuditAssertions,
-    CommandReplayReport, CommandReplayStepResult, DirtyFlags, DisplayListInvalidationAssertions,
-    DisplayListReuseAssertions, DisplayListReuseSeries, DisplayListReuseSeriesAssertions,
-    EmptyResourceResolver, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
-    FrameTiming, FrameTimingAssertions, FrameTimingSection, FrameTimingSeries,
-    FrameTimingSeriesAssertions, LayoutAssertions, PaintAssertions, PaintKindSelector,
-    PaintRecorderRenderer, PerformanceAssertions, PerformanceSamples, PixelDiffReport,
-    PixelDiffTolerance, PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput,
-    RgbaImageView, ScenarioFrameReport, ScenarioHarness, SnapshotAssertions, TestFailure,
-    TestResult,
+    diff_rgba8, run_ui_state_matrix, AccessibilityAssertions, AccessibilityRequestAssertions,
+    AuditAssertions, CommandReplayReport, CommandReplayStepResult, DirtyFlags,
+    DisplayListInvalidationAssertions, DisplayListReuseAssertions, DisplayListReuseSeries,
+    DisplayListReuseSeriesAssertions, EmptyResourceResolver, EventReplay, EventReplayReport,
+    EventReplayStep, EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
+    FrameTimingSeries, FrameTimingSeriesAssertions, LayoutAssertions, PaintAssertions,
+    PaintKindSelector, PaintRecorderRenderer, PerformanceAssertions, PerformanceSamples,
+    PixelDiffReport, PixelDiffTolerance, PlatformAssertions, RenderAssertions,
+    RenderOutputAssertions, ReplayInput, RgbaImageView, ScenarioFrameReport, ScenarioHarness,
+    SnapshotAssertions, TestFailure, TestResult, UiStateMatrixCase, UiStateMatrixDocument,
+    UiStateMatrixInteraction, UiStateMatrixReport, UiStateMatrixTarget, UiStateMatrixViewport,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,

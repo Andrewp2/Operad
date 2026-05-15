@@ -10,6 +10,8 @@ pub struct TooltipBoxOptions {
     pub animation: Option<AnimationMachine>,
     pub z_index: i16,
     pub layer: crate::platform::UiLayer,
+    pub clip_scope: ClipScope,
+    pub portal: UiPortalTarget,
     pub accessibility_label: Option<String>,
 }
 
@@ -46,6 +48,8 @@ impl Default for TooltipBoxOptions {
             animation: Some(tooltip_fade_slide_animation(true, false)),
             z_index: 100,
             layer: crate::platform::UiLayer::AppOverlay,
+            clip_scope: ClipScope::Viewport,
+            portal: UiPortalTarget::Parent,
             accessibility_label: None,
         }
     }
@@ -64,6 +68,16 @@ impl TooltipBoxOptions {
 
     pub fn with_animation(mut self, animation: impl Into<Option<AnimationMachine>>) -> Self {
         self.animation = animation.into();
+        self
+    }
+
+    pub const fn with_clip_scope(mut self, clip_scope: ClipScope) -> Self {
+        self.clip_scope = clip_scope;
+        self
+    }
+
+    pub fn with_portal(mut self, portal: UiPortalTarget) -> Self {
+        self.portal = portal;
         self
     }
 }
@@ -280,6 +294,7 @@ pub fn tooltip_box(
         },
     )
     .with_layer(options.layer)
+    .with_clip_scope(options.clip_scope)
     .with_visual(options.visual)
     .with_accessibility(
         AccessibilityMeta::new(AccessibilityRole::Tooltip)
@@ -289,7 +304,7 @@ pub fn tooltip_box(
     if let Some(animation) = options.animation {
         tooltip_node = tooltip_node.with_animation(animation);
     }
-    let tooltip = document.add_child(parent, tooltip_node);
+    let tooltip = document.add_portal_child(parent, options.portal.clone(), tooltip_node);
 
     label(
         document,
@@ -359,7 +374,9 @@ pub fn tooltip_box_from_request(
         parent,
         name,
         request.content.clone(),
-        options.at_rect(rect),
+        options
+            .at_rect(rect)
+            .with_portal(UiPortalTarget::AppOverlay),
     )
 }
 
@@ -400,6 +417,7 @@ mod tests {
         let node = document.node(tooltip);
         assert_eq!(node.style.z_index, 100);
         assert_eq!(node.layer, Some(crate::platform::UiLayer::AppOverlay));
+        assert_eq!(node.clip_scope, ClipScope::Viewport);
         assert_eq!(
             node.accessibility.as_ref().unwrap().role,
             AccessibilityRole::Tooltip
@@ -409,6 +427,31 @@ mod tests {
             node.animation.as_ref().unwrap().current_state_name(),
             "visible"
         );
+    }
+
+    #[test]
+    fn tooltip_box_from_request_routes_through_overlay_portal() {
+        let mut document = UiDocument::new(root_style(300.0, 180.0));
+        let root = document.root;
+        let request = TooltipRequest::new(
+            TooltipAnchor::new(root, UiRect::new(24.0, 24.0, 40.0, 20.0)),
+            TooltipContent::new("Save"),
+        );
+        let tooltip = tooltip_box_from_request(
+            &mut document,
+            root,
+            "save.tooltip",
+            &request,
+            UiRect::new(0.0, 0.0, 300.0, 180.0),
+            UiSize::new(120.0, 48.0),
+            None,
+            TooltipBoxOptions::default(),
+        );
+
+        let portal = document
+            .portal_host(APP_OVERLAY_PORTAL)
+            .expect("app overlay portal");
+        assert_eq!(document.node(tooltip).parent, Some(portal));
     }
 
     #[test]

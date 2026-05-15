@@ -1,4 +1,4 @@
-use taffy::prelude::{Dimension, Size as TaffySize, Style};
+use taffy::prelude::{AlignItems, Dimension, Size as TaffySize, Style};
 
 use crate::widgets;
 use crate::*;
@@ -15,6 +15,394 @@ fn button_style(width: f32, height: f32) -> UiNodeStyle {
         .style,
         ..Default::default()
     }
+}
+
+fn widget_state_matrix_viewports() -> Vec<UiStateMatrixViewport> {
+    vec![
+        UiStateMatrixViewport::new("compact", UiSize::new(260.0, 180.0)),
+        UiStateMatrixViewport::new("roomy", UiSize::new(420.0, 260.0)),
+    ]
+}
+
+fn widget_state_matrix_case(
+    label: &'static str,
+    build: impl Fn(&mut UiDocument, UiNodeId) -> Vec<UiStateMatrixTarget> + 'static,
+) -> UiStateMatrixCase<'static> {
+    UiStateMatrixCase::new(label, move |viewport| {
+        let mut document = UiDocument::new(root_style(viewport.width, viewport.height));
+        let root = document.root;
+        let surface = document.add_child(
+            root,
+            UiNode::container(
+                "matrix.surface",
+                LayoutStyle::column()
+                    .with_align_items(AlignItems::FlexStart)
+                    .with_width_percent(1.0)
+                    .with_height_percent(1.0)
+                    .with_padding(8.0)
+                    .with_gap(6.0),
+            ),
+        );
+        let targets = build(&mut document, surface);
+        Ok(UiStateMatrixDocument::new(document, targets))
+    })
+}
+
+fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
+    vec![
+        widget_state_matrix_case("button states", |document, parent| {
+            let default = widgets::button(
+                document,
+                parent,
+                "button.default",
+                "Toggle helper",
+                widgets::ButtonOptions::default().with_action("button.default"),
+            );
+            let pressed = widgets::toggle_button(
+                document,
+                parent,
+                "button.pressed",
+                "Pinned",
+                true,
+                widgets::ButtonOptions::default().with_action("button.pressed"),
+            );
+            let disabled = widgets::button(
+                document,
+                parent,
+                "button.disabled",
+                "Disabled",
+                widgets::ButtonOptions::default().disabled(),
+            );
+            vec![
+                UiStateMatrixTarget::pointer_click("default", default),
+                UiStateMatrixTarget::pointer_click("pressed", pressed),
+                UiStateMatrixTarget::layout("disabled", disabled),
+            ]
+        }),
+        widget_state_matrix_case("checkbox states", |document, parent| {
+            let unchecked = widgets::checkbox(
+                document,
+                parent,
+                "checkbox.unchecked",
+                "Unchecked",
+                false,
+                widgets::CheckboxOptions::default().with_action("checkbox.unchecked"),
+            );
+            let checked = widgets::checkbox(
+                document,
+                parent,
+                "checkbox.checked",
+                "Checked",
+                true,
+                widgets::CheckboxOptions::default().with_action("checkbox.checked"),
+            );
+            let disabled = widgets::checkbox(
+                document,
+                parent,
+                "checkbox.disabled",
+                "Disabled",
+                true,
+                widgets::CheckboxOptions {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+            vec![
+                UiStateMatrixTarget::pointer_click("unchecked", unchecked),
+                UiStateMatrixTarget::pointer_click("checked", checked),
+                UiStateMatrixTarget::layout("disabled", disabled),
+            ]
+        }),
+        widget_state_matrix_case("radio states", |document, parent| {
+            let unselected = widgets::radio_button(
+                document,
+                parent,
+                "radio.unselected",
+                "Unselected",
+                false,
+                widgets::RadioButtonOptions::default().with_action("radio.unselected"),
+            );
+            let selected = widgets::radio_button(
+                document,
+                parent,
+                "radio.selected",
+                "Selected",
+                true,
+                widgets::RadioButtonOptions::default().with_action("radio.selected"),
+            );
+            let disabled = widgets::radio_button(
+                document,
+                parent,
+                "radio.disabled",
+                "Disabled",
+                false,
+                widgets::RadioButtonOptions {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+            vec![
+                UiStateMatrixTarget::pointer_click("unselected", unselected),
+                UiStateMatrixTarget::pointer_click("selected", selected),
+                UiStateMatrixTarget::layout("disabled", disabled),
+            ]
+        }),
+        widget_state_matrix_case("toggle switch states", |document, parent| {
+            let off = widgets::toggle_switch(
+                document,
+                parent,
+                "toggle.off",
+                "Switch off",
+                widgets::ToggleValue::Off,
+                widgets::ToggleSwitchOptions::default().with_action("toggle.off"),
+            );
+            let on = widgets::toggle_switch(
+                document,
+                parent,
+                "toggle.on",
+                "Switch on",
+                widgets::ToggleValue::On,
+                widgets::ToggleSwitchOptions::default().with_action("toggle.on"),
+            );
+            let mixed = widgets::toggle_switch(
+                document,
+                parent,
+                "toggle.mixed",
+                "Switch mixed",
+                widgets::ToggleValue::Mixed,
+                widgets::ToggleSwitchOptions::default().with_action("toggle.mixed"),
+            );
+            vec![
+                UiStateMatrixTarget::pointer_click("off", off),
+                UiStateMatrixTarget::pointer_click("on", on),
+                UiStateMatrixTarget::pointer_click("mixed", mixed),
+            ]
+        }),
+        widget_state_matrix_case("slider states", |document, parent| {
+            let min = widgets::slider(
+                document,
+                parent,
+                "slider.min",
+                0.0,
+                0.0..100.0,
+                widgets::SliderOptions::default().with_drag_action("slider.min"),
+            );
+            let mid = widgets::slider(
+                document,
+                parent,
+                "slider.mid",
+                50.0,
+                0.0..100.0,
+                widgets::SliderOptions::default().with_drag_action("slider.mid"),
+            );
+            let max = widgets::slider(
+                document,
+                parent,
+                "slider.max",
+                100.0,
+                0.0..100.0,
+                widgets::SliderOptions::default().with_drag_action("slider.max"),
+            );
+            let disabled = widgets::slider(
+                document,
+                parent,
+                "slider.disabled",
+                25.0,
+                0.0..100.0,
+                widgets::SliderOptions {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+            vec![
+                UiStateMatrixTarget::pointer_click("min", min),
+                UiStateMatrixTarget::pointer_click("mid", mid),
+                UiStateMatrixTarget::pointer_click("max", max),
+                UiStateMatrixTarget::layout("disabled", disabled),
+            ]
+        }),
+        widget_state_matrix_case("text input states", |document, parent| {
+            let empty_state = widgets::TextInputState::new("");
+            let filled_state = widgets::TextInputState::new("Preset A");
+            let empty = widgets::text_input(
+                document,
+                parent,
+                "text.empty",
+                &empty_state,
+                widgets::TextInputOptions::default().with_placeholder("Preset name"),
+            );
+            let focused = widgets::text_input(
+                document,
+                parent,
+                "text.focused",
+                &filled_state,
+                widgets::TextInputOptions {
+                    focused: true,
+                    ..Default::default()
+                },
+            );
+            let disabled = widgets::text_input(
+                document,
+                parent,
+                "text.disabled",
+                &filled_state,
+                widgets::TextInputOptions {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+            vec![
+                UiStateMatrixTarget::pointer_click("empty", empty),
+                UiStateMatrixTarget::pointer_click("focused", focused),
+                UiStateMatrixTarget::layout("disabled", disabled),
+            ]
+        }),
+        widget_state_matrix_case("combo box states", |document, parent| {
+            let closed = widgets::combo_box(
+                document,
+                parent,
+                "combo.closed",
+                "Sine",
+                false,
+                widgets::ComboBoxOptions::default(),
+            );
+            let open = widgets::combo_box(
+                document,
+                parent,
+                "combo.open",
+                "Triangle",
+                true,
+                widgets::ComboBoxOptions::default(),
+            );
+            let disabled = widgets::combo_box(
+                document,
+                parent,
+                "combo.disabled",
+                "Noise",
+                false,
+                widgets::ComboBoxOptions {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+            vec![
+                UiStateMatrixTarget::pointer_click("closed", closed),
+                UiStateMatrixTarget::pointer_click("open", open),
+                UiStateMatrixTarget::layout("disabled", disabled),
+            ]
+        }),
+        widget_state_matrix_case("color button states", |document, parent| {
+            let color = ColorRgba::new(74, 133, 198, 255);
+            let rgb = widgets::color_edit_button_rgb(
+                document,
+                parent,
+                "color.rgb",
+                color,
+                widgets::ColorButtonOptions::default().with_action("color.rgb"),
+            );
+            let swatch = widgets::color_swatch_button(
+                document,
+                parent,
+                "color.swatch",
+                color,
+                widgets::ColorButtonOptions::default().with_action("color.swatch"),
+            );
+            vec![
+                UiStateMatrixTarget::pointer_click("rgb", rgb.root),
+                UiStateMatrixTarget::pointer_click("swatch", swatch.root),
+            ]
+        }),
+        widget_state_matrix_case("progress states", |document, parent| {
+            let progress = widgets::progress_indicator(
+                document,
+                parent,
+                "progress.percent",
+                widgets::ProgressIndicatorValue::percent(62.0),
+                widgets::ProgressIndicatorOptions {
+                    layout: LayoutStyle::new().with_width(180.0).with_height(8.0),
+                    accessibility_label: Some("Progress".to_string()),
+                    ..Default::default()
+                },
+            );
+            let spinner = widgets::spinner(
+                document,
+                parent,
+                "progress.spinner",
+                widgets::SpinnerOptions::default().with_phase(1.4),
+            );
+            vec![
+                UiStateMatrixTarget::layout("progress", progress.root),
+                UiStateMatrixTarget::layout("progress fill", progress.fill),
+                UiStateMatrixTarget::layout("spinner", spinner),
+            ]
+        }),
+        widget_state_matrix_case("scroll container states", |document, parent| {
+            let scroll = ScrollState {
+                axes: ScrollAxes::BOTH,
+                offset: UiPoint::new(18.0, 20.0),
+                viewport_size: UiSize::new(170.0, 64.0),
+                content_size: UiSize::new(360.0, 180.0),
+            };
+            let nodes = widgets::scroll_container(
+                document,
+                parent,
+                "scroll.matrix",
+                scroll,
+                widgets::ScrollContainerOptions::default()
+                    .with_axes(ScrollAxes::BOTH)
+                    .with_layout(LayoutStyle::size(210.0, 96.0))
+                    .with_scrollbar_visibility(ScrollbarVisibility::Always),
+                |document, viewport| {
+                    widgets::label(
+                        document,
+                        viewport,
+                        "scroll.matrix.long_label",
+                        "LongIdentifierWithoutSpacesLongIdentifier",
+                        TextStyle {
+                            wrap: TextWrap::None,
+                            ..Default::default()
+                        },
+                        LayoutStyle::new().with_width(360.0).with_height(24.0),
+                    );
+                    widgets::button(
+                        document,
+                        viewport,
+                        "scroll.matrix.action",
+                        "Scrollable action",
+                        widgets::ButtonOptions::default().with_action("scroll.matrix.action"),
+                    );
+                },
+            );
+            let mut targets = vec![
+                UiStateMatrixTarget::layout("root", nodes.root),
+                UiStateMatrixTarget::layout("viewport", nodes.viewport),
+            ];
+            if let Some(scrollbar) = nodes.vertical_scrollbar {
+                targets.push(UiStateMatrixTarget::pointer_click(
+                    "vertical scrollbar",
+                    scrollbar,
+                ));
+            }
+            if let Some(scrollbar) = nodes.horizontal_scrollbar {
+                targets.push(UiStateMatrixTarget::pointer_click(
+                    "horizontal scrollbar",
+                    scrollbar,
+                ));
+            }
+            targets
+        }),
+    ]
+}
+
+#[cfg(feature = "widgets")]
+#[test]
+fn widget_state_matrix_core_controls_keep_geometry_and_pointer_targets() {
+    let report = run_ui_state_matrix(widget_state_matrix_viewports(), widget_state_matrix_cases())
+        .expect("widget state matrix should stay layout-clean and interactive");
+
+    assert_eq!(report.cases, 10);
+    assert_eq!(report.viewports, 2);
+    assert!(report.pointer_interactions > 0);
 }
 
 #[cfg(feature = "widgets")]

@@ -89,6 +89,33 @@ Open a native window:
 cargo run --example showcase
 ```
 
+## Development Checks
+
+Use the fast gate while iterating:
+
+```bash
+scripts/test-fast.sh
+```
+
+That runs all-target/all-feature compilation, all-feature library tests, and the
+no-default compile gate without running perf smoke or WGPU snapshot integration
+tests.
+
+Focused cargo aliases are available for common loops:
+
+```bash
+cargo test-native
+cargo test-matrix
+cargo test-wgpu-snap
+cargo test-perf
+```
+
+Run the full local gate before release-level handoff:
+
+```bash
+scripts/test-full.sh
+```
+
 ## Learn More
 
 - [API documentation](https://docs.rs/operad)

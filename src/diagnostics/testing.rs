@@ -912,6 +912,305 @@ impl CommandReplayReport {
     }
 }
 
+pub struct UiStateMatrixCase<'a> {
+    pub label: String,
+    build: Box<dyn Fn(UiSize) -> TestResult<UiStateMatrixDocument> + 'a>,
+}
+
+impl<'a> UiStateMatrixCase<'a> {
+    pub fn new(
+        label: impl Into<String>,
+        build: impl Fn(UiSize) -> TestResult<UiStateMatrixDocument> + 'a,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            build: Box::new(build),
+        }
+    }
+}
+
+impl fmt::Debug for UiStateMatrixCase<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UiStateMatrixCase")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiStateMatrixViewport {
+    pub label: String,
+    pub size: UiSize,
+}
+
+impl UiStateMatrixViewport {
+    pub fn new(label: impl Into<String>, size: UiSize) -> Self {
+        Self {
+            label: label.into(),
+            size,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct UiStateMatrixDocument {
+    pub document: UiDocument,
+    pub targets: Vec<UiStateMatrixTarget>,
+}
+
+impl UiStateMatrixDocument {
+    pub fn new(
+        document: UiDocument,
+        targets: impl IntoIterator<Item = UiStateMatrixTarget>,
+    ) -> Self {
+        Self {
+            document,
+            targets: targets.into_iter().collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiStateMatrixTarget {
+    pub label: String,
+    pub node: UiNodeId,
+    pub interaction: UiStateMatrixInteraction,
+}
+
+impl UiStateMatrixTarget {
+    pub fn layout(label: impl Into<String>, node: UiNodeId) -> Self {
+        Self {
+            label: label.into(),
+            node,
+            interaction: UiStateMatrixInteraction::None,
+        }
+    }
+
+    pub fn pointer_click(label: impl Into<String>, node: UiNodeId) -> Self {
+        Self {
+            label: label.into(),
+            node,
+            interaction: UiStateMatrixInteraction::PointerClick,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UiStateMatrixInteraction {
+    #[default]
+    None,
+    PointerClick,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UiStateMatrixReport {
+    pub viewports: usize,
+    pub cases: usize,
+    pub documents: usize,
+    pub targets: usize,
+    pub pointer_interactions: usize,
+}
+
+impl UiStateMatrixReport {
+    fn record_document(&mut self, target_count: usize) {
+        self.documents += 1;
+        self.targets += target_count;
+    }
+
+    fn record_pointer_interaction(&mut self) {
+        self.pointer_interactions += 1;
+    }
+}
+
+pub fn run_ui_state_matrix<'a>(
+    viewports: impl IntoIterator<Item = UiStateMatrixViewport>,
+    cases: impl IntoIterator<Item = UiStateMatrixCase<'a>>,
+) -> TestResult<UiStateMatrixReport> {
+    let viewports = viewports.into_iter().collect::<Vec<_>>();
+    let cases = cases.into_iter().collect::<Vec<_>>();
+    let mut report = UiStateMatrixReport {
+        viewports: viewports.len(),
+        cases: cases.len(),
+        ..UiStateMatrixReport::default()
+    };
+    for case in &cases {
+        for viewport in &viewports {
+            let mut matrix_document = (case.build)(viewport.size).map_err(|error| {
+                TestFailure::new(format!(
+                    "state matrix `{}` at viewport `{}` failed to build: {error}",
+                    case.label, viewport.label
+                ))
+            })?;
+            matrix_document
+                .document
+                .compute_layout(viewport.size, &mut ApproxTextMeasurer)
+                .map_err(|error| {
+                    TestFailure::new(format!(
+                        "state matrix `{}` at viewport `{}` failed to layout: {error}",
+                        case.label, viewport.label
+                    ))
+                })?;
+            require_state_matrix_blocking_audit_clean(
+                &case.label,
+                viewport,
+                &matrix_document.document,
+            )?;
+            for target in &matrix_document.targets {
+                require_state_matrix_target_geometry(
+                    &case.label,
+                    viewport,
+                    &matrix_document.document,
+                    target,
+                )?;
+                match target.interaction {
+                    UiStateMatrixInteraction::None => {}
+                    UiStateMatrixInteraction::PointerClick => {
+                        require_state_matrix_pointer_click(
+                            &case.label,
+                            viewport,
+                            &mut matrix_document.document,
+                            target,
+                        )?;
+                        report.record_pointer_interaction();
+                    }
+                }
+            }
+            report.record_document(matrix_document.targets.len());
+        }
+    }
+    Ok(report)
+}
+
+fn require_state_matrix_blocking_audit_clean(
+    case_label: &str,
+    viewport: &UiStateMatrixViewport,
+    document: &UiDocument,
+) -> TestResult {
+    let warnings = document
+        .audit_layout()
+        .into_iter()
+        .filter(state_matrix_blocking_warning)
+        .collect::<Vec<_>>();
+    if warnings.is_empty() {
+        Ok(())
+    } else {
+        Err(TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` ({:?}) had blocking audit warnings: {warnings:?}",
+            viewport.label, viewport.size
+        )))
+    }
+}
+
+fn state_matrix_blocking_warning(warning: &AuditWarning) -> bool {
+    matches!(
+        warning,
+        AuditWarning::NonFiniteRect { .. }
+            | AuditWarning::InvisibleInteractiveNode { .. }
+            | AuditWarning::EmptyInteractiveClip { .. }
+            | AuditWarning::InteractiveTooSmall { .. }
+            | AuditWarning::DuplicateNodeName { .. }
+            | AuditWarning::TextClipped { .. }
+            | AuditWarning::NodeOutsideRoot { .. }
+            | AuditWarning::PaintItemEmptyClip { .. }
+    )
+}
+
+fn require_state_matrix_target_geometry(
+    case_label: &str,
+    viewport: &UiStateMatrixViewport,
+    document: &UiDocument,
+    target: &UiStateMatrixTarget,
+) -> TestResult {
+    let node = document.nodes().get(target.node.0).ok_or_else(|| {
+        TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` references missing node {:?}",
+            viewport.label, target.label, target.node
+        ))
+    })?;
+    if !node.layout.visible {
+        return Err(TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` is not visible",
+            viewport.label, target.label
+        )));
+    }
+    if !state_matrix_rect_is_finite(node.layout.rect)
+        || !state_matrix_rect_is_finite(node.layout.clip_rect)
+    {
+        return Err(TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` has non-finite geometry rect={:?} clip={:?}",
+            viewport.label, target.label, node.layout.rect, node.layout.clip_rect
+        )));
+    }
+    let clipped_rect = state_matrix_clipped_rect(node.layout.rect, node.layout.clip_rect);
+    if clipped_rect.width <= f32::EPSILON || clipped_rect.height <= f32::EPSILON {
+        return Err(TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` has an empty effective rect: rect={:?} clip={:?}",
+            viewport.label, target.label, node.layout.rect, node.layout.clip_rect
+        )));
+    }
+    Ok(())
+}
+
+fn require_state_matrix_pointer_click(
+    case_label: &str,
+    viewport: &UiStateMatrixViewport,
+    document: &mut UiDocument,
+    target: &UiStateMatrixTarget,
+) -> TestResult {
+    let node = document.nodes().get(target.node.0).ok_or_else(|| {
+        TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` references missing node {:?}",
+            viewport.label, target.label, target.node
+        ))
+    })?;
+    let clipped_rect = state_matrix_clipped_rect(node.layout.rect, node.layout.clip_rect);
+    let point = state_matrix_rect_center(clipped_rect);
+    let hit = document.hit_test(point).ok_or_else(|| {
+        TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` was not hit-testable at {:?}",
+            viewport.label, target.label, point
+        ))
+    })?;
+    if !document.node_is_descendant_or_self(target.node, hit) {
+        return Err(TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` expected hit under {:?}, got {:?}",
+            viewport.label, target.label, target.node, hit
+        )));
+    }
+
+    document.handle_input(UiInputEvent::PointerMove(point));
+    document.handle_input(UiInputEvent::PointerDown(point));
+    let result = document.handle_input(UiInputEvent::PointerUp(point));
+    let Some(clicked) = result.clicked else {
+        return Err(TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` did not produce a click at {:?}",
+            viewport.label, target.label, point
+        )));
+    };
+    if document.node_is_descendant_or_self(target.node, clicked) {
+        Ok(())
+    } else {
+        Err(TestFailure::new(format!(
+            "state matrix `{case_label}` at viewport `{}` target `{}` expected click under {:?}, got {:?}",
+            viewport.label, target.label, target.node, clicked
+        )))
+    }
+}
+
+fn state_matrix_rect_is_finite(rect: UiRect) -> bool {
+    rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()
+}
+
+fn state_matrix_clipped_rect(rect: UiRect, clip_rect: UiRect) -> UiRect {
+    rect.intersection(clip_rect)
+        .unwrap_or(UiRect::new(0.0, 0.0, 0.0, 0.0))
+}
+
+fn state_matrix_rect_center(rect: UiRect) -> UiPoint {
+    UiPoint::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutAssertions<'a> {
     document: &'a UiDocument,
@@ -3253,7 +3552,7 @@ mod tests {
         Command, CommandId, CommandMeta, CommandRegistry, CommandScope, Shortcut,
     };
     use crate::platform::{
-        ClipboardRequest, ClipboardResponse, CursorRequest, LogicalRect, PixelSize,
+        ClipboardRequest, ClipboardResponse, CursorGrabMode, CursorRequest, PixelSize,
         PlatformErrorCode, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
         PlatformResponse, PlatformServiceError, PlatformServiceKind, RepaintRequest,
         RepaintResponse,
@@ -4570,9 +4869,7 @@ mod tests {
             .expect("cursor request");
         assert_eq!(
             cursor_request.request,
-            PlatformRequest::Cursor(CursorRequest::Confine(LogicalRect::new(
-                0.0, 0.0, 120.0, 80.0
-            )))
+            PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked))
         );
     }
 
