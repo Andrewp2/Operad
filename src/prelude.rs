@@ -85,7 +85,8 @@ pub use crate::widgets::{
 
 #[cfg(feature = "native-window")]
 pub use crate::{
-    run_app, run_app_with, run_app_with_canvas_renderers, run_ui_document, run_ui_document_with,
-    run_ui_document_with_canvas_renderers, NativeWgpuCanvasRenderRegistry, NativeWindowOptions,
-    NativeWindowResult,
+    run_app, run_app_with, run_app_with_canvas_renderers, run_app_with_canvas_renderers_and_hooks,
+    run_ui_document, run_ui_document_with, run_ui_document_with_canvas_renderers,
+    NativeKeyboardInput, NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowMetrics,
+    NativeWindowOptions, NativeWindowResult,
 };

@@ -146,6 +146,11 @@ pub fn menu_list_popup(
             ..Default::default()
         },
     );
+    {
+        let layout = &mut document.node_mut(root).style.layout;
+        layout.display = Display::Flex;
+        layout.flex_direction = FlexDirection::Column;
+    }
     let rows = populate_menu_list(document, root, &name, items, active, &options);
     set_active_descendant(document, root, active_menu_row(items, &rows, active));
     MenuListNodes { root, rows }

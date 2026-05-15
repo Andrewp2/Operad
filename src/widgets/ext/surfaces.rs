@@ -619,6 +619,15 @@ mod tests {
         assert!(accessibility.iter().any(|node| {
             node.role == AccessibilityRole::Button && node.label.as_deref() == Some("Retry")
         }));
+        let retry_action = doc
+            .nodes()
+            .iter()
+            .find(|node| node.name == "toasts.toast.99.action.retry")
+            .and_then(|node| node.action.as_ref());
+        assert_eq!(
+            retry_action,
+            Some(&WidgetActionBinding::action("toast.action.99.retry"))
+        );
     }
 
     #[test]

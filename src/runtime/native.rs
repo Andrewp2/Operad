@@ -12,8 +12,8 @@ use crate::input::{
 };
 use crate::platform::PixelSize;
 use crate::{
-    process_document_frame, AccessibilityRole, ApproxTextMeasurer, CanvasRenderOutput,
-    CanvasRenderReport, CanvasRenderRequest, DirtyRegionSet, EmptyResourceResolver,
+    process_document_frame, AccessibilityRole, CanvasRenderOutput, CanvasRenderReport,
+    CanvasRenderRequest, CosmicTextMeasurer, DirtyRegionSet, EmptyResourceResolver,
     HostDocumentFrameState, HostFrameOutput, HostNodeInteraction, KeyCode, KeyModifiers,
     RenderError, RenderTarget, RendererAdapter, UiDocument, UiFocusState, UiInputEvent, UiNodeId,
     UiPoint, UiSize, WgpuCanvasContext, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase,
@@ -21,6 +21,109 @@ use crate::{
 };
 
 pub type NativeWindowResult<T = ()> = Result<T, Box<dyn Error>>;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeWindowMetrics {
+    pub physical_size: PixelSize,
+    pub viewport: UiSize,
+    pub scale_factor: f32,
+    pub dpi_scale: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeKeyboardInput {
+    pub logical_key: winit::keyboard::Key,
+    pub modifiers: winit::keyboard::ModifiersState,
+    pub repeat: bool,
+}
+
+type InitialSizeHook = Box<dyn Fn(&winit::event_loop::ActiveEventLoop) -> UiSize>;
+type TitleHook<State> = Box<dyn Fn(&State) -> String>;
+type ScaleFactorHook<State> = Box<dyn Fn(&State, NativeWindowMetrics) -> f32>;
+type CloseHook<State> = Box<dyn FnMut(&mut State) -> bool>;
+type KeyboardHook<State> = Box<dyn FnMut(&mut State, NativeKeyboardInput) -> bool>;
+type BeforeRenderHook<State> = Box<dyn FnMut(&mut State, NativeWindowMetrics)>;
+type IdleRedrawHook<State> = Box<dyn Fn(&State) -> bool>;
+
+pub struct NativeWindowHooks<State> {
+    pub initial_size: Option<InitialSizeHook>,
+    pub title: Option<TitleHook<State>>,
+    pub scale_factor: Option<ScaleFactorHook<State>>,
+    pub close_requested: Option<CloseHook<State>>,
+    pub keyboard_input: Option<KeyboardHook<State>>,
+    pub before_render: Option<BeforeRenderHook<State>>,
+    pub idle_redraw: Option<IdleRedrawHook<State>>,
+}
+
+impl<State> NativeWindowHooks<State> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_initial_size(
+        mut self,
+        initial_size: impl Fn(&winit::event_loop::ActiveEventLoop) -> UiSize + 'static,
+    ) -> Self {
+        self.initial_size = Some(Box::new(initial_size));
+        self
+    }
+
+    pub fn with_title(mut self, title: impl Fn(&State) -> String + 'static) -> Self {
+        self.title = Some(Box::new(title));
+        self
+    }
+
+    pub fn with_scale_factor(
+        mut self,
+        scale_factor: impl Fn(&State, NativeWindowMetrics) -> f32 + 'static,
+    ) -> Self {
+        self.scale_factor = Some(Box::new(scale_factor));
+        self
+    }
+
+    pub fn with_close_requested(
+        mut self,
+        close_requested: impl FnMut(&mut State) -> bool + 'static,
+    ) -> Self {
+        self.close_requested = Some(Box::new(close_requested));
+        self
+    }
+
+    pub fn with_keyboard_input(
+        mut self,
+        keyboard_input: impl FnMut(&mut State, NativeKeyboardInput) -> bool + 'static,
+    ) -> Self {
+        self.keyboard_input = Some(Box::new(keyboard_input));
+        self
+    }
+
+    pub fn with_before_render(
+        mut self,
+        before_render: impl FnMut(&mut State, NativeWindowMetrics) + 'static,
+    ) -> Self {
+        self.before_render = Some(Box::new(before_render));
+        self
+    }
+
+    pub fn with_idle_redraw(mut self, idle_redraw: impl Fn(&State) -> bool + 'static) -> Self {
+        self.idle_redraw = Some(Box::new(idle_redraw));
+        self
+    }
+}
+
+impl<State> Default for NativeWindowHooks<State> {
+    fn default() -> Self {
+        Self {
+            initial_size: None,
+            title: None,
+            scale_factor: None,
+            close_requested: None,
+            keyboard_input: None,
+            before_render: None,
+            idle_redraw: None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct NativeWgpuCanvasRenderContext<'a> {
@@ -300,8 +403,29 @@ pub fn run_app_with_canvas_renderers<State>(
 where
     State: 'static,
 {
+    run_app_with_canvas_renderers_and_hooks(
+        options,
+        state,
+        update,
+        view,
+        canvas_renderers,
+        NativeWindowHooks::default(),
+    )
+}
+
+pub fn run_app_with_canvas_renderers_and_hooks<State>(
+    options: NativeWindowOptions,
+    state: State,
+    update: impl FnMut(&mut State, WidgetAction) + 'static,
+    view: impl FnMut(&State, UiSize) -> UiDocument + 'static,
+    canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
+    hooks: NativeWindowHooks<State>,
+) -> NativeWindowResult
+where
+    State: 'static,
+{
     let event_loop = winit::event_loop::EventLoop::new()?;
-    let mut app = NativeWindowApp::new(options, state, update, view, canvas_renderers);
+    let mut app = NativeWindowApp::new(options, state, update, view, canvas_renderers, hooks);
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {
         Err(error.into())
@@ -319,9 +443,10 @@ struct NativeWindowApp<State, Update, View> {
     window_id: Option<winit::window::WindowId>,
     renderer: Option<WgpuSurfaceRenderer<'static>>,
     canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
+    hooks: NativeWindowHooks<State>,
     frame_state: HostDocumentFrameState,
     scroll_offsets: HashMap<String, UiPoint>,
-    text_measurer: ApproxTextMeasurer,
+    text_measurer: CosmicTextMeasurer,
     pending_input: Vec<RawInputEvent>,
     cursor: Option<UiPoint>,
     modifiers: KeyModifiers,
@@ -338,6 +463,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         update: Update,
         view: View,
         canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
+        hooks: NativeWindowHooks<State>,
     ) -> Self {
         Self {
             options,
@@ -348,9 +474,10 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             window_id: None,
             renderer: None,
             canvas_renderers,
+            hooks,
             frame_state: HostDocumentFrameState::new(),
             scroll_offsets: HashMap::new(),
-            text_measurer: ApproxTextMeasurer,
+            text_measurer: CosmicTextMeasurer::new(),
             pending_input: Vec::new(),
             cursor: None,
             modifiers: KeyModifiers::NONE,
@@ -367,8 +494,14 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     ) -> NativeWindowResult {
         let mut attributes = winit::window::Window::default_attributes()
             .with_title(self.options.title.clone())
-            .with_inner_size(logical_size(self.options.size))
             .with_visible(true);
+        let initial_size = self
+            .hooks
+            .initial_size
+            .as_ref()
+            .map(|initial_size| initial_size(event_loop))
+            .unwrap_or(self.options.size);
+        attributes = attributes.with_inner_size(logical_size(initial_size));
         if let Some(min_size) = self.options.min_size {
             attributes = attributes.with_min_inner_size(logical_size(min_size));
         }
@@ -417,7 +550,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         if size.width == 0 || size.height == 0 {
             None
         } else {
-            let scale = self.dpi_scale();
+            let scale = self.scale_factor_for_size(size);
             Some(UiSize::new(
                 size.width as f32 / scale,
                 size.height as f32 / scale,
@@ -431,6 +564,46 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             .map(|window| window.scale_factor() as f32)
             .filter(|scale| scale.is_finite() && *scale > 0.0)
             .unwrap_or(1.0)
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.window
+            .as_ref()
+            .map(|window| self.scale_factor_for_size(window.inner_size()))
+            .unwrap_or(1.0)
+    }
+
+    fn scale_factor_for_size(&self, size: winit::dpi::PhysicalSize<u32>) -> f32 {
+        let dpi_scale = self.dpi_scale();
+        let dpi_viewport = UiSize::new(
+            size.width.max(1) as f32 / dpi_scale,
+            size.height.max(1) as f32 / dpi_scale,
+        );
+        let metrics = NativeWindowMetrics {
+            physical_size: PixelSize::new(size.width.max(1), size.height.max(1)),
+            viewport: dpi_viewport,
+            scale_factor: dpi_scale,
+            dpi_scale,
+        };
+        self.hooks
+            .scale_factor
+            .as_ref()
+            .map(|scale_factor| normalized_native_scale(scale_factor(&self.state, metrics)))
+            .unwrap_or(dpi_scale)
+    }
+
+    fn metrics_for_viewport(&self, viewport: UiSize) -> NativeWindowMetrics {
+        let size = self
+            .window
+            .as_ref()
+            .map(|window| window.inner_size())
+            .unwrap_or_else(|| winit::dpi::PhysicalSize::new(1, 1));
+        NativeWindowMetrics {
+            physical_size: PixelSize::new(size.width.max(1), size.height.max(1)),
+            viewport,
+            scale_factor: self.scale_factor_for_size(size),
+            dpi_scale: self.dpi_scale(),
+        }
     }
 
     fn timestamp_millis(&self) -> u64 {
@@ -454,6 +627,13 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let Some(viewport) = self.viewport() else {
             return Ok(());
         };
+        let metrics = self.metrics_for_viewport(viewport);
+        if let Some(before_render) = self.hooks.before_render.as_mut() {
+            before_render(&mut self.state, metrics);
+        }
+        if let (Some(window), Some(title)) = (self.window.as_ref(), self.hooks.title.as_ref()) {
+            window.set_title(&title(&self.state));
+        }
         self.dispatch_tick_if_due();
         let raw_input = std::mem::take(&mut self.pending_input);
         let mut document = self.build_document(viewport)?;
@@ -532,7 +712,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     {
         let mut document = (self.view)(&self.state, viewport);
         document.set_ui_scale(self.options.ui_scale);
-        document.set_dpi_scale(self.dpi_scale());
+        document.set_dpi_scale(self.scale_factor());
         restore_scroll_offsets(&mut document, &self.scroll_offsets);
         let mut focus = UiFocusState {
             hovered: self.frame_state.interaction.hovered,
@@ -623,7 +803,20 @@ where
         }
 
         match event {
-            winit::event::WindowEvent::CloseRequested | winit::event::WindowEvent::Destroyed => {
+            winit::event::WindowEvent::CloseRequested => {
+                let should_exit = self
+                    .hooks
+                    .close_requested
+                    .as_mut()
+                    .map(|close_requested| close_requested(&mut self.state))
+                    .unwrap_or(true);
+                if should_exit {
+                    event_loop.exit();
+                } else {
+                    self.request_redraw();
+                }
+            }
+            winit::event::WindowEvent::Destroyed => {
                 event_loop.exit();
             }
             winit::event::WindowEvent::Resized(size) => {
@@ -632,7 +825,7 @@ where
                 }
             }
             winit::event::WindowEvent::CursorMoved { position, .. } => {
-                let scale = self.dpi_scale();
+                let scale = self.scale_factor();
                 let point = UiPoint::new(position.x as f32 / scale, position.y as f32 / scale);
                 self.cursor = Some(point);
                 self.push_input(RawInputEvent::Pointer(
@@ -668,7 +861,7 @@ where
                 let position = self.cursor.unwrap_or(UiPoint::new(0.0, 0.0));
                 let (delta, unit) = wheel_delta(delta);
                 let delta = if unit == WheelDeltaUnit::Pixel {
-                    let scale = self.dpi_scale();
+                    let scale = self.scale_factor();
                     UiPoint::new(delta.x / scale, delta.y / scale)
                 } else {
                     delta
@@ -687,6 +880,24 @@ where
             }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != winit::event::ElementState::Pressed {
+                    return;
+                }
+                let handled = self
+                    .hooks
+                    .keyboard_input
+                    .as_mut()
+                    .is_some_and(|keyboard_input| {
+                        keyboard_input(
+                            &mut self.state,
+                            NativeKeyboardInput {
+                                logical_key: event.logical_key.clone(),
+                                modifiers: winit_modifiers(self.modifiers),
+                                repeat: event.repeat,
+                            },
+                        )
+                    });
+                if handled {
+                    self.request_redraw();
                     return;
                 }
                 if let Some(key) = key_code(&event, self.modifiers) {
@@ -717,6 +928,15 @@ where
     }
 
     fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        if self
+            .hooks
+            .idle_redraw
+            .as_ref()
+            .is_some_and(|idle_redraw| idle_redraw(&self.state))
+        {
+            self.request_redraw();
+            return;
+        }
         if self.options.tick_action.is_none() {
             return;
         }
@@ -949,6 +1169,23 @@ fn key_modifiers(modifiers: winit::keyboard::ModifiersState) -> KeyModifiers {
     }
 }
 
+fn winit_modifiers(modifiers: KeyModifiers) -> winit::keyboard::ModifiersState {
+    let mut state = winit::keyboard::ModifiersState::empty();
+    if modifiers.shift {
+        state |= winit::keyboard::ModifiersState::SHIFT;
+    }
+    if modifiers.ctrl {
+        state |= winit::keyboard::ModifiersState::CONTROL;
+    }
+    if modifiers.alt {
+        state |= winit::keyboard::ModifiersState::ALT;
+    }
+    if modifiers.meta {
+        state |= winit::keyboard::ModifiersState::SUPER;
+    }
+    state
+}
+
 fn key_code(event: &winit::event::KeyEvent, modifiers: KeyModifiers) -> Option<KeyCode> {
     use winit::keyboard::{Key, NamedKey};
 
@@ -1082,6 +1319,7 @@ fn scroll_offset_key(document: &UiDocument, id: UiNodeId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ApproxTextMeasurer;
 
     #[test]
     fn native_shortcut_key_fallback_maps_physical_clipboard_keys_with_modifiers() {

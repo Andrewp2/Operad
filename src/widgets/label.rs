@@ -172,7 +172,9 @@ pub struct LinkOptions {
     pub focused_visual: UiVisual,
     pub disabled_visual: UiVisual,
     pub text_style: TextStyle,
+    pub visited_text_style: TextStyle,
     pub enabled: bool,
+    pub visited: bool,
     pub url: Option<String>,
     pub action: Option<WidgetActionBinding>,
     pub accessibility_label: Option<String>,
@@ -181,23 +183,34 @@ pub struct LinkOptions {
 
 impl Default for LinkOptions {
     fn default() -> Self {
+        let mut layout = LayoutStyle::column()
+            .with_align_items(AlignItems::FlexStart)
+            .with_padding(0.0);
+        layout.as_taffy_style_mut().align_self = Some(AlignItems::FlexStart);
+        let text_style = TextStyle {
+            color: ColorRgba::new(118, 183, 255, 255),
+            wrap: TextWrap::None,
+            ..Default::default()
+        };
+        let visited_text_style = TextStyle {
+            color: ColorRgba::new(176, 133, 255, 255),
+            wrap: TextWrap::None,
+            ..Default::default()
+        };
         Self {
-            layout: LayoutStyle::row()
-                .with_align_items(AlignItems::Center)
-                .with_padding(2.0),
+            layout,
             visual: UiVisual::TRANSPARENT,
-            hovered_visual: UiVisual::panel(ColorRgba::new(33, 56, 84, 120), None, 3.0),
+            hovered_visual: UiVisual::TRANSPARENT,
             focused_visual: UiVisual::panel(
                 ColorRgba::TRANSPARENT,
                 Some(StrokeStyle::new(ColorRgba::new(112, 170, 230, 255), 1.0)),
                 3.0,
             ),
             disabled_visual: UiVisual::TRANSPARENT,
-            text_style: TextStyle {
-                color: ColorRgba::new(118, 183, 255, 255),
-                ..Default::default()
-            },
+            text_style,
+            visited_text_style,
             enabled: true,
+            visited: false,
             url: None,
             action: None,
             accessibility_label: None,
@@ -226,6 +239,11 @@ impl LinkOptions {
         self.layout = layout.into();
         self
     }
+
+    pub const fn visited(mut self, visited: bool) -> Self {
+        self.visited = visited;
+        self
+    }
 }
 
 pub fn link(
@@ -237,6 +255,13 @@ pub fn link(
 ) -> UiNodeId {
     let name = name.into();
     let text = text.into();
+    let normal_text_style = if options.visited {
+        options.visited_text_style.clone()
+    } else {
+        options.text_style.clone()
+    };
+    let mut hovered_text_style = normal_text_style.clone();
+    hovered_text_style.underline = true;
     let hint = options
         .accessibility_hint
         .clone()
@@ -283,15 +308,25 @@ pub fn link(
         node = node.with_action(action);
     }
     let link = document.add_child(parent, node);
-    document.add_child(
-        link,
-        UiNode::text(
-            format!("{name}.label"),
-            text,
-            options.text_style,
-            LayoutStyle::new(),
-        ),
+    let mut label_node = UiNode::text(
+        format!("{name}.label"),
+        text,
+        normal_text_style.clone(),
+        LayoutStyle::new(),
+    )
+    .with_interaction_text_styles(
+        TextInteractionStyles::new(normal_text_style)
+            .hovered(hovered_text_style.clone())
+            .pressed(hovered_text_style.clone())
+            .pressed_hovered(hovered_text_style),
     );
+    if options.enabled {
+        label_node = label_node.with_input(InputBehavior::BUTTON);
+        if let Some(action) = options.action.clone() {
+            label_node = label_node.with_action(action);
+        }
+    }
+    document.add_child(link, label_node);
     link
 }
 
@@ -557,6 +592,11 @@ mod tests {
         let mut document = UiDocument::new(root_style(320.0, 120.0));
         let root = document.root;
         let options = LinkOptions::default()
+            .with_layout(
+                LayoutStyle::column()
+                    .with_width(160.0)
+                    .with_align_items(AlignItems::FlexStart),
+            )
             .with_url("https://example.test")
             .with_action("open.example");
         let link = link(&mut document, root, "docs", "Docs", options.clone());
@@ -569,6 +609,40 @@ mod tests {
         assert_eq!(accessibility.role, AccessibilityRole::Link);
         assert_eq!(accessibility.value.as_deref(), Some("https://example.test"));
         assert!(node.input.pointer);
+        let children = document.node(link).children.clone();
+        assert_eq!(children.len(), 1);
+        let label_rect = document.node(children[0]).layout.rect;
+        assert!(label_rect.width < document.node(link).layout.rect.width);
+        let UiContent::Text(label_text) = &document.node(children[0]).content else {
+            panic!("link label should be text");
+        };
+        assert!(!label_text.style.underline);
+
+        document.handle_input(UiInputEvent::PointerMove(UiPoint::new(3.0, 3.0)));
+        let UiContent::Text(label_text) = &document.node(children[0]).content else {
+            panic!("link label should be text");
+        };
+        assert!(label_text.style.underline);
+        let underlined_text = document
+            .paint_list()
+            .items
+            .into_iter()
+            .find(|item| item.node == children[0] && matches!(item.kind, PaintKind::Text(_)))
+            .expect("underlined text should paint");
+        assert_eq!(underlined_text.rect.width, label_rect.width);
+        assert!(underlined_text.rect.width < document.node(link).layout.rect.width);
+        let underline = document
+            .paint_list()
+            .items
+            .into_iter()
+            .find(|item| item.node == children[0] && matches!(item.kind, PaintKind::Line { .. }))
+            .expect("hovered link should paint a text-width underline");
+        let PaintKind::Line { from, to, .. } = underline.kind else {
+            panic!("underline should be a line");
+        };
+        assert_eq!(from.x, label_rect.x);
+        assert!(((to.x - from.x) - label_rect.width).abs() < 0.25);
+        assert!(to.x - from.x < document.node(link).layout.rect.width);
 
         document.handle_input(UiInputEvent::PointerDown(UiPoint::new(3.0, 3.0)));
         let result = document.handle_input(UiInputEvent::PointerUp(UiPoint::new(3.0, 3.0)));

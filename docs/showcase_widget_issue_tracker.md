@@ -8,9 +8,18 @@ This tracks the current showcase defects and the primitive/runtime gaps they exp
 
 ## Fixed
 
+- [x] Widget-by-widget offscreen visual pass covered controls, slider/numeric, text/select, menus/command/date, color, progress/lists, property/tree, layout/container, forms/overlays/drag/media, timeline/toasts/popup, and styling states without taking over the desktop.
+- [x] Drag value inputs now have a wider default field so unit-formatted values such as degrees and tau do not clip.
+- [x] Labels, text input, menus, lists/tables, trees, and layout showcase windows have larger content-aware defaults where their own demo content needed more space.
+- [x] Selectable text helper in the text-input showcase now uses the same explicit sizing and text style as the other text input examples.
+- [x] Color button showcase uses wider controls for long premultiplied/unmultiplied formats so labels remain readable.
+- [x] Layout widgets lorem panes no longer wrap long lines into overlapping text in fixed-height scrollers.
+- [x] Overlay popup placement no longer covers the tooltip content in the default overlay showcase state.
 - [x] Color picker copy hex action is now a compact button beside the hex value at the top.
 - [x] Button-like widgets center their text by default unless the caller explicitly overrides alignment.
-- [x] Labels showcase now demonstrates plain, localized/accent, muted, large, and wrapped labels.
+- [x] Labels showcase now demonstrates a visibly localized string, size scale, style/font variants, code styling, arbitrary colors, wrap modes with width constraints, and link/hyperlink behavior.
+- [x] Selectable label/value examples were removed from the Labels showcase because they are button/select controls, not plain labels.
+- [x] Link defaults no longer use a button-like hover box; the Labels showcase keeps links visually distinct from colored labels without oversized underline decoration.
 - [x] Slider steps use a configurable step value.
 - [x] Slider logarithmic mode remaps the slider thumb and value instead of behaving like a linear slider.
 - [x] Slider decimal values use wider editable value fields and constrained decimal formatting.
@@ -91,3 +100,6 @@ This tracks the current showcase defects and the primitive/runtime gaps they exp
 - [x] Floating-window z values now stay inside Operad's local layer range, avoiding clamp-to-same-layer behavior where document order could make an inactive window paint above the active one.
 - [x] Showcase window z bands now have enough local-layer capacity for every widget window at once, so opening the full widget inventory does not collapse several windows into the same effective render layer.
 - [x] Visual inspection coverage now includes open combo box layout, wide-glyph text caret placement, and overlapping z-order states.
+- [x] Labels localization now uses a locale dropdown instead of baking `es-MX` into the localized text.
+- [x] Link labels underline only the link text instead of behaving like button boxes or stretching the underline across extra layout space.
+- [x] Colored label spacing now relies on the real text measurement path so simple rows have consistent gaps between differently sized words.

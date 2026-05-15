@@ -105,10 +105,10 @@ impl Default for DragSourceOptions {
     fn default() -> Self {
         Self {
             layout: LayoutStyle::row()
-                .with_width(180.0)
                 .with_height(40.0)
                 .with_padding(8.0)
-                .with_gap(8.0),
+                .with_gap(8.0)
+                .with_flex_shrink(0.0),
             visual: UiVisual::panel(
                 ColorRgba::new(36, 42, 52, 255),
                 Some(StrokeStyle::new(ColorRgba::new(86, 104, 126, 255), 1.0)),
@@ -436,12 +436,14 @@ pub fn dnd_drag_source(
 
     let root = document.add_child(parent, node);
     document.set_node_visual(root, options.resolved_visual(document, root));
+    let mut text_style = options.text_style;
+    text_style.wrap = TextWrap::None;
     let label_node = document.add_child(
         root,
         UiNode::text(
             format!("{name}.label"),
             label,
-            options.text_style,
+            text_style,
             LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::auto(),
@@ -508,12 +510,14 @@ pub fn dnd_drop_zone(
 
     let root = document.add_child(parent, node);
     document.set_node_visual(root, options.resolved_visual(document, root));
+    let mut text_style = options.text_style;
+    text_style.wrap = TextWrap::None;
     let label_node = document.add_child(
         root,
         UiNode::text(
             format!("{name}.label"),
             label,
-            options.text_style,
+            text_style,
             LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::auto(),

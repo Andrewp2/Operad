@@ -244,6 +244,8 @@ pub fn timeline_ruler(
     };
     layout.as_taffy_style_mut().size.height = length(height);
     let range = spec.range.ordered();
+    layout.as_taffy_style_mut().min_size.width = length(scene_width);
+    layout.as_taffy_style_mut().min_size.height = length(height);
     let mut root_node = UiNode::container(
         name.clone(),
         UiNodeStyle {

@@ -234,9 +234,9 @@ pub use input_devices::{
     TouchGestureKind, TouchGesturePolicy, TouchGestureSample,
 };
 pub use layout::{
-    Layout, LayoutAlignment, LayoutDimension, LayoutDisplay, LayoutFlexDirection, LayoutGap,
-    LayoutInset, LayoutInsets, LayoutJustifyContent, LayoutLength, LayoutPosition, LayoutSize,
-    LayoutSpacing,
+    ContainedFlowLayout, Layout, LayoutAlignment, LayoutDimension, LayoutDisplay,
+    LayoutFlexDirection, LayoutFlexWrap, LayoutGap, LayoutInset, LayoutInsets,
+    LayoutJustifyContent, LayoutLength, LayoutPosition, LayoutSize, LayoutSpacing,
 };
 pub use limits::{
     drag_payload_byte_len, truncate_str_to_byte_limit, validate_cache_budget,
@@ -288,9 +288,10 @@ pub use resource_cache::{
 };
 #[cfg(feature = "native-window")]
 pub use runtime::native::{
-    run_app, run_app_with, run_app_with_canvas_renderers, run_ui_document, run_ui_document_with,
-    run_ui_document_with_canvas_renderers, NativeWgpuCanvasRenderContext,
-    NativeWgpuCanvasRenderHandler, NativeWgpuCanvasRenderRegistry, NativeWindowOptions,
+    run_app, run_app_with, run_app_with_canvas_renderers, run_app_with_canvas_renderers_and_hooks,
+    run_ui_document, run_ui_document_with, run_ui_document_with_canvas_renderers,
+    NativeKeyboardInput, NativeWgpuCanvasRenderContext, NativeWgpuCanvasRenderHandler,
+    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowMetrics, NativeWindowOptions,
     NativeWindowResult,
 };
 pub use runtime::{

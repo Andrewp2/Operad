@@ -1063,6 +1063,11 @@ pub fn select_menu_popup(
             ..Default::default()
         },
     );
+    {
+        let layout = &mut document.node_mut(root).style.layout;
+        layout.display = Display::Flex;
+        layout.flex_direction = FlexDirection::Column;
+    }
     let rows = populate_select_menu(document, root, &name, options, state, &menu_options);
     set_active_descendant(
         document,
@@ -1492,6 +1497,8 @@ fn option_accessibility_label(option: &SelectOption) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::PopupPlacement;
+    use crate::{root_style, ApproxTextMeasurer, UiRect};
 
     #[test]
     fn select_menu_state_selects_enabled_option_ids() {
@@ -1523,5 +1530,59 @@ mod tests {
             })
         );
         assert!(!state.open);
+    }
+
+    #[test]
+    fn select_menu_popup_stacks_rows_to_option_count() {
+        let mut document = UiDocument::new(root_style(360.0, 320.0));
+        let options = vec![
+            SelectOption::new("en-US", "English"),
+            SelectOption::new("es-MX", "Español"),
+            SelectOption::new("fr-FR", "Français"),
+            SelectOption::new("de-DE", "Deutsch"),
+        ];
+        let state = SelectMenuState {
+            open: true,
+            selected: Some(1),
+            active: Some(1),
+        };
+        let mut menu_options = SelectMenuOptions::default();
+        menu_options.width = 148.0;
+        menu_options.row_height = 30.0;
+        menu_options.max_visible_rows = options.len();
+
+        let root = document.root;
+        let nodes = select_menu_popup(
+            &mut document,
+            root,
+            "locale.popup",
+            AnchoredPopup::new(
+                UiRect::new(12.0, 12.0, 148.0, 30.0),
+                UiRect::new(0.0, 0.0, 360.0, 320.0),
+                PopupPlacement::default(),
+            ),
+            &options,
+            &state,
+            menu_options,
+        );
+        document
+            .compute_layout(UiSize::new(360.0, 320.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let popup = document.node(nodes.root);
+        assert_eq!(popup.style.layout.display, Display::Flex);
+        assert_eq!(popup.style.layout.flex_direction, FlexDirection::Column);
+        assert!((popup.layout.rect.height - 120.0).abs() < 0.01);
+
+        assert_eq!(nodes.rows.len(), options.len());
+        let first_y = document.node(nodes.rows[0]).layout.rect.y;
+        let first_x = document.node(nodes.rows[0]).layout.rect.x;
+        for (index, row) in nodes.rows.iter().enumerate() {
+            let rect = document.node(*row).layout.rect;
+            assert!((rect.x - first_x).abs() < 0.01);
+            assert!((rect.y - (first_y + index as f32 * 30.0)).abs() < 0.01);
+            assert!((rect.height - 30.0).abs() < 0.01);
+            assert!((rect.width - 148.0).abs() < 0.01);
+        }
     }
 }

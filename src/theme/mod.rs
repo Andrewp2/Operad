@@ -2846,6 +2846,7 @@ fn text_style(font_size: f32, line_height: f32, weight: FontWeight, color: Color
         stretch: FontStretch::Normal,
         wrap: TextWrap::Word,
         color,
+        underline: false,
     }
 }
 

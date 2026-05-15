@@ -206,12 +206,14 @@ pub fn checkbox(
             document.add_child(box_node, check_node);
         }
     }
-    label(
+    let mut label_style = options.text_style;
+    label_style.wrap = TextWrap::None;
+    let label = label(
         document,
         root,
         format!("{name}.label"),
         label_text,
-        options.text_style,
+        label_style,
         LayoutStyle::from_taffy_style(Style {
             size: TaffySize {
                 width: Dimension::auto(),
@@ -220,6 +222,10 @@ pub fn checkbox(
             ..Default::default()
         }),
     );
+    document.node_mut(root).layout_constraint = Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
+        sources: vec![label],
+        min_size: UiSize::new(24.0, 28.0),
+    });
     root
 }
 

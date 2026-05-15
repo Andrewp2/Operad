@@ -9,6 +9,7 @@ pub struct SpinnerOptions {
     pub radius: f32,
     pub stroke_width: f32,
     pub spoke_count: usize,
+    pub phase_radians: f32,
     pub animation: Option<AnimationMachine>,
     pub accessibility_label: Option<String>,
 }
@@ -21,6 +22,7 @@ impl Default for SpinnerOptions {
             radius: 8.0,
             stroke_width: 2.0,
             spoke_count: 12,
+            phase_radians: 0.0,
             animation: None,
             accessibility_label: None,
         }
@@ -37,6 +39,11 @@ impl SpinnerOptions {
         self.accessibility_label = Some(label.into());
         self
     }
+
+    pub const fn with_phase(mut self, radians: f32) -> Self {
+        self.phase_radians = radians;
+        self
+    }
 }
 
 pub fn spinner(
@@ -51,6 +58,7 @@ pub fn spinner(
         options.radius,
         options.stroke_width,
         options.spoke_count,
+        options.phase_radians,
     );
     let mut node = UiNode::scene(name.clone(), primitives, options.layout).with_accessibility(
         AccessibilityMeta::new(AccessibilityRole::ProgressBar)
@@ -69,15 +77,21 @@ fn spinner_primitives(
     radius: f32,
     stroke_width: f32,
     spoke_count: usize,
+    phase_radians: f32,
 ) -> Vec<ScenePrimitive> {
     let spoke_count = spoke_count.clamp(4, 24);
+    let phase = if phase_radians.is_finite() {
+        phase_radians
+    } else {
+        0.0
+    };
     let center = UiPoint::new(radius + stroke_width, radius + stroke_width);
     let inner = radius * 0.45;
     let outer = radius;
     (0..spoke_count)
         .map(|index| {
             let t = index as f32 / spoke_count as f32;
-            let angle = t * TAU;
+            let angle = t * TAU + phase;
             let alpha = (64.0 + 191.0 * t).round().clamp(0.0, 255.0) as u8;
             let spoke_color = ColorRgba::new(color.r, color.g, color.b, alpha);
             ScenePrimitive::Line {

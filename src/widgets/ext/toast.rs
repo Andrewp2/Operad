@@ -227,6 +227,7 @@ pub struct ToastStackOptions {
     pub body_style: TextStyle,
     pub toast_animation: Option<AnimationMachine>,
     pub show_close_button: bool,
+    pub action_prefix: Option<String>,
     pub close_action_prefix: Option<String>,
     pub close_button_visual: UiVisual,
     pub close_button_hovered_visual: UiVisual,
@@ -286,6 +287,7 @@ impl Default for ToastStackOptions {
             },
             toast_animation: Some(toast_enter_exit_animation(true)),
             show_close_button: true,
+            action_prefix: Some("toast.action".to_string()),
             close_action_prefix: Some("toast.dismiss".to_string()),
             close_button_visual: UiVisual::panel(ColorRgba::TRANSPARENT, None, 3.0),
             close_button_hovered_visual: UiVisual::panel(
@@ -554,40 +556,44 @@ fn add_toast_node(
             ),
         );
         for action in &toast.actions {
-            let button = document.add_child(
-                actions,
-                UiNode::container(
-                    format!("{stack_name}.toast.{}.action.{}", toast.id.0, action.id),
-                    UiNodeStyle {
-                        layout: LayoutStyle::from_taffy_style(Style {
-                            display: Display::Flex,
-                            flex_direction: FlexDirection::Row,
-                            align_items: Some(AlignItems::Center),
-                            size: TaffySize {
-                                width: Dimension::auto(),
-                                height: length(28.0),
-                            },
-                            padding: Rect::length(8.0),
-                            margin: Rect {
-                                right: LengthPercentageAuto::length(6.0),
-                                ..Rect::length(0.0)
-                            },
-                            ..Default::default()
-                        })
-                        .style,
-                        clip: ClipBehavior::Clip,
+            let mut button_node = UiNode::container(
+                format!("{stack_name}.toast.{}.action.{}", toast.id.0, action.id),
+                UiNodeStyle {
+                    layout: LayoutStyle::from_taffy_style(Style {
+                        display: Display::Flex,
+                        flex_direction: FlexDirection::Row,
+                        align_items: Some(AlignItems::Center),
+                        size: TaffySize {
+                            width: Dimension::auto(),
+                            height: length(28.0),
+                        },
+                        padding: Rect::length(8.0),
+                        margin: Rect {
+                            right: LengthPercentageAuto::length(6.0),
+                            ..Rect::length(0.0)
+                        },
                         ..Default::default()
-                    },
-                )
-                .with_input(InputBehavior::BUTTON)
-                .with_visual(options.action_visual)
-                .with_accessibility(
-                    AccessibilityMeta::new(AccessibilityRole::Button)
-                        .label(action.label.clone())
-                        .hint(format!("Activate {} notification action", toast.title))
-                        .focusable(),
-                ),
+                    })
+                    .style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_visual(options.action_visual)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label(action.label.clone())
+                    .hint(format!("Activate {} notification action", toast.title))
+                    .focusable(),
             );
+            if let Some(prefix) = &options.action_prefix {
+                button_node = button_node.with_action(WidgetActionBinding::action(format!(
+                    "{prefix}.{}.{}",
+                    toast.id.0, action.id
+                )));
+            }
+            let button = document.add_child(actions, button_node);
             document.add_child(
                 button,
                 UiNode::text(

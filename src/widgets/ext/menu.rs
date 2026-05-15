@@ -8,11 +8,11 @@ use taffy::prelude::{
 use super::menu_list::{menu_list_popup, MenuListNodes, MenuListOptions};
 
 use crate::{
-    length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
-    AnimationMachine, ClipBehavior, ColorRgba, CommandId, CommandRegistry, CommandScope,
-    CommandTooltipResolver, ImageContent, InputBehavior, KeyCode, KeyModifiers, LayoutStyle,
-    ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument, UiInputEvent,
-    UiNode, UiNodeId, UiNodeStyle, UiRect, UiSize, UiVisual, WidgetActionBinding,
+    layout, length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta,
+    AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba, CommandId, CommandRegistry,
+    CommandScope, CommandTooltipResolver, ImageContent, InputBehavior, KeyCode, KeyModifiers,
+    LayoutStyle, ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument,
+    UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiRect, UiSize, UiVisual, WidgetActionBinding,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,7 +149,7 @@ pub fn place_popup(
     viewport: UiRect,
     placement: PopupPlacement,
 ) -> PopupLayout {
-    let inner_viewport = inset_viewport(viewport, placement.viewport_margin.max(0.0));
+    let inner_viewport = layout::inset_rect(viewport, placement.viewport_margin.max(0.0));
     let primary = popup_rect_for_anchor(anchor, popup_size, placement.side, placement);
     let mut rect = primary;
     let mut side = placement.side;
@@ -158,7 +158,9 @@ pub fn place_popup(
     if placement.flip {
         let opposite_side = placement.side.opposite();
         let opposite = popup_rect_for_anchor(anchor, popup_size, opposite_side, placement);
-        if overflow_amount(opposite, inner_viewport) < overflow_amount(primary, inner_viewport) {
+        if layout::rect_overflow_amount(opposite, inner_viewport)
+            < layout::rect_overflow_amount(primary, inner_viewport)
+        {
             rect = opposite;
             side = opposite_side;
             flipped = true;
@@ -166,7 +168,7 @@ pub fn place_popup(
     }
 
     if placement.constrain_to_viewport {
-        rect = constrain_rect_to_viewport(rect, inner_viewport);
+        rect = layout::contain_rect(rect, inner_viewport, UiSize::ZERO);
     }
 
     PopupLayout {
@@ -177,8 +179,8 @@ pub fn place_popup(
 }
 
 pub fn centered_popup_rect(viewport: UiRect, popup_size: UiSize, viewport_margin: f32) -> UiRect {
-    let inner = inset_viewport(viewport, viewport_margin.max(0.0));
-    constrain_rect_to_viewport(
+    let inner = layout::inset_rect(viewport, viewport_margin.max(0.0));
+    layout::contain_rect(
         UiRect::new(
             inner.x + (inner.width - popup_size.width) * 0.5,
             inner.y + (inner.height - popup_size.height) * 0.5,
@@ -186,6 +188,7 @@ pub fn centered_popup_rect(viewport: UiRect, popup_size: UiSize, viewport_margin
             popup_size.height,
         ),
         inner,
+        UiSize::ZERO,
     )
 }
 
@@ -1690,42 +1693,6 @@ fn aligned_y(anchor: UiRect, height: f32, align: PopupAlign) -> f32 {
     }
 }
 
-fn inset_viewport(viewport: UiRect, margin: f32) -> UiRect {
-    let x_margin = margin.min(viewport.width * 0.5);
-    let y_margin = margin.min(viewport.height * 0.5);
-    UiRect::new(
-        viewport.x + x_margin,
-        viewport.y + y_margin,
-        (viewport.width - x_margin * 2.0).max(0.0),
-        (viewport.height - y_margin * 2.0).max(0.0),
-    )
-}
-
-fn overflow_amount(rect: UiRect, viewport: UiRect) -> f32 {
-    (viewport.x - rect.x).max(0.0)
-        + (rect.right() - viewport.right()).max(0.0)
-        + (viewport.y - rect.y).max(0.0)
-        + (rect.bottom() - viewport.bottom()).max(0.0)
-}
-
-fn constrain_rect_to_viewport(rect: UiRect, viewport: UiRect) -> UiRect {
-    let (x, width) = constrain_axis(rect.x, rect.width, viewport.x, viewport.right());
-    let (y, height) = constrain_axis(rect.y, rect.height, viewport.y, viewport.bottom());
-    UiRect::new(x, y, width, height)
-}
-
-fn constrain_axis(start: f32, size: f32, min: f32, max: f32) -> (f32, f32) {
-    let available = (max - min).max(0.0);
-    let size = size.max(0.0).min(available);
-    let max_start = max - size;
-    let start = if max_start <= min {
-        min
-    } else {
-        start.clamp(min, max_start)
-    };
-    (start, size)
-}
-
 fn absolute_rect_style(rect: UiRect) -> LayoutStyle {
     LayoutStyle::from_taffy_style(Style {
         position: Position::Absolute,
@@ -2971,6 +2938,13 @@ mod tests {
             document.node(popup.root).style.layout.position,
             Position::Absolute
         );
+        document
+            .compute_layout(UiSize::new(640.0, 480.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let first_row = document.node(popup.rows[0]).layout.rect;
+        let second_row = document.node(popup.rows[1]).layout.rect;
+        assert_eq!(first_row.x, second_row.x);
+        assert!(second_row.y > first_row.y, "{first_row:?} {second_row:?}");
         assert!(
             document.node(nodes.submenus[0].root).style.z_index
                 > document.node(popup.root).style.z_index

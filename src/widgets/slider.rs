@@ -169,6 +169,7 @@ impl Default for SliderOptions {
                     width: length(160.0),
                     height: length(28.0),
                 },
+                flex_shrink: 0.0,
                 ..Default::default()
             }),
             track_visual: UiVisual::panel(ColorRgba::new(42, 49, 58, 255), None, 3.0),

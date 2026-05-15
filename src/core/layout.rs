@@ -6,11 +6,12 @@
 //! values.
 
 use taffy::prelude::{
-    AlignContent, AlignItems, CompactLength, Dimension, Display, FlexDirection, JustifyContent,
-    LengthPercentage, LengthPercentageAuto, Position, Rect, Size as TaffySize, Style,
+    AlignContent, AlignItems, CompactLength, Dimension, Display, FlexDirection, FlexWrap,
+    JustifyContent, LengthPercentage, LengthPercentageAuto, Position, Rect, Size as TaffySize,
+    Style,
 };
 
-use crate::{ClipBehavior, LayoutStyle, UiNodeStyle};
+use crate::{ClipBehavior, LayoutStyle, UiNodeStyle, UiPoint, UiRect, UiSize};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayoutLength {
@@ -578,6 +579,43 @@ impl From<LayoutFlexDirection> for FlexDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutFlexWrap {
+    NoWrap,
+    Wrap,
+    WrapReverse,
+}
+
+impl LayoutFlexWrap {
+    pub const fn to_taffy(self) -> FlexWrap {
+        match self {
+            Self::NoWrap => FlexWrap::NoWrap,
+            Self::Wrap => FlexWrap::Wrap,
+            Self::WrapReverse => FlexWrap::WrapReverse,
+        }
+    }
+
+    pub const fn from_taffy(value: FlexWrap) -> Self {
+        match value {
+            FlexWrap::NoWrap => Self::NoWrap,
+            FlexWrap::Wrap => Self::Wrap,
+            FlexWrap::WrapReverse => Self::WrapReverse,
+        }
+    }
+}
+
+impl Default for LayoutFlexWrap {
+    fn default() -> Self {
+        Self::NoWrap
+    }
+}
+
+impl From<LayoutFlexWrap> for FlexWrap {
+    fn from(value: LayoutFlexWrap) -> Self {
+        value.to_taffy()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutAlignment {
     Start,
     End,
@@ -681,6 +719,7 @@ pub struct Layout {
     pub padding: LayoutSpacing,
     pub gap: LayoutGap,
     pub flex_direction: LayoutFlexDirection,
+    pub flex_wrap: LayoutFlexWrap,
     pub align_items: Option<LayoutAlignment>,
     pub justify_content: Option<LayoutJustifyContent>,
     pub flex_grow: f32,
@@ -700,6 +739,7 @@ impl Layout {
         padding: LayoutSpacing::ZERO,
         gap: LayoutGap::ZERO,
         flex_direction: LayoutFlexDirection::Row,
+        flex_wrap: LayoutFlexWrap::NoWrap,
         align_items: None,
         justify_content: None,
         flex_grow: 0.0,
@@ -787,6 +827,11 @@ impl Layout {
         self
     }
 
+    pub const fn flex_wrap(mut self, wrap: LayoutFlexWrap) -> Self {
+        self.flex_wrap = wrap;
+        self
+    }
+
     pub const fn align_items(mut self, alignment: LayoutAlignment) -> Self {
         self.align_items = Some(alignment);
         self
@@ -816,6 +861,7 @@ impl Layout {
         style.padding = self.padding.to_taffy_rect();
         style.gap = self.gap.to_taffy_size();
         style.flex_direction = self.flex_direction.to_taffy();
+        style.flex_wrap = self.flex_wrap.to_taffy();
         style.align_items = self.align_items.map(LayoutAlignment::to_taffy);
         style.justify_content = self.justify_content.map(LayoutJustifyContent::to_taffy);
         style.flex_grow = self.flex_grow.max(0.0);
@@ -844,6 +890,7 @@ impl Layout {
             padding: LayoutSpacing::from_taffy(style.padding)?,
             gap: LayoutGap::from_taffy(style.gap)?,
             flex_direction: LayoutFlexDirection::from_taffy(style.flex_direction),
+            flex_wrap: LayoutFlexWrap::from_taffy(style.flex_wrap),
             align_items: style.align_items.map(LayoutAlignment::from_taffy),
             justify_content: style.justify_content.map(LayoutJustifyContent::from_taffy),
             flex_grow: style.flex_grow,
@@ -931,6 +978,12 @@ pub fn centered_row() -> LayoutStyle {
     with_centered_children(row())
 }
 
+pub fn wrapping_row() -> LayoutStyle {
+    Layout::row()
+        .flex_wrap(LayoutFlexWrap::Wrap)
+        .to_layout_style()
+}
+
 pub fn centered_column() -> LayoutStyle {
     with_centered_children(column())
 }
@@ -973,6 +1026,11 @@ pub fn with_flex(mut style: LayoutStyle, grow: f32, shrink: f32, basis: Dimensio
     taffy_style.flex_grow = grow.max(0.0);
     taffy_style.flex_shrink = shrink.max(0.0);
     taffy_style.flex_basis = basis;
+    style
+}
+
+pub fn with_flex_wrap(mut style: LayoutStyle, wrap: LayoutFlexWrap) -> LayoutStyle {
+    style.as_taffy_style_mut().flex_wrap = wrap.to_taffy();
     style
 }
 
@@ -1054,6 +1112,192 @@ pub fn clipped_node_style(layout: impl Into<LayoutStyle>) -> UiNodeStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContainedFlowLayout {
+    pub bounds: UiRect,
+    pub gap: f32,
+    pub cascade_offset: f32,
+    cursor: UiPoint,
+    row_height: f32,
+    placed: usize,
+    overflow_index: usize,
+}
+
+impl ContainedFlowLayout {
+    pub fn new(bounds: UiRect) -> Self {
+        let bounds = finite_rect(bounds);
+        Self {
+            bounds,
+            gap: 0.0,
+            cascade_offset: 0.0,
+            cursor: UiPoint::new(bounds.x, bounds.y),
+            row_height: 0.0,
+            placed: 0,
+            overflow_index: 0,
+        }
+    }
+
+    pub fn with_gap(mut self, gap: f32) -> Self {
+        self.gap = finite_or(gap, 0.0).max(0.0);
+        self
+    }
+
+    pub fn with_cascade_offset(mut self, offset: f32) -> Self {
+        self.cascade_offset = finite_or(offset, 0.0).max(0.0);
+        self
+    }
+
+    pub fn next_rect(&mut self, preferred_size: UiSize, min_size: UiSize) -> UiRect {
+        let size = contain_size(preferred_size, min_size, bounds_size(self.bounds));
+        if self.cursor.x > self.bounds.x && self.cursor.x + size.width > self.bounds.right() {
+            self.cursor.x = self.bounds.x;
+            self.cursor.y += self.row_height + self.gap;
+            self.row_height = 0.0;
+        }
+
+        let rect = if self.cursor.y + size.height > self.bounds.bottom() && self.placed > 0 {
+            let offset = self.cascade_offset * (self.overflow_index % 8) as f32;
+            self.overflow_index += 1;
+            contain_rect(
+                UiRect::new(
+                    self.bounds.x + offset,
+                    self.bounds.y + offset,
+                    size.width,
+                    size.height,
+                ),
+                self.bounds,
+                min_size,
+            )
+        } else {
+            let rect = contain_rect(
+                UiRect::new(self.cursor.x, self.cursor.y, size.width, size.height),
+                self.bounds,
+                min_size,
+            );
+            self.cursor.x = rect.right() + self.gap;
+            self.row_height = self.row_height.max(rect.height);
+            rect
+        };
+
+        self.placed += 1;
+        rect
+    }
+}
+
+pub fn inset_rect(rect: UiRect, margin: f32) -> UiRect {
+    let rect = finite_rect(rect);
+    let margin = finite_or(margin, 0.0).max(0.0);
+    let x_margin = margin.min(rect.width * 0.5);
+    let y_margin = margin.min(rect.height * 0.5);
+    UiRect::new(
+        rect.x + x_margin,
+        rect.y + y_margin,
+        (rect.width - x_margin * 2.0).max(0.0),
+        (rect.height - y_margin * 2.0).max(0.0),
+    )
+}
+
+pub fn rect_overflow_amount(rect: UiRect, bounds: UiRect) -> f32 {
+    let rect = finite_rect(rect);
+    let bounds = finite_rect(bounds);
+    (bounds.x - rect.x).max(0.0)
+        + (rect.right() - bounds.right()).max(0.0)
+        + (bounds.y - rect.y).max(0.0)
+        + (rect.bottom() - bounds.bottom()).max(0.0)
+}
+
+pub fn contain_size(preferred_size: UiSize, min_size: UiSize, bounds: UiSize) -> UiSize {
+    let available = finite_size(bounds);
+    let min = UiSize::new(
+        finite_or(min_size.width, 0.0).max(0.0).min(available.width),
+        finite_or(min_size.height, 0.0)
+            .max(0.0)
+            .min(available.height),
+    );
+    UiSize::new(
+        finite_or(preferred_size.width, min.width)
+            .max(min.width)
+            .min(available.width),
+        finite_or(preferred_size.height, min.height)
+            .max(min.height)
+            .min(available.height),
+    )
+}
+
+pub fn contain_rect(rect: UiRect, bounds: UiRect, min_size: UiSize) -> UiRect {
+    let bounds = finite_rect(bounds);
+    let rect = finite_rect(rect);
+    let size = contain_size(
+        UiSize::new(rect.width, rect.height),
+        min_size,
+        bounds_size(bounds),
+    );
+    let (x, width) = contain_axis(rect.x, size.width, bounds.x, bounds.right());
+    let (y, height) = contain_axis(rect.y, size.height, bounds.y, bounds.bottom());
+    UiRect::new(x, y, width, height)
+}
+
+pub fn contain_rect_from_origin(rect: UiRect, bounds: UiRect, min_size: UiSize) -> UiRect {
+    let bounds = finite_rect(bounds);
+    let rect = finite_rect(rect);
+    let min_size = contain_size(min_size, UiSize::ZERO, bounds_size(bounds));
+    let x = contain_origin_for_min(rect.x, bounds.x, bounds.right(), min_size.width);
+    let y = contain_origin_for_min(rect.y, bounds.y, bounds.bottom(), min_size.height);
+    let max_width = (bounds.right() - x).max(min_size.width);
+    let max_height = (bounds.bottom() - y).max(min_size.height);
+    UiRect::new(
+        x,
+        y,
+        finite_or(rect.width, min_size.width).clamp(min_size.width, max_width),
+        finite_or(rect.height, min_size.height).clamp(min_size.height, max_height),
+    )
+}
+
+fn bounds_size(bounds: UiRect) -> UiSize {
+    UiSize::new(bounds.width.max(0.0), bounds.height.max(0.0))
+}
+
+fn contain_axis(start: f32, size: f32, min: f32, max: f32) -> (f32, f32) {
+    let available = (max - min).max(0.0);
+    let size = finite_or(size, 0.0).max(0.0).min(available);
+    let max_start = max - size;
+    let start = if max_start <= min {
+        min
+    } else {
+        finite_or(start, min).clamp(min, max_start)
+    };
+    (start, size)
+}
+
+fn contain_origin_for_min(start: f32, min: f32, max: f32, min_size: f32) -> f32 {
+    let max_start = (max - min_size).max(min);
+    finite_or(start, min).clamp(min, max_start)
+}
+
+fn finite_rect(rect: UiRect) -> UiRect {
+    UiRect::new(
+        finite_or(rect.x, 0.0),
+        finite_or(rect.y, 0.0),
+        finite_or(rect.width, 0.0).max(0.0),
+        finite_or(rect.height, 0.0).max(0.0),
+    )
+}
+
+fn finite_size(size: UiSize) -> UiSize {
+    UiSize::new(
+        finite_or(size.width, 0.0).max(0.0),
+        finite_or(size.height, 0.0).max(0.0),
+    )
+}
+
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use taffy::prelude::{
@@ -1089,6 +1333,7 @@ mod tests {
             ))
             .gap(LayoutGap::points(10.0, 14.0))
             .flex_direction(LayoutFlexDirection::RowReverse)
+            .flex_wrap(LayoutFlexWrap::Wrap)
             .align_items(LayoutAlignment::Center)
             .justify_content(LayoutJustifyContent::SpaceBetween)
             .flex(2.0, 0.5, LayoutDimension::points(64.0));
@@ -1110,6 +1355,7 @@ mod tests {
         assert_eq!(taffy.gap.width, LengthPercentage::length(10.0));
         assert_eq!(taffy.gap.height, LengthPercentage::length(14.0));
         assert_eq!(taffy.flex_direction, FlexDirection::RowReverse);
+        assert_eq!(taffy.flex_wrap, FlexWrap::Wrap);
         assert_eq!(taffy.align_items, Some(AlignItems::Center));
         assert_eq!(taffy.justify_content, Some(AlignContent::SpaceBetween));
         assert_eq!(taffy.flex_grow, 2.0);
@@ -1121,6 +1367,7 @@ mod tests {
         assert_eq!(recovered.inset, layout.inset);
         assert_eq!(recovered.padding, layout.padding);
         assert_eq!(recovered.flex_direction, layout.flex_direction);
+        assert_eq!(recovered.flex_wrap, layout.flex_wrap);
     }
 
     #[test]
@@ -1137,5 +1384,71 @@ mod tests {
             LayoutLength::from_taffy(LengthPercentage::length(6.0)),
             Some(LayoutLength::Points(6.0))
         );
+    }
+
+    #[test]
+    fn containment_shifts_and_shrinks_rects_to_bounds() {
+        let bounds = UiRect::new(10.0, 20.0, 100.0, 80.0);
+
+        assert_eq!(
+            contain_rect(
+                UiRect::new(90.0, 30.0, 40.0, 20.0),
+                bounds,
+                UiSize::new(20.0, 10.0),
+            ),
+            UiRect::new(70.0, 30.0, 40.0, 20.0)
+        );
+        assert_eq!(
+            contain_rect(
+                UiRect::new(-40.0, 0.0, 180.0, 120.0),
+                bounds,
+                UiSize::new(20.0, 10.0),
+            ),
+            bounds
+        );
+        assert_eq!(
+            inset_rect(bounds, 15.0),
+            UiRect::new(25.0, 35.0, 70.0, 50.0)
+        );
+        assert_eq!(rect_overflow_amount(bounds, bounds), 0.0);
+    }
+
+    #[test]
+    fn origin_preserving_containment_shrinks_trailing_edges() {
+        let bounds = UiRect::new(12.0, 12.0, 376.0, 276.0);
+
+        assert_eq!(
+            contain_rect_from_origin(
+                UiRect::new(100.0, 40.0, 600.0, 120.0),
+                bounds,
+                UiSize::new(160.0, 96.0),
+            ),
+            UiRect::new(100.0, 40.0, 288.0, 120.0)
+        );
+        assert_eq!(
+            contain_rect_from_origin(
+                UiRect::new(380.0, 280.0, 160.0, 120.0),
+                bounds,
+                UiSize::new(160.0, 96.0),
+            ),
+            UiRect::new(228.0, 192.0, 160.0, 96.0)
+        );
+    }
+
+    #[test]
+    fn contained_flow_wraps_and_cascades_inside_bounds() {
+        let mut flow = ContainedFlowLayout::new(UiRect::new(0.0, 0.0, 220.0, 120.0))
+            .with_gap(10.0)
+            .with_cascade_offset(12.0);
+
+        let first = flow.next_rect(UiSize::new(100.0, 40.0), UiSize::new(40.0, 20.0));
+        let second = flow.next_rect(UiSize::new(100.0, 40.0), UiSize::new(40.0, 20.0));
+        let third = flow.next_rect(UiSize::new(100.0, 40.0), UiSize::new(40.0, 20.0));
+        let fourth = flow.next_rect(UiSize::new(200.0, 90.0), UiSize::new(40.0, 20.0));
+
+        assert_eq!(first, UiRect::new(0.0, 0.0, 100.0, 40.0));
+        assert_eq!(second, UiRect::new(110.0, 0.0, 100.0, 40.0));
+        assert_eq!(third, UiRect::new(0.0, 50.0, 100.0, 40.0));
+        assert!(UiRect::new(0.0, 0.0, 220.0, 120.0).contains_rect(fourth));
     }
 }

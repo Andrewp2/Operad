@@ -1502,8 +1502,12 @@ pub fn virtualized_data_table(
                     display: Display::Flex,
                     flex_direction: FlexDirection::Column,
                     size: TaffySize {
-                        width: px(spec.viewport_width),
+                        width: Dimension::percent(1.0),
                         height: px(spec.viewport_height),
+                    },
+                    min_size: TaffySize {
+                        width: px(0.0),
+                        height: px(0.0),
                     },
                     ..Default::default()
                 })

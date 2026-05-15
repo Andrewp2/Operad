@@ -522,8 +522,12 @@ pub fn command_palette(
                     display: Display::Flex,
                     flex_direction: FlexDirection::Column,
                     size: TaffySize {
-                        width: length(options.width.max(0.0)),
+                        width: Dimension::percent(1.0),
                         height: length(height.max(0.0)),
+                    },
+                    max_size: TaffySize {
+                        width: length(options.width.max(0.0)),
+                        height: Dimension::auto(),
                     },
                     padding: TaffyRect::length(4.0),
                     ..Default::default()

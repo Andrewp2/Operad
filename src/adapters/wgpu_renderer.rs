@@ -4202,7 +4202,7 @@ fn push_text(
         rect,
         clip,
         text: text.to_owned(),
-        style,
+        style: style.clone(),
         opacity,
     });
 }

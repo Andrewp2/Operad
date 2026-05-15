@@ -214,6 +214,26 @@ pub fn button(
     layout.flex_direction = FlexDirection::Row;
     layout.align_items = Some(AlignItems::Center);
     layout.justify_content = Some(JustifyContent::Center);
+    if !label.is_empty() && padding_is_zero(layout.padding) {
+        layout.padding = taffy::prelude::Rect {
+            left: taffy::prelude::LengthPercentage::length(12.0),
+            right: taffy::prelude::LengthPercentage::length(12.0),
+            top: taffy::prelude::LengthPercentage::length(6.0),
+            bottom: taffy::prelude::LengthPercentage::length(6.0),
+        };
+    }
+    if !label.is_empty() && layout.size.height == Dimension::auto() {
+        layout.min_size.height = length(32.0);
+    }
+    let inline_min_size = UiSize::new(
+        horizontal_padding_width(layout.padding)
+            + options
+                .leading_image
+                .as_ref()
+                .map(|_| options.image_size.width + 6.0)
+                .unwrap_or(0.0),
+        vertical_padding_height(layout.padding),
+    );
     let accessibility_label = options
         .accessibility_label
         .clone()
@@ -278,13 +298,16 @@ pub fn button(
         }
         document.add_child(button, image_node);
     }
+    let mut label_node_id = None;
     if !label.is_empty() || document.node(button).children.is_empty() {
-        document.add_child(
+        let mut text_style = options.text_style;
+        text_style.wrap = TextWrap::None;
+        label_node_id = Some(document.add_child(
             button,
             UiNode::text(
                 format!("{name}.label"),
                 label,
-                options.text_style,
+                text_style,
                 LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
@@ -293,9 +316,47 @@ pub fn button(
                     ..Default::default()
                 }),
             ),
-        );
+        ));
+    }
+    if let Some(label_node_id) = label_node_id {
+        document.node_mut(button).layout_constraint =
+            Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
+                sources: vec![label_node_id],
+                min_size: inline_min_size,
+            });
     }
     button
+}
+
+fn padding_is_zero(padding: taffy::prelude::Rect<taffy::prelude::LengthPercentage>) -> bool {
+    length_percentage_is_zero(padding.left)
+        && length_percentage_is_zero(padding.right)
+        && length_percentage_is_zero(padding.top)
+        && length_percentage_is_zero(padding.bottom)
+}
+
+fn length_percentage_is_zero(value: taffy::prelude::LengthPercentage) -> bool {
+    let raw = value.into_raw();
+    raw.tag() == taffy::prelude::CompactLength::LENGTH_TAG && raw.value().abs() <= f32::EPSILON
+}
+
+fn horizontal_padding_width(
+    padding: taffy::prelude::Rect<taffy::prelude::LengthPercentage>,
+) -> f32 {
+    length_percentage_points(padding.left) + length_percentage_points(padding.right)
+}
+
+fn vertical_padding_height(padding: taffy::prelude::Rect<taffy::prelude::LengthPercentage>) -> f32 {
+    length_percentage_points(padding.top) + length_percentage_points(padding.bottom)
+}
+
+fn length_percentage_points(value: taffy::prelude::LengthPercentage) -> f32 {
+    let raw = value.into_raw();
+    if raw.tag() == taffy::prelude::CompactLength::LENGTH_TAG {
+        raw.value().max(0.0)
+    } else {
+        0.0
+    }
 }
 
 pub fn small_button(

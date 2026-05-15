@@ -399,6 +399,7 @@ pub struct TextStyle {
     pub stretch: FontStretch,
     pub wrap: TextWrap,
     pub color: ColorRgba,
+    pub underline: bool,
 }
 
 impl Default for TextStyle {
@@ -412,6 +413,74 @@ impl Default for TextStyle {
             stretch: FontStretch::Normal,
             wrap: TextWrap::Word,
             color: ColorRgba::WHITE,
+            underline: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextInteractionStyles {
+    pub normal: TextStyle,
+    pub hovered: Option<TextStyle>,
+    pub pressed: Option<TextStyle>,
+    pub pressed_hovered: Option<TextStyle>,
+    pub focused: Option<TextStyle>,
+    pub disabled: Option<TextStyle>,
+}
+
+impl TextInteractionStyles {
+    pub fn new(normal: TextStyle) -> Self {
+        Self {
+            normal,
+            hovered: None,
+            pressed: None,
+            pressed_hovered: None,
+            focused: None,
+            disabled: None,
+        }
+    }
+
+    pub fn hovered(mut self, hovered: TextStyle) -> Self {
+        self.hovered = Some(hovered);
+        self
+    }
+
+    pub fn pressed(mut self, pressed: TextStyle) -> Self {
+        self.pressed = Some(pressed);
+        self
+    }
+
+    pub fn pressed_hovered(mut self, pressed_hovered: TextStyle) -> Self {
+        self.pressed_hovered = Some(pressed_hovered);
+        self
+    }
+
+    pub fn focused(mut self, focused: TextStyle) -> Self {
+        self.focused = Some(focused);
+        self
+    }
+
+    pub fn disabled(mut self, disabled: TextStyle) -> Self {
+        self.disabled = Some(disabled);
+        self
+    }
+
+    pub fn resolve(&self, enabled: bool, hovered: bool, pressed: bool, focused: bool) -> TextStyle {
+        if !enabled {
+            self.disabled.clone().unwrap_or_else(|| self.normal.clone())
+        } else if pressed && hovered {
+            self.pressed_hovered
+                .clone()
+                .or_else(|| self.pressed.clone())
+                .unwrap_or_else(|| self.normal.clone())
+        } else if pressed {
+            self.pressed.clone().unwrap_or_else(|| self.normal.clone())
+        } else if hovered {
+            self.hovered.clone().unwrap_or_else(|| self.normal.clone())
+        } else if focused {
+            self.focused.clone().unwrap_or_else(|| self.normal.clone())
+        } else {
+            self.normal.clone()
         }
     }
 }
@@ -1544,6 +1613,7 @@ pub struct UiNode {
     pub layer: Option<platform::UiLayer>,
     pub visual: UiVisual,
     pub interaction_visuals: Option<InteractionVisuals>,
+    pub interaction_text_styles: Option<TextInteractionStyles>,
     pub action: Option<actions::WidgetActionBinding>,
     pub action_mode: actions::WidgetActionMode,
     pub content: UiContent,
@@ -1552,6 +1622,7 @@ pub struct UiNode {
     pub animation: Option<AnimationMachine>,
     pub accessibility: Option<AccessibilityMeta>,
     pub shader: Option<ShaderEffect>,
+    pub layout_constraint: Option<UiNodeLayoutConstraint>,
     pub layout: ComputedLayout,
 }
 
@@ -1565,6 +1636,7 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            interaction_text_styles: None,
             action: None,
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Empty,
@@ -1573,6 +1645,7 @@ impl UiNode {
             animation: None,
             accessibility: None,
             shader: None,
+            layout_constraint: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -1595,6 +1668,7 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            interaction_text_styles: None,
             action: None,
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Text(TextContent::new(text, text_style)),
@@ -1603,6 +1677,7 @@ impl UiNode {
             animation: None,
             accessibility: None,
             shader: None,
+            layout_constraint: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -1626,6 +1701,7 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            interaction_text_styles: None,
             action: None,
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Text(
@@ -1637,6 +1713,7 @@ impl UiNode {
             animation: None,
             accessibility: None,
             shader: None,
+            layout_constraint: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -1659,6 +1736,7 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            interaction_text_styles: None,
             action: None,
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Canvas(CanvasContent::new(key)),
@@ -1671,6 +1749,7 @@ impl UiNode {
             animation: None,
             accessibility: None,
             shader: None,
+            layout_constraint: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -1710,6 +1789,7 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            interaction_text_styles: None,
             action: None,
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Image(image),
@@ -1718,6 +1798,7 @@ impl UiNode {
             animation: None,
             accessibility: None,
             shader: None,
+            layout_constraint: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -1740,6 +1821,7 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            interaction_text_styles: None,
             action: None,
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::PaintRect(rect),
@@ -1748,6 +1830,7 @@ impl UiNode {
             animation: None,
             accessibility: None,
             shader: None,
+            layout_constraint: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -1782,6 +1865,7 @@ impl UiNode {
             layer: None,
             visual: UiVisual::default(),
             interaction_visuals: None,
+            interaction_text_styles: None,
             action: None,
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Scene(primitives),
@@ -1790,6 +1874,7 @@ impl UiNode {
             animation: None,
             accessibility: None,
             shader: None,
+            layout_constraint: None,
             layout: ComputedLayout::default(),
         }
     }
@@ -1812,6 +1897,14 @@ impl UiNode {
     pub fn with_interaction_visuals(mut self, visuals: InteractionVisuals) -> Self {
         self.interaction_visuals = Some(visuals);
         self.visual = visuals.normal;
+        self
+    }
+
+    pub fn with_interaction_text_styles(mut self, styles: TextInteractionStyles) -> Self {
+        if let UiContent::Text(text) = &mut self.content {
+            text.style = styles.normal.clone();
+        }
+        self.interaction_text_styles = Some(styles);
         self
     }
 
@@ -1854,6 +1947,11 @@ impl UiNode {
         self.shader = Some(shader);
         self
     }
+
+    pub fn with_layout_constraint(mut self, constraint: UiNodeLayoutConstraint) -> Self {
+        self.layout_constraint = Some(constraint);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1862,6 +1960,7 @@ pub struct ComputedLayout {
     pub clip_rect: UiRect,
     pub visible: bool,
     pub opacity: f32,
+    pub content_size: Option<UiSize>,
 }
 
 impl Default for ComputedLayout {
@@ -1871,13 +1970,47 @@ impl Default for ComputedLayout {
             clip_rect: UiRect::new(0.0, 0.0, 0.0, 0.0),
             visible: false,
             opacity: 1.0,
+            content_size: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IntrinsicSize {
+    pub min: UiSize,
+    pub preferred: UiSize,
+}
+
+impl IntrinsicSize {
+    pub const ZERO: Self = Self {
+        min: UiSize::ZERO,
+        preferred: UiSize::ZERO,
+    };
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiNodeLayoutConstraint {
+    InlineIntrinsicSize {
+        sources: Vec<UiNodeId>,
+        min_size: UiSize,
+    },
+    StackedIntrinsicSize {
+        sources: Vec<UiNodeId>,
+        min_size: UiSize,
+        bounds: UiRect,
+        fit_to_preferred: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
 enum MeasureContext {
     Text(TextContent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntrinsicMeasureMode {
+    Min,
+    Preferred,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1989,6 +2122,123 @@ impl TextMeasurer for CosmicTextMeasurer {
         }
         self.cache.insert(key, measured);
         measured
+    }
+}
+
+fn measure_taffy_text(
+    text_measurer: &mut impl TextMeasurer,
+    text: &TextContent,
+    known: TaffySize<Option<f32>>,
+    available: TaffySize<AvailableSpace>,
+) -> UiSize {
+    if known.width.is_none() && available.width == AvailableSpace::MinContent {
+        return measure_text_min_content(text_measurer, text, known, available);
+    }
+    text_measurer.measure(
+        text,
+        KnownSize {
+            width: known.width,
+            height: known.height,
+        },
+        AvailableSize {
+            width: available_space_to_option(available.width),
+            height: available_space_to_option(available.height),
+        },
+    )
+}
+
+fn measure_text_min_content(
+    text_measurer: &mut impl TextMeasurer,
+    text: &TextContent,
+    known: TaffySize<Option<f32>>,
+    available: TaffySize<AvailableSpace>,
+) -> UiSize {
+    match text.style.wrap {
+        TextWrap::None => text_measurer.measure(
+            text,
+            KnownSize {
+                width: known.width,
+                height: known.height,
+            },
+            AvailableSize {
+                width: None,
+                height: available_space_to_option(available.height),
+            },
+        ),
+        TextWrap::Word => measure_text_fragments_min_content(
+            text_measurer,
+            text,
+            known,
+            available,
+            text.text.split_whitespace(),
+        ),
+        TextWrap::Glyph | TextWrap::WordOrGlyph => measure_text_fragments_min_content(
+            text_measurer,
+            text,
+            known,
+            available,
+            text.text
+                .chars()
+                .map(|ch| ch.len_utf8())
+                .scan(0, |start, len| {
+                    let end = *start + len;
+                    let fragment = &text.text[*start..end];
+                    *start = end;
+                    Some(fragment)
+                }),
+        ),
+    }
+}
+
+fn measure_text_fragments_min_content<'a>(
+    text_measurer: &mut impl TextMeasurer,
+    text: &TextContent,
+    known: TaffySize<Option<f32>>,
+    available: TaffySize<AvailableSpace>,
+    fragments: impl IntoIterator<Item = &'a str>,
+) -> UiSize {
+    let mut measured = UiSize::ZERO;
+    let mut found_fragment = false;
+    for fragment in fragments {
+        if fragment.is_empty() {
+            continue;
+        }
+        found_fragment = true;
+        let mut fragment_text = text.clone();
+        fragment_text.text = fragment.to_string();
+        fragment_text.style.wrap = TextWrap::None;
+        let fragment_size = text_measurer.measure(
+            &fragment_text,
+            KnownSize {
+                width: None,
+                height: known.height,
+            },
+            AvailableSize {
+                width: None,
+                height: available_space_to_option(available.height),
+            },
+        );
+        measured.width = measured.width.max(fragment_size.width);
+        measured.height = measured.height.max(fragment_size.height);
+    }
+
+    if found_fragment {
+        UiSize::new(
+            known.width.unwrap_or(measured.width),
+            known.height.unwrap_or(measured.height),
+        )
+    } else {
+        text_measurer.measure(
+            text,
+            KnownSize {
+                width: known.width,
+                height: known.height,
+            },
+            AvailableSize {
+                width: None,
+                height: available_space_to_option(available.height),
+            },
+        )
     }
 }
 
@@ -2419,16 +2669,18 @@ impl UiDocument {
         let Some(node) = self.nodes.get_mut(id.0) else {
             return;
         };
-        let Some(visuals) = node.interaction_visuals else {
-            return;
-        };
         let enabled = node.input.pointer || node.input.focusable || node.input.keyboard;
-        node.visual = visuals.resolve(
-            enabled,
-            self.focus.hovered == Some(id),
-            self.focus.pressed == Some(id),
-            self.focus.focused == Some(id),
-        );
+        let hovered = self.focus.hovered == Some(id);
+        let pressed = self.focus.pressed == Some(id);
+        let focused = self.focus.focused == Some(id);
+        if let Some(visuals) = node.interaction_visuals {
+            node.visual = visuals.resolve(enabled, hovered, pressed, focused);
+        }
+        if let (Some(styles), UiContent::Text(text)) =
+            (node.interaction_text_styles.as_ref(), &mut node.content)
+        {
+            text.style = styles.resolve(enabled, hovered, pressed, focused);
+        }
     }
 
     pub fn scroll_state(&self, id: UiNodeId) -> Option<ScrollState> {
@@ -2531,30 +2783,23 @@ impl UiDocument {
         if self.layout_cache_key == Some(cache_key) {
             return Ok(());
         }
+        self.resolve_layout_constraints(text_measurer)?;
         let mut taffy = TaffyTree::<MeasureContext>::new();
         let mut mapping = HashMap::<UiNodeId, TaffyNodeId>::new();
         let root = self.build_taffy_subtree(self.root, &mut taffy, &mut mapping)?;
+        let mut measured_content = HashMap::<TaffyNodeId, UiSize>::new();
         taffy.compute_layout_with_measure(
             root,
             TaffySize {
                 width: AvailableSpace::Definite(viewport.width),
                 height: AvailableSpace::Definite(viewport.height),
             },
-            |known, available, _node_id, context, _style| {
+            |known, available, node_id, context, _style| {
                 let Some(MeasureContext::Text(text)) = context else {
                     return TaffySize::ZERO;
                 };
-                let measured = text_measurer.measure(
-                    text,
-                    KnownSize {
-                        width: known.width,
-                        height: known.height,
-                    },
-                    AvailableSize {
-                        width: available_space_to_option(available.width),
-                        height: available_space_to_option(available.height),
-                    },
-                );
+                let measured = measure_taffy_text(text_measurer, text, known, available);
+                measured_content.insert(node_id, measured);
                 TaffySize {
                     width: measured.width,
                     height: measured.height,
@@ -2569,9 +2814,225 @@ impl UiDocument {
             UiPoint::new(0.0, 0.0),
             viewport_rect,
             &mapping,
+            &measured_content,
         )?;
         self.layout_cache_key = Some(cache_key);
         Ok(())
+    }
+
+    pub fn intrinsic_size(
+        &self,
+        id: UiNodeId,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Result<IntrinsicSize, taffy::TaffyError> {
+        Ok(IntrinsicSize {
+            min: self.intrinsic_size_for_available_space(
+                id,
+                AvailableSpace::MinContent,
+                text_measurer,
+            )?,
+            preferred: self.intrinsic_size_for_available_space(
+                id,
+                AvailableSpace::MaxContent,
+                text_measurer,
+            )?,
+        })
+    }
+
+    fn intrinsic_size_for_available_space(
+        &self,
+        id: UiNodeId,
+        width: AvailableSpace,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Result<UiSize, taffy::TaffyError> {
+        let mut taffy = TaffyTree::<MeasureContext>::new();
+        let mut mapping = HashMap::<UiNodeId, TaffyNodeId>::new();
+        let mode = match width {
+            AvailableSpace::MinContent => IntrinsicMeasureMode::Min,
+            AvailableSpace::Definite(_) | AvailableSpace::MaxContent => {
+                IntrinsicMeasureMode::Preferred
+            }
+        };
+        let root = self.build_taffy_subtree_for_intrinsic(
+            id,
+            &mut taffy,
+            &mut mapping,
+            Some(id),
+            Some(mode),
+        )?;
+        taffy.compute_layout_with_measure(
+            root,
+            TaffySize {
+                width,
+                height: AvailableSpace::MaxContent,
+            },
+            |known, available, _node_id, context, _style| {
+                let Some(MeasureContext::Text(text)) = context else {
+                    return TaffySize::ZERO;
+                };
+                let measured = measure_taffy_text(text_measurer, text, known, available);
+                TaffySize {
+                    width: measured.width,
+                    height: measured.height,
+                }
+            },
+        )?;
+        let layout = taffy.layout(root)?;
+        let scale = normalized_scale(self.ui_scale());
+        Ok(UiSize::new(
+            layout.size.width / scale,
+            layout.size.height / scale,
+        ))
+    }
+
+    fn resolve_layout_constraints(
+        &mut self,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Result<(), taffy::TaffyError> {
+        let constraints = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                node.layout_constraint
+                    .clone()
+                    .map(|constraint| (UiNodeId(index), constraint))
+            })
+            .collect::<Vec<_>>();
+
+        for (target, constraint) in &constraints {
+            if let UiNodeLayoutConstraint::InlineIntrinsicSize { sources, min_size } = constraint {
+                let base_size = UiSize::new(
+                    finite_or(min_size.width, 0.0),
+                    finite_or(min_size.height, 0.0),
+                );
+                let mut min_row = UiSize::ZERO;
+                let mut preferred_row = UiSize::ZERO;
+                for source in sources {
+                    if source.0 >= self.nodes.len() {
+                        continue;
+                    }
+                    let source_size = self.intrinsic_size(*source, text_measurer)?;
+                    min_row.width += source_size.min.width;
+                    min_row.height = min_row.height.max(source_size.min.height);
+                    preferred_row.width += source_size.preferred.width;
+                    preferred_row.height = preferred_row.height.max(source_size.preferred.height);
+                }
+                let min_size = UiSize::new(
+                    base_size.width + min_row.width,
+                    base_size.height.max(min_row.height),
+                );
+                let preferred_size = UiSize::new(
+                    base_size.width + preferred_row.width,
+                    base_size.height.max(preferred_row.height),
+                );
+                self.apply_inline_intrinsic_size_constraint(*target, min_size, preferred_size);
+            }
+        }
+
+        for (target, constraint) in constraints {
+            if let UiNodeLayoutConstraint::StackedIntrinsicSize {
+                sources,
+                min_size,
+                bounds,
+                fit_to_preferred,
+            } = constraint
+            {
+                let mut min_stack = UiSize::ZERO;
+                let mut preferred_stack = UiSize::ZERO;
+                for source in sources {
+                    if source.0 >= self.nodes.len() {
+                        continue;
+                    }
+                    let source_size = self.intrinsic_size(source, text_measurer)?;
+                    min_stack.width = min_stack.width.max(source_size.min.width);
+                    min_stack.height += source_size.min.height;
+                    preferred_stack.width = preferred_stack.width.max(source_size.preferred.width);
+                    preferred_stack.height += source_size.preferred.height;
+                }
+                let min_size = UiSize::new(
+                    finite_or(min_size.width, 0.0).max(min_stack.width).max(1.0),
+                    finite_or(min_size.height, 0.0)
+                        .max(min_stack.height)
+                        .max(1.0),
+                );
+                let preferred_size = UiSize::new(
+                    preferred_stack.width.max(min_size.width),
+                    preferred_stack.height.max(min_size.height),
+                );
+                self.apply_intrinsic_size_constraint(
+                    target,
+                    min_size,
+                    preferred_size,
+                    bounds,
+                    fit_to_preferred,
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_inline_intrinsic_size_constraint(
+        &mut self,
+        target: UiNodeId,
+        min_size: UiSize,
+        preferred_size: UiSize,
+    ) {
+        let Some(node) = self.nodes.get_mut(target.0) else {
+            return;
+        };
+        node.style.layout.min_size.width = max_length_dimension(
+            node.style.layout.min_size.width,
+            min_size.width.max(preferred_size.width).max(1.0),
+        );
+        node.style.layout.min_size.height = max_length_dimension(
+            node.style.layout.min_size.height,
+            min_size.height.max(preferred_size.height).max(1.0),
+        );
+        if node.style.layout.size.width == Dimension::auto() {
+            node.style.layout.size.width = Dimension::length(preferred_size.width.max(1.0));
+        }
+        if node.style.layout.size.height == Dimension::auto() {
+            node.style.layout.size.height = Dimension::length(preferred_size.height.max(1.0));
+        }
+    }
+
+    fn apply_intrinsic_size_constraint(
+        &mut self,
+        target: UiNodeId,
+        min_size: UiSize,
+        preferred_size: UiSize,
+        bounds: UiRect,
+        fit_to_preferred: bool,
+    ) {
+        let Some(node) = self.nodes.get_mut(target.0) else {
+            return;
+        };
+        let rect = absolute_rect_from_style(&node.style.layout).unwrap_or_else(|| {
+            UiRect::new(0.0, 0.0, min_size.width.max(1.0), min_size.height.max(1.0))
+        });
+        let bounds = finite_rect(bounds);
+        let size = if fit_to_preferred {
+            preferred_size
+        } else {
+            UiSize::new(rect.width, rect.height)
+        };
+        let contained = crate::layout::contain_rect(
+            UiRect::new(rect.x, rect.y, size.width, size.height),
+            bounds,
+            min_size,
+        );
+        node.style.layout.size = TaffySize {
+            width: Dimension::length(contained.width),
+            height: Dimension::length(contained.height),
+        };
+        node.style.layout.min_size = TaffySize {
+            width: Dimension::length(min_size.width.min(bounds.width.max(1.0))),
+            height: Dimension::length(min_size.height.min(bounds.height.max(1.0))),
+        };
+        node.style.layout.inset.left = LengthPercentageAuto::length(contained.x);
+        node.style.layout.inset.top = LengthPercentageAuto::length(contained.y);
     }
 
     fn build_taffy_subtree(
@@ -2580,32 +3041,61 @@ impl UiDocument {
         taffy: &mut TaffyTree<MeasureContext>,
         mapping: &mut HashMap<UiNodeId, TaffyNodeId>,
     ) -> Result<TaffyNodeId, taffy::TaffyError> {
+        self.build_taffy_subtree_for_intrinsic(id, taffy, mapping, None, None)
+    }
+
+    fn build_taffy_subtree_for_intrinsic(
+        &self,
+        id: UiNodeId,
+        taffy: &mut TaffyTree<MeasureContext>,
+        mapping: &mut HashMap<UiNodeId, TaffyNodeId>,
+        intrinsic_root: Option<UiNodeId>,
+        intrinsic_mode: Option<IntrinsicMeasureMode>,
+    ) -> Result<TaffyNodeId, taffy::TaffyError> {
         let node = &self.nodes[id.0];
         let layout_scale = self.ui_scale();
-        let taffy_node = if node.children.is_empty() {
+        let mut style = scaled_taffy_style(&node.style.layout, layout_scale);
+        if intrinsic_root == Some(id) {
+            normalize_intrinsic_root_style(&mut style);
+        } else if intrinsic_root.is_some() {
+            normalize_intrinsic_descendant_style(&mut style);
+        }
+        let scroll_min_axes = (intrinsic_mode == Some(IntrinsicMeasureMode::Min)
+            && intrinsic_root != Some(id)
+            && node.scroll.is_some())
+        .then(|| node.scroll.expect("checked scroll").axes);
+        if let Some(axes) = scroll_min_axes {
+            normalize_intrinsic_scroll_min_style(&mut style, axes);
+        }
+        let collapse_scroll_for_min =
+            scroll_min_axes.is_some_and(|axes| axes.horizontal && axes.vertical);
+        let taffy_node = if node.children.is_empty() || collapse_scroll_for_min {
             match &node.content {
                 UiContent::Text(text) => taffy.new_leaf_with_context(
-                    scaled_taffy_style(&node.style.layout, layout_scale),
+                    style,
                     MeasureContext::Text(scaled_text_content(text, layout_scale)),
                 )?,
                 UiContent::Empty
                 | UiContent::Canvas(_)
                 | UiContent::Image(_)
                 | UiContent::PaintRect(_)
-                | UiContent::Scene(_) => {
-                    taffy.new_leaf(scaled_taffy_style(&node.style.layout, layout_scale))?
-                }
+                | UiContent::Scene(_) => taffy.new_leaf(style)?,
             }
         } else {
             let children = node
                 .children
                 .iter()
-                .map(|child| self.build_taffy_subtree(*child, taffy, mapping))
+                .map(|child| {
+                    self.build_taffy_subtree_for_intrinsic(
+                        *child,
+                        taffy,
+                        mapping,
+                        intrinsic_root,
+                        intrinsic_mode,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            taffy.new_with_children(
-                scaled_taffy_style(&node.style.layout, layout_scale),
-                &children,
-            )?
+            taffy.new_with_children(style, &children)?
         };
         mapping.insert(id, taffy_node);
         Ok(taffy_node)
@@ -2619,14 +3109,20 @@ impl UiDocument {
         parent_origin: UiPoint,
         parent_clip: UiRect,
         mapping: &HashMap<UiNodeId, TaffyNodeId>,
+        measured_content: &HashMap<TaffyNodeId, UiSize>,
     ) -> Result<(), taffy::TaffyError> {
         let layout = taffy.layout(taffy_node)?;
-        let rect = UiRect::new(
+        let mut rect = UiRect::new(
             parent_origin.x + layout.location.x,
             parent_origin.y + layout.location.y,
             layout.size.width,
             layout.size.height,
         );
+        if matches!(self.nodes[id.0].content, UiContent::Canvas(_)) {
+            if let Some(aspect_ratio) = self.nodes[id.0].style.layout.aspect_ratio {
+                rect = aspect_fit_rect(rect, aspect_ratio);
+            }
+        }
         let has_scroll = self.nodes[id.0].scroll.is_some();
         let scroll_offset = self.nodes[id.0]
             .scroll
@@ -2644,6 +3140,7 @@ impl UiDocument {
             clip_rect,
             visible: rect.intersects(parent_clip),
             opacity: self.nodes[id.0].style.opacity,
+            content_size: measured_content.get(&taffy_node).copied(),
         };
         let children = self.nodes[id.0].children.clone();
         let child_origin = if has_scroll {
@@ -2653,7 +3150,15 @@ impl UiDocument {
         };
         for child in children {
             let child_taffy = mapping[&child];
-            self.apply_layout_subtree(child, child_taffy, taffy, child_origin, clip_rect, mapping)?;
+            self.apply_layout_subtree(
+                child,
+                child_taffy,
+                taffy,
+                child_origin,
+                clip_rect,
+                mapping,
+                measured_content,
+            )?;
         }
         if has_scroll {
             let mut content_size = UiSize::new(rect.width, rect.height);
@@ -2934,17 +3439,45 @@ impl UiDocument {
             }
             match &node.content {
                 UiContent::Empty => {}
-                UiContent::Text(text) => list.items.push(PaintItem {
-                    node: id,
-                    rect: node.layout.rect,
-                    clip_rect: node.layout.clip_rect,
-                    z_index,
-                    layer_order,
-                    opacity,
-                    transform,
-                    shader: node.shader.clone(),
-                    kind: PaintKind::Text(scaled_text_content(text, self.ui_scale())),
-                }),
+                UiContent::Text(text) => {
+                    list.items.push(PaintItem {
+                        node: id,
+                        rect: node.layout.rect,
+                        clip_rect: node.layout.clip_rect,
+                        z_index,
+                        layer_order,
+                        opacity,
+                        transform,
+                        shader: node.shader.clone(),
+                        kind: PaintKind::Text(scaled_text_content(text, self.ui_scale())),
+                    });
+                    if text.style.underline {
+                        let underline = text_underline_segment(
+                            node.layout.rect,
+                            node.layout.content_size,
+                            text,
+                            self.ui_scale(),
+                        );
+                        list.items.push(PaintItem {
+                            node: id,
+                            rect: node.layout.rect,
+                            clip_rect: node.layout.clip_rect,
+                            z_index,
+                            layer_order,
+                            opacity,
+                            transform,
+                            shader: node.shader.clone(),
+                            kind: PaintKind::Line {
+                                from: underline.0,
+                                to: underline.1,
+                                stroke: StrokeStyle::new(
+                                    text.style.color,
+                                    self.ui_scale().max(1.0),
+                                ),
+                            },
+                        });
+                    }
+                }
                 UiContent::Canvas(canvas) => list.items.push(PaintItem {
                     node: id,
                     rect: node.layout.rect,
@@ -3733,6 +4266,7 @@ impl UiDocument {
             if (node.input.pointer || node.input.focusable)
                 && (node.layout.clip_rect.width <= f32::EPSILON
                     || node.layout.clip_rect.height <= f32::EPSILON)
+                && !self.has_scroll_ancestor(id)
             {
                 warnings.push(AuditWarning::EmptyInteractiveClip {
                     node: id,
@@ -3850,9 +4384,9 @@ impl UiDocument {
                 );
             }
             if let UiContent::Text(text) = &node.content {
-                if !node.layout.clip_rect.contains_rect(node.layout.rect)
-                    && !self.has_scroll_ancestor(id)
-                {
+                let (scroll_axes, clip_bounds) =
+                    self.scroll_ancestor_axes_and_cross_bounds(id, node.layout.clip_rect);
+                if rect_exceeds_unscrollable_axes(node.layout.rect, clip_bounds, scroll_axes) {
                     warnings.push(AuditWarning::TextClipped {
                         node: id,
                         name: node.name.clone(),
@@ -3885,9 +4419,10 @@ impl UiDocument {
                     }
                 }
             }
+            let (root_scroll_axes, root_bounds) =
+                self.scroll_ancestor_axes_and_cross_bounds(id, root_rect);
             if id != self.root
-                && !root_rect.contains_rect(node.layout.rect)
-                && !self.has_scroll_ancestor(id)
+                && rect_exceeds_unscrollable_axes(node.layout.rect, root_bounds, root_scroll_axes)
                 && !matches!(node.content, UiContent::Canvas(_))
             {
                 warnings.push(AuditWarning::NodeOutsideRoot {
@@ -3913,6 +4448,49 @@ impl UiDocument {
             id = parent;
         }
         false
+    }
+
+    fn scroll_ancestor_axes_and_cross_bounds(
+        &self,
+        mut id: UiNodeId,
+        fallback_bounds: UiRect,
+    ) -> (ScrollAxes, UiRect) {
+        let mut axes = ScrollAxes::NONE;
+        let mut horizontal_bounds = None;
+        let mut vertical_bounds = None;
+        while let Some(parent) = self.nodes[id.0].parent {
+            let parent_node = &self.nodes[parent.0];
+            if let Some(scroll) = parent_node.scroll {
+                axes.horizontal |= scroll.axes.horizontal;
+                axes.vertical |= scroll.axes.vertical;
+                if scroll.axes.vertical && !scroll.axes.horizontal {
+                    horizontal_bounds = intersect_axis_bounds(
+                        horizontal_bounds,
+                        parent_node.layout.rect.x,
+                        parent_node.layout.rect.right(),
+                    );
+                }
+                if scroll.axes.horizontal && !scroll.axes.vertical {
+                    vertical_bounds = intersect_axis_bounds(
+                        vertical_bounds,
+                        parent_node.layout.rect.y,
+                        parent_node.layout.rect.bottom(),
+                    );
+                }
+            }
+            id = parent;
+        }
+
+        let mut bounds = fallback_bounds;
+        if let Some((x, right)) = horizontal_bounds {
+            bounds.x = x;
+            bounds.width = (right - x).max(0.0);
+        }
+        if let Some((y, bottom)) = vertical_bounds {
+            bounds.y = y;
+            bounds.height = (bottom - y).max(0.0);
+        }
+        (axes, bounds)
     }
 
     fn effective_background_color(&self, mut id: UiNodeId) -> Option<ColorRgba> {
@@ -4237,6 +4815,43 @@ pub(crate) fn rect_is_finite(rect: UiRect) -> bool {
     rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()
 }
 
+fn rect_exceeds_unscrollable_axes(rect: UiRect, bounds: UiRect, scroll_axes: ScrollAxes) -> bool {
+    let horizontal_exceeds = rect.x < bounds.x || rect.right() > bounds.right();
+    let vertical_exceeds = rect.y < bounds.y || rect.bottom() > bounds.bottom();
+    (horizontal_exceeds && !scroll_axes.horizontal) || (vertical_exceeds && !scroll_axes.vertical)
+}
+
+fn intersect_axis_bounds(current: Option<(f32, f32)>, start: f32, end: f32) -> Option<(f32, f32)> {
+    let (start, end) = match current {
+        Some((current_start, current_end)) => (current_start.max(start), current_end.min(end)),
+        None => (start, end),
+    };
+    Some((start, start.max(end)))
+}
+
+fn aspect_fit_rect(rect: UiRect, aspect_ratio: f32) -> UiRect {
+    if !aspect_ratio.is_finite() || aspect_ratio <= f32::EPSILON {
+        return rect;
+    }
+    let width = rect.width.max(0.0);
+    let height = rect.height.max(0.0);
+    if width <= f32::EPSILON || height <= f32::EPSILON {
+        return UiRect::new(rect.x, rect.y, width, height);
+    }
+    let height_from_width = width / aspect_ratio;
+    let (fit_width, fit_height) = if height_from_width <= height {
+        (width, height_from_width)
+    } else {
+        (height * aspect_ratio, height)
+    };
+    UiRect::new(
+        rect.x + (width - fit_width) * 0.5,
+        rect.y + (height - fit_height) * 0.5,
+        fit_width,
+        fit_height,
+    )
+}
+
 fn normalized_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
         scale
@@ -4254,6 +4869,30 @@ fn scaled_text_content(text: &TextContent, scale: f32) -> TextContent {
     text.style.font_size = (text.style.font_size * scale).max(1.0);
     text.style.line_height = (text.style.line_height * scale).max(text.style.font_size);
     text
+}
+
+fn text_underline_segment(
+    rect: UiRect,
+    content_size: Option<UiSize>,
+    text: &TextContent,
+    scale: f32,
+) -> (UiPoint, UiPoint) {
+    let scale = normalized_scale(scale);
+    let content_width = content_size
+        .map(|size| size.width)
+        .filter(|width| width.is_finite() && *width > f32::EPSILON)
+        .unwrap_or_else(|| approximate_unwrapped_text_width(text, scale));
+    let width = content_width.max(0.0);
+    let line_height = (text.style.line_height * scale)
+        .max(text.style.font_size * scale)
+        .max(1.0);
+    let y = rect.y + (line_height * 0.84).min(rect.height.max(0.0));
+    (UiPoint::new(rect.x, y), UiPoint::new(rect.x + width, y))
+}
+
+fn approximate_unwrapped_text_width(text: &TextContent, scale: f32) -> f32 {
+    let char_width = text.style.font_size * scale * 0.55;
+    (text.text.chars().count() as f32 * char_width).max(char_width)
 }
 
 fn scaled_taffy_style(style: &Style, scale: f32) -> Style {
@@ -4285,6 +4924,60 @@ fn scaled_taffy_style(style: &Style, scale: f32) -> Style {
     };
     style.flex_basis = scale_dimension(style.flex_basis, scale);
     style
+}
+
+fn normalize_intrinsic_root_style(style: &mut Style) {
+    style.position = taffy::prelude::Position::Relative;
+    style.inset = TaffyRect {
+        left: LengthPercentageAuto::auto(),
+        right: LengthPercentageAuto::auto(),
+        top: LengthPercentageAuto::auto(),
+        bottom: LengthPercentageAuto::auto(),
+    };
+    style.flex_grow = 0.0;
+    style.flex_shrink = 0.0;
+    style.flex_basis = Dimension::auto();
+    if is_percent_dimension(style.size.width) {
+        style.size.width = Dimension::auto();
+    }
+    if is_percent_dimension(style.size.height) {
+        style.size.height = Dimension::auto();
+    }
+}
+
+fn normalize_intrinsic_descendant_style(style: &mut Style) {
+    if is_percent_dimension(style.size.width) {
+        style.size.width = Dimension::auto();
+    }
+    if is_percent_dimension(style.size.height) {
+        style.size.height = Dimension::auto();
+    }
+}
+
+fn normalize_intrinsic_scroll_min_style(style: &mut Style, axes: ScrollAxes) {
+    style.flex_grow = 0.0;
+    style.flex_shrink = 1.0;
+    style.flex_basis = Dimension::auto();
+    if is_percent_dimension(style.size.width) {
+        style.size.width = Dimension::auto();
+    }
+    if is_percent_dimension(style.size.height) {
+        style.size.height = Dimension::auto();
+    }
+    if axes.horizontal {
+        style.size.width = Dimension::length(1.0);
+        style.min_size.width = Dimension::length(0.0);
+        style.max_size.width = Dimension::length(1.0);
+    }
+    if axes.vertical {
+        style.size.height = Dimension::length(1.0);
+        style.min_size.height = Dimension::length(0.0);
+        style.max_size.height = Dimension::length(1.0);
+    }
+}
+
+fn is_percent_dimension(value: Dimension) -> bool {
+    value.tag() == CompactLength::PERCENT_TAG
 }
 
 fn scale_dimension(value: Dimension, scale: f32) -> Dimension {
@@ -4349,6 +5042,57 @@ fn available_space_to_option(value: AvailableSpace) -> Option<f32> {
     match value {
         AvailableSpace::Definite(value) => Some(value),
         AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+    }
+}
+
+fn absolute_rect_from_style(style: &Style) -> Option<UiRect> {
+    Some(UiRect::new(
+        length_percentage_auto_points(style.inset.left)?,
+        length_percentage_auto_points(style.inset.top)?,
+        dimension_points(style.size.width)?,
+        dimension_points(style.size.height)?,
+    ))
+}
+
+fn dimension_points(value: Dimension) -> Option<f32> {
+    if value.tag() == CompactLength::LENGTH_TAG {
+        Some(value.value())
+    } else {
+        None
+    }
+}
+
+fn max_length_dimension(current: Dimension, value: f32) -> Dimension {
+    let value = value.max(0.0);
+    match dimension_points(current) {
+        Some(current) => Dimension::length(current.max(value)),
+        None => Dimension::length(value),
+    }
+}
+
+fn length_percentage_auto_points(value: LengthPercentageAuto) -> Option<f32> {
+    let raw = value.into_raw();
+    if raw.tag() == CompactLength::LENGTH_TAG {
+        Some(raw.value())
+    } else {
+        None
+    }
+}
+
+fn finite_rect(rect: UiRect) -> UiRect {
+    UiRect::new(
+        finite_or(rect.x, 0.0),
+        finite_or(rect.y, 0.0),
+        finite_or(rect.width, 0.0).max(0.0),
+        finite_or(rect.height, 0.0).max(0.0),
+    )
+}
+
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
     }
 }
 
@@ -4681,7 +5425,8 @@ fn paint_document_egui_impl(
             }
             PaintKind::Text(text) => {
                 simple_rect_batch.flush(&painter, outer_clip);
-                painter.with_clip_rect(clip_rect).text(
+                let text_painter = painter.with_clip_rect(clip_rect);
+                text_painter.text(
                     egui::Pos2::new(rect.min.x, rect.min.y),
                     egui::Align2::LEFT_TOP,
                     &text.text,
@@ -5301,6 +6046,83 @@ mod tests {
     }
 
     #[test]
+    fn intrinsic_text_size_distinguishes_min_and_preferred_widths() {
+        let mut doc = UiDocument::new(root_style(300.0, 200.0));
+        let text = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "wrapping.label",
+                "short LongIdentifierWithoutSpaces",
+                TextStyle {
+                    wrap: TextWrap::Word,
+                    ..TextStyle::default()
+                },
+                LayoutStyle::new(),
+            ),
+        );
+        let intrinsic = doc
+            .intrinsic_size(text, &mut ApproxTextMeasurer)
+            .expect("intrinsic size");
+
+        assert!(intrinsic.min.width > 0.0, "{intrinsic:?}");
+        assert!(
+            intrinsic.preferred.width > intrinsic.min.width,
+            "{intrinsic:?}"
+        );
+    }
+
+    #[test]
+    fn inline_intrinsic_constraint_publishes_chrome_plus_text_width() {
+        let mut doc = UiDocument::new(root_style(300.0, 200.0));
+        let control = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "inline.control",
+                UiNodeStyle {
+                    layout: LayoutStyle::row().with_height(28.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            ),
+        );
+        doc.add_child(
+            control,
+            UiNode::container(
+                "inline.control.chrome",
+                LayoutStyle::size(16.0, 16.0).with_flex_shrink(0.0),
+            ),
+        );
+        let label = doc.add_child(
+            control,
+            UiNode::text(
+                "inline.control.label",
+                "Inline label",
+                TextStyle::default(),
+                LayoutStyle::new(),
+            ),
+        );
+        doc.node_mut(control).layout_constraint =
+            Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
+                sources: vec![label],
+                min_size: UiSize::new(24.0, 28.0),
+            });
+
+        doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let control_rect = doc.node(control).layout.rect;
+        let label_rect = doc.node(label).layout.rect;
+        assert!(
+            control_rect.width >= label_rect.width + 24.0,
+            "{control_rect:?} {label_rect:?}"
+        );
+        assert!(!doc.audit_layout().iter().any(|warning| matches!(
+            warning,
+            AuditWarning::TextClipped { name, .. } if name == "inline.control.label"
+        )));
+    }
+
+    #[test]
     fn document_ui_scale_applies_to_layout_and_text_paint() {
         let mut doc = UiDocument::new(
             LayoutStyle::column()
@@ -5745,6 +6567,119 @@ mod tests {
             .expect("layout");
         assert_eq!(doc.node(row).layout.rect.y, -30.0);
         assert_eq!(doc.hit_test(UiPoint::new(10.0, 90.0)), None);
+    }
+
+    #[test]
+    fn audit_layout_allows_scroll_overflow_only_on_enabled_axis() {
+        let mut doc = UiDocument::new(root_style(120.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "vertical.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(100.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll_area,
+            UiNode::text(
+                "vertical.scroll.wide_text",
+                "Wide text",
+                TextStyle::default(),
+                LayoutStyle::size(180.0, 20.0).with_flex_shrink(0.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(120.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert!(doc.audit_layout().iter().any(|warning| matches!(
+            warning,
+            AuditWarning::TextClipped { name, .. } if name == "vertical.scroll.wide_text"
+        )));
+    }
+
+    #[test]
+    fn audit_layout_suppresses_text_clipping_on_enabled_scroll_axis() {
+        let mut doc = UiDocument::new(root_style(120.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "vertical.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(100.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll_area,
+            UiNode::text(
+                "vertical.scroll.tall_text",
+                "Tall text",
+                TextStyle::default(),
+                LayoutStyle::size(100.0, 120.0).with_flex_shrink(0.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(120.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert!(!doc.audit_layout().iter().any(|warning| matches!(
+            warning,
+            AuditWarning::TextClipped { name, .. } if name == "vertical.scroll.tall_text"
+        )));
+    }
+
+    #[test]
+    fn audit_layout_uses_scroll_viewport_for_unscrollable_axis_bounds() {
+        let mut doc = UiDocument::new(root_style(120.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "vertical.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(100.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll_area,
+            UiNode::text(
+                "vertical.scroll.offscreen_text",
+                "Offscreen",
+                TextStyle::default(),
+                LayoutStyle::absolute_rect(UiRect::new(0.0, 80.0, 100.0, 20.0)),
+            ),
+        );
+        doc.add_child(
+            scroll_area,
+            UiNode::text(
+                "vertical.scroll.offscreen_wide_text",
+                "Wide offscreen",
+                TextStyle::default(),
+                LayoutStyle::absolute_rect(UiRect::new(0.0, 110.0, 140.0, 20.0)),
+            ),
+        );
+        doc.compute_layout(UiSize::new(120.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let warnings = doc.audit_layout();
+
+        assert!(!warnings.iter().any(|warning| matches!(
+            warning,
+            AuditWarning::TextClipped { name, .. } if name == "vertical.scroll.offscreen_text"
+        )));
+        assert!(warnings.iter().any(|warning| matches!(
+            warning,
+            AuditWarning::TextClipped { name, .. } if name == "vertical.scroll.offscreen_wide_text"
+        )));
     }
 
     #[test]

@@ -8,10 +8,10 @@ use taffy::prelude::{
 };
 
 use crate::{
-    length, AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, EditPhase,
+    layout, length, AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, EditPhase,
     InputBehavior, InteractionVisuals, LayoutStyle, ScenePrimitive, StrokeStyle, TextStyle,
-    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
-    WidgetActionBinding, WidgetActionMode, WidgetPointerEdit,
+    UiDocument, UiNode, UiNodeId, UiNodeLayoutConstraint, UiNodeStyle, UiPoint, UiRect, UiSize,
+    UiVisual, WidgetActionBinding, WidgetActionMode, WidgetPointerEdit,
 };
 
 use super::surfaces::{DEFAULT_SURFACE_BG, DEFAULT_SURFACE_STROKE};
@@ -33,6 +33,7 @@ pub struct FloatingWindowDescriptor {
     pub collapse_action: Option<WidgetActionBinding>,
     pub close_action: Option<WidgetActionBinding>,
     pub resize_action: Option<WidgetActionBinding>,
+    pub auto_size_to_content: bool,
     pub accessibility_label: Option<String>,
     pub accessibility_hint: Option<String>,
 }
@@ -55,6 +56,7 @@ impl FloatingWindowDescriptor {
             collapse_action: None,
             close_action: None,
             resize_action: None,
+            auto_size_to_content: false,
             accessibility_label: None,
             accessibility_hint: None,
         }
@@ -117,6 +119,11 @@ impl FloatingWindowDescriptor {
 
     pub fn with_resize_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
         self.resize_action = Some(action.into());
+        self
+    }
+
+    pub const fn with_auto_size_to_content(mut self, auto_size_to_content: bool) -> Self {
+        self.auto_size_to_content = auto_size_to_content;
         self
     }
 
@@ -194,12 +201,14 @@ pub struct FloatingWindowDragState {
 pub struct FloatingWindowResizeState {
     pub origin_size: UiSize,
     pub origin_pointer: UiPoint,
+    pub was_user_sized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FloatingDesktopState {
     pub positions: HashMap<String, UiPoint>,
     pub sizes: HashMap<String, UiSize>,
+    pub user_sized: HashSet<String>,
     pub drag: HashMap<String, FloatingWindowDragState>,
     pub resize: HashMap<String, FloatingWindowResizeState>,
     pub collapsed: HashSet<String>,
@@ -213,6 +222,7 @@ impl FloatingDesktopState {
         Self {
             positions: HashMap::new(),
             sizes: HashMap::new(),
+            user_sized: HashSet::new(),
             drag: HashMap::new(),
             resize: HashMap::new(),
             collapsed: HashSet::new(),
@@ -380,7 +390,16 @@ impl FloatingDesktopState {
         edit: WidgetPointerEdit,
         defaults: FloatingWindowDefaults,
     ) {
-        let origin_size = self.size(id, defaults.size);
+        let stored_size = self.size(id, defaults.size);
+        let origin_size = if self.user_sized.contains(id) {
+            stored_size
+        } else {
+            UiSize::new(
+                finite_or(edit.target_rect.width, stored_size.width).max(defaults.min_size.width),
+                finite_or(edit.target_rect.height, stored_size.height)
+                    .max(defaults.min_size.height),
+            )
+        };
         match edit.phase.edit_phase() {
             EditPhase::Preview => {}
             EditPhase::BeginEdit => {
@@ -390,8 +409,10 @@ impl FloatingDesktopState {
                     FloatingWindowResizeState {
                         origin_size,
                         origin_pointer: edit.position,
+                        was_user_sized: self.user_sized.contains(id),
                     },
                 );
+                self.user_sized.insert(id.to_string());
                 self.sizes.insert(id.to_string(), origin_size);
             }
             EditPhase::UpdateEdit | EditPhase::CommitEdit => {
@@ -402,7 +423,9 @@ impl FloatingDesktopState {
                     .unwrap_or(FloatingWindowResizeState {
                         origin_size,
                         origin_pointer: edit.position,
+                        was_user_sized: self.user_sized.contains(id),
                     });
+                self.user_sized.insert(id.to_string());
                 let size = UiSize::new(
                     (resize.origin_size.width + edit.position.x - resize.origin_pointer.x)
                         .max(defaults.min_size.width),
@@ -416,6 +439,9 @@ impl FloatingDesktopState {
             }
             EditPhase::CancelEdit => {
                 if let Some(resize) = self.resize.remove(id) {
+                    if !resize.was_user_sized {
+                        self.user_sized.remove(id);
+                    }
                     self.sizes.insert(id.to_string(), resize.origin_size);
                 }
             }
@@ -429,6 +455,9 @@ impl FloatingDesktopState {
     ) {
         descriptor.position = Some(self.position(&descriptor.id, defaults.position));
         descriptor.preferred_size = self.size(&descriptor.id, defaults.size);
+        if self.user_sized.contains(&descriptor.id) {
+            descriptor.auto_size_to_content = false;
+        }
         descriptor.collapsed = self.is_collapsed(&descriptor.id);
         if let Some(z_index) = self.z_index(&descriptor.id) {
             descriptor.z_index = Some(z_index);
@@ -597,12 +626,16 @@ pub fn floating_window_layout(
     let gap = finite_or(options.gap, 0.0).max(0.0);
     let cascade_offset = finite_or(options.cascade_offset, 0.0).max(0.0);
     let mut placements = Vec::new();
-    let mut cursor_x = margin;
-    let mut cursor_y = margin;
-    let mut row_height: f32 = 0.0;
-    let mut overflow_index = 0usize;
-    let max_right = finite_or(bounds.width, 0.0).max(margin);
-    let max_bottom = finite_or(bounds.height, 0.0).max(margin);
+    let bounds_rect = UiRect::new(
+        0.0,
+        0.0,
+        finite_or(bounds.width, 0.0).max(0.0),
+        finite_or(bounds.height, 0.0).max(0.0),
+    );
+    let inner_bounds = layout::inset_rect(bounds_rect, margin);
+    let mut flow = layout::ContainedFlowLayout::new(inner_bounds)
+        .with_gap(gap)
+        .with_cascade_offset(cascade_offset);
 
     for (source_index, window) in windows
         .iter()
@@ -622,30 +655,13 @@ pub fn floating_window_layout(
             )
         });
         let rect = if let Some(position) = window.position {
-            explicit_position_rect(position, size, min_size, margin, max_right, max_bottom)
+            layout::contain_rect_from_origin(
+                UiRect::new(position.x, position.y, size.width, size.height),
+                inner_bounds,
+                min_size,
+            )
         } else {
-            if cursor_x > margin && cursor_x + size.width > max_right {
-                cursor_x = margin;
-                cursor_y += row_height + gap;
-                row_height = 0.0;
-            }
-
-            let rect = if cursor_y + size.height > max_bottom && !placements.is_empty() {
-                let offset = cascade_offset * (overflow_index % 8) as f32;
-                overflow_index += 1;
-                UiRect::new(
-                    clamp_axis(margin + offset, margin, max_right, size.width),
-                    clamp_axis(margin + offset, margin, max_bottom, size.height),
-                    size.width,
-                    size.height,
-                )
-            } else {
-                let rect = UiRect::new(cursor_x, cursor_y, size.width, size.height);
-                cursor_x += size.width + gap;
-                row_height = row_height.max(size.height);
-                rect
-            };
-            rect
+            flow.next_rect(size, min_size)
         };
 
         placements.push(FloatingWindowPlacement {
@@ -808,8 +824,7 @@ fn add_floating_window(
                         height: Dimension::auto(),
                     },
                     flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    flex_basis: length(0.0),
+                    flex_shrink: 0.0,
                     ..Default::default()
                 }),
             )
@@ -851,6 +866,10 @@ fn add_floating_window(
                         width: Dimension::percent(1.0),
                         height: content_height,
                     },
+                    min_size: TaffySize {
+                        width: length(0.0),
+                        height: length(0.0),
+                    },
                     padding: Rect {
                         left: LengthPercentage::length(options.content_padding.max(0.0)),
                         right: LengthPercentage::length(options.content_padding.max(0.0)),
@@ -878,6 +897,27 @@ fn add_floating_window(
             })
         })
         .flatten();
+
+    let mut constraint_sources = vec![title_bar];
+    if !descriptor.collapsed {
+        constraint_sources.push(content);
+    }
+    let bounds = layout::inset_rect(
+        UiRect::new(
+            0.0,
+            0.0,
+            options.bounds.width.max(0.0),
+            options.bounds.height.max(0.0),
+        ),
+        options.margin,
+    );
+    document.node_mut(root).layout_constraint =
+        Some(UiNodeLayoutConstraint::StackedIntrinsicSize {
+            sources: constraint_sources,
+            min_size: descriptor.min_size,
+            bounds,
+            fit_to_preferred: descriptor.auto_size_to_content,
+        });
 
     FloatingWindowNode {
         id: descriptor.id.clone(),
@@ -1170,15 +1210,18 @@ fn resolved_min_size(
         (finite_or(bounds.height, window.preferred_size.height) - margin * 2.0).max(1.0);
     let padding = finite_or(options.content_padding, 0.0).max(0.0);
     let title_bar_height = finite_or(options.title_bar_height, 0.0).max(0.0);
+    let title_control_width = title_bar_control_width(window, options);
+    let title_text_width = approximate_title_width(&window.title, &options.title_style);
+    let title_min_width = padding * 2.0 + title_control_width + title_text_width;
     let chrome_min = window
         .content_min_size
         .map(|content| {
             UiSize::new(
-                finite_or(content.width, 1.0).max(1.0) + padding * 2.0,
+                (finite_or(content.width, 1.0).max(1.0) + padding * 2.0).max(title_min_width),
                 finite_or(content.height, 1.0).max(1.0) + title_bar_height + padding * 2.0,
             )
         })
-        .unwrap_or_else(|| UiSize::new(0.0, title_bar_height));
+        .unwrap_or_else(|| UiSize::new(title_min_width, title_bar_height));
     UiSize::new(
         finite_or(window.min_size.width, 1.0)
             .max(chrome_min.width)
@@ -1191,24 +1234,27 @@ fn resolved_min_size(
     )
 }
 
-fn explicit_position_rect(
-    position: UiPoint,
-    size: UiSize,
-    min_size: UiSize,
-    margin: f32,
-    max_right: f32,
-    max_bottom: f32,
-) -> UiRect {
-    let x = clamp_axis_for_min(position.x, margin, max_right, min_size.width);
-    let y = clamp_axis_for_min(position.y, margin, max_bottom, min_size.height);
-    let max_width_from_position = (max_right - margin - x).max(min_size.width);
-    let max_height_from_position = (max_bottom - margin - y).max(min_size.height);
-    UiRect::new(
-        x,
-        y,
-        finite_or(size.width, min_size.width).clamp(min_size.width, max_width_from_position),
-        finite_or(size.height, min_size.height).clamp(min_size.height, max_height_from_position),
-    )
+fn title_bar_control_width(
+    window: &FloatingWindowDescriptor,
+    options: &FloatingDesktopOptions,
+) -> f32 {
+    let button = finite_or(options.close_button_size, 0.0).max(1.0);
+    let mut width = 0.0;
+    if window.collapse_action.is_some() {
+        width += button + 8.0;
+    }
+    if window.close_action.is_some() {
+        width += button + 8.0;
+    }
+    width
+}
+
+fn approximate_title_width(title: &str, style: &TextStyle) -> f32 {
+    if title.is_empty() {
+        return 0.0;
+    }
+    let font_size = finite_or(style.font_size, 13.0).max(1.0);
+    (title.chars().count() as f32 * font_size * 0.55).max(font_size)
 }
 
 fn finite_or(value: f32, fallback: f32) -> f32 {
@@ -1219,21 +1265,9 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
     }
 }
 
-fn clamp_axis(position: f32, margin: f32, max_extent: f32, size: f32) -> f32 {
-    let min = margin;
-    let max = (max_extent - margin - size).max(min);
-    finite_or(position, min).clamp(min, max)
-}
-
-fn clamp_axis_for_min(position: f32, margin: f32, max_extent: f32, min_size: f32) -> f32 {
-    let min = margin;
-    let max = (max_extent - margin - min_size).max(min);
-    finite_or(position, min).clamp(min, max)
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::{root_style, ApproxTextMeasurer};
+    use crate::{root_style, ApproxTextMeasurer, ScrollAxes};
 
     use super::*;
 
@@ -1614,6 +1648,169 @@ mod tests {
                 && item.clip_rect.width > 0.0
                 && item.clip_rect.height > 0.0
         }));
+    }
+
+    #[test]
+    fn floating_desktop_grows_window_to_measured_content_minimum() {
+        let windows = vec![FloatingWindowDescriptor::new(
+            "wide_content",
+            "Wide content",
+            UiSize::new(120.0, 90.0),
+        )
+        .with_min_size(UiSize::new(80.0, 70.0))
+        .with_position(UiPoint::new(20.0, 20.0))];
+        let mut document = UiDocument::new(root_style(420.0, 260.0));
+        let root = document.root;
+        let nodes = floating_desktop(
+            &mut document,
+            root,
+            "desk",
+            &windows,
+            FloatingDesktopOptions::new(UiSize::new(420.0, 260.0)).with_margin(10.0),
+            |document, parent, _window| {
+                document.add_child(
+                    parent,
+                    UiNode::container("wide.fixed", LayoutStyle::size(260.0, 42.0)),
+                );
+            },
+        );
+        document
+            .compute_layout(UiSize::new(420.0, 260.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let window = document.node(nodes.windows[0].root).layout.rect;
+        let content = document.node(nodes.windows[0].content).layout.rect;
+        assert!(window.width >= 280.0, "{window:?}");
+        assert!(window.height >= 94.0, "{window:?}");
+        assert!(
+            content.right() <= window.right(),
+            "content={content:?} window={window:?}"
+        );
+    }
+
+    #[test]
+    fn floating_desktop_scroll_content_does_not_force_min_window_height() {
+        let windows = vec![FloatingWindowDescriptor::new(
+            "scroll_content",
+            "Scroll content",
+            UiSize::new(240.0, 110.0),
+        )
+        .with_min_size(UiSize::new(120.0, 80.0))
+        .with_position(UiPoint::new(20.0, 20.0))];
+        let mut document = UiDocument::new(root_style(420.0, 260.0));
+        let root = document.root;
+        let nodes = floating_desktop(
+            &mut document,
+            root,
+            "desk",
+            &windows,
+            FloatingDesktopOptions::new(UiSize::new(420.0, 260.0)).with_margin(10.0),
+            |document, parent, _window| {
+                let scroll = document.add_child(
+                    parent,
+                    UiNode::container(
+                        "scroll_content.body",
+                        LayoutStyle::column()
+                            .with_width_percent(1.0)
+                            .with_height_percent(1.0)
+                            .with_flex_grow(1.0),
+                    )
+                    .with_scroll(ScrollAxes::VERTICAL),
+                );
+                for index in 0..12 {
+                    document.add_child(
+                        scroll,
+                        UiNode::container(
+                            format!("scroll_content.row.{index}"),
+                            LayoutStyle::new()
+                                .with_width_percent(1.0)
+                                .with_height(24.0)
+                                .with_flex_shrink(0.0),
+                        ),
+                    );
+                }
+            },
+        );
+        document
+            .compute_layout(UiSize::new(420.0, 260.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let window = document.node(nodes.windows[0].root).layout.rect;
+        assert!(window.height <= 120.0, "{window:?}");
+    }
+
+    #[test]
+    fn floating_desktop_auto_sizes_spawn_to_preferred_content() {
+        let windows =
+            vec![
+                FloatingWindowDescriptor::new("compact", "Compact", UiSize::new(360.0, 220.0))
+                    .with_min_size(UiSize::new(80.0, 70.0))
+                    .with_auto_size_to_content(true)
+                    .with_position(UiPoint::new(20.0, 20.0)),
+            ];
+        let mut document = UiDocument::new(root_style(420.0, 260.0));
+        let root = document.root;
+        let nodes = floating_desktop(
+            &mut document,
+            root,
+            "desk",
+            &windows,
+            FloatingDesktopOptions::new(UiSize::new(420.0, 260.0)).with_margin(10.0),
+            |document, parent, _window| {
+                document.add_child(
+                    parent,
+                    UiNode::container("compact.fixed", LayoutStyle::size(120.0, 42.0)),
+                );
+            },
+        );
+        document
+            .compute_layout(UiSize::new(420.0, 260.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let window = document.node(nodes.windows[0].root).layout.rect;
+        assert!(window.width < 220.0, "{window:?}");
+        assert!(window.height < 150.0, "{window:?}");
+        assert!(window.width >= 140.0, "{window:?}");
+        assert!(window.height >= 94.0, "{window:?}");
+    }
+
+    #[test]
+    fn floating_desktop_state_disables_auto_size_after_user_resize() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(20.0, 20.0),
+            UiSize::new(240.0, 140.0),
+            UiSize::new(80.0, 70.0),
+        );
+        let mut state = FloatingDesktopState::default();
+        state.ensure_window("compact", defaults);
+        state.apply_resize(
+            "compact",
+            WidgetPointerEdit::new(
+                crate::WidgetValueEditPhase::Begin,
+                UiPoint::new(240.0, 140.0),
+                UiPoint::new(0.0, 0.0),
+                UiRect::new(20.0, 20.0, 240.0, 140.0),
+            ),
+            defaults,
+        );
+        state.apply_resize(
+            "compact",
+            WidgetPointerEdit::new(
+                crate::WidgetValueEditPhase::Commit,
+                UiPoint::new(300.0, 180.0),
+                UiPoint::new(0.0, 0.0),
+                UiRect::new(20.0, 20.0, 240.0, 140.0),
+            ),
+            defaults,
+        );
+
+        let mut descriptor =
+            FloatingWindowDescriptor::new("compact", "Compact", UiSize::new(1.0, 1.0))
+                .with_auto_size_to_content(true);
+        state.apply_to_descriptor(&mut descriptor, defaults);
+
+        assert!(!descriptor.auto_size_to_content);
+        assert_eq!(descriptor.preferred_size, UiSize::new(300.0, 180.0));
     }
 
     fn overlaps(left: UiRect, right: UiRect) -> bool {

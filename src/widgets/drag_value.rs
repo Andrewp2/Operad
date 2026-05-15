@@ -27,7 +27,7 @@ impl Default for DragValueOptions {
                 align_items: Some(AlignItems::Center),
                 justify_content: Some(JustifyContent::Center),
                 size: TaffySize {
-                    width: length(72.0),
+                    width: length(92.0),
                     height: length(30.0),
                 },
                 padding: taffy::prelude::Rect {

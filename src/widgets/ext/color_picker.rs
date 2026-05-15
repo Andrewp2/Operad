@@ -7,9 +7,9 @@ use taffy::prelude::{
 use crate::{
     length, AccessibilityMeta, AccessibilityRole, AccessibilityValueRange, ClipBehavior, ColorRgba,
     EditPhase, GradientStop, ImageContent, InputBehavior, LayoutStyle, LinearGradient, PaintBrush,
-    PaintRect, ScenePrimitive, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual, WidgetActionBinding, WidgetActionKind,
-    WidgetPointerEdit,
+    PaintRect, ScenePrimitive, ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode,
+    UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual, WidgetActionBinding,
+    WidgetActionKind, WidgetPointerEdit,
 };
 
 use super::pickers::{PickerAnimationMeta, PickerElementStyle};
@@ -1062,6 +1062,10 @@ impl Default for ColorButtonOptions {
                 align_items: Some(AlignItems::Center),
                 justify_content: Some(taffy::prelude::JustifyContent::Center),
                 size: TaffySize {
+                    width: Dimension::auto(),
+                    height: length(30.0),
+                },
+                min_size: TaffySize {
                     width: length(112.0),
                     height: length(30.0),
                 },
@@ -1458,10 +1462,26 @@ fn color_button_with_value(
     options: ColorButtonOptions,
 ) -> ColorButtonNodes {
     let name = name.into();
+    let mut layout = options.layout.style;
+    layout.display = Display::Flex;
+    layout.flex_direction = FlexDirection::Row;
+    layout.align_items = Some(AlignItems::Center);
+    layout.justify_content = Some(if options.show_label {
+        taffy::prelude::JustifyContent::FlexStart
+    } else {
+        taffy::prelude::JustifyContent::Center
+    });
+    if !options.show_label {
+        let compact_width = (options.swatch_size.width + 8.0).max(options.swatch_size.width);
+        if layout.size.width.is_auto() {
+            layout.size.width = length(compact_width);
+        }
+        layout.min_size.width = length(compact_width);
+    }
     let mut root = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout: options.layout.style,
+            layout,
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -1500,18 +1520,20 @@ fn color_button_with_value(
         ),
     );
     let label = options.show_label.then(|| {
+        let mut text_style = options.text_style;
+        text_style.wrap = TextWrap::None;
         document.add_child(
             root,
             UiNode::text(
                 format!("{name}.label"),
                 value,
-                options.text_style,
+                text_style,
                 LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
-                    flex_shrink: 1.0,
+                    flex_shrink: 0.0,
                     ..Default::default()
                 }),
             ),
@@ -2674,7 +2696,7 @@ fn unpremultiply_alpha(color: ColorRgba) -> ColorRgba {
 
 #[cfg(test)]
 mod tests {
-    use crate::root_style;
+    use crate::{root_style, ApproxTextMeasurer};
 
     use super::*;
 
@@ -2757,6 +2779,11 @@ mod tests {
         assert!(
             document.node(absolute).style.layout.position == taffy::prelude::Position::Absolute
         );
+        document
+            .compute_layout(UiSize::new(360.0, 180.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let swatch_rect = document.node(swatch.root).layout.rect;
+        assert!(swatch_rect.width <= 32.0, "{swatch_rect:?}");
     }
 
     #[test]

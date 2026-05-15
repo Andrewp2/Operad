@@ -160,14 +160,20 @@ pub fn radio_button(
             .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Image).label("Selected")),
         );
     }
-    label(
+    let mut label_style = options.text_style;
+    label_style.wrap = TextWrap::None;
+    let label = label(
         document,
         root,
         format!("{name}.label"),
         label_text,
-        options.text_style,
+        label_style,
         LayoutStyle::new(),
     );
+    document.node_mut(root).layout_constraint = Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
+        sources: vec![label],
+        min_size: UiSize::new(24.0, 28.0),
+    });
     root
 }
 

@@ -110,6 +110,64 @@ fn widget_localized_label_exports_direction_to_paint_and_accessibility() {
     let accessible = tree.iter().find(|node| node.id == label).unwrap();
     assert_eq!(accessible.label.as_deref(), Some("Back"));
 }
+
+#[cfg(all(feature = "widgets", feature = "text-cosmic"))]
+#[test]
+fn widget_label_row_uses_real_text_widths_with_cosmic_measurer() {
+    let mut doc = UiDocument::new(root_style(320.0, 80.0));
+    let root = doc.root;
+    let row = doc.add_child(
+        root,
+        UiNode::container("row", LayoutStyle::row().with_width_percent(1.0).gap(14.0)),
+    );
+    let green = widgets::colored_label(
+        &mut doc,
+        row,
+        "green",
+        "Green",
+        ColorRgba::new(111, 203, 159, 255),
+        LayoutStyle::new(),
+    );
+    let yellow = widgets::colored_label(
+        &mut doc,
+        row,
+        "yellow",
+        "Yellow",
+        ColorRgba::new(232, 196, 101, 255),
+        LayoutStyle::new(),
+    );
+    let red = widgets::colored_label(
+        &mut doc,
+        row,
+        "red",
+        "Red",
+        ColorRgba::new(244, 118, 118, 255),
+        LayoutStyle::new(),
+    );
+    let mut measurer = CosmicTextMeasurer::new();
+    doc.compute_layout(UiSize::new(320.0, 80.0), &mut measurer)
+        .expect("layout");
+
+    let green_rect = doc.node(green).layout.rect;
+    let yellow_rect = doc.node(yellow).layout.rect;
+    let red_rect = doc.node(red).layout.rect;
+    let green_to_yellow = yellow_rect.x - green_rect.right();
+    let yellow_to_red = red_rect.x - yellow_rect.right();
+
+    assert!(
+        (green_to_yellow - 14.0).abs() < 0.5,
+        "green/yellow gap should match row gap, got {green_to_yellow}"
+    );
+    assert!(
+        (yellow_to_red - 14.0).abs() < 0.5,
+        "yellow/red gap should match row gap, got {yellow_to_red}"
+    );
+    assert!(
+        yellow_rect.width > green_rect.width,
+        "real text measurement should preserve Yellow as wider than Green"
+    );
+}
+
 #[cfg(feature = "widgets")]
 #[test]
 fn widget_button_builds_focusable_document_nodes() {
