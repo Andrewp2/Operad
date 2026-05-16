@@ -6,9 +6,10 @@ use taffy::prelude::{
 };
 
 use crate::{
-    length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba,
-    ImageContent, InputBehavior, KeyCode, LayoutStyle, ScrollAxes, ShaderEffect, StrokeStyle,
-    TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiSize, UiVisual,
+    length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ClipScope,
+    ColorRgba, ImageContent, InputBehavior, KeyCode, LayoutStyle, ScrollAxes, ShaderEffect,
+    StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle,
+    UiPortalTarget, UiSize, UiVisual,
 };
 
 use super::menu::{
@@ -954,6 +955,7 @@ pub struct SelectMenuOptions {
     pub menu_shader: Option<ShaderEffect>,
     pub active_shader: Option<ShaderEffect>,
     pub menu_animation: Option<AnimationMachine>,
+    pub portal: UiPortalTarget,
     pub z_index: i16,
     pub action_prefix: Option<String>,
 }
@@ -983,6 +985,7 @@ impl Default for SelectMenuOptions {
             menu_shader: None,
             active_shader: None,
             menu_animation: None,
+            portal: UiPortalTarget::AppOverlay,
             z_index: 100,
             action_prefix: None,
         }
@@ -1050,6 +1053,11 @@ pub fn select_menu_popup(
         PopupOptions {
             visual: menu_options.menu_visual,
             z_index: menu_options.z_index,
+            clip_scope: match menu_options.portal {
+                UiPortalTarget::Parent => ClipScope::Parent,
+                _ => ClipScope::Viewport,
+            },
+            portal: menu_options.portal.clone(),
             scroll_axes: if options.len() > menu_options.max_visible_rows {
                 ScrollAxes::VERTICAL
             } else {
@@ -1546,10 +1554,12 @@ mod tests {
             selected: Some(1),
             active: Some(1),
         };
-        let mut menu_options = SelectMenuOptions::default();
-        menu_options.width = 148.0;
-        menu_options.row_height = 30.0;
-        menu_options.max_visible_rows = options.len();
+        let menu_options = SelectMenuOptions {
+            width: 148.0,
+            row_height: 30.0,
+            max_visible_rows: options.len(),
+            ..Default::default()
+        };
 
         let root = document.root;
         let nodes = select_menu_popup(

@@ -99,10 +99,11 @@ pub fn toggle_switch(
         accessibility = accessibility.disabled();
     }
 
+    let root_layout = options.layout.style.clone();
     let mut root_node = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout: options.layout.style,
+            layout: root_layout.clone(),
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -134,26 +135,27 @@ pub fn toggle_switch(
             .disabled_thumb_visual
             .unwrap_or(options.thumb_visual)
     };
+    let track_layout = Style {
+        display: Display::Flex,
+        flex_direction: FlexDirection::Row,
+        align_items: Some(AlignItems::Center),
+        size: TaffySize {
+            width: length(44.0),
+            height: length(22.0),
+        },
+        padding: taffy::prelude::Rect::length(2.0),
+        margin: taffy::prelude::Rect {
+            right: taffy::prelude::LengthPercentageAuto::length(8.0),
+            ..taffy::prelude::Rect::length(0.0)
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
+    };
     let track = document.add_child(
         root,
         UiNode::container(
             format!("{name}.track"),
-            LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Row,
-                align_items: Some(AlignItems::Center),
-                size: TaffySize {
-                    width: length(44.0),
-                    height: length(22.0),
-                },
-                padding: taffy::prelude::Rect::length(2.0),
-                margin: taffy::prelude::Rect {
-                    right: taffy::prelude::LengthPercentageAuto::length(8.0),
-                    ..taffy::prelude::Rect::length(0.0)
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }),
+            LayoutStyle::from_taffy_style(track_layout.clone()),
         )
         .with_visual(track_visual),
     );
@@ -184,8 +186,7 @@ pub fn toggle_switch(
         );
     }
     if !label_text.is_empty() {
-        let mut label_style = options.text_style;
-        label_style.wrap = TextWrap::None;
+        let label_style = single_line_text_style(options.text_style);
         let label = label(
             document,
             root,
@@ -194,11 +195,12 @@ pub fn toggle_switch(
             label_style,
             LayoutStyle::new(),
         );
-        document.node_mut(root).layout_constraint =
-            Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
-                sources: vec![label],
-                min_size: UiSize::new(52.0, 30.0),
-            });
+        publish_inline_intrinsic_size(
+            document,
+            root,
+            vec![label],
+            inline_intrinsic_base_size(&root_layout, &[&track_layout], 2),
+        );
     }
     root
 }

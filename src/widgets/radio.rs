@@ -93,10 +93,11 @@ pub fn radio_button(
         accessibility = accessibility.disabled();
     }
 
+    let root_layout = options.layout.style.clone();
     let mut root_node = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout: options.layout.style,
+            layout: root_layout.clone(),
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -122,25 +123,26 @@ pub fn radio_button(
     } else {
         options.outer_visual
     };
+    let outer_layout = Style {
+        display: Display::Flex,
+        align_items: Some(AlignItems::Center),
+        justify_content: Some(JustifyContent::Center),
+        size: TaffySize {
+            width: length(16.0),
+            height: length(16.0),
+        },
+        margin: taffy::prelude::Rect {
+            right: taffy::prelude::LengthPercentageAuto::length(8.0),
+            ..taffy::prelude::Rect::length(0.0)
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
+    };
     let outer = document.add_child(
         root,
         UiNode::container(
             format!("{name}.outer"),
-            LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                align_items: Some(AlignItems::Center),
-                justify_content: Some(JustifyContent::Center),
-                size: TaffySize {
-                    width: length(16.0),
-                    height: length(16.0),
-                },
-                margin: taffy::prelude::Rect {
-                    right: taffy::prelude::LengthPercentageAuto::length(8.0),
-                    ..taffy::prelude::Rect::length(0.0)
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }),
+            LayoutStyle::from_taffy_style(outer_layout.clone()),
         )
         .with_visual(outer_visual),
     );
@@ -160,8 +162,7 @@ pub fn radio_button(
             .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Image).label("Selected")),
         );
     }
-    let mut label_style = options.text_style;
-    label_style.wrap = TextWrap::None;
+    let label_style = single_line_text_style(options.text_style);
     let label = label(
         document,
         root,
@@ -170,10 +171,12 @@ pub fn radio_button(
         label_style,
         LayoutStyle::new(),
     );
-    document.node_mut(root).layout_constraint = Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
-        sources: vec![label],
-        min_size: UiSize::new(24.0, 28.0),
-    });
+    publish_inline_intrinsic_size(
+        document,
+        root,
+        vec![label],
+        inline_intrinsic_base_size(&root_layout, &[&outer_layout], 2),
+    );
     root
 }
 

@@ -1,5 +1,3 @@
-#![cfg(feature = "wgpu")]
-
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::max;
@@ -33,8 +31,8 @@ use crate::{
     FontStyle, FrameTiming, ImageAlignment, ImageFit, LinearGradient, MaskMode, PaintBrush,
     PaintCompositorLayer, PaintEffectKind, PaintKind, PaintTransform, PixelRect, RenderError,
     RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage,
-    RendererAdapter, ResourceFormat, ResourceResolver, ResourceUpdate, StrokeStyle, TextStyle,
-    TextWrap, UiNodeId, UiPoint, UiRect, UiSize,
+    RendererAdapter, ResourceFormat, ResourceResolver, ResourceUpdate, StrokeStyle,
+    TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 const OFFSCREEN_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
@@ -1768,7 +1766,7 @@ impl WgpuContext {
             text_areas.push(GlyphTextArea {
                 buffer: &buffer.buffer,
                 left: text.rect.x,
-                top: text.rect.y,
+                top: glyph_text_area_top(text, &buffer.buffer),
                 scale: 1.0,
                 bounds: glyph_text_bounds(text.clip, size),
                 default_color: glyph_color(text.style.color, text.opacity),
@@ -2201,6 +2199,8 @@ struct TextPaint {
     clip: UiRect,
     text: String,
     style: TextStyle,
+    horizontal_align: TextHorizontalAlign,
+    vertical_align: TextVerticalAlign,
     opacity: f32,
 }
 
@@ -2295,6 +2295,7 @@ struct TextBufferKey {
     style: FontStyle,
     stretch: FontStretch,
     wrap: TextWrap,
+    horizontal_align: TextHorizontalAlign,
 }
 
 impl TextBufferKey {
@@ -2310,6 +2311,7 @@ impl TextBufferKey {
             style: text.style.style,
             stretch: text.style.stretch,
             wrap: text.style.wrap,
+            horizontal_align: text.horizontal_align,
         }
     }
 
@@ -2323,6 +2325,7 @@ impl TextBufferKey {
             && self.style == other.style
             && self.stretch == other.stretch
             && self.wrap == other.wrap
+            && self.horizontal_align == other.horizontal_align
     }
 }
 
@@ -2339,6 +2342,7 @@ struct TextRenderKey {
     clip_height: u32,
     color: (u8, u8, u8, u8),
     opacity: u32,
+    vertical_align: TextVerticalAlign,
 }
 
 impl TextRenderKey {
@@ -2360,6 +2364,7 @@ impl TextRenderKey {
                 text.style.color.a,
             ),
             opacity: text.opacity.to_bits(),
+            vertical_align: text.vertical_align,
         }
     }
 }
@@ -2628,6 +2633,8 @@ impl WgpuRenderer {
                     color: ColorRgba::WHITE,
                     ..Default::default()
                 },
+                horizontal_align: TextHorizontalAlign::Start,
+                vertical_align: TextVerticalAlign::Top,
                 opacity: 1.0,
             }],
         )?;
@@ -3321,6 +3328,7 @@ fn render_snapshot_with_context(
     Ok(pixels)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_render_pass(
     context: &mut WgpuContext,
     encoder: &mut wgpu::CommandEncoder,
@@ -3526,6 +3534,8 @@ fn build_geometry_into(
                 clip,
                 &text.text,
                 &text.style,
+                TextHorizontalAlign::Start,
+                TextVerticalAlign::Top,
                 item.opacity,
                 transform,
             ),
@@ -3537,6 +3547,8 @@ fn build_geometry_into(
                     clip,
                     &text.text,
                     &text.style,
+                    text.horizontal_align,
+                    text.vertical_align,
                     item.opacity,
                     transform,
                 );
@@ -3841,8 +3853,8 @@ fn layer_mask_for_shader(
     mask: Option<&CompositorMask>,
     transform: crate::PaintTransform,
 ) -> Option<UiRect> {
-    mask.and_then(|mask| match mask.mode {
-        MaskMode::Alpha | MaskMode::Luminance => Some(transform.transform_rect(mask.bounds)),
+    mask.map(|mask| match mask.mode {
+        MaskMode::Alpha | MaskMode::Luminance => transform.transform_rect(mask.bounds),
     })
 }
 
@@ -4172,6 +4184,7 @@ fn push_arc_points(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_text(
     geometry: &mut RenderGeometry,
     node: UiNodeId,
@@ -4179,6 +4192,8 @@ fn push_text(
     clip: UiRect,
     text: &str,
     style: &TextStyle,
+    horizontal_align: TextHorizontalAlign,
+    vertical_align: TextVerticalAlign,
     opacity: f32,
     transform: crate::PaintTransform,
 ) {
@@ -4203,6 +4218,8 @@ fn push_text(
         clip,
         text: text.to_owned(),
         style: style.clone(),
+        horizontal_align,
+        vertical_align,
         opacity,
     });
 }
@@ -4233,12 +4250,12 @@ fn push_canvas(
         ) {
             if rect.width > 0.0 && rect.height > 0.0 && rect.intersection(clip).is_some() {
                 geometry.push_textured_rect(clip, surface_key, rect, uv, image_tint(None, opacity));
-                return;
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_image(
     geometry: &mut RenderGeometry,
     rect: UiRect,
@@ -4706,8 +4723,16 @@ fn sync_glyph_buffer(
         &text.text,
         &attrs,
         glyph_shaping(&text.text),
-        None,
+        glyph_horizontal_align(text.horizontal_align),
     );
+}
+
+fn glyph_horizontal_align(align: TextHorizontalAlign) -> Option<glyphon::cosmic_text::Align> {
+    match align {
+        TextHorizontalAlign::Start => None,
+        TextHorizontalAlign::Center => Some(glyphon::cosmic_text::Align::Center),
+        TextHorizontalAlign::End => Some(glyphon::cosmic_text::Align::Right),
+    }
 }
 
 fn glyph_attrs(style: &TextStyle) -> GlyphAttrs<'_> {
@@ -4754,6 +4779,24 @@ fn glyph_wrap(wrap: TextWrap) -> GlyphWrap {
         TextWrap::Word => GlyphWrap::Word,
         TextWrap::WordOrGlyph => GlyphWrap::WordOrGlyph,
     }
+}
+
+fn glyph_text_area_top(text: &TextPaint, buffer: &GlyphBuffer) -> f32 {
+    let content_height = glyph_text_content_height(buffer);
+    let slack = (text.rect.height - content_height).max(0.0);
+    text.rect.y
+        + match text.vertical_align {
+            TextVerticalAlign::Top | TextVerticalAlign::Baseline => 0.0,
+            TextVerticalAlign::Center => slack * 0.5,
+            TextVerticalAlign::Bottom => slack,
+        }
+}
+
+fn glyph_text_content_height(buffer: &GlyphBuffer) -> f32 {
+    buffer
+        .layout_runs()
+        .map(|run| run.line_top + run.line_height)
+        .fold(0.0, f32::max)
 }
 
 fn glyph_shaping(text: &str) -> GlyphShaping {
@@ -5382,6 +5425,8 @@ fn fs_main() -> @location(0) vec4<f32> {
                 color: ColorRgba::WHITE,
                 ..Default::default()
             },
+            horizontal_align: TextHorizontalAlign::Start,
+            vertical_align: TextVerticalAlign::Top,
             opacity: 1.0,
         };
         let moved = TextPaint {
@@ -5395,6 +5440,63 @@ fn fs_main() -> @location(0) vec4<f32> {
         assert_eq!(original_key.buffer, moved_key.buffer);
         assert!(original_key.buffer.has_same_layout_as(&moved_key.buffer));
         assert_ne!(original_key.rect_x, moved_key.rect_x);
+    }
+
+    #[test]
+    fn text_render_keys_track_scene_text_alignment() {
+        let text = TextPaint {
+            node: UiNodeId(1),
+            rect: UiRect::new(4.0, 6.0, 88.0, 40.0),
+            clip: UiRect::new(0.0, 0.0, 96.0, 64.0),
+            text: "Centered".to_string(),
+            style: TextStyle {
+                font_size: 20.0,
+                line_height: 24.0,
+                color: ColorRgba::WHITE,
+                ..Default::default()
+            },
+            horizontal_align: TextHorizontalAlign::Start,
+            vertical_align: TextVerticalAlign::Top,
+            opacity: 1.0,
+        };
+        let centered = TextPaint {
+            horizontal_align: TextHorizontalAlign::Center,
+            vertical_align: TextVerticalAlign::Center,
+            ..text.clone()
+        };
+        let size = PixelSize::new(96, 64);
+        let original_key = TextRenderKey::new(&text, size);
+        let centered_key = TextRenderKey::new(&centered, size);
+
+        assert_ne!(original_key.buffer, centered_key.buffer);
+        assert!(!original_key.buffer.has_same_layout_as(&centered_key.buffer));
+        assert_ne!(original_key.vertical_align, centered_key.vertical_align);
+    }
+
+    #[test]
+    fn push_text_carries_scene_alignment_into_wgpu_text_geometry() {
+        let mut geometry = RenderGeometry::default();
+        push_text(
+            &mut geometry,
+            UiNodeId(1),
+            UiRect::new(4.0, 6.0, 88.0, 40.0),
+            UiRect::new(0.0, 0.0, 96.0, 64.0),
+            "Centered",
+            &TextStyle {
+                font_size: 20.0,
+                line_height: 24.0,
+                color: ColorRgba::WHITE,
+                ..Default::default()
+            },
+            TextHorizontalAlign::Center,
+            TextVerticalAlign::Center,
+            1.0,
+            PaintTransform::default(),
+        );
+
+        let text = geometry.texts.first().expect("text geometry");
+        assert_eq!(text.horizontal_align, TextHorizontalAlign::Center);
+        assert_eq!(text.vertical_align, TextVerticalAlign::Center);
     }
 
     fn chunked_text_request(frame: usize) -> RenderFrameRequest {

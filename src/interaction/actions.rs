@@ -332,6 +332,7 @@ impl WidgetTextEdit {
 pub enum WidgetActionMode {
     Activate,
     PointerEdit,
+    PointerEditParentRect,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -587,6 +588,15 @@ impl WidgetAction {
                     WidgetActionMode::PointerEdit => Some(pointer_edit_action(
                         document,
                         target,
+                        target,
+                        binding,
+                        WidgetValueEditPhase::Commit,
+                        click.position,
+                    )),
+                    WidgetActionMode::PointerEditParentRect => Some(pointer_edit_action(
+                        document,
+                        target,
+                        action_rect_parent(document, target),
                         binding,
                         WidgetValueEditPhase::Commit,
                         click.position,
@@ -605,6 +615,15 @@ impl WidgetAction {
                     WidgetActionMode::PointerEdit => Some(pointer_edit_action(
                         document,
                         target,
+                        target,
+                        binding,
+                        WidgetValueEditPhase::from(gesture.phase),
+                        gesture.current,
+                    )),
+                    WidgetActionMode::PointerEditParentRect => Some(pointer_edit_action(
+                        document,
+                        target,
+                        action_rect_parent(document, target),
                         binding,
                         WidgetValueEditPhase::from(gesture.phase),
                         gesture.current,
@@ -639,13 +658,14 @@ fn resolve_action_target(
 fn pointer_edit_action(
     document: &UiDocument,
     target: UiNodeId,
+    rect_source: UiNodeId,
     binding: WidgetActionBinding,
     phase: WidgetValueEditPhase,
     position: UiPoint,
 ) -> WidgetAction {
     let target_rect = document
         .nodes()
-        .get(target.0)
+        .get(rect_source.0)
         .map(|node| node.layout.rect)
         .unwrap_or_else(|| UiRect::new(0.0, 0.0, 0.0, 0.0));
     let local_position = UiPoint::new(position.x - target_rect.x, position.y - target_rect.y);
@@ -654,6 +674,14 @@ fn pointer_edit_action(
         binding,
         WidgetPointerEdit::new(phase, position, local_position, target_rect),
     )
+}
+
+fn action_rect_parent(document: &UiDocument, target: UiNodeId) -> UiNodeId {
+    document
+        .nodes()
+        .get(target.0)
+        .and_then(|node| node.parent)
+        .unwrap_or(target)
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1000,6 +1028,54 @@ mod tests {
         assert_eq!(edit.local_position, UiPoint::new(25.0, 8.0));
         assert_eq!(edit.target_rect.width, 100.0);
         assert_eq!(edit.target_rect.height, 20.0);
+    }
+
+    #[test]
+    fn pointer_edit_parent_rect_uses_parent_geometry() {
+        let mut document = UiDocument::new(LayoutStyle::size(240.0, 160.0));
+        let parent = document.add_child(
+            document.root,
+            UiNode::container("window", LayoutStyle::size(180.0, 90.0)),
+        );
+        let target = document.add_child(
+            parent,
+            UiNode::container("window.resize", LayoutStyle::size(16.0, 16.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_action("window.resize")
+                .with_action_mode(WidgetActionMode::PointerEditParentRect),
+        );
+        document
+            .compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let drag = GestureEvent::Drag(DragGesture {
+            pointer_id: PointerId::MOUSE,
+            target,
+            phase: GesturePhase::Update,
+            origin: UiPoint::new(170.0, 80.0),
+            current: UiPoint::new(190.0, 100.0),
+            previous: UiPoint::new(170.0, 80.0),
+            delta: UiPoint::new(20.0, 20.0),
+            total_delta: UiPoint::new(20.0, 20.0),
+            button: PointerButton::Primary,
+            modifiers: KeyModifiers::NONE,
+            captured: true,
+            timestamp_millis: 5,
+        });
+
+        let action = WidgetAction::from_gesture_event_for_document(&document, &drag, |id| {
+            document.nodes()[id.0].action.clone()
+        })
+        .expect("pointer edit action");
+
+        assert_eq!(action.target, target);
+        assert_eq!(action.binding, WidgetActionBinding::action("window.resize"));
+        let WidgetActionKind::PointerEdit(edit) = action.kind else {
+            panic!("expected pointer edit");
+        };
+        assert_eq!(edit.phase, WidgetValueEditPhase::Update);
+        assert_eq!(edit.target_rect.width, 180.0);
+        assert_eq!(edit.target_rect.height, 90.0);
+        assert_eq!(edit.local_position, UiPoint::new(190.0, 100.0));
     }
 
     #[test]

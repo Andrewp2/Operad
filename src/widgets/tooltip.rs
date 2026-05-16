@@ -351,6 +351,7 @@ pub fn tooltip_box(
     tooltip
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn tooltip_box_from_request(
     document: &mut UiDocument,
     parent: UiNodeId,

@@ -507,9 +507,7 @@ mod tests {
                 && (actual.y - expected.y).abs() <= epsilon
                 && (actual.width - expected.width).abs() <= epsilon
                 && (actual.height - expected.height).abs() <= epsilon,
-            "expected {:?}, got {:?}",
-            expected,
-            actual
+            "expected {expected:?}, got {actual:?}",
         );
     }
 

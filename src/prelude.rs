@@ -6,8 +6,10 @@
 
 pub use crate::{
     length, root_style, AccessibilityAction, AccessibilityChecked, AccessibilityLiveRegion,
-    AccessibilityMeta, AccessibilityRole, AccessibilityValueRange, AnimationMachine,
-    AnimationState, AnimationTransition, AnimationTrigger, CanvasContent, CanvasContextDescriptor,
+    AccessibilityMeta, AccessibilityRole, AccessibilityValueRange, AnimatedValues,
+    AnimationBlendBinding, AnimationCondition, AnimationInputValue, AnimationMachine,
+    AnimationNumberComparison, AnimationState, AnimationTickOutcome, AnimationTickReport,
+    AnimationTransition, AnimationTrigger, CanvasContent, CanvasContextDescriptor,
     CanvasContextKind, CanvasInteractionPolicy, CanvasRenderMode, ClipBehavior, ClipScope,
     ColorRgba, ComputedLayout, DragDropSurfaceKind, DragSourceDescriptor, DragSourceId,
     DropPayloadFilter, DropTargetDescriptor, DropTargetHit, DropTargetId, EditPhase, FieldId,
@@ -19,6 +21,9 @@ pub use crate::{
     UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalId, UiPortalTarget, UiRect, UiSize, UiVisual,
     UiWheelEvent, ValidationMessage, ValidationSeverity, WidgetAction, WidgetActionBinding,
     WidgetActionId, WidgetActionKind, WidgetActionMode, WidgetActionQueue, WidgetActionTrigger,
+    ANIMATION_INPUT_ACTIVATED, ANIMATION_INPUT_ACTIVE, ANIMATION_INPUT_FOCUSED,
+    ANIMATION_INPUT_HOVER, ANIMATION_INPUT_POINTER_NORM_X, ANIMATION_INPUT_POINTER_NORM_Y,
+    ANIMATION_INPUT_POINTER_X, ANIMATION_INPUT_POINTER_Y, ANIMATION_INPUT_PRESSED,
     APP_OVERLAY_PORTAL,
 };
 

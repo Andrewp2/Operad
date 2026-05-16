@@ -105,10 +105,11 @@ pub fn checkbox(
     } else {
         accessibility = accessibility.disabled();
     }
+    let root_layout = options.layout.style.clone();
     let mut root_node = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout: options.layout.style,
+            layout: root_layout.clone(),
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -136,25 +137,25 @@ pub fn checkbox(
     } else {
         options.box_visual
     };
+    let box_layout = Style {
+        size: TaffySize {
+            width: length(16.0),
+            height: length(16.0),
+        },
+        margin: taffy::prelude::Rect {
+            left: taffy::prelude::LengthPercentageAuto::length(0.0),
+            right: taffy::prelude::LengthPercentageAuto::length(8.0),
+            top: taffy::prelude::LengthPercentageAuto::length(0.0),
+            bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
+        },
+        ..Default::default()
+    };
     let box_node = document.add_child(
         root,
         UiNode::container(
             format!("{name}.box"),
             UiNodeStyle {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(16.0),
-                        height: length(16.0),
-                    },
-                    margin: taffy::prelude::Rect {
-                        left: taffy::prelude::LengthPercentageAuto::length(0.0),
-                        right: taffy::prelude::LengthPercentageAuto::length(8.0),
-                        top: taffy::prelude::LengthPercentageAuto::length(0.0),
-                        bottom: taffy::prelude::LengthPercentageAuto::length(0.0),
-                    },
-                    ..Default::default()
-                })
-                .style,
+                layout: LayoutStyle::from_taffy_style(box_layout.clone()).style,
                 ..Default::default()
             },
         )
@@ -206,8 +207,7 @@ pub fn checkbox(
             document.add_child(box_node, check_node);
         }
     }
-    let mut label_style = options.text_style;
-    label_style.wrap = TextWrap::None;
+    let label_style = single_line_text_style(options.text_style);
     let label = label(
         document,
         root,
@@ -222,10 +222,12 @@ pub fn checkbox(
             ..Default::default()
         }),
     );
-    document.node_mut(root).layout_constraint = Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
-        sources: vec![label],
-        min_size: UiSize::new(24.0, 28.0),
-    });
+    publish_inline_intrinsic_size(
+        document,
+        root,
+        vec![label],
+        inline_intrinsic_base_size(&root_layout, &[&box_layout], 2),
+    );
     root
 }
 

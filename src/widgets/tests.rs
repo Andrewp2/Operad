@@ -407,6 +407,123 @@ fn widget_state_matrix_core_controls_keep_geometry_and_pointer_targets() {
 
 #[cfg(feature = "widgets")]
 #[test]
+fn widget_core_controls_publish_minimums_from_composition() {
+    assert_widget_minimum_prevents_text_clipping(|document, parent| {
+        widgets::button(
+            document,
+            parent,
+            "button.long",
+            "Long control label",
+            widgets::ButtonOptions::default().with_leading_image(ImageContent::new("icons.play")),
+        )
+    });
+    assert_widget_minimum_prevents_text_clipping(|document, parent| {
+        widgets::checkbox(
+            document,
+            parent,
+            "checkbox.long",
+            "Long checkbox label",
+            false,
+            widgets::CheckboxOptions::default(),
+        )
+    });
+    assert_widget_minimum_prevents_text_clipping(|document, parent| {
+        widgets::radio_button(
+            document,
+            parent,
+            "radio.long",
+            "Long radio label",
+            false,
+            widgets::RadioButtonOptions::default(),
+        )
+    });
+    assert_widget_minimum_prevents_text_clipping(|document, parent| {
+        widgets::toggle_switch(
+            document,
+            parent,
+            "toggle.long",
+            "Long switch label",
+            widgets::ToggleValue::On,
+            widgets::ToggleSwitchOptions::default(),
+        )
+    });
+    assert_widget_minimum_prevents_text_clipping(|document, parent| {
+        widgets::collapsing_header(
+            document,
+            parent,
+            "collapsing.long",
+            "Long collapsed header",
+            widgets::CollapsingHeaderOptions::default().expanded(false),
+        )
+        .header
+    });
+}
+
+#[cfg(feature = "widgets")]
+fn assert_widget_minimum_prevents_text_clipping(
+    build: impl FnOnce(&mut UiDocument, UiNodeId) -> UiNodeId,
+) {
+    let mut doc = UiDocument::new(root_style(900.0, 180.0));
+    let root = doc.root;
+    let target = build(&mut doc, root);
+    doc.compute_layout(UiSize::new(900.0, 180.0), &mut ApproxTextMeasurer)
+        .expect("initial layout");
+
+    let min = minimum_size_from_style(&doc.node(target).style.layout);
+    assert!(
+        min.width > 0.0 && min.height > 0.0,
+        "target {:?} should publish a finite minimum from its composition",
+        doc.node(target).name
+    );
+
+    doc.node_mut(root).style.layout.size = TaffySize {
+        width: length(min.width),
+        height: length(min.height),
+    };
+    doc.invalidate_layout();
+    doc.compute_layout(min, &mut ApproxTextMeasurer)
+        .expect("layout at computed minimum");
+
+    let clipped = doc
+        .audit_layout()
+        .into_iter()
+        .filter(|warning| {
+            matches!(
+                warning,
+                AuditWarning::TextClipped { node, .. }
+                    if doc.node_is_descendant_or_self(target, *node)
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        clipped.is_empty(),
+        "target {:?} clipped text at its published minimum: {clipped:?}",
+        doc.node(target).name
+    );
+}
+
+#[cfg(feature = "widgets")]
+fn minimum_size_from_style(style: &taffy::prelude::Style) -> UiSize {
+    UiSize::new(
+        dimension_length(style.min_size.width)
+            .or_else(|| dimension_length(style.size.width))
+            .unwrap_or(1.0)
+            .max(1.0),
+        dimension_length(style.min_size.height)
+            .or_else(|| dimension_length(style.size.height))
+            .unwrap_or(1.0)
+            .max(1.0),
+    )
+}
+
+#[cfg(feature = "widgets")]
+fn dimension_length(value: Dimension) -> Option<f32> {
+    let raw = value.into_raw();
+    (raw.tag() == taffy::prelude::CompactLength::LENGTH_TAG).then_some(raw.value())
+}
+
+#[cfg(feature = "widgets")]
+#[test]
 fn widget_apis_accept_legacy_taffy_layout_inputs() {
     let root_style = root_style(280.0, 120.0);
     let mut doc = UiDocument::new(root_style);

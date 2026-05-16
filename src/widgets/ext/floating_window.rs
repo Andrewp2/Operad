@@ -253,7 +253,6 @@ impl FloatingDesktopState {
         self.positions
             .entry(id.to_string())
             .or_insert(defaults.position);
-        self.sizes.entry(id.to_string()).or_insert(defaults.size);
     }
 
     pub fn position(&self, id: &str, fallback: UiPoint) -> UiPoint {
@@ -391,15 +390,24 @@ impl FloatingDesktopState {
         defaults: FloatingWindowDefaults,
     ) {
         let stored_size = self.size(id, defaults.size);
-        let origin_size = if self.user_sized.contains(id) {
-            stored_size
-        } else {
-            UiSize::new(
-                finite_or(edit.target_rect.width, stored_size.width).max(defaults.min_size.width),
-                finite_or(edit.target_rect.height, stored_size.height)
-                    .max(defaults.min_size.height),
-            )
-        };
+        let target_width = finite_or(edit.target_rect.width, 0.0);
+        let target_height = finite_or(edit.target_rect.height, 0.0);
+        let rendered_size = UiSize::new(
+            if target_width > 0.0 {
+                target_width
+            } else {
+                stored_size.width
+            },
+            if target_height > 0.0 {
+                target_height
+            } else {
+                stored_size.height
+            },
+        );
+        let origin_size = UiSize::new(
+            rendered_size.width.max(defaults.min_size.width).max(1.0),
+            rendered_size.height.max(defaults.min_size.height).max(1.0),
+        );
         match edit.phase.edit_phase() {
             EditPhase::Preview => {}
             EditPhase::BeginEdit => {
@@ -455,7 +463,7 @@ impl FloatingDesktopState {
     ) {
         descriptor.position = Some(self.position(&descriptor.id, defaults.position));
         descriptor.preferred_size = self.size(&descriptor.id, defaults.size);
-        if self.user_sized.contains(&descriptor.id) {
+        if self.user_sized.contains(&descriptor.id) || self.sizes.contains_key(&descriptor.id) {
             descriptor.auto_size_to_content = false;
         }
         descriptor.collapsed = self.is_collapsed(&descriptor.id);
@@ -1102,7 +1110,7 @@ fn add_resize_handle(
         )
         .with_input(InputBehavior::BUTTON)
         .with_action(action.clone())
-        .with_action_mode(WidgetActionMode::PointerEdit)
+        .with_action_mode(WidgetActionMode::PointerEditParentRect)
         .with_visual(options.resize_handle_visual)
         .with_accessibility(
             AccessibilityMeta::new(AccessibilityRole::Button)
@@ -1689,7 +1697,7 @@ mod tests {
     }
 
     #[test]
-    fn floating_desktop_scroll_content_does_not_force_min_window_height() {
+    fn floating_desktop_scroll_content_min_height_is_bounded_by_desktop() {
         let windows = vec![FloatingWindowDescriptor::new(
             "scroll_content",
             "Scroll content",
@@ -1706,16 +1714,15 @@ mod tests {
             &windows,
             FloatingDesktopOptions::new(UiSize::new(420.0, 260.0)).with_margin(10.0),
             |document, parent, _window| {
+                let mut layout = LayoutStyle::column()
+                    .with_width_percent(1.0)
+                    .with_height_percent(1.0)
+                    .with_flex_grow(1.0);
+                layout.as_taffy_style_mut().min_size.height = length(48.0);
                 let scroll = document.add_child(
                     parent,
-                    UiNode::container(
-                        "scroll_content.body",
-                        LayoutStyle::column()
-                            .with_width_percent(1.0)
-                            .with_height_percent(1.0)
-                            .with_flex_grow(1.0),
-                    )
-                    .with_scroll(ScrollAxes::VERTICAL),
+                    UiNode::container("scroll_content.body", layout)
+                        .with_scroll(ScrollAxes::VERTICAL),
                 );
                 for index in 0..12 {
                     document.add_child(
@@ -1736,7 +1743,119 @@ mod tests {
             .expect("layout");
 
         let window = document.node(nodes.windows[0].root).layout.rect;
-        assert!(window.height <= 120.0, "{window:?}");
+        assert!(
+            window.height >= 230.0 && window.height <= 240.0,
+            "{window:?}"
+        );
+    }
+
+    #[test]
+    fn floating_desktop_unbounded_scroll_content_contributes_to_min_window_height() {
+        let windows = vec![FloatingWindowDescriptor::new(
+            "scroll_content",
+            "Scroll content",
+            UiSize::new(240.0, 110.0),
+        )
+        .with_min_size(UiSize::new(120.0, 80.0))
+        .with_position(UiPoint::new(20.0, 20.0))];
+        let mut document = UiDocument::new(root_style(420.0, 380.0));
+        let root = document.root;
+        let nodes = floating_desktop(
+            &mut document,
+            root,
+            "desk",
+            &windows,
+            FloatingDesktopOptions::new(UiSize::new(420.0, 380.0)).with_margin(10.0),
+            |document, parent, _window| {
+                let scroll = document.add_child(
+                    parent,
+                    UiNode::container(
+                        "scroll_content.body",
+                        LayoutStyle::column()
+                            .with_width_percent(1.0)
+                            .with_height_percent(1.0)
+                            .with_flex_grow(1.0),
+                    )
+                    .with_scroll(ScrollAxes::VERTICAL),
+                );
+                for index in 0..8 {
+                    document.add_child(
+                        scroll,
+                        UiNode::container(
+                            format!("scroll_content.row.{index}"),
+                            LayoutStyle::new()
+                                .with_width_percent(1.0)
+                                .with_height(24.0)
+                                .with_flex_shrink(0.0),
+                        ),
+                    );
+                }
+            },
+        );
+        document
+            .compute_layout(UiSize::new(420.0, 380.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let window = document.node(nodes.windows[0].root).layout.rect;
+        assert!(window.height >= 240.0, "{window:?}");
+    }
+
+    #[test]
+    fn floating_desktop_scroll_viewport_minimum_contributes_to_window_min_height() {
+        let windows = vec![FloatingWindowDescriptor::new(
+            "scroll_viewport",
+            "Scroll viewport",
+            UiSize::new(240.0, 90.0),
+        )
+        .with_min_size(UiSize::new(120.0, 70.0))
+        .with_position(UiPoint::new(20.0, 20.0))];
+        let mut document = UiDocument::new(root_style(420.0, 280.0));
+        let root = document.root;
+        let nodes = floating_desktop(
+            &mut document,
+            root,
+            "desk",
+            &windows,
+            FloatingDesktopOptions::new(UiSize::new(420.0, 280.0)).with_margin(10.0),
+            |document, parent, _window| {
+                let mut layout = LayoutStyle::column()
+                    .with_width_percent(1.0)
+                    .with_height_percent(1.0)
+                    .with_flex_grow(1.0);
+                layout.as_taffy_style_mut().min_size.height = length(140.0);
+                let scroll = document.add_child(
+                    parent,
+                    UiNode::container("scroll_viewport.body", layout)
+                        .with_scroll(ScrollAxes::VERTICAL),
+                );
+                for index in 0..12 {
+                    document.add_child(
+                        scroll,
+                        UiNode::container(
+                            format!("scroll_viewport.row.{index}"),
+                            LayoutStyle::new()
+                                .with_width_percent(1.0)
+                                .with_height(24.0)
+                                .with_flex_shrink(0.0),
+                        ),
+                    );
+                }
+            },
+        );
+        document
+            .compute_layout(UiSize::new(420.0, 280.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let window = document.node(nodes.windows[0].root).layout.rect;
+        let viewport = document
+            .nodes()
+            .iter()
+            .find(|node| node.name == "scroll_viewport.body")
+            .expect("scroll viewport")
+            .layout
+            .rect;
+        assert!(window.height >= 190.0, "{window:?}");
+        assert!(viewport.height >= 140.0, "{viewport:?}");
     }
 
     #[test]
@@ -1811,6 +1930,69 @@ mod tests {
 
         assert!(!descriptor.auto_size_to_content);
         assert_eq!(descriptor.preferred_size, UiSize::new(300.0, 180.0));
+    }
+
+    #[test]
+    fn floating_desktop_state_disables_auto_size_for_known_window_sizes() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(20.0, 20.0),
+            UiSize::new(240.0, 140.0),
+            UiSize::new(80.0, 70.0),
+        );
+        let mut state = FloatingDesktopState::default();
+        state.ensure_window("compact", defaults);
+        state
+            .sizes
+            .insert("compact".to_string(), UiSize::new(260.0, 150.0));
+
+        let mut descriptor =
+            FloatingWindowDescriptor::new("compact", "Compact", UiSize::new(1.0, 1.0))
+                .with_auto_size_to_content(true);
+        state.apply_to_descriptor(&mut descriptor, defaults);
+
+        assert!(!descriptor.auto_size_to_content);
+        assert_eq!(descriptor.preferred_size, UiSize::new(260.0, 150.0));
+    }
+
+    #[test]
+    fn floating_desktop_state_resizes_from_rendered_window_rect() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(20.0, 20.0),
+            UiSize::new(240.0, 140.0),
+            UiSize::new(80.0, 70.0),
+        );
+        let mut state = FloatingDesktopState::default();
+        state.ensure_window("compact", defaults);
+        state
+            .sizes
+            .insert("compact".to_string(), UiSize::new(80.0, 70.0));
+        state.user_sized.insert("compact".to_string());
+
+        state.apply_resize(
+            "compact",
+            WidgetPointerEdit::new(
+                crate::WidgetValueEditPhase::Begin,
+                UiPoint::new(260.0, 160.0),
+                UiPoint::new(240.0, 140.0),
+                UiRect::new(20.0, 20.0, 260.0, 140.0),
+            ),
+            defaults,
+        );
+        state.apply_resize(
+            "compact",
+            WidgetPointerEdit::new(
+                crate::WidgetValueEditPhase::Commit,
+                UiPoint::new(300.0, 190.0),
+                UiPoint::new(280.0, 170.0),
+                UiRect::new(20.0, 20.0, 260.0, 140.0),
+            ),
+            defaults,
+        );
+
+        assert_eq!(
+            state.size("compact", defaults.size),
+            UiSize::new(300.0, 170.0)
+        );
     }
 
     fn overlaps(left: UiRect, right: UiRect) -> bool {

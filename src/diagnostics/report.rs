@@ -796,7 +796,7 @@ fn accessibility_response_label(response: &AccessibilityAdapterResponse) -> &'st
 fn accessibility_response_summary(response: &AccessibilityAdapterResponse) -> String {
     match response {
         AccessibilityAdapterResponse::Applied => "applied".to_string(),
-        AccessibilityAdapterResponse::Unsupported(kind) => format!("unsupported {:?}", kind),
+        AccessibilityAdapterResponse::Unsupported(kind) => format!("unsupported {kind:?}"),
         AccessibilityAdapterResponse::FocusChanged(focused) => {
             format!("focus changed to {}", optional_node_label(*focused))
         }
@@ -804,7 +804,7 @@ fn accessibility_response_summary(response: &AccessibilityAdapterResponse) -> St
             accessibility_preferences_summary(*preferences)
         }
         AccessibilityAdapterResponse::Failed { request, reason } => {
-            format!("failed {:?}: {}", request, reason)
+            format!("failed {request:?}: {reason}")
         }
     }
 }

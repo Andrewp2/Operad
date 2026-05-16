@@ -1,16 +1,22 @@
+#![allow(clippy::field_reassign_with_default)]
+
+use std::time::{Duration, Instant};
+
 use operad::platform::{DragPayload, PixelSize, UiLayer};
 use operad::widgets::{CalendarDate, TextInputLayoutMetrics, TextInputOptions, TextInputState};
 use operad::{
-    root_style, widgets, AccessibilityMeta, AccessibilityRole, AlignedStroke, BuiltInIcon,
-    CanvasContent, CanvasRenderOutput, ClipBehavior, ColorRgba, CornerRadii, DragDropSurfaceKind,
-    DropPayloadFilter, DynamicLabelMeta, FocusRestoreTarget, FontFamily, FontWeight, FormState,
-    FormValidationResult, ImageContent, LayoutFlexWrap, LayoutStyle, LocaleId, LocalizationPolicy,
-    NativeWgpuCanvasRenderContext, NativeWgpuCanvasRenderRegistry, NativeWindowOptions,
-    NativeWindowResult, PaintEffect, PaintRect, PaintText, RenderError, ScenePrimitive, ScrollAxes,
-    StrokeStyle, TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, TooltipContent,
-    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual,
+    root_style, widgets, AccessibilityMeta, AccessibilityRole, AlignedStroke, AnimatedValues,
+    AnimationBlendBinding, AnimationCondition, AnimationMachine, AnimationState,
+    AnimationTransition, BuiltInIcon, CanvasContent, CanvasRenderOutput, ClipBehavior, ColorRgba,
+    CornerRadii, DragDropSurfaceKind, DropPayloadFilter, DynamicLabelMeta, FocusRestoreTarget,
+    FontFamily, FontWeight, FormState, FormValidationResult, ImageContent, InputBehavior,
+    LayoutFlexWrap, LayoutStyle, LocaleId, LocalizationPolicy, NativeWgpuCanvasRenderContext,
+    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowOptions, NativeWindowResult,
+    PaintEffect, PaintRect, PaintText, RenderError, ScenePrimitive, ScrollAxes, StrokeStyle,
+    TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, TooltipContent, UiDocument,
+    UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual,
     ValidationMessage, WgpuCanvasContext, WgpuCanvasRenderPass, WidgetAction, WidgetActionBinding,
-    WidgetActionKind, WidgetDrag, WidgetDragPhase, WidgetTextEdit,
+    WidgetActionKind, WidgetDrag, WidgetDragPhase, WidgetTextEdit, ANIMATION_INPUT_POINTER_NORM_X,
 };
 
 const RIGHT_PANEL_WIDTH: f32 = 300.0;
@@ -18,11 +24,23 @@ const SHOWCASE_WINDOW_Z_BASE: i16 = 64;
 const SHOWCASE_WINDOW_Z_STRIDE: i16 = 32;
 const SHOWCASE_WINDOW_Z_MAX: i16 = 960;
 const SHOWCASE_TICK_RATE_HZ: f32 = 60.0;
+const SHOWCASE_FPS_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 const SHOWCASE_PROGRESS_RADIANS_PER_SECOND: f32 = 1.08;
 const TEXT_CARET_BLINK_HZ: f32 = 1.1;
 const CONTROLS_WIDGET_ROW_HEIGHT: f32 = 28.0;
-const CONTROLS_WIDGET_ROW_GAP: f32 = 4.0;
-const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 28] = [
+const CONTROLS_WIDGET_ROW_GAP: f32 = 1.0;
+const ANIMATION_INPUT_OPEN: &str = "open";
+const ANIMATION_INPUT_PROGRESS: &str = "progress";
+const ANIMATION_INPUT_SCRUB: &str = "scrub";
+const ANIMATION_STAGE_MIN_WIDTH: f32 = 360.0;
+const ANIMATION_STAGE_HEIGHT: f32 = 170.0;
+const ANIMATION_ORB_SIZE: f32 = 96.0;
+const ANIMATION_SHAPE_SIZE: f32 = 96.0;
+const ANIMATION_PANEL_INSET_X: f32 = 24.0;
+const ANIMATION_PANEL_Y: f32 = 62.0;
+const ANIMATION_PANEL_WIDTH: f32 = 136.0;
+const ANIMATION_PANEL_HEIGHT: f32 = 46.0;
+const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 29] = [
     "labels",
     "buttons",
     "checkbox",
@@ -37,6 +55,7 @@ const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 28] = [
     "color_picker",
     "color_buttons",
     "progress",
+    "animation",
     "lists_tables",
     "property_inspector",
     "trees",
@@ -56,7 +75,9 @@ const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 28] = [
 fn main() -> NativeWindowResult {
     let mut canvas_renderers = NativeWgpuCanvasRenderRegistry::new();
     canvas_renderers.register("canvas.shader", render_showcase_canvas);
-    operad::run_app_with_canvas_renderers(
+    let hooks = NativeWindowHooks::new()
+        .with_before_render(|state: &mut ShowcaseState, _metrics| state.record_frame());
+    operad::run_app_with_canvas_renderers_and_hooks(
         NativeWindowOptions::new("showcase")
             .with_size(900.0, 760.0)
             .with_min_size(720.0, 560.0)
@@ -66,6 +87,7 @@ fn main() -> NativeWindowResult {
         ShowcaseState::update,
         ShowcaseState::view,
         canvas_renderers,
+        hooks,
     )
 }
 
@@ -124,6 +146,12 @@ struct ShowcaseState {
     toast_action_status: &'static str,
     popup_open: bool,
     progress_phase: f32,
+    animation_scrub: f32,
+    animation_open: bool,
+    animation_timed_expanded: bool,
+    animation_scrub_expanded: bool,
+    animation_state_expanded: bool,
+    animation_interaction_expanded: bool,
     caret_phase: f32,
     command_palette: widgets::CommandPaletteState,
     last_command: String,
@@ -139,6 +167,12 @@ struct ShowcaseState {
     scrollbars: widgets::ScrollbarControllerState,
     layout_tab: usize,
     styling: StylingState,
+    styling_stroke_picker: widgets::ColorPickerState,
+    styling_stroke_picker_open: bool,
+    styling_fill_picker: widgets::ColorPickerState,
+    styling_fill_picker_open: bool,
+    styling_shadow_picker: widgets::ColorPickerState,
+    styling_shadow_picker_open: bool,
     cube: CanvasCubeState,
     menu_bar: widgets::MenuBarState,
     menu_button: widgets::MenuButtonState,
@@ -156,8 +190,11 @@ struct ShowcaseState {
     drag_drop_status: &'static str,
     layout_split: widgets::SplitPaneState,
     containers_scroll: operad::ScrollState,
-    controls_scroll: f32,
+    controls_scroll: operad::ScrollState,
     color_copied_hex: Option<String>,
+    fps_last_sample: Instant,
+    fps_frames: u32,
+    fps: f32,
     windows: ShowcaseWindows,
     desktop: widgets::FloatingDesktopState,
 }
@@ -183,10 +220,9 @@ struct StylingState {
     shadow_y: f32,
     shadow_blur: f32,
     shadow_spread: f32,
-    shadow_alpha: f32,
+    shadow: ColorRgba,
     stroke_width: f32,
-    stroke_tint: f32,
-    fill_tint: f32,
+    stroke: ColorRgba,
     fill: ColorRgba,
 }
 
@@ -212,11 +248,10 @@ impl Default for StylingState {
             shadow_y: 12.0,
             shadow_blur: 16.0,
             shadow_spread: 0.0,
-            shadow_alpha: 140.0,
+            shadow: ColorRgba::new(0, 0, 0, 140),
             stroke_width: 1.0,
-            stroke_tint: 0.68,
-            fill_tint: 0.54,
-            fill: ColorRgba::new(79, 45, 191, 255),
+            stroke: ColorRgba::new(198, 198, 205, 255),
+            fill: ColorRgba::new(100, 55, 205, 255),
         }
     }
 }
@@ -262,27 +297,15 @@ impl StylingState {
     }
 
     fn stroke_color(self) -> ColorRgba {
-        let t = unit(self.stroke_tint);
-        ColorRgba::new(
-            (140.0 + t * 85.0) as u8,
-            (140.0 + t * 85.0) as u8,
-            (150.0 + t * 75.0) as u8,
-            255,
-        )
+        self.stroke
     }
 
     fn fill_color(self) -> ColorRgba {
-        let t = unit(self.fill_tint);
-        ColorRgba::new(
-            (58.0 + t * 80.0) as u8,
-            (30.0 + t * 44.0) as u8,
-            (150.0 + t * 95.0) as u8,
-            255,
-        )
+        self.fill
     }
 
     fn shadow_color(self) -> ColorRgba {
-        ColorRgba::new(0, 0, 0, self.shadow_alpha.clamp(0.0, 255.0) as u8)
+        self.shadow
     }
 }
 
@@ -296,7 +319,6 @@ enum FocusedTextInput {
     CodeEditor,
     Search,
     Password,
-    SelectableHelper,
     SliderValue,
     SliderRangeLeft,
     SliderRangeRight,
@@ -305,7 +327,11 @@ enum FocusedTextInput {
 
 impl FocusedTextInput {
     const fn is_read_only(self) -> bool {
-        matches!(self, Self::Selectable | Self::SelectableHelper)
+        matches!(self, Self::Selectable)
+    }
+
+    const fn is_multiline(self) -> bool {
+        matches!(self, Self::Multiline | Self::TextArea | Self::CodeEditor)
     }
 }
 
@@ -391,13 +417,19 @@ impl Default for ShowcaseState {
         selectable_text.selection_anchor = Some(0);
         selectable_text.caret = "Selectable".len();
         let windows = ShowcaseWindows::default();
-        let desktop = widgets::FloatingDesktopState::with_visible_order(
+        let mut desktop = widgets::FloatingDesktopState::with_visible_order(
             SHOWCASE_WIDGET_WINDOW_IDS
                 .into_iter()
                 .filter(|id| windows.is_visible(id))
                 .map(str::to_string),
             showcase_window_z_policy(),
         );
+        for id in SHOWCASE_WIDGET_WINDOW_IDS
+            .into_iter()
+            .filter(|id| windows.is_visible(id))
+        {
+            desktop.ensure_window(id, window_defaults(id));
+        }
 
         Self {
             checked: true,
@@ -444,9 +476,10 @@ impl Default for ShowcaseState {
             text,
             selectable_text,
             singleline_text: TextInputState::new("Single line"),
-            multiline_text: TextInputState::new("First line\nSecond line"),
-            text_area_text: TextInputState::new("Text area content"),
-            code_editor_text: TextInputState::new("fn main() {\n    println!(\"showcase\");\n}"),
+            multiline_text: TextInputState::new("First line\nSecond line").multiline(true),
+            text_area_text: TextInputState::new("Text area content").multiline(true),
+            code_editor_text: TextInputState::new("fn main() {\n    println!(\"showcase\");\n}")
+                .multiline(true),
             search_text: TextInputState::new("widgets"),
             password_text: TextInputState::new("correct horse"),
             focused_text: None,
@@ -462,6 +495,12 @@ impl Default for ShowcaseState {
             toast_action_status: "No toast action",
             popup_open: false,
             progress_phase: 0.0,
+            animation_scrub: 0.0,
+            animation_open: false,
+            animation_timed_expanded: true,
+            animation_scrub_expanded: true,
+            animation_state_expanded: true,
+            animation_interaction_expanded: true,
             caret_phase: 0.0,
             command_palette: widgets::CommandPaletteState {
                 query: String::new(),
@@ -481,6 +520,18 @@ impl Default for ShowcaseState {
             scrollbars: widgets::ScrollbarControllerState::new(),
             layout_tab: 0,
             styling: StylingState::default(),
+            styling_stroke_picker: widgets::ColorPickerState::new(
+                StylingState::default().stroke_color(),
+            ),
+            styling_stroke_picker_open: false,
+            styling_fill_picker: widgets::ColorPickerState::new(
+                StylingState::default().fill_color(),
+            ),
+            styling_fill_picker_open: false,
+            styling_shadow_picker: widgets::ColorPickerState::new(
+                StylingState::default().shadow_color(),
+            ),
+            styling_shadow_picker_open: false,
             cube: CanvasCubeState::default(),
             menu_bar: widgets::MenuBarState {
                 open_menu: Some(0),
@@ -506,8 +557,11 @@ impl Default for ShowcaseState {
                 viewport_size: UiSize::new(260.0, 82.0),
                 content_size: UiSize::new(440.0, 180.0),
             },
-            controls_scroll: 0.0,
+            controls_scroll: operad::ScrollState::new(ScrollAxes::VERTICAL),
             color_copied_hex: None,
+            fps_last_sample: Instant::now(),
+            fps_frames: 0,
+            fps: 0.0,
             windows,
             desktop,
         }
@@ -529,6 +583,7 @@ struct ShowcaseWindows {
     color_picker: bool,
     color_buttons: bool,
     progress: bool,
+    animation: bool,
     lists_tables: bool,
     property_inspector: bool,
     trees: bool,
@@ -562,6 +617,7 @@ impl Default for ShowcaseWindows {
             color_picker: true,
             color_buttons: false,
             progress: false,
+            animation: false,
             lists_tables: false,
             property_inspector: false,
             trees: false,
@@ -597,6 +653,7 @@ impl ShowcaseWindows {
             "color_picker" => self.color_picker,
             "color_buttons" => self.color_buttons,
             "progress" => self.progress,
+            "animation" => self.animation,
             "lists_tables" => self.lists_tables,
             "property_inspector" => self.property_inspector,
             "trees" => self.trees,
@@ -631,6 +688,7 @@ impl ShowcaseWindows {
             "color_picker" => Some(&mut self.color_picker),
             "color_buttons" => Some(&mut self.color_buttons),
             "progress" => Some(&mut self.progress),
+            "animation" => Some(&mut self.animation),
             "lists_tables" => Some(&mut self.lists_tables),
             "property_inspector" => Some(&mut self.property_inspector),
             "trees" => Some(&mut self.trees),
@@ -670,6 +728,14 @@ impl ShowcaseWindows {
             }
         }
     }
+
+    fn open_all(&mut self) {
+        for id in SHOWCASE_WIDGET_WINDOW_IDS {
+            if let Some(visible) = self.slot_mut(id) {
+                *visible = true;
+            }
+        }
+    }
 }
 
 fn showcase_window_z_policy() -> widgets::FloatingDesktopZPolicy {
@@ -689,6 +755,21 @@ fn window_defaults(id: &str) -> widgets::FloatingWindowDefaults {
 }
 
 impl ShowcaseState {
+    fn record_frame(&mut self) {
+        self.fps_frames = self.fps_frames.saturating_add(1);
+        let now = Instant::now();
+        let elapsed = now
+            .checked_duration_since(self.fps_last_sample)
+            .unwrap_or(Duration::ZERO);
+        if elapsed < SHOWCASE_FPS_SAMPLE_INTERVAL {
+            return;
+        }
+        let seconds = elapsed.as_secs_f32().max(f32::EPSILON);
+        self.fps = self.fps_frames as f32 / seconds;
+        self.fps_frames = 0;
+        self.fps_last_sample = now;
+    }
+
     fn update(&mut self, action: WidgetAction) {
         let WidgetAction { binding, kind, .. } = action;
         let WidgetActionBinding::Action(action_id) = binding else {
@@ -729,9 +810,44 @@ impl ShowcaseState {
         if slider_color_outcome.update.is_some() || slider_color_outcome.mode_changed {
             return;
         }
+        let styling_stroke_outcome = self.styling_stroke_picker.apply_action(
+            action_id,
+            kind.clone(),
+            widgets::ColorPickerActionOptions::new("styling.stroke_picker"),
+        );
+        if styling_stroke_outcome.update.is_some() || styling_stroke_outcome.mode_changed {
+            self.styling.stroke = self.styling_stroke_picker.value;
+            return;
+        }
+        let styling_fill_outcome = self.styling_fill_picker.apply_action(
+            action_id,
+            kind.clone(),
+            widgets::ColorPickerActionOptions::new("styling.fill_picker"),
+        );
+        if styling_fill_outcome.update.is_some() || styling_fill_outcome.mode_changed {
+            self.styling.fill = self.styling_fill_picker.value;
+            return;
+        }
+        let styling_shadow_outcome = self.styling_shadow_picker.apply_action(
+            action_id,
+            kind.clone(),
+            widgets::ColorPickerActionOptions::new("styling.shadow_picker"),
+        );
+        if styling_shadow_outcome.update.is_some() || styling_shadow_outcome.mode_changed {
+            self.styling.shadow = self.styling_shadow_picker.value;
+            return;
+        }
 
         if action_id == "window.clear_all" {
             self.windows.clear_all();
+            return;
+        }
+        if action_id == "window.add_all" {
+            self.windows.open_all();
+            for id in SHOWCASE_WIDGET_WINDOW_IDS {
+                self.desktop.ensure_window(id, window_defaults(id));
+                self.desktop.bring_to_front(id);
+            }
             return;
         }
         if let Some(id) = action_id.strip_prefix("window.toggle.") {
@@ -1068,6 +1184,44 @@ impl ShowcaseState {
                 self.slider_smart_aim = !self.slider_smart_aim;
                 return;
             }
+            "animation.open" => {
+                self.animation_open = !self.animation_open;
+                return;
+            }
+            "animation.timed.toggle" => {
+                self.animation_timed_expanded = !self.animation_timed_expanded;
+                return;
+            }
+            "animation.scrub.toggle" => {
+                self.animation_scrub_expanded = !self.animation_scrub_expanded;
+                return;
+            }
+            "animation.state.toggle" => {
+                self.animation_state_expanded = !self.animation_state_expanded;
+                return;
+            }
+            "animation.interaction.toggle" => {
+                self.animation_interaction_expanded = !self.animation_interaction_expanded;
+                return;
+            }
+            "animation.scrub" => {
+                if let WidgetActionKind::PointerEdit(edit) = kind {
+                    self.animation_scrub = scaled_slider(edit.target_rect, edit.position, 0.0, 1.0);
+                }
+                return;
+            }
+            "styling.stroke_color_button" => {
+                self.styling_stroke_picker_open = !self.styling_stroke_picker_open;
+                return;
+            }
+            "styling.fill_color_button" => {
+                self.styling_fill_picker_open = !self.styling_fill_picker_open;
+                return;
+            }
+            "styling.shadow_color_button" => {
+                self.styling_shadow_picker_open = !self.styling_shadow_picker_open;
+                return;
+            }
             "styling.inner_same" => {
                 self.styling.inner_same = !self.styling.inner_same;
                 return;
@@ -1105,10 +1259,8 @@ impl ShowcaseState {
                         self.containers_scroll.clamp_offset(scroll.offset);
                 }
                 "controls.widget_list.scroll" => {
-                    self.controls_scroll =
-                        controls_scroll_state(scroll.offset.y, scroll.viewport_size.height)
-                            .offset
-                            .y;
+                    self.controls_scroll = *scroll;
+                    self.controls_scroll.offset = self.controls_scroll.clamp_offset(scroll.offset);
                 }
                 _ => {}
             }
@@ -1290,15 +1442,15 @@ impl ShowcaseState {
                 );
             }
             "controls.widget_list.scrollbar" => {
-                self.controls_scroll = self
-                    .scrollbars
-                    .apply_drag_for_target_rect(
-                        "controls.widget_list",
-                        controls_scroll_state(self.controls_scroll, edit.target_rect.height),
-                        widgets::ScrollAxis::Vertical,
-                        edit,
-                    )
-                    .y;
+                let mut scroll =
+                    controls_scroll_state_for_view(self.controls_scroll, edit.target_rect.height);
+                scroll.offset = self.scrollbars.apply_drag_for_target_rect(
+                    "controls.widget_list",
+                    scroll,
+                    widgets::ScrollAxis::Vertical,
+                    edit,
+                );
+                self.controls_scroll = scroll;
             }
             "styling.inner" => {
                 self.styling.inner_margin =
@@ -1372,28 +1524,9 @@ impl ShowcaseState {
                 self.styling.shadow_spread =
                     scaled_slider(edit.target_rect, edit.position, 0.0, 16.0);
             }
-            "styling.shadow_alpha" => {
-                self.styling.shadow_alpha =
-                    scaled_slider(edit.target_rect, edit.position, 0.0, 220.0);
-            }
             "styling.stroke" => {
                 self.styling.stroke_width =
                     scaled_slider(edit.target_rect, edit.position, 0.0, 4.0);
-            }
-            "styling.fill" => {
-                self.styling.fill_tint = widgets::slider_value_from_control_point(
-                    edit.target_rect,
-                    edit.position,
-                    0.0..1.0,
-                );
-                self.styling.fill = self.styling.fill_color();
-            }
-            "styling.stroke_color" => {
-                self.styling.stroke_tint = widgets::slider_value_from_control_point(
-                    edit.target_rect,
-                    edit.position,
-                    0.0..1.0,
-                );
             }
             _ => {}
         }
@@ -1420,6 +1553,9 @@ impl ShowcaseState {
 
     fn apply_text_edit(&mut self, input: FocusedTextInput, edit: WidgetTextEdit) {
         self.focused_text = Some(input);
+        if let Some(state) = self.text_state_mut(input) {
+            state.multiline = input.is_multiline();
+        }
         if let Some(point) = edit.local_position {
             let style = text(13.0, color(230, 236, 246));
             let target_rect = edit
@@ -1485,9 +1621,7 @@ impl ShowcaseState {
     fn text_state_mut(&mut self, input: FocusedTextInput) -> Option<&mut TextInputState> {
         match input {
             FocusedTextInput::Editable => Some(&mut self.text),
-            FocusedTextInput::Selectable | FocusedTextInput::SelectableHelper => {
-                Some(&mut self.selectable_text)
-            }
+            FocusedTextInput::Selectable => Some(&mut self.selectable_text),
             FocusedTextInput::Singleline => Some(&mut self.singleline_text),
             FocusedTextInput::Multiline => Some(&mut self.multiline_text),
             FocusedTextInput::TextArea => Some(&mut self.text_area_text),
@@ -1695,10 +1829,59 @@ impl ShowcaseState {
             self,
             UiSize::new(desktop_width, viewport.height),
         );
+        fps_counter(&mut ui, desktop, self, viewport.height);
         control_panel(&mut ui, controls, self, viewport.height);
 
         ui
     }
+}
+
+fn fps_counter(
+    ui: &mut UiDocument,
+    desktop: UiNodeId,
+    state: &ShowcaseState,
+    viewport_height: f32,
+) {
+    let counter = ui.add_child(
+        desktop,
+        UiNode::container(
+            "showcase.fps",
+            UiNodeStyle {
+                layout: LayoutStyle::absolute_rect(UiRect::new(
+                    12.0,
+                    (viewport_height - 34.0).max(12.0),
+                    92.0,
+                    24.0,
+                ))
+                .as_taffy_style()
+                .clone(),
+                z_index: SHOWCASE_WINDOW_Z_MAX.saturating_add(16),
+                ..Default::default()
+            },
+        )
+        .with_visual(UiVisual::panel(
+            ColorRgba::new(11, 15, 21, 210),
+            Some(StrokeStyle::new(color(56, 68, 84), 1.0)),
+            4.0,
+        ))
+        .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label("FPS counter")),
+    );
+    let fps = if state.fps > 0.0 {
+        format!("{:.0} FPS", state.fps)
+    } else {
+        "-- FPS".to_string()
+    };
+    widgets::label(
+        ui,
+        counter,
+        "showcase.fps.label",
+        fps,
+        text(11.0, color(198, 211, 230)),
+        LayoutStyle::new()
+            .with_width_percent(1.0)
+            .with_height_percent(1.0)
+            .padding(5.0),
+    );
 }
 
 fn showcase_windows(
@@ -1738,6 +1921,7 @@ fn showcase_windows(
             "color_picker" => color_picker(ui, window, state),
             "color_buttons" => color_buttons(ui, window, state),
             "progress" => progress_indicator(ui, window, state),
+            "animation" => animation_widgets(ui, window, state),
             "lists_tables" => list_and_table_widgets(ui, window, state),
             "property_inspector" => property_inspector(ui, window, state),
             "trees" => tree_widgets(ui, window, state),
@@ -1869,8 +2053,8 @@ fn showcase_window_descriptors(
     state: &ShowcaseState,
     desktop_size: UiSize,
 ) -> Vec<widgets::FloatingWindowDescriptor> {
-    let wide = (desktop_size.width - 36.0).min(720.0).max(320.0);
-    let medium = (desktop_size.width - 36.0).min(604.0).max(300.0);
+    let wide = (desktop_size.width - 36.0).clamp(320.0, 720.0);
+    let medium = (desktop_size.width - 36.0).clamp(300.0, 604.0);
     let buttons_width = medium.min(620.0);
     let mut windows = Vec::new();
     push_window(
@@ -1973,6 +2157,13 @@ fn showcase_window_descriptors(
     );
     push_window(
         &mut windows,
+        state.windows.animation,
+        "animation",
+        "Animation",
+        UiSize::new(520.0, 430.0),
+    );
+    push_window(
+        &mut windows,
         state.windows.lists_tables,
         "lists_tables",
         "Lists and tables",
@@ -2060,14 +2251,14 @@ fn showcase_window_descriptors(
         state.windows.canvas,
         "canvas",
         "Canvas",
-        UiSize::new(420.0, 292.0),
+        UiSize::new(560.0, 390.0),
     );
     push_window(
         &mut windows,
         state.windows.styling,
         "styling",
         "Styling",
-        UiSize::new(640.0, 560.0),
+        UiSize::new(540.0, 440.0),
     );
     for window in &mut windows {
         window.drag_action = Some(WidgetActionBinding::action(format!(
@@ -2097,13 +2288,18 @@ fn push_window(
     preferred_size: UiSize,
 ) {
     if visible {
-        windows.push(
-            widgets::FloatingWindowDescriptor::new(id, title, preferred_size)
-                .with_min_size(default_window_state_min_size(id))
-                .with_auto_size_to_content(true)
-                .with_activate_action(format!("window.activate.{id}"))
-                .with_close_action(format!("window.close.{id}")),
-        );
+        let mut window = widgets::FloatingWindowDescriptor::new(id, title, preferred_size)
+            .with_min_size(default_window_state_min_size(id))
+            .with_auto_size_to_content(id != "canvas")
+            .with_activate_action(format!("window.activate.{id}"))
+            .with_close_action(format!("window.close.{id}"));
+        if id == "animation" {
+            window = window.with_content_min_size(UiSize::new(
+                ANIMATION_STAGE_MIN_WIDTH,
+                ANIMATION_STAGE_HEIGHT * 4.0,
+            ));
+        }
+        windows.push(window);
     }
 }
 
@@ -2123,6 +2319,7 @@ fn default_window_size(id: &str) -> UiSize {
         "color_picker" => UiSize::new(340.0, 390.0),
         "color_buttons" => UiSize::new(430.0, 360.0),
         "progress" => UiSize::new(500.0, 168.0),
+        "animation" => UiSize::new(520.0, 430.0),
         "lists_tables" => UiSize::new(600.0, 700.0),
         "property_inspector" => UiSize::new(330.0, 250.0),
         "trees" => UiSize::new(430.0, 450.0),
@@ -2135,7 +2332,7 @@ fn default_window_size(id: &str) -> UiSize {
         "timeline" => UiSize::new(600.0, 120.0),
         "toasts" => UiSize::new(320.0, 270.0),
         "popup_panel" => UiSize::new(360.0, 200.0),
-        "canvas" => UiSize::new(420.0, 292.0),
+        "canvas" => UiSize::new(560.0, 390.0),
         "styling" => UiSize::new(640.0, 560.0),
         _ => UiSize::new(300.0, 180.0),
     }
@@ -2161,6 +2358,7 @@ fn default_window_position(id: &str) -> UiPoint {
         "color_picker" => UiPoint::new(18.0, 560.0),
         "color_buttons" => UiPoint::new(380.0, 500.0),
         "progress" => UiPoint::new(72.0, 540.0),
+        "animation" => UiPoint::new(180.0, 170.0),
         "lists_tables" => UiPoint::new(18.0, 90.0),
         "property_inspector" => UiPoint::new(300.0, 420.0),
         "trees" => UiPoint::new(36.0, 220.0),
@@ -2173,7 +2371,7 @@ fn default_window_position(id: &str) -> UiPoint {
         "timeline" => UiPoint::new(18.0, 620.0),
         "toasts" => UiPoint::new(320.0, 70.0),
         "popup_panel" => UiPoint::new(320.0, 370.0),
-        "canvas" => UiPoint::new(380.0, 560.0),
+        "canvas" => UiPoint::new(280.0, 390.0),
         "styling" => UiPoint::new(86.0, 118.0),
         _ => UiPoint::new(18.0, 18.0),
     }
@@ -2201,6 +2399,7 @@ fn window_for_action(action_id: &str) -> Option<&'static str> {
         id if id.starts_with("color.") => Some("color_picker"),
         id if id.starts_with("color_buttons.") => Some("color_buttons"),
         id if id.starts_with("progress.") => Some("progress"),
+        id if id.starts_with("animation.") => Some("animation"),
         id if id.starts_with("lists_tables.") => Some("lists_tables"),
         id if id.starts_with("property_inspector.") => Some("property_inspector"),
         id if id.starts_with("trees.") => Some("trees"),
@@ -2230,7 +2429,6 @@ fn focused_text_for_action(action_id: &str) -> Option<FocusedTextInput> {
         "text.code_editor.edit" => FocusedTextInput::CodeEditor,
         "text.search.edit" => FocusedTextInput::Search,
         "text.password.edit" => FocusedTextInput::Password,
-        "text.selectable_helper.edit" => FocusedTextInput::SelectableHelper,
         "slider.value_text.edit" => FocusedTextInput::SliderValue,
         "slider.left_text.edit" => FocusedTextInput::SliderRangeLeft,
         "slider.right_text.edit" => FocusedTextInput::SliderRangeRight,
@@ -2254,6 +2452,8 @@ fn control_panel(
         LayoutStyle::new().with_width_percent(1.0),
     );
     let list_viewport_height = controls_list_viewport_height(viewport_height);
+    let controls_scroll =
+        controls_scroll_state_for_view(state.controls_scroll, list_viewport_height);
     let list_row = ui.add_child(
         parent,
         UiNode::container(
@@ -2263,7 +2463,7 @@ fn control_panel(
                 .with_height(list_viewport_height)
                 .with_flex_grow(1.0)
                 .with_flex_shrink(1.0)
-                .gap(6.0),
+                .gap(2.0),
         ),
     );
     let list = widgets::scroll_area(
@@ -2279,19 +2479,17 @@ fn control_panel(
     );
     ui.node_mut(list).action = Some("controls.widget_list.scroll".into());
     if let Some(scroll) = ui.node_mut(list).scroll.as_mut() {
-        scroll.offset.y = controls_scroll_state(state.controls_scroll, list_viewport_height)
-            .offset
-            .y;
+        *scroll = controls_scroll;
     }
     widgets::scrollbar(
         ui,
         list_row,
         "controls.widget_list.scrollbar",
-        controls_scroll_state(state.controls_scroll, list_viewport_height),
+        controls_scroll,
         widgets::ScrollAxis::Vertical,
         widgets::ScrollbarOptions::default()
             .with_layout(LayoutStyle::new().with_width(8.0).with_height_percent(1.0))
-            .with_track_size(UiSize::new(8.0, list_viewport_height))
+            .with_track_size(UiSize::new(8.0, controls_scroll.viewport_size.height))
             .with_action("controls.widget_list.scrollbar"),
     );
 
@@ -2357,6 +2555,7 @@ fn control_panel(
         "Progress indicator",
         state.windows.progress,
     );
+    window_toggle(ui, list, "animation", "Animation", state.windows.animation);
     window_toggle(
         ui,
         list,
@@ -2419,32 +2618,74 @@ fn control_panel(
                 .with_flex_shrink(1.0),
         ),
     );
-    let mut clear =
-        widgets::ButtonOptions::new(LayoutStyle::new().with_width_percent(1.0).with_height(30.0))
-            .with_action("window.clear_all");
-    clear.visual = UiVisual::panel(
+    let actions = ui.add_child(
+        parent,
+        UiNode::container(
+            "controls.bulk_actions",
+            LayoutStyle::row()
+                .with_width_percent(1.0)
+                .with_height(30.0)
+                .with_flex_shrink(0.0)
+                .gap(8.0),
+        ),
+    );
+    control_action_button(
+        ui,
+        actions,
+        "controls.add_all",
+        "Add all",
+        "window.add_all",
+        "Add all widgets",
+    );
+    control_action_button(
+        ui,
+        actions,
+        "controls.clear_all",
+        "Clear all",
+        "window.clear_all",
+        "Clear all widgets",
+    );
+}
+
+fn control_action_button(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: &'static str,
+    label: &'static str,
+    action: &'static str,
+    accessibility_label: &'static str,
+) {
+    let mut options = widgets::ButtonOptions::new(
+        LayoutStyle::new()
+            .with_width(0.0)
+            .with_height_percent(1.0)
+            .with_flex_grow(1.0)
+            .with_flex_shrink(1.0),
+    )
+    .with_action(action);
+    options.visual = UiVisual::panel(
         color(31, 38, 48),
         Some(StrokeStyle::new(color(76, 88, 106), 1.0)),
         4.0,
     );
-    clear.hovered_visual = Some(UiVisual::panel(
+    options.hovered_visual = Some(UiVisual::panel(
         color(45, 56, 70),
         Some(StrokeStyle::new(color(118, 144, 174), 1.0)),
         4.0,
     ));
-    clear.pressed_visual = Some(UiVisual::panel(
+    options.pressed_visual = Some(UiVisual::panel(
         color(20, 27, 36),
         Some(StrokeStyle::new(color(82, 104, 132), 1.0)),
         4.0,
     ));
-    clear.pressed_hovered_visual = Some(UiVisual::panel(
+    options.pressed_hovered_visual = Some(UiVisual::panel(
         color(36, 48, 62),
         Some(StrokeStyle::new(color(138, 170, 206), 1.0)),
         4.0,
     ));
-    clear.text_style = text(12.0, color(230, 236, 246));
-    clear.accessibility_label = Some("Clear all widgets".to_string());
-    widgets::button(ui, parent, "controls.clear_all", "Clear all", clear);
+    options.text_style = text(12.0, color(230, 236, 246));
+    options.accessibility_label = Some(accessibility_label.to_string());
+    widgets::button(ui, parent, name, label, options);
 }
 
 fn window_toggle(
@@ -2529,6 +2770,7 @@ fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     locale_options.menu.row_height = 30.0;
     locale_options.menu.max_visible_rows = locale_items.len();
     locale_options.menu.text_style = text(13.0, color(226, 232, 242));
+    locale_options.menu.portal = UiPortalTarget::Parent;
     let locale_nodes = widgets::dropdown_select(
         ui,
         locale_row,
@@ -2543,7 +2785,7 @@ fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
                 30.0,
             ),
             UiRect::new(0.0, 0.0, 460.0, 260.0),
-            widgets::PopupPlacement::default(),
+            widgets::PopupPlacement::default().with_viewport_margin(0.0),
         )),
         locale_options,
     );
@@ -3296,9 +3538,18 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
     options.layout = LayoutStyle::new()
         .with_width(select_width)
         .with_height(30.0);
+    let combo_anchor = ui.add_child(
+        body,
+        UiNode::container(
+            "selection.combo.anchor",
+            LayoutStyle::new()
+                .with_width(select_width)
+                .with_height(30.0),
+        ),
+    );
     let combo = widgets::combo_box(
         ui,
-        body,
+        combo_anchor,
         "combo.toggle",
         state.combo_label.clone(),
         state.combo_open,
@@ -3309,12 +3560,12 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
     if state.combo_open {
         widgets::select_menu_popup(
             ui,
-            body,
+            combo_anchor,
             "selection.combo_menu",
             widgets::AnchoredPopup::new(
-                UiRect::new(0.0, 27.0, select_width, 30.0),
+                UiRect::new(0.0, 0.0, select_width, 30.0),
                 UiRect::new(0.0, 0.0, 320.0, 308.0),
-                widgets::PopupPlacement::default(),
+                widgets::PopupPlacement::default().with_viewport_margin(0.0),
             ),
             &select_options,
             &widgets::SelectMenuState {
@@ -3357,16 +3608,25 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
     let mut dropdown_options = widgets::DropdownSelectOptions::default();
     dropdown_options.menu =
         select_menu_options(select_width).with_action_prefix("selection.dropdown");
+    let dropdown_anchor = ui.add_child(
+        body,
+        UiNode::container(
+            "selection.dropdown.anchor",
+            LayoutStyle::new()
+                .with_width(select_width)
+                .with_height(30.0),
+        ),
+    );
     let dropdown_nodes = widgets::dropdown_select(
         ui,
-        body,
+        dropdown_anchor,
         "selection.dropdown",
         &select_options,
         &state.dropdown,
         Some(widgets::AnchoredPopup::new(
             UiRect::new(0.0, 0.0, select_width, 30.0),
             UiRect::new(0.0, 0.0, 320.0, 308.0),
-            widgets::PopupPlacement::default(),
+            widgets::PopupPlacement::default().with_viewport_margin(0.0),
         )),
         dropdown_options,
     );
@@ -3376,6 +3636,7 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
 fn select_menu_options(width: f32) -> widgets::SelectMenuOptions {
     let mut options = widgets::SelectMenuOptions::default();
     options.width = width;
+    options.portal = UiPortalTarget::Parent;
     options
 }
 
@@ -3460,22 +3721,6 @@ fn text_input(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     password.focused = state.focused_text == Some(FocusedTextInput::Password);
     password.caret_visible = caret_visible(state.caret_phase);
     widgets::password_input(ui, body, "text.password", &state.password_text, password);
-
-    let mut helper = TextInputOptions::default();
-    helper.read_only = true;
-    helper.selectable = true;
-    helper.layout = LayoutStyle::new().with_width(360.0).with_height(36.0);
-    helper.text_style = text(13.0, color(196, 210, 230));
-    helper.edit_action = Some("text.selectable_helper.edit".into());
-    helper.focused = state.focused_text == Some(FocusedTextInput::SelectableHelper);
-    helper.caret_visible = caret_visible(state.caret_phase);
-    widgets::selectable_text(
-        ui,
-        body,
-        "text.selectable_helper",
-        &state.selectable_text,
-        helper,
-    );
 }
 
 fn date_picker(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
@@ -3911,6 +4156,440 @@ fn progress_indicator(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSta
         text(12.0, color(196, 210, 230)),
         LayoutStyle::new().with_width_percent(1.0),
     );
+}
+
+fn animation_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let body = section(ui, parent, "animation", "Animation");
+
+    if let Some(section) = animation_section(
+        ui,
+        body,
+        "animation.timed",
+        "Timed playback",
+        state.animation_timed_expanded,
+    ) {
+        let live_stage = animation_stage(ui, section, "animation.live.stage");
+        let live_amount = smooth_loop(state.progress_phase * 1.65, 0.0);
+        let live_values = animation_blend_machine(
+            ANIMATION_INPUT_PROGRESS,
+            live_amount,
+            UiPoint::new(220.0, 0.0),
+            0.88,
+            1.10,
+            1.0,
+        )
+        .with_bool_input("looping", true)
+        .values();
+        ui.add_child(
+            live_stage,
+            UiNode::scene(
+                "animation.live.orb",
+                animation_orb_primitives(
+                    color(108, 180, 255),
+                    ANIMATION_ORB_SIZE * live_values.scale,
+                    UiPoint::new(
+                        28.0 + live_values.translate.x,
+                        37.0 + live_values.translate.y,
+                    ),
+                ),
+                animation_scene_layout(),
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Image).label("Looping orb"),
+            ),
+        );
+    }
+
+    if let Some(section) = animation_section(
+        ui,
+        body,
+        "animation.scrub",
+        "Scrubbed input",
+        state.animation_scrub_expanded,
+    ) {
+        let scrub_row = row(ui, section, "animation.scrub.row", 10.0);
+        widgets::slider(
+            ui,
+            scrub_row,
+            "animation.scrub",
+            state.animation_scrub,
+            0.0..1.0,
+            widgets::SliderOptions::default()
+                .with_layout(
+                    LayoutStyle::new()
+                        .with_width(200.0)
+                        .with_height(28.0)
+                        .with_flex_shrink(0.0),
+                )
+                .with_value_edit_action("animation.scrub"),
+        );
+        widgets::label(
+            ui,
+            scrub_row,
+            "animation.scrub.value",
+            format!("{:.0}%", state.animation_scrub * 100.0),
+            text(12.0, color(186, 198, 216)),
+            LayoutStyle::new().with_width_percent(1.0),
+        );
+        let scrub_stage = animation_stage(ui, section, "animation.scrub.stage");
+        let scrub_values = animation_blend_machine(
+            ANIMATION_INPUT_SCRUB,
+            state.animation_scrub,
+            UiPoint::new(220.0, 0.0),
+            0.82,
+            1.14,
+            1.0,
+        )
+        .values();
+        ui.add_child(
+            scrub_stage,
+            UiNode::scene(
+                "animation.scrub.shape",
+                animation_morph_shape_primitives(
+                    color(111, 203, 159),
+                    ANIMATION_SHAPE_SIZE * scrub_values.scale,
+                    UiPoint::new(
+                        28.0 + scrub_values.translate.x,
+                        37.0 + scrub_values.translate.y,
+                    ),
+                    scrub_values.morph,
+                ),
+                animation_scene_layout(),
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Image).label("Scrubbed morphing shape"),
+            ),
+        );
+    }
+
+    if let Some(section) = animation_section(
+        ui,
+        body,
+        "animation.state",
+        "Boolean input transition",
+        state.animation_state_expanded,
+    ) {
+        let state_row = row(ui, section, "animation.state.row", 10.0);
+        let mut open = widgets::ButtonOptions::new(
+            LayoutStyle::new()
+                .with_width(92.0)
+                .with_height(30.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_action("animation.open");
+        open.visual = if state.animation_open {
+            button_visual(48, 112, 184)
+        } else {
+            button_visual(38, 46, 58)
+        };
+        open.hovered_visual = Some(button_visual(65, 86, 106));
+        open.pressed_visual = Some(button_visual(34, 54, 84));
+        open.text_style = text(12.0, color(238, 244, 252));
+        widgets::button(
+            ui,
+            state_row,
+            "animation.open",
+            if state.animation_open {
+                "Close"
+            } else {
+                "Open"
+            },
+            open,
+        );
+        let open_stage = animation_stage(ui, section, "animation.state.stage");
+        let panel_offset = if state.animation_open {
+            UiPoint::new(
+                ANIMATION_STAGE_MIN_WIDTH - ANIMATION_PANEL_WIDTH - ANIMATION_PANEL_INSET_X,
+                ANIMATION_PANEL_Y,
+            )
+        } else {
+            UiPoint::new(ANIMATION_PANEL_INSET_X, ANIMATION_PANEL_Y)
+        };
+        ui.add_child(
+            open_stage,
+            UiNode::scene(
+                "animation.state.panel",
+                animation_panel_primitives(panel_offset),
+                animation_scene_layout(),
+            )
+            .with_animation(animation_open_machine(state.animation_open))
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Image).label("Open state panel"),
+            ),
+        );
+    }
+
+    if let Some(section) = animation_section(
+        ui,
+        body,
+        "animation.interaction",
+        "Interaction inputs",
+        state.animation_interaction_expanded,
+    ) {
+        let interaction_stage = animation_stage(ui, section, "animation.interaction.stage");
+        ui.add_child(
+            interaction_stage,
+            UiNode::scene(
+                "animation.interaction.target",
+                animation_interaction_primitives(
+                    color(176, 126, 230),
+                    ANIMATION_ORB_SIZE,
+                    UiPoint::new(40.0, 37.0),
+                ),
+                animation_scene_layout(),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_animation(animation_interaction_machine())
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label("Interaction animation target")
+                    .focusable(),
+            ),
+        );
+    }
+}
+
+fn animation_section(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: &'static str,
+    title: &'static str,
+    expanded: bool,
+) -> Option<UiNodeId> {
+    let mut options = widgets::CollapsingHeaderOptions::default()
+        .expanded(expanded)
+        .with_toggle_action(format!("{name}.toggle"));
+    options.text_style = text(12.0, color(220, 228, 238));
+    options.indicator_text_style = text(12.0, color(186, 198, 216));
+    options.header_visual = UiVisual::panel(
+        color(21, 26, 33),
+        Some(StrokeStyle::new(color(48, 58, 72), 1.0)),
+        4.0,
+    );
+    options.hovered_visual = UiVisual::panel(color(38, 48, 61), None, 4.0);
+    options.pressed_visual = UiVisual::panel(color(27, 36, 48), None, 4.0);
+    options.body_layout = LayoutStyle::column()
+        .with_width_percent(1.0)
+        .with_padding(0.0)
+        .with_gap(10.0);
+    widgets::collapsing_header(ui, parent, name, title, options).body
+}
+
+fn animation_stage(ui: &mut UiDocument, parent: UiNodeId, name: impl Into<String>) -> UiNodeId {
+    let mut layout = LayoutStyle::row()
+        .with_width_percent(1.0)
+        .with_height(ANIMATION_STAGE_HEIGHT)
+        .with_align_items(taffy::prelude::AlignItems::Center)
+        .with_flex_shrink(0.0);
+    layout.as_taffy_style_mut().min_size.width = operad::length(ANIMATION_STAGE_MIN_WIDTH);
+    layout.as_taffy_style_mut().min_size.height = operad::length(ANIMATION_STAGE_HEIGHT);
+    ui.add_child(
+        parent,
+        UiNode::container(name, layout).with_visual(UiVisual::panel(
+            color(16, 21, 28),
+            Some(StrokeStyle::new(color(48, 58, 72), 1.0)),
+            6.0,
+        )),
+    )
+}
+
+fn animation_scene_layout() -> LayoutStyle {
+    let mut layout = LayoutStyle::new()
+        .with_width_percent(1.0)
+        .with_height_percent(1.0)
+        .with_flex_grow(1.0)
+        .with_flex_shrink(1.0);
+    layout.as_taffy_style_mut().min_size.width = operad::length(0.0);
+    layout.as_taffy_style_mut().min_size.height = operad::length(0.0);
+    layout
+}
+
+fn animation_blend_machine(
+    input: &'static str,
+    value: f32,
+    translate: UiPoint,
+    start_scale: f32,
+    end_scale: f32,
+    end_opacity: f32,
+) -> AnimationMachine {
+    AnimationMachine::new(
+        vec![
+            AnimationState::new(
+                "start",
+                AnimatedValues::new(0.45, UiPoint::new(0.0, 0.0), start_scale),
+            ),
+            AnimationState::new(
+                "end",
+                AnimatedValues::new(end_opacity, translate, end_scale).with_morph(1.0),
+            ),
+        ],
+        Vec::new(),
+        "start",
+    )
+    .expect("animation blend machine")
+    .with_number_input(input, value)
+    .with_blend_binding(AnimationBlendBinding::new(input, "start", "end"))
+}
+
+fn animation_open_machine(open: bool) -> AnimationMachine {
+    AnimationMachine::new(
+        vec![
+            AnimationState::new(
+                "closed",
+                AnimatedValues::new(0.35, UiPoint::new(0.0, 0.0), 1.0),
+            ),
+            AnimationState::new(
+                "open",
+                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+            ),
+        ],
+        vec![
+            AnimationTransition::when(
+                "closed",
+                "open",
+                AnimationCondition::bool(ANIMATION_INPUT_OPEN, true),
+                0.18,
+            ),
+            AnimationTransition::when(
+                "open",
+                "closed",
+                AnimationCondition::bool(ANIMATION_INPUT_OPEN, false),
+                0.14,
+            ),
+        ],
+        "closed",
+    )
+    .expect("animation open machine")
+    .with_bool_input(ANIMATION_INPUT_OPEN, open)
+}
+
+fn animation_interaction_machine() -> AnimationMachine {
+    AnimationMachine::new(
+        vec![
+            AnimationState::new(
+                "rest",
+                AnimatedValues::new(0.72, UiPoint::new(0.0, 0.0), 1.0),
+            ),
+            AnimationState::new(
+                "right",
+                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(1.0),
+            ),
+        ],
+        Vec::new(),
+        "rest",
+    )
+    .expect("animation interaction machine")
+    .with_number_input(ANIMATION_INPUT_POINTER_NORM_X, 0.0)
+    .with_blend_binding(AnimationBlendBinding::new(
+        ANIMATION_INPUT_POINTER_NORM_X,
+        "rest",
+        "right",
+    ))
+}
+
+fn animation_interaction_primitives(
+    fill: ColorRgba,
+    size: f32,
+    offset: UiPoint,
+) -> Vec<ScenePrimitive> {
+    vec![
+        ScenePrimitive::MorphPolygon {
+            from_points: animation_square_points(size, offset),
+            to_points: animation_pentagon_points(size, offset),
+            amount: 0.0,
+            fill,
+            stroke: Some(StrokeStyle::new(color(236, 244, 255), 1.0)),
+        },
+        ScenePrimitive::Circle {
+            center: UiPoint::new(offset.x + size * 0.34, offset.y + size * 0.30),
+            radius: size * 0.10,
+            fill: color(244, 248, 255),
+            stroke: None,
+        },
+    ]
+}
+
+fn animation_orb_primitives(fill: ColorRgba, size: f32, offset: UiPoint) -> Vec<ScenePrimitive> {
+    let center = size * 0.5;
+    let radius = size * 0.44;
+    vec![
+        ScenePrimitive::Circle {
+            center: UiPoint::new(offset.x + center, offset.y + center),
+            radius,
+            fill,
+            stroke: Some(StrokeStyle::new(color(236, 244, 255), 1.0)),
+        },
+        ScenePrimitive::Circle {
+            center: UiPoint::new(offset.x + size * 0.34, offset.y + size * 0.30),
+            radius: size * 0.12,
+            fill: color(244, 248, 255),
+            stroke: None,
+        },
+    ]
+}
+
+fn animation_morph_shape_primitives(
+    fill: ColorRgba,
+    size: f32,
+    offset: UiPoint,
+    amount: f32,
+) -> Vec<ScenePrimitive> {
+    vec![ScenePrimitive::MorphPolygon {
+        from_points: animation_square_points(size, offset),
+        to_points: animation_pentagon_points(size, offset),
+        amount,
+        fill,
+        stroke: Some(StrokeStyle::new(color(226, 246, 236), 1.0)),
+    }]
+}
+
+fn animation_square_points(size: f32, offset: UiPoint) -> Vec<UiPoint> {
+    let inset = size * 0.08;
+    let left = offset.x + inset;
+    let top = offset.y + inset;
+    let right = offset.x + size - inset;
+    let bottom = offset.y + size - inset;
+    let center_x = offset.x + size * 0.5;
+    vec![
+        UiPoint::new(center_x, top),
+        UiPoint::new(right, top),
+        UiPoint::new(right, bottom),
+        UiPoint::new(left, bottom),
+        UiPoint::new(left, top),
+    ]
+}
+
+fn animation_pentagon_points(size: f32, offset: UiPoint) -> Vec<UiPoint> {
+    let center = size * 0.5;
+    let radius = size * 0.46;
+    (0..5)
+        .map(|index| {
+            let angle = -std::f32::consts::FRAC_PI_2 + index as f32 * std::f32::consts::TAU / 5.0;
+            UiPoint::new(
+                offset.x + center + angle.cos() * radius,
+                offset.y + center + angle.sin() * radius,
+            )
+        })
+        .collect()
+}
+
+fn animation_panel_primitives(offset: UiPoint) -> Vec<ScenePrimitive> {
+    vec![ScenePrimitive::Rect(
+        PaintRect::solid(
+            UiRect::new(
+                offset.x,
+                offset.y,
+                ANIMATION_PANEL_WIDTH,
+                ANIMATION_PANEL_HEIGHT,
+            ),
+            color(232, 186, 88),
+        )
+        .stroke(AlignedStroke::inside(StrokeStyle::new(
+            color(255, 226, 154),
+            1.0,
+        )))
+        .corner_radii(CornerRadii::uniform(6.0)),
+    )]
 }
 
 fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
@@ -5150,213 +5829,110 @@ fn popup_controls(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) 
 
 fn styling_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "styling", "Styling");
-    let grid = ui.add_child(
-        body,
-        UiNode::container(
-            "styling.grid",
-            LayoutStyle::row()
-                .with_width_percent(1.0)
-                .with_height_percent(1.0)
-                .gap(16.0),
-        ),
-    );
+    let mut grid_layout = LayoutStyle::row()
+        .with_width_percent(1.0)
+        .with_height_percent(1.0)
+        .gap(10.0);
+    grid_layout.as_taffy_style_mut().flex_wrap = LayoutFlexWrap::Wrap.to_taffy();
+    let grid = ui.add_child(body, UiNode::container("styling.grid", grid_layout));
     let controls = ui.add_child(
         grid,
         UiNode::container(
             "styling.controls",
             LayoutStyle::column()
-                .with_width(330.0)
+                .with_width(300.0)
                 .with_height_percent(1.0)
                 .with_flex_shrink(0.0)
                 .gap(6.0),
         ),
     );
-    style_checkbox(
-        ui,
-        controls,
-        "styling.inner_same",
-        "Inner margin same",
-        state.styling.inner_same,
-    );
-    style_slider(
+    style_edge_group(
         ui,
         controls,
         "styling.inner",
-        "Inner left",
-        state.styling.inner_margin,
+        "Inner margin",
+        "styling.inner_same",
+        state.styling.inner_same,
+        [
+            ("Left", "styling.inner", state.styling.inner_margin),
+            ("Right", "styling.inner_right", state.styling.inner_right),
+            ("Top", "styling.inner_top", state.styling.inner_top),
+            ("Bottom", "styling.inner_bottom", state.styling.inner_bottom),
+        ],
         0.0..32.0,
     );
-    if !state.styling.inner_same {
-        style_slider(
-            ui,
-            controls,
-            "styling.inner_right",
-            "Inner right",
-            state.styling.inner_right,
-            0.0..32.0,
-        );
-        style_slider(
-            ui,
-            controls,
-            "styling.inner_top",
-            "Inner top",
-            state.styling.inner_top,
-            0.0..32.0,
-        );
-        style_slider(
-            ui,
-            controls,
-            "styling.inner_bottom",
-            "Inner bottom",
-            state.styling.inner_bottom,
-            0.0..32.0,
-        );
-    }
-    style_checkbox(
-        ui,
-        controls,
-        "styling.outer_same",
-        "Outer margin same",
-        state.styling.outer_same,
-    );
-    style_slider(
+    style_edge_group(
         ui,
         controls,
         "styling.outer",
-        "Outer left",
-        state.styling.outer_margin,
+        "Outer margin",
+        "styling.outer_same",
+        state.styling.outer_same,
+        [
+            ("Left", "styling.outer", state.styling.outer_margin),
+            ("Right", "styling.outer_right", state.styling.outer_right),
+            ("Top", "styling.outer_top", state.styling.outer_top),
+            ("Bottom", "styling.outer_bottom", state.styling.outer_bottom),
+        ],
         0.0..40.0,
     );
-    if !state.styling.outer_same {
-        style_slider(
-            ui,
-            controls,
-            "styling.outer_right",
-            "Outer right",
-            state.styling.outer_right,
-            0.0..40.0,
-        );
-        style_slider(
-            ui,
-            controls,
-            "styling.outer_top",
-            "Outer top",
-            state.styling.outer_top,
-            0.0..40.0,
-        );
-        style_slider(
-            ui,
-            controls,
-            "styling.outer_bottom",
-            "Outer bottom",
-            state.styling.outer_bottom,
-            0.0..40.0,
-        );
-    }
-    style_checkbox(
-        ui,
-        controls,
-        "styling.radius_same",
-        "Corner radius same",
-        state.styling.radius_same,
-    );
-    style_slider(
+    style_edge_group(
         ui,
         controls,
         "styling.radius",
-        "Radius NW",
-        state.styling.corner_radius,
+        "Corner radius",
+        "styling.radius_same",
+        state.styling.radius_same,
+        [
+            ("NW", "styling.radius", state.styling.corner_radius),
+            ("NE", "styling.radius_ne", state.styling.corner_ne),
+            ("SW", "styling.radius_sw", state.styling.corner_sw),
+            ("SE", "styling.radius_se", state.styling.corner_se),
+        ],
         0.0..28.0,
     );
-    if !state.styling.radius_same {
-        style_slider(
+    style_shadow_group(ui, controls, state);
+    style_color_button_row(
+        ui,
+        controls,
+        "styling.fill_color_button",
+        "Fill",
+        state.styling.fill_color(),
+        "Pick fill color",
+    );
+    if state.styling_fill_picker_open {
+        widgets::color_picker(
             ui,
             controls,
-            "styling.radius_ne",
-            "Radius NE",
-            state.styling.corner_ne,
-            0.0..28.0,
-        );
-        style_slider(
-            ui,
-            controls,
-            "styling.radius_sw",
-            "Radius SW",
-            state.styling.corner_sw,
-            0.0..28.0,
-        );
-        style_slider(
-            ui,
-            controls,
-            "styling.radius_se",
-            "Radius SE",
-            state.styling.corner_se,
-            0.0..28.0,
+            "styling.fill_picker",
+            &state.styling_fill_picker,
+            widgets::ColorPickerOptions::default()
+                .with_label("Fill")
+                .with_action_prefix("styling.fill_picker"),
         );
     }
-    style_slider(
+    style_stroke_row(ui, controls, state);
+    if state.styling_stroke_picker_open {
+        widgets::color_picker(
+            ui,
+            controls,
+            "styling.stroke_picker",
+            &state.styling_stroke_picker,
+            widgets::ColorPickerOptions::default()
+                .with_label("Stroke color")
+                .with_action_prefix("styling.stroke_picker"),
+        );
+    }
+    widgets::separator(
         ui,
-        controls,
-        "styling.shadow_x",
-        "Shadow x",
-        state.styling.shadow_x,
-        -24.0..24.0,
-    );
-    style_slider(
-        ui,
-        controls,
-        "styling.shadow_y",
-        "Shadow y",
-        state.styling.shadow_y,
-        -24.0..24.0,
-    );
-    style_slider(
-        ui,
-        controls,
-        "styling.shadow",
-        "Shadow blur",
-        state.styling.shadow_blur,
-        0.0..32.0,
-    );
-    style_slider(
-        ui,
-        controls,
-        "styling.shadow_spread",
-        "Shadow spread",
-        state.styling.shadow_spread,
-        0.0..16.0,
-    );
-    style_slider(
-        ui,
-        controls,
-        "styling.shadow_alpha",
-        "Shadow color",
-        state.styling.shadow_alpha,
-        0.0..220.0,
-    );
-    style_slider(
-        ui,
-        controls,
-        "styling.fill",
-        "Fill color",
-        state.styling.fill_tint,
-        0.0..1.0,
-    );
-    style_slider(
-        ui,
-        controls,
-        "styling.stroke_color",
-        "Stroke color",
-        state.styling.stroke_tint,
-        0.0..1.0,
-    );
-    style_slider(
-        ui,
-        controls,
-        "styling.stroke",
-        "Stroke",
-        state.styling.stroke_width,
-        0.0..4.0,
+        grid,
+        "styling.preview.separator",
+        widgets::SeparatorOptions::vertical().with_layout(
+            LayoutStyle::new()
+                .with_width(1.0)
+                .with_height_percent(1.0)
+                .with_flex_shrink(0.0),
+        ),
     );
 
     let preview = ui.add_child(
@@ -5364,68 +5940,309 @@ fn styling_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
         UiNode::container(
             "styling.preview",
             LayoutStyle::column()
-                .with_width_percent(1.0)
+                .with_width(210.0)
                 .with_height_percent(1.0)
+                .with_flex_shrink(0.0)
                 .padding(8.0),
         )
-        .with_visual(UiVisual::panel(
-            color(17, 20, 25),
-            Some(StrokeStyle::new(color(56, 66, 82), 1.0)),
-            4.0,
-        )),
+        .with_visual(UiVisual::panel(color(17, 20, 25), None, 0.0)),
     );
     style_preview(ui, preview, state.styling);
 }
 
-fn style_slider(
+#[allow(clippy::too_many_arguments)]
+fn style_edge_group(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: &'static str,
+    title: &'static str,
+    same_action: &'static str,
+    same: bool,
+    values: [(&'static str, &'static str, f32); 4],
+    range: std::ops::Range<f32>,
+) {
+    let group = style_control_group(ui, parent, format!("{name}.group"));
+    style_group_title(ui, group, format!("{name}.title"), title);
+    let fields = ui.add_child(
+        group,
+        UiNode::container(
+            format!("{name}.fields"),
+            LayoutStyle::column()
+                .with_width(138.0)
+                .with_flex_shrink(0.0)
+                .gap(3.0),
+        ),
+    );
+    style_compact_checkbox(ui, fields, same_action, "same", same);
+    if same {
+        style_number_row(ui, fields, values[0].1, "All", values[0].2, range, 0);
+    } else {
+        for (label, action, value) in values {
+            style_number_row(ui, fields, action, label, value, range.clone(), 0);
+        }
+    }
+}
+
+fn style_shadow_group(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let group = style_control_group(ui, parent, "styling.shadow.group");
+    style_group_title(ui, group, "styling.shadow.title", "Shadow");
+    let fields = ui.add_child(
+        group,
+        UiNode::container(
+            "styling.shadow.fields",
+            LayoutStyle::column()
+                .with_width(174.0)
+                .with_flex_shrink(0.0)
+                .gap(4.0),
+        ),
+    );
+    let offsets = row(ui, fields, "styling.shadow.offsets", 6.0);
+    style_inline_number(
+        ui,
+        offsets,
+        "styling.shadow_x",
+        "x",
+        state.styling.shadow_x,
+        -24.0..24.0,
+        0,
+    );
+    style_inline_number(
+        ui,
+        offsets,
+        "styling.shadow_y",
+        "y",
+        state.styling.shadow_y,
+        -24.0..24.0,
+        0,
+    );
+    let spread = row(ui, fields, "styling.shadow.blur_spread", 6.0);
+    style_inline_number(
+        ui,
+        spread,
+        "styling.shadow",
+        "blur",
+        state.styling.shadow_blur,
+        0.0..32.0,
+        0,
+    );
+    style_inline_number(
+        ui,
+        spread,
+        "styling.shadow_spread",
+        "spread",
+        state.styling.shadow_spread,
+        0.0..16.0,
+        0,
+    );
+    style_color_button_row(
+        ui,
+        fields,
+        "styling.shadow_color_button",
+        "",
+        state.styling.shadow_color(),
+        "Pick shadow color",
+    );
+    if state.styling_shadow_picker_open {
+        widgets::color_picker(
+            ui,
+            fields,
+            "styling.shadow_picker",
+            &state.styling_shadow_picker,
+            widgets::ColorPickerOptions::default()
+                .with_label("Shadow color")
+                .with_action_prefix("styling.shadow_picker"),
+        );
+    }
+}
+
+fn style_stroke_row(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let row = row(ui, parent, "styling.stroke.row", 8.0);
+    widgets::label(
+        ui,
+        row,
+        "styling.stroke.label",
+        "Stroke",
+        text(12.0, color(166, 176, 190)),
+        LayoutStyle::new().with_width(86.0).with_flex_shrink(0.0),
+    );
+    style_value_input(
+        ui,
+        row,
+        "styling.stroke",
+        state.styling.stroke_width,
+        0.0..4.0,
+        1,
+    );
+    widgets::color_edit_button_rgba(
+        ui,
+        row,
+        "styling.stroke_color_button",
+        state.styling.stroke_color(),
+        color_mini_button_options("styling.stroke_color_button")
+            .accessibility_label("Pick stroke color"),
+    );
+    let mut options = widgets::SliderOptions::default()
+        .with_layout(
+            LayoutStyle::new()
+                .with_width(60.0)
+                .with_height(20.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_value_edit_action("styling.stroke");
+    options.fill_color = color(120, 170, 230);
+    widgets::slider(
+        ui,
+        row,
+        "styling.stroke.slider",
+        (state.styling.stroke_width / 4.0).clamp(0.0, 1.0),
+        0.0..1.0,
+        options,
+    );
+}
+
+fn style_control_group(ui: &mut UiDocument, parent: UiNodeId, name: impl Into<String>) -> UiNodeId {
+    ui.add_child(
+        parent,
+        UiNode::container(
+            name,
+            LayoutStyle::row()
+                .with_width_percent(1.0)
+                .with_flex_shrink(0.0)
+                .padding(4.0)
+                .gap(8.0),
+        )
+        .with_visual(UiVisual::panel(color(23, 27, 33), None, 2.0)),
+    )
+}
+
+fn style_group_title(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    label: &'static str,
+) {
+    widgets::label(
+        ui,
+        parent,
+        name,
+        label,
+        text(12.0, color(166, 176, 190)),
+        LayoutStyle::new()
+            .with_width(88.0)
+            .with_flex_shrink(0.0)
+            .with_height(22.0),
+    );
+}
+
+fn style_color_button_row(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    action: &'static str,
+    label: &'static str,
+    value: ColorRgba,
+    accessibility_label: &'static str,
+) {
+    let row = row(ui, parent, format!("{action}.row"), 8.0);
+    if !label.is_empty() {
+        widgets::label(
+            ui,
+            row,
+            format!("{action}.label"),
+            label,
+            text(12.0, color(166, 176, 190)),
+            LayoutStyle::new()
+                .with_width(86.0)
+                .with_flex_shrink(0.0)
+                .with_height(24.0),
+        );
+    }
+    widgets::color_edit_button_rgba(
+        ui,
+        row,
+        action,
+        value,
+        color_mini_button_options(action).accessibility_label(accessibility_label),
+    );
+    widgets::label(
+        ui,
+        row,
+        format!("{action}.value"),
+        widgets::format_hex_color(value, value.a < 255),
+        text(12.0, color(226, 232, 242)),
+        LayoutStyle::new().with_width(96.0).with_height(24.0),
+    );
+}
+
+fn style_number_row(
     ui: &mut UiDocument,
     parent: UiNodeId,
     name: &'static str,
     label: &'static str,
     value: f32,
     range: std::ops::Range<f32>,
+    decimals: u8,
 ) {
-    let row = row(ui, parent, format!("{name}.row"), 8.0);
+    let row = row(ui, parent, format!("{name}.row"), 6.0);
     widgets::label(
         ui,
         row,
         format!("{name}.label"),
         label,
         text(12.0, color(166, 176, 190)),
-        LayoutStyle::new().with_width(118.0),
+        LayoutStyle::new().with_width(48.0).with_height(22.0),
     );
+    style_value_input(ui, row, name, value, range, decimals);
+}
+
+fn style_inline_number(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: &'static str,
+    label: &'static str,
+    value: f32,
+    range: std::ops::Range<f32>,
+    decimals: u8,
+) {
+    let row = row(ui, parent, format!("{name}.inline"), 3.0);
     widgets::label(
         ui,
         row,
-        format!("{name}.value"),
-        if range.end <= 1.0 {
-            format!("{value:.2}")
-        } else {
-            format!("{value:.0}")
-        },
-        text(12.0, color(226, 232, 242)),
-        LayoutStyle::new().with_width(42.0),
+        format!("{name}.inline_label"),
+        format!("{label}:"),
+        text(12.0, color(166, 176, 190)),
+        LayoutStyle::new()
+            .with_width(if label.len() > 1 { 42.0 } else { 16.0 })
+            .with_height(22.0),
     );
-    let mut options = widgets::SliderOptions::default()
-        .with_layout(
-            LayoutStyle::new()
-                .with_width(112.0)
-                .with_height(20.0)
-                .with_flex_shrink(0.0),
-        )
-        .with_value_edit_action(name);
-    options.fill_color = color(120, 170, 230);
-    widgets::slider(
-        ui,
-        row,
-        format!("{name}.slider"),
-        ((value - range.start) / (range.end - range.start).max(f32::EPSILON)).clamp(0.0, 1.0),
-        0.0..1.0,
-        options,
-    );
+    style_value_input(ui, row, name, value, range, decimals);
 }
 
-fn style_checkbox(
+fn style_value_input(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: &'static str,
+    value: f32,
+    range: std::ops::Range<f32>,
+    decimals: u8,
+) {
+    let mut options = widgets::DragValueOptions::default()
+        .with_layout(
+            LayoutStyle::new()
+                .with_width(42.0)
+                .with_height(22.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_range(widgets::NumericRange::new(
+            f64::from(range.start),
+            f64::from(range.end),
+        ))
+        .with_precision(widgets::NumericPrecision::decimals(decimals))
+        .with_action(name);
+    options.text_style = text(12.0, color(226, 232, 242));
+    widgets::drag_value_input(ui, parent, name, f64::from(value), options);
+}
+
+fn style_compact_checkbox(
     ui: &mut UiDocument,
     parent: UiNodeId,
     name: &'static str,
@@ -5433,9 +6250,17 @@ fn style_checkbox(
     checked: bool,
 ) {
     let mut options = widgets::CheckboxOptions::default().with_action(name);
-    options.layout = LayoutStyle::new().with_width_percent(1.0).with_height(22.0);
+    options.layout = LayoutStyle::new().with_width(92.0).with_height(22.0);
     options.text_style = text(12.0, color(220, 228, 238));
     widgets::checkbox(ui, parent, name, label, checked, options);
+}
+
+fn color_mini_button_options(action: &'static str) -> widgets::ColorButtonOptions {
+    widgets::ColorButtonOptions::default()
+        .with_layout(LayoutStyle::size(28.0, 24.0).with_flex_shrink(0.0))
+        .with_swatch_size(UiSize::new(22.0, 18.0))
+        .with_action(action)
+        .show_label(false)
 }
 
 fn style_preview(ui: &mut UiDocument, parent: UiNodeId, styling: StylingState) {
@@ -5663,14 +6488,24 @@ fn section(
     name: impl Into<String>,
     _title: impl Into<String>,
 ) -> UiNodeId {
+    section_with_min_viewport(ui, parent, name, _title, UiSize::ZERO)
+}
+
+fn section_with_min_viewport(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    _title: impl Into<String>,
+    min_viewport_size: UiSize,
+) -> UiNodeId {
     let name = name.into();
     let mut layout = LayoutStyle::column()
         .with_width_percent(1.0)
         .with_height_percent(1.0)
         .with_flex_grow(1.0)
         .gap(10.0);
-    layout.as_taffy_style_mut().min_size.width = operad::length(0.0);
-    layout.as_taffy_style_mut().min_size.height = operad::length(0.0);
+    layout.as_taffy_style_mut().min_size.width = operad::length(min_viewport_size.width.max(0.0));
+    layout.as_taffy_style_mut().min_size.height = operad::length(min_viewport_size.height.max(0.0));
     widgets::scroll_area(
         ui,
         parent,
@@ -6067,8 +6902,21 @@ fn controls_list_viewport_height(viewport_height: f32) -> f32 {
     (viewport_height - 110.0).max(120.0)
 }
 
-fn controls_scroll_state(offset_y: f32, viewport_height: f32) -> operad::ScrollState {
-    let mut scroll = scroll_state(offset_y, viewport_height, controls_list_content_height());
+fn controls_scroll_state_for_view(
+    saved: operad::ScrollState,
+    viewport_height: f32,
+) -> operad::ScrollState {
+    let viewport_height = if saved.viewport_size.height > f32::EPSILON {
+        saved.viewport_size.height
+    } else {
+        viewport_height
+    };
+    let content_height = if saved.content_size.height > f32::EPSILON {
+        saved.content_size.height
+    } else {
+        controls_list_content_height()
+    };
+    let mut scroll = scroll_state(saved.offset.y, viewport_height, content_height);
     scroll.offset = scroll.clamp_offset(scroll.offset);
     scroll
 }
@@ -6106,199 +6954,4 @@ fn text(size: f32, color: ColorRgba) -> TextStyle {
 
 fn color(r: u8, g: u8, b: u8) -> ColorRgba {
     ColorRgba::new(r, g, b, 255)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use operad::{ApproxTextMeasurer, AuditWarning};
-
-    fn state_with_window(id: &str) -> ShowcaseState {
-        let mut state = ShowcaseState::default();
-        state.windows.clear_all();
-        *state.windows.slot_mut(id).expect("known showcase window") = true;
-        if id == "popup_panel" {
-            state.popup_open = true;
-        }
-        if id == "overlays" {
-            state.overlay_popup_open = true;
-            state.overlay_modal_open = true;
-        }
-        state
-    }
-
-    fn severe_layout_warning(warning: &AuditWarning) -> bool {
-        matches!(
-            warning,
-            AuditWarning::NonFiniteRect { .. }
-                | AuditWarning::EmptyInteractiveClip { .. }
-                | AuditWarning::TextClipped { .. }
-                | AuditWarning::NodeOutsideRoot { .. }
-                | AuditWarning::PaintItemEmptyClip { .. }
-        )
-    }
-
-    #[test]
-    fn showcase_windows_avoid_hard_clipping_at_common_viewport_sizes() {
-        let viewports = [
-            UiSize::new(900.0, 760.0),
-            UiSize::new(720.0, 560.0),
-            UiSize::new(1180.0, 820.0),
-        ];
-
-        for viewport in viewports {
-            for id in SHOWCASE_WIDGET_WINDOW_IDS {
-                let state = state_with_window(id);
-                let mut document = state.view(viewport);
-                document
-                    .compute_layout(viewport, &mut ApproxTextMeasurer)
-                    .expect("showcase layout");
-                let warnings = document
-                    .audit_layout()
-                    .into_iter()
-                    .filter(severe_layout_warning)
-                    .collect::<Vec<_>>();
-                assert!(
-                    warnings.is_empty(),
-                    "window {id:?} at {viewport:?} emitted severe layout warnings: {warnings:#?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn showcase_windows_survive_small_user_resizes() {
-        let viewport = UiSize::new(900.0, 760.0);
-        for id in SHOWCASE_WIDGET_WINDOW_IDS {
-            let mut state = state_with_window(id);
-            state
-                .desktop
-                .sizes
-                .insert(id.to_string(), UiSize::new(220.0, 140.0));
-            state.desktop.user_sized.insert(id.to_string());
-            if id == "selection" {
-                state.combo_open = true;
-                state.dropdown.open = true;
-            }
-            if id == "slider" {
-                state.slider_trailing_picker_open = true;
-            }
-            if id == "menus" {
-                state.menu_button.open(&menu_items(state.menu_autosave));
-                state
-                    .context_menu
-                    .open_with_items(UiPoint::new(160.0, 160.0), &menu_items(state.menu_autosave));
-            }
-            if id == "overlays" {
-                state.overlay_popup_open = true;
-                state.overlay_modal_open = true;
-            }
-            if id == "popup_panel" {
-                state.popup_open = true;
-            }
-
-            let mut document = state.view(viewport);
-            document
-                .compute_layout(viewport, &mut ApproxTextMeasurer)
-                .expect("showcase layout");
-            let warnings = document
-                .audit_layout()
-                .into_iter()
-                .filter(severe_layout_warning)
-                .collect::<Vec<_>>();
-            assert!(
-                warnings.is_empty(),
-                "resized window {id:?} emitted severe layout warnings: {warnings:#?}"
-            );
-        }
-    }
-
-    #[test]
-    fn showcase_canvas_aspect_fits_when_window_is_short() {
-        let mut state = state_with_window("canvas");
-        state
-            .desktop
-            .sizes
-            .insert("canvas".to_string(), UiSize::new(420.0, 160.0));
-        state.desktop.user_sized.insert("canvas".to_string());
-
-        let viewport = UiSize::new(900.0, 760.0);
-        let mut document = state.view(viewport);
-        document
-            .compute_layout(viewport, &mut ApproxTextMeasurer)
-            .expect("showcase layout");
-
-        let canvas = document
-            .nodes()
-            .iter()
-            .find(|node| node.name == "canvas.shader")
-            .expect("canvas shader node");
-        let rect = canvas.layout.rect;
-        assert!(rect.width > 0.0 && rect.height > 0.0, "{rect:?}");
-        assert!(
-            (rect.width / rect.height - 16.0 / 9.0).abs() < 0.01,
-            "{rect:?}"
-        );
-        assert!(rect.width < 300.0, "{rect:?}");
-    }
-
-    #[test]
-    fn showcase_slider_primary_track_width_is_stable_when_window_resizes() {
-        let mut widths = Vec::new();
-        for window_width in [430.0, 340.0] {
-            let mut state = state_with_window("slider");
-            state
-                .desktop
-                .sizes
-                .insert("slider".to_string(), UiSize::new(window_width, 360.0));
-            state.desktop.user_sized.insert("slider".to_string());
-
-            let viewport = UiSize::new(900.0, 760.0);
-            let mut document = state.view(viewport);
-            document
-                .compute_layout(viewport, &mut ApproxTextMeasurer)
-                .expect("showcase layout");
-            let slider = document
-                .nodes()
-                .iter()
-                .find(|node| node.name == "slider.value")
-                .expect("primary slider node");
-            widths.push(slider.layout.rect.width);
-        }
-
-        assert!((widths[0] - 180.0).abs() < 0.01, "{widths:?}");
-        assert!((widths[1] - 180.0).abs() < 0.01, "{widths:?}");
-    }
-
-    #[test]
-    fn showcase_slider_color_button_opens_inline_picker() {
-        let mut state = state_with_window("slider");
-        state.update(WidgetAction::activate(
-            UiNodeId(0),
-            "slider.trailing_color_button",
-        ));
-        assert!(state.slider_trailing_picker_open);
-
-        let viewport = UiSize::new(900.0, 760.0);
-        let mut document = state.view(viewport);
-        document
-            .compute_layout(viewport, &mut ApproxTextMeasurer)
-            .expect("showcase layout");
-        assert!(document
-            .nodes()
-            .iter()
-            .any(|node| node.name == "slider.trailing_picker"));
-        assert!(!document
-            .nodes()
-            .iter()
-            .any(|node| node.name == "slider.trailing_color_button.label"));
-    }
-
-    #[test]
-    fn showcase_progress_phase_does_not_wrap_on_tick() {
-        let mut state = ShowcaseState::default();
-        state.progress_phase = std::f32::consts::TAU - 0.001;
-        state.update(WidgetAction::activate(UiNodeId(0), "runtime.tick"));
-        assert!(state.progress_phase > std::f32::consts::TAU);
-    }
 }

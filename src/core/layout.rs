@@ -850,24 +850,25 @@ impl Layout {
     }
 
     pub fn to_taffy_style(self) -> Style {
-        let mut style = Style::default();
-        style.display = self.display.to_taffy();
-        style.position = self.position.to_taffy();
-        style.size = self.size.to_taffy();
-        style.min_size = self.min_size.to_taffy();
-        style.max_size = self.max_size.to_taffy();
-        style.inset = self.inset.to_taffy_rect();
-        style.margin = self.margin.to_taffy_rect();
-        style.padding = self.padding.to_taffy_rect();
-        style.gap = self.gap.to_taffy_size();
-        style.flex_direction = self.flex_direction.to_taffy();
-        style.flex_wrap = self.flex_wrap.to_taffy();
-        style.align_items = self.align_items.map(LayoutAlignment::to_taffy);
-        style.justify_content = self.justify_content.map(LayoutJustifyContent::to_taffy);
-        style.flex_grow = self.flex_grow.max(0.0);
-        style.flex_shrink = self.flex_shrink.max(0.0);
-        style.flex_basis = self.flex_basis.to_taffy();
-        style
+        Style {
+            display: self.display.to_taffy(),
+            position: self.position.to_taffy(),
+            size: self.size.to_taffy(),
+            min_size: self.min_size.to_taffy(),
+            max_size: self.max_size.to_taffy(),
+            inset: self.inset.to_taffy_rect(),
+            margin: self.margin.to_taffy_rect(),
+            padding: self.padding.to_taffy_rect(),
+            gap: self.gap.to_taffy_size(),
+            flex_direction: self.flex_direction.to_taffy(),
+            flex_wrap: self.flex_wrap.to_taffy(),
+            align_items: self.align_items.map(LayoutAlignment::to_taffy),
+            justify_content: self.justify_content.map(LayoutJustifyContent::to_taffy),
+            flex_grow: self.flex_grow.max(0.0),
+            flex_shrink: self.flex_shrink.max(0.0),
+            flex_basis: self.flex_basis.to_taffy(),
+            ..Default::default()
+        }
     }
 
     pub fn to_layout_style(self) -> LayoutStyle {

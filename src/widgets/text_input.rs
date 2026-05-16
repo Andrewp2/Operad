@@ -1454,7 +1454,6 @@ pub fn selectable_text(
     options.read_only = true;
     options.selectable = true;
     options.allow_copy = true;
-    options.edit_action = None;
     text_input(document, parent, name, state, options)
 }
 
@@ -1900,7 +1899,14 @@ fn text_input_selection_rects(
                 metrics.text_rect.y - metrics.scroll_offset.y
                     + position.line as f32 * metrics.line_height,
             );
-            let selected_width = text_input_prefix_width(&text[start..end], metrics);
+            let mut selected_width = text_input_prefix_width(&text[start..end], metrics);
+            let full_line_selected = selected_range.start <= line_range.start
+                && selected_range.end >= line_range.end
+                && start == line_range.start
+                && end == line_range.end;
+            if full_line_selected {
+                selected_width = selected_width.max(metrics.text_rect.right() - origin.x);
+            }
             let width = if selected_width <= f32::EPSILON {
                 metrics.caret_width
             } else {
@@ -1998,4 +2004,34 @@ fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
         index -= 1;
     }
     index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selectable_text_preserves_edit_action_for_selection_events() {
+        let mut document = UiDocument::new(root_style(240.0, 120.0));
+        let root = document.root;
+        let options = TextInputOptions {
+            edit_action: Some("selectable.edit".into()),
+            ..Default::default()
+        };
+        let node = selectable_text(
+            &mut document,
+            root,
+            "selectable",
+            &TextInputState::new("Selectable"),
+            options,
+        );
+
+        assert_eq!(
+            document.node(node).action.as_ref(),
+            Some(&WidgetActionBinding::action("selectable.edit"))
+        );
+        let accessibility = document.node(node).accessibility.as_ref().unwrap();
+        assert!(accessibility.read_only);
+        assert!(accessibility.focusable);
+    }
 }

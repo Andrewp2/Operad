@@ -140,19 +140,10 @@ impl Default for FieldHelpOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ValidationMessageOptions {
     pub layout: LayoutStyle,
     pub text_style: Option<TextStyle>,
-}
-
-impl Default for ValidationMessageOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::new(),
-            text_style: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

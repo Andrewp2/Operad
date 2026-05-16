@@ -5,6 +5,9 @@ use taffy::prelude::{
     Size as TaffySize, Style,
 };
 
+use crate::widgets::{
+    inline_intrinsic_base_size, publish_inline_intrinsic_size, single_line_text_style,
+};
 use crate::{
     AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, ImageContent, InputBehavior,
     LayoutStyle, ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId,
@@ -241,29 +244,29 @@ pub fn tab_group(
     for (index, tab) in tabs.iter().enumerate() {
         let selected = selected_index == Some(index);
         let focused = focused_index == Some(index);
-        let style = if tab.disabled {
+        let style = single_line_text_style(if tab.disabled {
             options.muted_text_style.clone()
         } else {
             options.text_style.clone()
+        });
+        let tab_layout = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            size: TaffySize {
+                width: px(options.min_tab_width),
+                height: Dimension::percent(1.0),
+            },
+            padding: taffy::prelude::Rect::length(6.0),
+            flex_shrink: 0.0,
+            ..Default::default()
         };
         let tab_node = with_optional_shader(
             UiNode::container(
                 format!("{name}.tab.{}", tab.id),
                 UiNodeStyle {
-                    layout: LayoutStyle::from_taffy_style(Style {
-                        display: Display::Flex,
-                        flex_direction: FlexDirection::Row,
-                        align_items: Some(AlignItems::Center),
-                        justify_content: Some(JustifyContent::Center),
-                        size: TaffySize {
-                            width: px(options.min_tab_width),
-                            height: Dimension::percent(1.0),
-                        },
-                        padding: taffy::prelude::Rect::length(6.0),
-                        flex_shrink: 0.0,
-                        ..Default::default()
-                    })
-                    .style,
+                    layout: LayoutStyle::from_taffy_style(tab_layout.clone()).style,
                     clip: ClipBehavior::Clip,
                     ..Default::default()
                 },
@@ -300,18 +303,21 @@ pub fn tab_group(
         } else {
             tab.label.clone()
         };
+        let mut fixed_items = Vec::<Style>::new();
         if let Some(image) = tab.leading_image.clone() {
+            let image_layout = leading_image_layout(options.leading_image_size);
+            fixed_items.push(image_layout.clone());
             document.add_child(
                 tab_node,
                 leading_image_node(
                     format!("{name}.tab.{}.image", tab.id),
                     image,
-                    options.leading_image_size,
+                    image_layout,
                     Some(tab.label.clone()),
                 ),
             );
         }
-        document.add_child(
+        let label_node = document.add_child(
             tab_node,
             UiNode::text(
                 format!("{name}.tab.{}.label", tab.id),
@@ -329,19 +335,21 @@ pub fn tab_group(
         );
 
         if tab.closable {
+            let close_layout = Style {
+                size: TaffySize {
+                    width: px(16.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            };
+            fixed_items.push(close_layout.clone());
             document.add_child(
                 tab_node,
                 UiNode::text(
                     format!("{name}.tab.{}.close", tab.id),
                     "x",
-                    options.muted_text_style.clone(),
-                    LayoutStyle::from_taffy_style(Style {
-                        size: TaffySize {
-                            width: px(16.0),
-                            height: Dimension::percent(1.0),
-                        },
-                        ..Default::default()
-                    }),
+                    single_line_text_style(options.muted_text_style.clone()),
+                    LayoutStyle::from_taffy_style(close_layout),
                 )
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
@@ -351,6 +359,13 @@ pub fn tab_group(
                 ),
             );
         }
+        let fixed_items = fixed_items.iter().collect::<Vec<_>>();
+        publish_inline_intrinsic_size(
+            document,
+            tab_node,
+            vec![label_node],
+            inline_intrinsic_base_size(&tab_layout, &fixed_items, fixed_items.len() + 1),
+        );
     }
 
     let panel = with_optional_shader(
@@ -459,29 +474,29 @@ fn previous_enabled_tab_index(tabs: &[TabItem], current: Option<usize>) -> Optio
 fn leading_image_node(
     name: impl Into<String>,
     image: ImageContent,
-    size: f32,
+    layout: Style,
     label: Option<String>,
 ) -> UiNode {
-    let node = UiNode::image(
-        name,
-        image,
-        LayoutStyle::from_taffy_style(Style {
-            size: TaffySize {
-                width: px(size),
-                height: px(size),
-            },
-            margin: taffy::prelude::Rect {
-                right: LengthPercentageAuto::length(6.0),
-                ..taffy::prelude::Rect::length(0.0)
-            },
-            flex_shrink: 0.0,
-            ..Default::default()
-        }),
-    );
+    let node = UiNode::image(name, image, LayoutStyle::from_taffy_style(layout));
     if let Some(label) = label {
         node.with_accessibility(AccessibilityMeta::new(AccessibilityRole::Image).label(label))
     } else {
         node
+    }
+}
+
+fn leading_image_layout(size: f32) -> Style {
+    Style {
+        size: TaffySize {
+            width: px(size),
+            height: px(size),
+        },
+        margin: taffy::prelude::Rect {
+            right: LengthPercentageAuto::length(6.0),
+            ..taffy::prelude::Rect::length(0.0)
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
     }
 }
 

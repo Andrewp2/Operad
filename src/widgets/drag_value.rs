@@ -127,6 +127,7 @@ pub fn drag_value_input(
         accessibility = accessibility.disabled();
     }
 
+    let layout = options.layout.style.clone();
     let interaction_visuals = InteractionVisuals::new(options.visual)
         .hovered(options.hovered_visual.unwrap_or(options.visual))
         .pressed(options.pressed_visual.unwrap_or(options.visual))
@@ -134,7 +135,7 @@ pub fn drag_value_input(
     let mut root_node = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout: options.layout.style,
+            layout: layout.clone(),
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
@@ -151,13 +152,22 @@ pub fn drag_value_input(
         root_node = root_node.with_action(action);
     }
     let root = document.add_child(parent, root_node);
-    label(
-        document,
-        root,
+    let intrinsic_text = drag_value_intrinsic_text(value, &options);
+    let mut text_node = UiNode::text(
         format!("{name}.value"),
         text,
-        options.text_style,
+        single_line_text_style(options.text_style),
         LayoutStyle::new(),
+    );
+    if let UiContent::Text(text_content) = &mut text_node.content {
+        text_content.intrinsic_text = Some(intrinsic_text);
+    }
+    let value_node = document.add_child(root, text_node);
+    publish_inline_intrinsic_size(
+        document,
+        root,
+        vec![value_node],
+        inline_intrinsic_base_size(&layout, &[], 1),
     );
     root
 }
@@ -210,6 +220,27 @@ fn angle_drag_options(
         options.precision = NumericPrecision::decimals(default_decimals);
     }
     options
+}
+
+fn drag_value_intrinsic_text(value: f64, options: &DragValueOptions) -> String {
+    let mut candidates = vec![value];
+    if let Some(range) = options.range {
+        candidates.push(range.min);
+        candidates.push(range.max);
+        if range.contains(0.0) {
+            candidates.push(0.0);
+        }
+    }
+    candidates
+        .into_iter()
+        .map(|value| options.unit.format(options.precision.format(value)))
+        .max_by(|left, right| {
+            left.chars()
+                .count()
+                .cmp(&right.chars().count())
+                .then_with(|| left.len().cmp(&right.len()))
+        })
+        .unwrap_or_default()
 }
 
 pub fn drag_value_input_actions_from_gesture_event(
@@ -315,6 +346,54 @@ mod tests {
                 .value
                 .as_deref(),
             Some("0.250 tau")
+        );
+    }
+
+    #[test]
+    fn drag_value_input_sizes_from_range_widest_value_without_wrapping() {
+        let mut document = UiDocument::new(root_style(240.0, 120.0));
+        let root = document.root;
+        let node = drag_value_input(
+            &mut document,
+            root,
+            "angle",
+            42.25,
+            DragValueOptions::default()
+                .with_layout(LayoutStyle::from_taffy_style(Style {
+                    display: Display::Flex,
+                    align_items: Some(AlignItems::Center),
+                    justify_content: Some(JustifyContent::Center),
+                    size: TaffySize {
+                        width: length(56.0),
+                        height: length(30.0),
+                    },
+                    padding: taffy::prelude::Rect {
+                        left: taffy::prelude::LengthPercentage::length(8.0),
+                        right: taffy::prelude::LengthPercentage::length(8.0),
+                        top: taffy::prelude::LengthPercentage::length(4.0),
+                        bottom: taffy::prelude::LengthPercentage::length(4.0),
+                    },
+                    ..Default::default()
+                }))
+                .with_precision(NumericPrecision::decimals(1))
+                .with_unit(NumericUnitFormat::default().suffix(" deg"))
+                .with_range(NumericRange::new(0.0, 360.0)),
+        );
+        document
+            .compute_layout(UiSize::new(240.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let text_node = document.node(document.node(node).children[0]);
+        let UiContent::Text(text) = &text_node.content else {
+            panic!("drag value child should be text");
+        };
+        assert_eq!(text.text, "42.3 deg");
+        assert_eq!(text.intrinsic_text.as_deref(), Some("360.0 deg"));
+        assert_eq!(text.style.wrap, TextWrap::None);
+        assert!(
+            document.node(node).layout.rect.width > 56.0,
+            "{:?}",
+            document.node(node).layout.rect
         );
     }
 }

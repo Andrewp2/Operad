@@ -911,6 +911,7 @@ pub fn date_picker(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn date_control_button(
     document: &mut UiDocument,
     parent: UiNodeId,

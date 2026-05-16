@@ -159,8 +159,10 @@ pub fn wrapped_label(
     wrap: TextWrap,
     layout: impl Into<LayoutStyle>,
 ) -> UiNodeId {
-    let mut style = TextStyle::default();
-    style.wrap = wrap;
+    let style = TextStyle {
+        wrap,
+        ..Default::default()
+    };
     label(document, parent, name, text, style, layout)
 }
 

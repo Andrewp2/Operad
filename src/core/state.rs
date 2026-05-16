@@ -449,7 +449,7 @@ impl WidgetStateLifecycleReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WidgetStateError {
     SlotKindMismatch {
-        key: WidgetStateKey,
+        key: Box<WidgetStateKey>,
         expected: WidgetStateSlotKind,
         actual: WidgetStateSlotKind,
     },
@@ -760,7 +760,7 @@ fn validate_slot_kind(
         Ok(())
     } else {
         Err(WidgetStateError::SlotKindMismatch {
-            key: key.clone(),
+            key: Box::new(key.clone()),
             expected: expected.clone(),
             actual: actual.clone(),
         })
@@ -934,7 +934,7 @@ mod tests {
         assert_eq!(
             err,
             WidgetStateError::SlotKindMismatch {
-                key: key.clone(),
+                key: Box::new(key.clone()),
                 expected: WidgetStateSlotKind::Focus,
                 actual: WidgetStateSlotKind::Hover,
             }

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,7 @@ use crate::platform::{
     PlatformServiceResponse, RepaintRequest, RepaintResponse,
 };
 use crate::{
-    process_document_frame, AccessibilityRole, CanvasContent, CanvasRenderOutput,
+    process_document_frame, AccessibilityRole, AnimationMachine, CanvasContent, CanvasRenderOutput,
     CanvasRenderReport, CanvasRenderRequest, CosmicTextMeasurer, DirtyRegionSet,
     EmptyResourceResolver, HostDocumentFrameState, HostFrameOutput, HostNodeInteraction, KeyCode,
     KeyModifiers, RenderError, RenderTarget, RendererAdapter, UiContent, UiDocument, UiFocusState,
@@ -26,6 +27,92 @@ use crate::{
 };
 
 pub type NativeWindowResult<T = ()> = Result<T, Box<dyn Error>>;
+
+#[derive(Debug)]
+struct NativeWindowRunError {
+    title: String,
+    phase: &'static str,
+    message: String,
+    app_error: Option<String>,
+    last_frame: Option<NativeFrameTimingReport>,
+}
+
+impl NativeWindowRunError {
+    fn new(
+        title: impl Into<String>,
+        phase: &'static str,
+        message: impl Into<String>,
+        app_error: Option<String>,
+        last_frame: Option<NativeFrameTimingReport>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            phase,
+            message: message.into(),
+            app_error,
+            last_frame,
+        }
+    }
+}
+
+impl fmt::Display for NativeWindowRunError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "native window {:?} failed while {}: {}",
+            self.title, self.phase, self.message
+        )?;
+        if let Some(app_error) = &self.app_error {
+            write!(f, "\nlast application error: {app_error}")?;
+        }
+        if let Some(last_frame) = self.last_frame {
+            write!(f, "\nlast completed frame: {last_frame}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for NativeWindowRunError {}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeFrameTimingReport {
+    viewport: UiSize,
+    nodes: usize,
+    paint_items: usize,
+    widget_actions: usize,
+    build_document: Duration,
+    host_input: Duration,
+    document_frame: Duration,
+    action_rebuild: Option<Duration>,
+    canvas_render: Duration,
+    surface_render: Duration,
+    total: Duration,
+}
+
+impl fmt::Display for NativeFrameTimingReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "viewport={:.0}x{:.0}, nodes={}, paint_items={}, actions={}, build_document={:?}, host_input={:?}, document_frame={:?}",
+            self.viewport.width,
+            self.viewport.height,
+            self.nodes,
+            self.paint_items,
+            self.widget_actions,
+            self.build_document,
+            self.host_input,
+            self.document_frame,
+        )?;
+        if let Some(action_rebuild) = self.action_rebuild {
+            write!(f, ", action_rebuild={action_rebuild:?}")?;
+        }
+        write!(
+            f,
+            ", canvas_render={:?}, surface_render={:?}, total={:?}",
+            self.canvas_render, self.surface_render, self.total
+        )
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeWindowMetrics {
@@ -484,11 +571,36 @@ pub fn run_app_with_canvas_renderers_and_hooks<State>(
 where
     State: 'static,
 {
-    let event_loop = winit::event_loop::EventLoop::new()?;
+    let title = options.title.clone();
+    let event_loop = winit::event_loop::EventLoop::new().map_err(|error| {
+        NativeWindowRunError::new(
+            title.clone(),
+            "creating the platform event loop",
+            error.to_string(),
+            None,
+            None,
+        )
+    })?;
     let mut app = NativeWindowApp::new(options, state, update, view, canvas_renderers, hooks);
-    event_loop.run_app(&mut app)?;
+    if let Err(error) = event_loop.run_app(&mut app) {
+        return Err(NativeWindowRunError::new(
+            app.options.title.clone(),
+            "running the platform event loop",
+            error.to_string(),
+            app.error.take(),
+            app.last_frame_report,
+        )
+        .into());
+    }
     if let Some(error) = app.error {
-        Err(error.into())
+        Err(NativeWindowRunError::new(
+            app.options.title.clone(),
+            "rendering a frame",
+            error,
+            None,
+            app.last_frame_report,
+        )
+        .into())
     } else {
         Ok(())
     }
@@ -508,6 +620,7 @@ struct NativeWindowApp<State, Update, View> {
     platform_request_ids: PlatformRequestIdAllocator,
     pending_platform_responses: Vec<PlatformServiceResponse>,
     scroll_offsets: HashMap<String, UiPoint>,
+    animation_states: HashMap<String, AnimationMachine>,
     text_measurer: CosmicTextMeasurer,
     pending_input: Vec<RawInputEvent>,
     cursor: Option<UiPoint>,
@@ -517,6 +630,8 @@ struct NativeWindowApp<State, Update, View> {
     continuous_redraw: bool,
     start: Instant,
     last_tick: Instant,
+    last_animation_tick: Instant,
+    last_frame_report: Option<NativeFrameTimingReport>,
     error: Option<String>,
 }
 
@@ -543,6 +658,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             platform_request_ids: PlatformRequestIdAllocator::default(),
             pending_platform_responses: Vec::new(),
             scroll_offsets: HashMap::new(),
+            animation_states: HashMap::new(),
             text_measurer: CosmicTextMeasurer::new(),
             pending_input: Vec::new(),
             cursor: None,
@@ -552,6 +668,8 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             continuous_redraw: false,
             start: Instant::now(),
             last_tick: Instant::now(),
+            last_animation_tick: Instant::now(),
+            last_frame_report: None,
             error: None,
         }
     }
@@ -832,6 +950,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let Some(viewport) = self.viewport() else {
             return Ok(());
         };
+        let frame_started = Instant::now();
         let metrics = self.metrics_for_viewport(viewport);
         if let Some(before_render) = self.hooks.before_render.as_mut() {
             before_render(&mut self.state, metrics);
@@ -842,59 +961,109 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         self.apply_hook_platform_requests(metrics);
         self.dispatch_tick_if_due();
         let raw_input = std::mem::take(&mut self.pending_input);
+        let animation_dt = self.animation_delta_seconds();
+
+        let build_started = Instant::now();
         let mut document = self.build_document(viewport)?;
+        let mut build_document = build_started.elapsed();
+        let mut nodes = document.node_count();
+        document.tick_animations(animation_dt);
         let raw_input = self.dispatch_canvas_input_hooks(&document, raw_input);
         let mut host_request = self.frame_state.host_frame_request(viewport);
         host_request.raw_input = raw_input;
         host_request.platform_responses = std::mem::take(&mut self.pending_platform_responses);
+        let host_input_started = Instant::now();
         let host_output =
             process_host_frame_input_with_target_resolver(host_request, |event, state| {
                 resolve_target(event, state, &document)
             });
+        let host_input = host_input_started.elapsed();
         let frame_request = self.frame_state.document_frame_request(
             viewport,
             RenderTarget::window(self.options.title.clone(), viewport),
             host_output,
         );
+        let document_frame_started = Instant::now();
         let frame = process_document_frame(&mut document, &mut self.text_measurer, frame_request)?;
-        self.capture_scroll_offsets(&document);
+        let mut document_frame = document_frame_started.elapsed();
+        self.capture_document_runtime_state(&document);
         let actions = collect_widget_actions(&document, &frame);
+        let actions_count = actions.len();
         self.frame_state.apply_document_frame_output(&frame);
         self.apply_platform_service_requests(&frame);
 
+        let mut action_rebuild = None;
         let frame = if actions.is_empty() {
             frame
         } else {
+            let action_started = Instant::now();
             for action in actions {
                 (self.update)(&mut self.state, action);
             }
+            let rebuild_started = Instant::now();
             let mut document = self.build_document(viewport)?;
+            build_document += rebuild_started.elapsed();
+            nodes = document.node_count();
             let frame_request = self.frame_state.document_frame_request(
                 viewport,
                 RenderTarget::window(self.options.title.clone(), viewport),
                 HostFrameOutput::new(self.frame_state.interaction.clone()),
             );
+            let document_frame_started = Instant::now();
             let frame =
                 process_document_frame(&mut document, &mut self.text_measurer, frame_request)?;
-            self.capture_scroll_offsets(&document);
+            document_frame += document_frame_started.elapsed();
+            self.capture_document_runtime_state(&document);
             self.frame_state.apply_document_frame_output(&frame);
             self.apply_platform_service_requests(&frame);
+            action_rebuild = Some(action_started.elapsed());
             frame
         };
 
         let Some(renderer) = self.renderer.as_mut() else {
+            self.last_frame_report = Some(NativeFrameTimingReport {
+                viewport,
+                nodes,
+                paint_items: frame.render_request.paint.items.len(),
+                widget_actions: actions_count,
+                build_document,
+                host_input,
+                document_frame,
+                action_rebuild,
+                canvas_render: Duration::ZERO,
+                surface_render: Duration::ZERO,
+                total: frame_started.elapsed(),
+            });
             return Ok(());
         };
+        let paint_items = frame.render_request.paint.items.len();
+        let canvas_started = Instant::now();
         let canvas_report = self.canvas_renderers.render_frame_canvases(
             &mut self.state,
             renderer,
             &frame.render_request,
         );
+        let canvas_render = canvas_started.elapsed();
         if let Some(error) = canvas_report.first_failure().cloned() {
             return Err(error.into());
         }
         let repaint_requested = canvas_report.repaint_requested();
+        let surface_started = Instant::now();
         renderer.render_frame(frame.render_request, &EmptyResourceResolver)?;
+        let surface_render = surface_started.elapsed();
+        self.last_frame_report = Some(NativeFrameTimingReport {
+            viewport,
+            nodes,
+            paint_items,
+            widget_actions: actions_count,
+            build_document,
+            host_input,
+            document_frame,
+            action_rebuild,
+            canvas_render,
+            surface_render,
+            total: frame_started.elapsed(),
+        });
         if repaint_requested {
             self.request_redraw();
         }
@@ -924,6 +1093,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         document.set_ui_scale(self.options.ui_scale);
         document.set_dpi_scale(self.scale_factor());
         restore_scroll_offsets(&mut document, &self.scroll_offsets);
+        self.restore_animation_states(&mut document);
         let mut focus = UiFocusState {
             hovered: self.frame_state.interaction.hovered,
             pressed: self.frame_state.interaction.pressed,
@@ -959,6 +1129,23 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         Ok(document)
     }
 
+    fn animation_delta_seconds(&mut self) -> f32 {
+        let now = Instant::now();
+        let dt = now
+            .checked_duration_since(self.last_animation_tick)
+            .unwrap_or(Duration::ZERO);
+        self.last_animation_tick = now;
+        dt.as_secs_f32().clamp(0.0, 0.1)
+    }
+
+    fn capture_document_runtime_state(&mut self, document: &UiDocument) {
+        self.capture_scroll_offsets(document);
+        self.capture_animation_states(document);
+        if document.animations_active() {
+            self.request_redraw();
+        }
+    }
+
     fn capture_scroll_offsets(&mut self, document: &UiDocument) {
         self.scroll_offsets.clear();
         for index in 0..document.node_count() {
@@ -970,7 +1157,46 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
                 continue;
             }
             self.scroll_offsets
-                .insert(scroll_offset_key(document, id), scroll.offset);
+                .insert(node_path_key(document, id), scroll.offset);
+        }
+    }
+
+    fn restore_animation_states(&self, document: &mut UiDocument) -> bool {
+        if self.animation_states.is_empty() {
+            return false;
+        }
+        let mut restored = Vec::new();
+        for index in 0..document.node_count() {
+            let id = UiNodeId(index);
+            let Some(animation) = document.node(id).animation.as_ref() else {
+                continue;
+            };
+            let Some(stored) = self.animation_states.get(&node_path_key(document, id)) else {
+                continue;
+            };
+            if animation.has_same_definition(stored) {
+                let mut restored_animation = animation.clone();
+                restored_animation.retain_runtime_from(stored);
+                restored.push((id, restored_animation));
+            }
+        }
+
+        let changed = !restored.is_empty();
+        for (id, animation) in restored {
+            document.node_mut(id).animation = Some(animation);
+        }
+        changed
+    }
+
+    fn capture_animation_states(&mut self, document: &UiDocument) {
+        self.animation_states.clear();
+        for index in 0..document.node_count() {
+            let id = UiNodeId(index);
+            let Some(animation) = document.node(id).animation.as_ref() else {
+                continue;
+            };
+            self.animation_states
+                .insert(node_path_key(document, id), animation.clone());
         }
     }
 
@@ -1406,10 +1632,7 @@ fn native_canvas_input_for_raw_event(
         RawInputEvent::Wheel(wheel) => resolve_target(event, state, document)
             .and_then(|target| canvas_target(document, target))
             .filter(|(_, canvas, _)| canvas.interaction.wheel_capture)
-            .or_else(|| {
-                active_canvas_capture(document, state, |plan| plan.wheel_capture)
-                    .map(|(node, canvas, rect)| (node, canvas, rect))
-            })
+            .or_else(|| active_canvas_capture(document, state, |plan| plan.wheel_capture))
             .map(|(node, canvas, rect)| {
                 native_canvas_input(node, canvas, rect, Some(wheel.position), event.clone())
             }),
@@ -1417,10 +1640,7 @@ fn native_canvas_input_for_raw_event(
             .focused
             .and_then(|focused| canvas_target(document, focused))
             .filter(|(_, canvas, _)| canvas.interaction.keyboard_capture)
-            .or_else(|| {
-                active_canvas_capture(document, state, |plan| plan.keyboard_capture)
-                    .map(|(node, canvas, rect)| (node, canvas, rect))
-            })
+            .or_else(|| active_canvas_capture(document, state, |plan| plan.keyboard_capture))
             .map(|(node, canvas, rect)| {
                 native_canvas_input(node, canvas, rect, None, event.clone())
             }),
@@ -1682,7 +1902,7 @@ fn restore_scroll_offsets(document: &mut UiDocument, offsets: &HashMap<String, U
         if document.scroll_state(id).is_none() {
             continue;
         }
-        let Some(offset) = offsets.get(&scroll_offset_key(document, id)).copied() else {
+        let Some(offset) = offsets.get(&node_path_key(document, id)).copied() else {
             continue;
         };
         scroll_offsets.push((id, offset));
@@ -1706,7 +1926,7 @@ fn scroll_offset_is_zero(offset: UiPoint) -> bool {
     offset.x.abs() <= f32::EPSILON && offset.y.abs() <= f32::EPSILON
 }
 
-fn scroll_offset_key(document: &UiDocument, id: UiNodeId) -> String {
+fn node_path_key(document: &UiDocument, id: UiNodeId) -> String {
     let mut path = Vec::new();
     let mut current = Some(id);
     while let Some(id) = current {
@@ -1886,10 +2106,7 @@ mod tests {
             .unwrap();
 
         let mut offsets = HashMap::new();
-        offsets.insert(
-            scroll_offset_key(&document, scroll),
-            UiPoint::new(0.0, 120.0),
-        );
+        offsets.insert(node_path_key(&document, scroll), UiPoint::new(0.0, 120.0));
 
         assert!(restore_scroll_offsets(&mut document, &offsets));
         document
@@ -1902,5 +2119,36 @@ mod tests {
             UiPoint::new(0.0, 120.0)
         );
         assert_eq!(document.node(child).layout.rect.y, -120.0);
+    }
+
+    #[test]
+    fn native_window_error_includes_application_error_and_frame_timing() {
+        let error = NativeWindowRunError::new(
+            "showcase",
+            "running the platform event loop",
+            "ExitFailure(1)",
+            Some("Io error: Broken pipe (os error 32)".to_string()),
+            Some(NativeFrameTimingReport {
+                viewport: UiSize::new(1200.0, 900.0),
+                nodes: 1635,
+                paint_items: 1262,
+                widget_actions: 0,
+                build_document: Duration::from_millis(423),
+                host_input: Duration::from_millis(1),
+                document_frame: Duration::from_millis(4),
+                action_rebuild: None,
+                canvas_render: Duration::from_millis(2),
+                surface_render: Duration::from_millis(8),
+                total: Duration::from_millis(438),
+            }),
+        )
+        .to_string();
+
+        assert!(error.contains("native window \"showcase\" failed"));
+        assert!(error.contains("ExitFailure(1)"));
+        assert!(error.contains("Broken pipe"));
+        assert!(error.contains("last completed frame"));
+        assert!(error.contains("build_document=423ms"));
+        assert!(error.contains("nodes=1635"));
     }
 }

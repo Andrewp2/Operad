@@ -794,6 +794,7 @@ fn same_resource_shape(left: &ResourceDescriptor, right: &ResourceDescriptor) ->
     left.handle == right.handle && left.size == right.size && left.format == right.format
 }
 
+#[allow(clippy::too_many_arguments)]
 fn report_from_entry(
     entry: &CachedResource,
     outcome: ResourceLifecycleOutcome,

@@ -7,6 +7,9 @@ use taffy::prelude::{
 
 use super::menu_list::{menu_list_popup, MenuListNodes, MenuListOptions};
 
+use crate::widgets::{
+    inline_intrinsic_base_size, publish_inline_intrinsic_size, single_line_text_style,
+};
 use crate::{
     layout, length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta,
     AccessibilityRole, AnimationMachine, ClipBehavior, ClipScope, ColorRgba, CommandId,
@@ -952,6 +955,7 @@ pub struct MenuButtonNodes {
     pub submenus: Vec<MenuListNodes>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn menu_button(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -974,6 +978,7 @@ pub fn menu_button(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn image_text_menu_button(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -998,6 +1003,7 @@ pub fn image_text_menu_button(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn image_menu_button(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1060,11 +1066,9 @@ fn menu_button_with_image(
         })
         .flatten();
     if let Some(popup) = &popup {
-        document
-            .node_mut(button)
-            .accessibility
-            .as_mut()
-            .map(|accessibility| accessibility.relations.controls.push(popup.root));
+        if let Some(accessibility) = document.node_mut(button).accessibility.as_mut() {
+            accessibility.relations.controls.push(popup.root);
+        }
     }
     let submenus = if state.open {
         anchors
@@ -1884,6 +1888,7 @@ pub(in crate::widget_ext) fn button_like_with_input(
     input: InputBehavior,
 ) -> UiNodeId {
     let name = name.into();
+    let text_style = single_line_text_style(text_style);
     let mut layout_style = layout.style;
     layout_style.display = Display::Flex;
     layout_style.flex_direction = FlexDirection::Row;
@@ -1896,7 +1901,7 @@ pub(in crate::widget_ext) fn button_like_with_input(
         UiNode::container(
             name.clone(),
             UiNodeStyle {
-                layout: layout_style,
+                layout: layout_style.clone(),
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -1904,7 +1909,7 @@ pub(in crate::widget_ext) fn button_like_with_input(
         .with_input(input)
         .with_visual(visual),
     );
-    label(
+    let label = label(
         document,
         root,
         format!("{name}.label"),
@@ -1917,6 +1922,12 @@ pub(in crate::widget_ext) fn button_like_with_input(
             },
             ..Default::default()
         }),
+    );
+    publish_inline_intrinsic_size(
+        document,
+        root,
+        vec![label],
+        inline_intrinsic_base_size(&layout_style, &[], 1),
     );
     root
 }

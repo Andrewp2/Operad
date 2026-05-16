@@ -1108,12 +1108,12 @@ fn tessellate_polyline_stroke(
     }
 
     if closed {
-        for index in 0..points.len() {
+        for (index, point) in points.iter().copied().enumerate() {
             let previous = (index + segment_count - 1) % segment_count;
             let next = index % segment_count;
             push_join_triangles(
                 &mut triangles,
-                points[index],
+                point,
                 normals[previous],
                 normals[next],
                 half,

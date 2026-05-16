@@ -507,10 +507,10 @@ pub fn apply_scroll_anchor(
     }
 }
 
-pub fn select_scroll_anchor<'a>(
+pub fn select_scroll_anchor(
     scroll: ScrollState,
-    candidates: &'a [ScrollAnchorCandidate],
-) -> Option<&'a ScrollAnchorCandidate> {
+    candidates: &[ScrollAnchorCandidate],
+) -> Option<&ScrollAnchorCandidate> {
     let viewport = content_viewport_rect(scroll);
     candidates
         .iter()

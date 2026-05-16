@@ -242,8 +242,7 @@ impl OverlayStack {
             })
             .collect::<Vec<_>>();
 
-        self.entries
-            .retain(|entry| !dismissed.iter().any(|id| *id == entry.id));
+        self.entries.retain(|entry| !dismissed.contains(&entry.id));
 
         OverlayDismissOutcome {
             dismissed,

@@ -1110,7 +1110,7 @@ mod tests {
 
         assert_eq!(deadline.id, RuntimeTimerId::new(1));
         assert_eq!(deadline.deadline, Duration::from_millis(50));
-        assert_eq!(runtime.timer_deadlines(), &[deadline.clone()]);
+        assert_eq!(runtime.timer_deadlines(), std::slice::from_ref(&deadline));
         assert_eq!(
             runtime.repaint_scheduler().delay(),
             Some(Duration::from_millis(50))

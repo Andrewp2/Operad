@@ -28,7 +28,7 @@ impl Default for ScrollContainerOptions {
                 .with_track_size(UiSize::new(120.0, 8.0)),
             scrollbar_thickness: 8.0,
             gap: 4.0,
-            scrollbar_visibility: ScrollbarVisibility::Always,
+            scrollbar_visibility: ScrollbarVisibility::Auto,
             auto_actions: true,
             action_prefix: None,
             accessibility_label: None,
@@ -340,9 +340,12 @@ fn show_scrollbar(
     if !scroll_axis_enabled(axis, axes) {
         return false;
     }
+    if axis.value(scroll.max_offset()) <= f32::EPSILON {
+        return false;
+    }
     match visibility {
         ScrollbarVisibility::Always => true,
-        ScrollbarVisibility::Auto => axis.value(scroll.max_offset()) > f32::EPSILON,
+        ScrollbarVisibility::Auto => true,
         ScrollbarVisibility::Hidden => false,
     }
 }
@@ -610,6 +613,31 @@ mod tests {
         );
 
         assert!(nodes.vertical_scrollbar.is_some());
+        assert!(nodes.horizontal_scrollbar.is_none());
+        assert!(nodes.horizontal_row.is_none());
+    }
+
+    #[test]
+    fn scroll_container_omits_unneeded_scrollbars_even_when_visibility_is_always() {
+        let mut document = UiDocument::new(root_style(320.0, 220.0));
+        let root = document.root;
+        let scroll = ScrollState {
+            axes: ScrollAxes::BOTH,
+            offset: UiPoint::new(0.0, 0.0),
+            viewport_size: UiSize::new(200.0, 100.0),
+            content_size: UiSize::new(200.0, 100.0),
+        };
+        let nodes = scroll_container_shell(
+            &mut document,
+            root,
+            "empty",
+            scroll,
+            ScrollContainerOptions::default()
+                .with_axes(ScrollAxes::BOTH)
+                .with_scrollbar_visibility(ScrollbarVisibility::Always),
+        );
+
+        assert!(nodes.vertical_scrollbar.is_none());
         assert!(nodes.horizontal_scrollbar.is_none());
         assert!(nodes.horizontal_row.is_none());
     }

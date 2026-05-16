@@ -82,6 +82,8 @@ pub fn collapsing_header(
 ) -> CollapsingHeaderNodes {
     let name = name.into();
     let label_text = label_text.into();
+    let text_style = single_line_text_style(options.text_style.clone());
+    let indicator_text_style = single_line_text_style(options.indicator_text_style.clone());
     let root = document.add_child(
         parent,
         UiNode::container(
@@ -149,7 +151,7 @@ pub fn collapsing_header(
         UiNode::text(
             format!("{name}.indicator"),
             if options.expanded { "v" } else { ">" },
-            options.indicator_text_style.clone(),
+            indicator_text_style,
             LayoutStyle::new().with_width(18.0).with_flex_shrink(0.0),
         )
         .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).hidden()),
@@ -160,9 +162,15 @@ pub fn collapsing_header(
         UiNode::text(
             format!("{name}.label"),
             label_text,
-            options.text_style.clone(),
+            text_style,
             LayoutStyle::new().with_width_percent(1.0),
         ),
+    );
+    publish_inline_intrinsic_size(
+        document,
+        header,
+        vec![indicator, label],
+        inline_intrinsic_base_size(&options.header_layout.style, &[], 2),
     );
 
     let body = options.expanded.then(|| {
@@ -242,6 +250,49 @@ mod tests {
         assert_eq!(header_accessibility.expanded, Some(true));
         assert_eq!(header_accessibility.relations.controls, vec![body]);
         assert!(document.node(nodes.header).input.pointer);
+    }
+
+    #[test]
+    fn collapsing_header_label_is_measured_as_single_line() {
+        let mut document = UiDocument::new(root_style(320.0, 180.0));
+        let root = document.root;
+        let nodes = collapsing_header(
+            &mut document,
+            root,
+            "advanced",
+            "Boolean input transition",
+            CollapsingHeaderOptions::default().expanded(false),
+        );
+
+        let label = document.node(nodes.label);
+        let UiContent::Text(text) = &label.content else {
+            panic!("collapsing header label should be text");
+        };
+        assert_eq!(text.style.wrap, TextWrap::None);
+
+        let intrinsic = document
+            .intrinsic_size(nodes.label, &mut ApproxTextMeasurer)
+            .expect("label intrinsic size");
+        assert!(
+            (intrinsic.preferred.width - intrinsic.min.width).abs() <= 0.01,
+            "{intrinsic:?}"
+        );
+
+        document
+            .compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let header_min_width =
+            dimension_length(document.node(nodes.header).style.layout.min_size.width)
+                .expect("header minimum width");
+        assert!(
+            header_min_width >= intrinsic.preferred.width + 36.0,
+            "header min width {header_min_width} should include label, indicator, padding, and gap"
+        );
+    }
+
+    fn dimension_length(value: Dimension) -> Option<f32> {
+        let raw = value.into_raw();
+        (raw.tag() == taffy::prelude::CompactLength::LENGTH_TAG).then_some(raw.value())
     }
 
     #[test]

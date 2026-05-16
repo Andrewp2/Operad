@@ -6,9 +6,9 @@ use cosmic_text::{
     Style as CosmicFontStyle, Weight as CosmicWeight, Wrap as CosmicWrap,
 };
 use taffy::prelude::{
-    AlignItems, AvailableSpace, CompactLength, Dimension, Display, FlexDirection, JustifyContent,
-    LengthPercentage, LengthPercentageAuto, NodeId as TaffyNodeId, Rect as TaffyRect,
-    Size as TaffySize, Style, TaffyTree,
+    AlignItems, AvailableSpace, CompactLength, Dimension, Display, FlexDirection, FlexWrap,
+    JustifyContent, LengthPercentage, LengthPercentageAuto, NodeId as TaffyNodeId,
+    Rect as TaffyRect, Size as TaffySize, Style, TaffyTree,
 };
 
 use crate::compositor::*;
@@ -556,6 +556,7 @@ impl TextInteractionStyles {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextContent {
     pub text: String,
+    pub intrinsic_text: Option<String>,
     pub style: TextStyle,
     pub locale: Option<LocaleId>,
     pub direction: ResolvedTextDirection,
@@ -567,12 +568,18 @@ impl TextContent {
     pub fn new(text: impl Into<String>, style: TextStyle) -> Self {
         Self {
             text: text.into(),
+            intrinsic_text: None,
             style,
             locale: None,
             direction: ResolvedTextDirection::Ltr,
             bidi: BidiPolicy::default(),
             dynamic_label: None,
         }
+    }
+
+    pub fn with_intrinsic_text(mut self, text: impl Into<String>) -> Self {
+        self.intrinsic_text = Some(text.into());
+        self
     }
 
     pub fn with_localization_policy(mut self, policy: &LocalizationPolicy) -> Self {
@@ -1376,6 +1383,13 @@ pub enum ScenePrimitive {
         fill: ColorRgba,
         stroke: Option<StrokeStyle>,
     },
+    MorphPolygon {
+        from_points: Vec<UiPoint>,
+        to_points: Vec<UiPoint>,
+        amount: f32,
+        fill: ColorRgba,
+        stroke: Option<StrokeStyle>,
+    },
     Image {
         key: String,
         rect: UiRect,
@@ -2094,6 +2108,15 @@ enum IntrinsicMeasureMode {
     Preferred,
 }
 
+#[derive(Debug)]
+struct LayoutSizingPass {
+    root: TaffyNodeId,
+    taffy: TaffyTree<MeasureContext>,
+    mapping: HashMap<UiNodeId, TaffyNodeId>,
+    measured_content: HashMap<TaffyNodeId, UiSize>,
+    sizes: HashMap<UiNodeId, UiSize>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct KnownSize {
     pub width: Option<f32>,
@@ -2184,7 +2207,12 @@ impl TextMeasurer for CosmicTextMeasurer {
             .weight(cosmic_weight(text.style.weight))
             .style(cosmic_font_style(text.style.style))
             .stretch(cosmic_stretch(text.style.stretch));
-        buffer.set_text(&mut self.font_system, &text.text, &attrs, Shaping::Advanced);
+        buffer.set_text(
+            &mut self.font_system,
+            &text.text,
+            &attrs,
+            cosmic_shaping(&text.text),
+        );
 
         let mut measured = UiSize::ZERO;
         for run in buffer.layout_runs() {
@@ -2212,6 +2240,17 @@ fn measure_taffy_text(
     known: TaffySize<Option<f32>>,
     available: TaffySize<AvailableSpace>,
 ) -> UiSize {
+    let measurement_text;
+    let text = if let Some(intrinsic_text) = &text.intrinsic_text {
+        measurement_text = TextContent {
+            text: intrinsic_text.clone(),
+            intrinsic_text: None,
+            ..text.clone()
+        };
+        &measurement_text
+    } else {
+        text
+    };
     if known.width.is_none() && available.width == AvailableSpace::MinContent {
         return measure_text_min_content(text_measurer, text, known, available);
     }
@@ -2363,6 +2402,15 @@ fn cosmic_wrap(wrap: TextWrap) -> CosmicWrap {
         TextWrap::Glyph => CosmicWrap::Glyph,
         TextWrap::Word => CosmicWrap::Word,
         TextWrap::WordOrGlyph => CosmicWrap::WordOrGlyph,
+    }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn cosmic_shaping(text: &str) -> Shaping {
+    if text.is_ascii() {
+        Shaping::Basic
+    } else {
+        Shaping::Advanced
     }
 }
 
@@ -2784,11 +2832,35 @@ impl UiDocument {
     }
 
     pub fn set_focus_state(&mut self, focus: UiFocusState) {
+        self.sanitize_focus_state();
         let previous_hovered = self.focus.hovered;
         let previous_pressed = self.focus.pressed;
         let previous_focused = self.focus.focused;
-        self.focus = focus;
+        self.focus = self.sanitized_focus_state(focus);
+        self.sync_interaction_animation_inputs_for(
+            previous_hovered,
+            previous_pressed,
+            previous_focused,
+            None,
+            None,
+        );
         self.refresh_interaction_visuals_for(previous_hovered, previous_pressed, previous_focused);
+    }
+
+    fn sanitize_focus_state(&mut self) {
+        self.focus = self.sanitized_focus_state(self.focus.clone());
+    }
+
+    fn sanitized_focus_state(&self, focus: UiFocusState) -> UiFocusState {
+        UiFocusState {
+            hovered: self.valid_node_id(focus.hovered),
+            focused: self.valid_node_id(focus.focused),
+            pressed: self.valid_node_id(focus.pressed),
+        }
+    }
+
+    fn valid_node_id(&self, id: Option<UiNodeId>) -> Option<UiNodeId> {
+        id.filter(|id| id.0 < self.nodes.len())
     }
 
     fn refresh_interaction_visuals_for(
@@ -2934,6 +3006,17 @@ impl UiDocument {
         if self.layout_cache_key == Some(cache_key) {
             return Ok(());
         }
+        let sizing = self.compute_layout_sizing_pass(viewport, text_measurer)?;
+        self.apply_layout_position_pass(&sizing, viewport)?;
+        self.layout_cache_key = Some(cache_key);
+        Ok(())
+    }
+
+    fn compute_layout_sizing_pass(
+        &mut self,
+        viewport: UiSize,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Result<LayoutSizingPass, taffy::TaffyError> {
         self.resolve_layout_constraints(text_measurer)?;
         let mut taffy = TaffyTree::<MeasureContext>::new();
         let mut mapping = HashMap::<UiNodeId, TaffyNodeId>::new();
@@ -2957,18 +3040,40 @@ impl UiDocument {
                 }
             },
         )?;
-        let viewport_rect = UiRect::new(0.0, 0.0, viewport.width, viewport.height);
-        self.apply_layout_subtree(
-            self.root,
+        let sizes = mapping
+            .iter()
+            .map(|(node, taffy_node)| {
+                let layout = taffy.layout(*taffy_node)?;
+                Ok((*node, UiSize::new(layout.size.width, layout.size.height)))
+            })
+            .collect::<Result<HashMap<_, _>, taffy::TaffyError>>()?;
+
+        Ok(LayoutSizingPass {
             root,
-            &taffy,
+            taffy,
+            mapping,
+            measured_content,
+            sizes,
+        })
+    }
+
+    fn apply_layout_position_pass(
+        &mut self,
+        sizing: &LayoutSizingPass,
+        viewport: UiSize,
+    ) -> Result<(), taffy::TaffyError> {
+        let viewport_rect = UiRect::new(0.0, 0.0, viewport.width, viewport.height);
+        self.apply_layout_position_subtree(
+            self.root,
+            sizing.root,
+            &sizing.taffy,
             UiPoint::new(0.0, 0.0),
             viewport_rect,
             viewport_rect,
-            &mapping,
-            &measured_content,
+            &sizing.mapping,
+            &sizing.measured_content,
+            &sizing.sizes,
         )?;
-        self.layout_cache_key = Some(cache_key);
         Ok(())
     }
 
@@ -2997,6 +3102,14 @@ impl UiDocument {
         width: AvailableSpace,
         text_measurer: &mut impl TextMeasurer,
     ) -> Result<UiSize, taffy::TaffyError> {
+        if width == AvailableSpace::MinContent {
+            return Ok(self.intrinsic_min_size(id, text_measurer));
+        }
+        if let Some(size) =
+            self.fast_leaf_intrinsic_size_for_available_space(id, width, text_measurer)
+        {
+            return Ok(size);
+        }
         let mut taffy = TaffyTree::<MeasureContext>::new();
         let mut mapping = HashMap::<UiNodeId, TaffyNodeId>::new();
         let mode = match width {
@@ -3035,6 +3148,206 @@ impl UiDocument {
             layout.size.width / scale,
             layout.size.height / scale,
         ))
+    }
+
+    fn intrinsic_min_size(&self, id: UiNodeId, text_measurer: &mut impl TextMeasurer) -> UiSize {
+        let scale = normalized_scale(self.ui_scale());
+        let size = self.intrinsic_min_size_scaled(id, text_measurer, scale, None);
+        UiSize::new(size.width / scale, size.height / scale)
+    }
+
+    fn intrinsic_min_size_for_width(
+        &self,
+        id: UiNodeId,
+        width: f32,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> UiSize {
+        let scale = normalized_scale(self.ui_scale());
+        let allocated_width = (width * scale).is_finite().then_some(width * scale);
+        let size = self.intrinsic_min_size_scaled(id, text_measurer, scale, allocated_width);
+        UiSize::new(size.width / scale, size.height / scale)
+    }
+
+    fn intrinsic_min_size_scaled(
+        &self,
+        id: UiNodeId,
+        text_measurer: &mut impl TextMeasurer,
+        scale: f32,
+        allocated_width: Option<f32>,
+    ) -> UiSize {
+        let Some(node) = self.nodes.get(id.0) else {
+            return UiSize::ZERO;
+        };
+        let style = scaled_taffy_style(&node.style.layout, scale);
+        if style.display == Display::None {
+            return UiSize::ZERO;
+        }
+
+        let mut content_size = if node.children.is_empty() {
+            self.intrinsic_leaf_min_size_scaled(node, &style, text_measurer, scale, allocated_width)
+        } else {
+            self.intrinsic_children_min_size_scaled(
+                node,
+                &style,
+                text_measurer,
+                scale,
+                allocated_width,
+            )
+        };
+
+        if let Some(width) = dimension_points(style.size.width).or(allocated_width) {
+            content_size.width = content_size.width.max(width);
+        }
+        if let Some(height) = dimension_points(style.size.height) {
+            content_size.height = content_size.height.max(height);
+        }
+        content_size.width = constrain_intrinsic_extent(
+            content_size.width,
+            style.min_size.width,
+            style.max_size.width,
+        );
+        content_size.height = constrain_intrinsic_extent(
+            content_size.height,
+            style.min_size.height,
+            style.max_size.height,
+        );
+        content_size
+    }
+
+    fn intrinsic_leaf_min_size_scaled(
+        &self,
+        node: &UiNode,
+        style: &Style,
+        text_measurer: &mut impl TextMeasurer,
+        scale: f32,
+        allocated_width: Option<f32>,
+    ) -> UiSize {
+        let known = TaffySize {
+            width: dimension_points(style.size.width).or(allocated_width),
+            height: dimension_points(style.size.height),
+        };
+        match &node.content {
+            UiContent::Text(text) => {
+                let text = scaled_text_content(text, scale);
+                measure_taffy_text(
+                    text_measurer,
+                    &text,
+                    known,
+                    TaffySize {
+                        width: known
+                            .width
+                            .map_or(AvailableSpace::MinContent, AvailableSpace::Definite),
+                        height: AvailableSpace::MaxContent,
+                    },
+                )
+            }
+            UiContent::PaintRect(rect) => paint_rect_intrinsic_size(rect, scale),
+            UiContent::Scene(primitives) => scene_primitives_intrinsic_size(primitives, scale),
+            UiContent::Empty | UiContent::Canvas(_) | UiContent::Image(_) => {
+                UiSize::new(known.width.unwrap_or(0.0), known.height.unwrap_or(0.0))
+            }
+        }
+    }
+
+    fn intrinsic_children_min_size_scaled(
+        &self,
+        node: &UiNode,
+        style: &Style,
+        text_measurer: &mut impl TextMeasurer,
+        scale: f32,
+        allocated_width: Option<f32>,
+    ) -> UiSize {
+        let spacing_width = box_horizontal_spacing(style, scale);
+        let spacing_height = box_vertical_spacing(style, scale);
+        let content_width = dimension_points(style.size.width)
+            .or(allocated_width)
+            .map(|width| (width - spacing_width).max(0.0));
+        let children = node
+            .children
+            .iter()
+            .filter_map(|child| {
+                let child_node = self.nodes.get(child.0)?;
+                if child_node.style.layout.display == Display::None
+                    || child_node.style.layout.position == taffy::prelude::Position::Absolute
+                {
+                    return None;
+                }
+                let child_style = scaled_taffy_style(&child_node.style.layout, scale);
+                let child_width = resolve_intrinsic_child_width(&child_style, content_width);
+                let child_size =
+                    self.intrinsic_min_size_scaled(*child, text_measurer, scale, child_width);
+                Some(outer_intrinsic_size(child_size, &child_style))
+            })
+            .collect::<Vec<_>>();
+
+        if children.is_empty() {
+            return UiSize::new(spacing_width, spacing_height);
+        }
+
+        let gap_count = children.len().saturating_sub(1) as f32;
+        match style.flex_direction {
+            FlexDirection::Row | FlexDirection::RowReverse => UiSize::new(
+                children.iter().map(|child| child.width).sum::<f32>()
+                    + length_percentage_points(style.gap.width, 0.0, 1.0) * gap_count
+                    + spacing_width,
+                children
+                    .iter()
+                    .map(|child| child.height)
+                    .fold(0.0, f32::max)
+                    + spacing_height,
+            ),
+            FlexDirection::Column | FlexDirection::ColumnReverse => UiSize::new(
+                children.iter().map(|child| child.width).fold(0.0, f32::max) + spacing_width,
+                children.iter().map(|child| child.height).sum::<f32>()
+                    + length_percentage_points(style.gap.height, 0.0, 1.0) * gap_count
+                    + spacing_height,
+            ),
+        }
+    }
+
+    fn fast_leaf_intrinsic_size_for_available_space(
+        &self,
+        id: UiNodeId,
+        width: AvailableSpace,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Option<UiSize> {
+        let node = self.nodes.get(id.0)?;
+        if !node.children.is_empty() {
+            return None;
+        }
+        let scale = normalized_scale(self.ui_scale());
+        let mut style = scaled_taffy_style(&node.style.layout, scale);
+        normalize_intrinsic_root_style(&mut style);
+        let known = TaffySize {
+            width: dimension_points(style.size.width),
+            height: dimension_points(style.size.height),
+        };
+        let available = TaffySize {
+            width,
+            height: AvailableSpace::MaxContent,
+        };
+        let mut size = match &node.content {
+            UiContent::Text(text) => {
+                let text = scaled_text_content(text, scale);
+                measure_taffy_text(text_measurer, &text, known, available)
+            }
+            UiContent::PaintRect(rect) => paint_rect_intrinsic_size(rect, scale),
+            UiContent::Scene(primitives) => scene_primitives_intrinsic_size(primitives, scale),
+            UiContent::Empty | UiContent::Canvas(_) | UiContent::Image(_) => {
+                UiSize::new(known.width.unwrap_or(0.0), known.height.unwrap_or(0.0))
+            }
+        };
+        if let Some(width) = known.width {
+            size.width = size.width.max(width);
+        }
+        if let Some(height) = known.height {
+            size.height = size.height.max(height);
+        }
+        size.width =
+            constrain_intrinsic_extent(size.width, style.min_size.width, style.max_size.width);
+        size.height =
+            constrain_intrinsic_extent(size.height, style.min_size.height, style.max_size.height);
+        Some(UiSize::new(size.width / scale, size.height / scale))
     }
 
     fn resolve_layout_constraints(
@@ -3092,26 +3405,51 @@ impl UiDocument {
             {
                 let mut min_stack = UiSize::ZERO;
                 let mut preferred_stack = UiSize::ZERO;
-                for source in sources {
+                let mut valid_sources = Vec::new();
+                for source in &sources {
                     if source.0 >= self.nodes.len() {
                         continue;
                     }
-                    let source_size = self.intrinsic_size(source, text_measurer)?;
-                    min_stack.width = min_stack.width.max(source_size.min.width);
-                    min_stack.height += source_size.min.height;
-                    preferred_stack.width = preferred_stack.width.max(source_size.preferred.width);
-                    preferred_stack.height += source_size.preferred.height;
+                    valid_sources.push(source);
+                    if fit_to_preferred {
+                        let source_size = self.intrinsic_size(*source, text_measurer)?;
+                        min_stack.width = min_stack.width.max(source_size.min.width);
+                        preferred_stack.width =
+                            preferred_stack.width.max(source_size.preferred.width);
+                        preferred_stack.height += source_size.preferred.height;
+                    } else {
+                        let source_size = self.intrinsic_size_for_available_space(
+                            *source,
+                            AvailableSpace::MinContent,
+                            text_measurer,
+                        )?;
+                        min_stack.width = min_stack.width.max(source_size.width);
+                    }
+                }
+                let constrained_min_width =
+                    finite_or(min_size.width, 0.0).max(min_stack.width).max(1.0);
+                for source in valid_sources {
+                    let source_size = self.intrinsic_min_size_for_width(
+                        *source,
+                        constrained_min_width,
+                        text_measurer,
+                    );
+                    min_stack.height += source_size.height;
                 }
                 let min_size = UiSize::new(
-                    finite_or(min_size.width, 0.0).max(min_stack.width).max(1.0),
+                    constrained_min_width,
                     finite_or(min_size.height, 0.0)
                         .max(min_stack.height)
                         .max(1.0),
                 );
-                let preferred_size = UiSize::new(
-                    preferred_stack.width.max(min_size.width),
-                    preferred_stack.height.max(min_size.height),
-                );
+                let preferred_size = if fit_to_preferred {
+                    UiSize::new(
+                        preferred_stack.width.max(min_size.width),
+                        preferred_stack.height.max(min_size.height),
+                    )
+                } else {
+                    min_size
+                };
                 self.apply_intrinsic_size_constraint(
                     target,
                     min_size,
@@ -3134,6 +3472,8 @@ impl UiDocument {
         let Some(node) = self.nodes.get_mut(target.0) else {
             return;
         };
+        let min_size = ceil_layout_size(min_size);
+        let preferred_size = ceil_layout_size(preferred_size);
         node.style.layout.min_size.width = max_length_dimension(
             node.style.layout.min_size.width,
             min_size.width.max(preferred_size.width).max(1.0),
@@ -3161,6 +3501,8 @@ impl UiDocument {
         let Some(node) = self.nodes.get_mut(target.0) else {
             return;
         };
+        let min_size = ceil_layout_size(min_size);
+        let preferred_size = ceil_layout_size(preferred_size);
         let rect = absolute_rect_from_style(&node.style.layout).unwrap_or_else(|| {
             UiRect::new(0.0, 0.0, min_size.width.max(1.0), min_size.height.max(1.0))
         });
@@ -3212,16 +3554,12 @@ impl UiDocument {
         } else if intrinsic_root.is_some() {
             normalize_intrinsic_descendant_style(&mut style);
         }
-        let scroll_min_axes = (intrinsic_mode == Some(IntrinsicMeasureMode::Min)
-            && intrinsic_root != Some(id)
-            && node.scroll.is_some())
-        .then(|| node.scroll.expect("checked scroll").axes);
-        if let Some(axes) = scroll_min_axes {
-            normalize_intrinsic_scroll_min_style(&mut style, axes);
+        if intrinsic_mode == Some(IntrinsicMeasureMode::Min)
+            && style.flex_direction == FlexDirection::Row
+        {
+            style.flex_wrap = FlexWrap::NoWrap;
         }
-        let collapse_scroll_for_min =
-            scroll_min_axes.is_some_and(|axes| axes.horizontal && axes.vertical);
-        let taffy_node = if node.children.is_empty() || collapse_scroll_for_min {
+        let taffy_node = if node.children.is_empty() {
             match &node.content {
                 UiContent::Text(text) => taffy.new_leaf_with_context(
                     style,
@@ -3253,7 +3591,8 @@ impl UiDocument {
         Ok(taffy_node)
     }
 
-    fn apply_layout_subtree(
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layout_position_subtree(
         &mut self,
         id: UiNodeId,
         taffy_node: TaffyNodeId,
@@ -3263,13 +3602,18 @@ impl UiDocument {
         viewport_clip: UiRect,
         mapping: &HashMap<UiNodeId, TaffyNodeId>,
         measured_content: &HashMap<TaffyNodeId, UiSize>,
+        sizes: &HashMap<UiNodeId, UiSize>,
     ) -> Result<(), taffy::TaffyError> {
         let layout = taffy.layout(taffy_node)?;
+        let resolved_size = sizes
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| UiSize::new(layout.size.width, layout.size.height));
         let mut rect = UiRect::new(
             parent_origin.x + layout.location.x,
             parent_origin.y + layout.location.y,
-            layout.size.width,
-            layout.size.height,
+            resolved_size.width,
+            resolved_size.height,
         );
         if matches!(self.nodes[id.0].content, UiContent::Canvas(_)) {
             if let Some(aspect_ratio) = self.nodes[id.0].style.layout.aspect_ratio {
@@ -3307,7 +3651,7 @@ impl UiDocument {
         };
         for child in children {
             let child_taffy = mapping[&child];
-            self.apply_layout_subtree(
+            self.apply_layout_position_subtree(
                 child,
                 child_taffy,
                 taffy,
@@ -3316,6 +3660,7 @@ impl UiDocument {
                 viewport_clip,
                 mapping,
                 measured_content,
+                sizes,
             )?;
         }
         if has_scroll {
@@ -3396,16 +3741,20 @@ impl UiDocument {
     }
 
     pub fn handle_input(&mut self, event: UiInputEvent) -> UiInputResult {
+        self.sanitize_focus_state();
         let previous_hovered = self.focus.hovered;
         let previous_pressed = self.focus.pressed;
         let previous_focused = self.focus.focused;
         let mut scrolled = None;
+        let mut pointer = None;
         let clicked = match event {
             UiInputEvent::PointerMove(point) => {
+                pointer = Some(point);
                 self.focus.hovered = self.hit_test(point);
                 None
             }
             UiInputEvent::PointerDown(point) => {
+                pointer = Some(point);
                 let hit = self.hit_test(point);
                 self.focus.pressed = hit;
                 if hit.is_some_and(|id| self.nodes[id.0].input.focusable) {
@@ -3414,6 +3763,7 @@ impl UiDocument {
                 None
             }
             UiInputEvent::PointerUp(point) => {
+                pointer = Some(point);
                 let hit = self.hit_test(point);
                 let clicked = self.focus.pressed.filter(|pressed| Some(*pressed) == hit);
                 self.focus.pressed = None;
@@ -3429,6 +3779,18 @@ impl UiDocument {
                 None
             }
         };
+        self.sync_interaction_animation_inputs_for(
+            previous_hovered,
+            previous_pressed,
+            previous_focused,
+            pointer,
+            clicked,
+        );
+        self.trigger_interaction_animations_for(
+            previous_hovered,
+            previous_pressed,
+            previous_focused,
+        );
         self.refresh_interaction_visuals_for(previous_hovered, previous_pressed, previous_focused);
         UiInputResult {
             hovered: self.focus.hovered,
@@ -3439,32 +3801,196 @@ impl UiDocument {
         }
     }
 
+    fn sync_interaction_animation_inputs_for(
+        &mut self,
+        previous_hovered: Option<UiNodeId>,
+        previous_pressed: Option<UiNodeId>,
+        previous_focused: Option<UiNodeId>,
+        pointer: Option<UiPoint>,
+        clicked: Option<UiNodeId>,
+    ) {
+        let ids = [
+            previous_hovered,
+            previous_pressed,
+            previous_focused,
+            self.focus.hovered,
+            self.focus.pressed,
+            self.focus.focused,
+            clicked,
+        ];
+        for index in 0..ids.len() {
+            let Some(id) = ids[index] else {
+                continue;
+            };
+            if ids[..index].contains(&Some(id)) {
+                continue;
+            }
+            let hovered = self.focus.hovered == Some(id);
+            let pressed = self.focus.pressed == Some(id);
+            let focused = self.focus.focused == Some(id);
+            let active = hovered || pressed || focused;
+            let Some(rect) = self.nodes.get(id.0).map(|node| node.layout.rect) else {
+                continue;
+            };
+            if let Some(animation) = self
+                .nodes
+                .get_mut(id.0)
+                .and_then(|node| node.animation.as_mut())
+            {
+                animation.set_bool_input(ANIMATION_INPUT_HOVER, hovered);
+                animation.set_bool_input(ANIMATION_INPUT_PRESSED, pressed);
+                animation.set_bool_input(ANIMATION_INPUT_FOCUSED, focused);
+                animation.set_bool_input(ANIMATION_INPUT_ACTIVE, active);
+                if clicked == Some(id) {
+                    animation.fire_trigger_input(ANIMATION_INPUT_ACTIVATED);
+                }
+                let local_pointer = active
+                    .then(|| {
+                        pointer.map(|pointer| {
+                            UiPoint::new(
+                                (pointer.x - rect.x).clamp(0.0, rect.width.max(0.0)),
+                                (pointer.y - rect.y).clamp(0.0, rect.height.max(0.0)),
+                            )
+                        })
+                    })
+                    .flatten();
+                let local_x = local_pointer.map_or(0.0, |pointer| pointer.x);
+                let local_y = local_pointer.map_or(0.0, |pointer| pointer.y);
+                animation.set_number_input(ANIMATION_INPUT_POINTER_X, local_x);
+                animation.set_number_input(ANIMATION_INPUT_POINTER_Y, local_y);
+                animation.set_number_input(
+                    ANIMATION_INPUT_POINTER_NORM_X,
+                    local_x / rect.width.max(f32::EPSILON),
+                );
+                animation.set_number_input(
+                    ANIMATION_INPUT_POINTER_NORM_Y,
+                    local_y / rect.height.max(f32::EPSILON),
+                );
+            }
+        }
+    }
+
+    fn trigger_interaction_animations_for(
+        &mut self,
+        previous_hovered: Option<UiNodeId>,
+        previous_pressed: Option<UiNodeId>,
+        previous_focused: Option<UiNodeId>,
+    ) {
+        let hovered = self.focus.hovered;
+        if previous_hovered != hovered {
+            if let Some(id) = previous_hovered {
+                self.trigger_node_animation(id, AnimationTrigger::PointerLeave);
+            }
+            if let Some(id) = hovered {
+                self.trigger_node_animation(id, AnimationTrigger::PointerEnter);
+            }
+        }
+
+        let pressed = self.focus.pressed;
+        if previous_pressed != pressed {
+            if let Some(id) = previous_pressed {
+                self.trigger_node_animation(id, AnimationTrigger::Released);
+            }
+            if let Some(id) = pressed {
+                self.trigger_node_animation(id, AnimationTrigger::Pressed);
+            }
+        }
+
+        let focused = self.focus.focused;
+        if previous_focused != focused {
+            if let Some(id) = previous_focused {
+                self.trigger_node_animation(id, AnimationTrigger::FocusLost);
+            }
+            if let Some(id) = focused {
+                self.trigger_node_animation(id, AnimationTrigger::FocusGained);
+            }
+        }
+    }
+
+    fn trigger_node_animation(&mut self, id: UiNodeId, trigger: AnimationTrigger) -> bool {
+        self.nodes
+            .get_mut(id.0)
+            .and_then(|node| node.animation.as_mut())
+            .is_some_and(|animation| animation.trigger(trigger))
+    }
+
     fn apply_wheel_scroll(&mut self, wheel: UiWheelEvent) -> Option<UiNodeId> {
         if !wheel.scrolls_document() {
             return None;
         }
+        if let Some(scope) = self.wheel_event_scope(wheel.position) {
+            return self.scroll_wheel_from_scope(scope, wheel.position, wheel.delta);
+        }
+        self.scroll_topmost_wheel_candidate(wheel.position, wheel.delta, None)
+    }
+
+    fn scroll_wheel_from_scope(
+        &mut self,
+        scope: UiNodeId,
+        position: UiPoint,
+        delta: UiPoint,
+    ) -> Option<UiNodeId> {
+        if let Some(target) = self.scroll_topmost_wheel_candidate(position, delta, Some(scope)) {
+            return Some(target);
+        }
+
+        let mut current = self.nodes.get(scope.0).and_then(|node| node.parent);
+        while let Some(id) = current {
+            if self.node_can_receive_wheel_scroll(id, position) && self.scroll_by(id, delta) {
+                return Some(id);
+            }
+            current = self.nodes.get(id.0).and_then(|node| node.parent);
+        }
+
+        None
+    }
+
+    fn wheel_event_scope(&self, position: UiPoint) -> Option<UiNodeId> {
+        self.visual_order()
+            .into_iter()
+            .rev()
+            .map(UiNodeId)
+            .find(|id| self.node_occludes_wheel_at(*id, position))
+    }
+
+    fn scroll_topmost_wheel_candidate(
+        &mut self,
+        position: UiPoint,
+        delta: UiPoint,
+        subtree_root: Option<UiNodeId>,
+    ) -> Option<UiNodeId> {
         for index in self.visual_order().into_iter().rev() {
-            let target = {
-                let node = &self.nodes[index];
-                if node.layout.visible
-                    && node.layout.clip_rect.contains_point(wheel.position)
-                    && self.node_paint_rect(index).contains_point(wheel.position)
-                    && node
-                        .scroll
-                        .is_some_and(|scroll| scroll.axes.horizontal || scroll.axes.vertical)
-                {
-                    Some(UiNodeId(index))
-                } else {
-                    None
-                }
-            };
-            if let Some(target) = target {
-                if self.scroll_by(target, wheel.delta) {
-                    return Some(target);
-                }
+            let target = UiNodeId(index);
+            if subtree_root.is_none_or(|root| self.node_is_descendant_or_self(root, target))
+                && self.node_can_receive_wheel_scroll(target, position)
+                && self.scroll_by(target, delta)
+            {
+                return Some(target);
             }
         }
         None
+    }
+
+    fn node_can_receive_wheel_scroll(&self, id: UiNodeId, position: UiPoint) -> bool {
+        let Some(node) = self.nodes.get(id.0) else {
+            return false;
+        };
+        node.layout.visible
+            && node.layout.clip_rect.contains_point(position)
+            && self.node_paint_rect(id.0).contains_point(position)
+            && node
+                .scroll
+                .is_some_and(|scroll| scroll.axes.horizontal || scroll.axes.vertical)
+    }
+
+    fn node_occludes_wheel_at(&self, id: UiNodeId, position: UiPoint) -> bool {
+        let Some(node) = self.nodes.get(id.0) else {
+            return false;
+        };
+        node.layout.visible
+            && node.layout.clip_rect.contains_point(position)
+            && self.node_paint_rect(id.0).contains_point(position)
+            && node_blocks_wheel_passthrough(node)
     }
 
     fn next_focus(&self, current: Option<UiNodeId>, direction: FocusDirection) -> Option<UiNodeId> {
@@ -3543,18 +4069,69 @@ impl UiDocument {
     }
 
     pub fn trigger_animation(&mut self, id: UiNodeId, trigger: AnimationTrigger) -> bool {
+        self.trigger_node_animation(id, trigger)
+    }
+
+    pub fn set_animation_input(
+        &mut self,
+        id: UiNodeId,
+        name: impl Into<String>,
+        value: AnimationInputValue,
+    ) -> bool {
         self.nodes
             .get_mut(id.0)
             .and_then(|node| node.animation.as_mut())
-            .is_some_and(|animation| animation.trigger(trigger))
+            .is_some_and(|animation| animation.set_input(name, value))
     }
 
-    pub fn tick_animations(&mut self, dt_seconds: f32) {
+    pub fn set_animation_bool_input(
+        &mut self,
+        id: UiNodeId,
+        name: impl Into<String>,
+        value: bool,
+    ) -> bool {
+        self.set_animation_input(id, name, AnimationInputValue::bool(value))
+    }
+
+    pub fn set_animation_number_input(
+        &mut self,
+        id: UiNodeId,
+        name: impl Into<String>,
+        value: f32,
+    ) -> bool {
+        self.set_animation_input(id, name, AnimationInputValue::number(value))
+    }
+
+    pub fn fire_animation_trigger_input(&mut self, id: UiNodeId, name: impl Into<String>) -> bool {
+        self.set_animation_input(id, name, AnimationInputValue::fired_trigger())
+    }
+
+    pub fn tick_animations(&mut self, dt_seconds: f32) -> AnimationTickReport {
+        let mut report = AnimationTickReport::default();
         for node in &mut self.nodes {
             if let Some(animation) = &mut node.animation {
-                animation.tick(dt_seconds);
+                report.ticked += 1;
+                let outcome = animation.tick(dt_seconds);
+                if outcome.advanced {
+                    report.advanced += 1;
+                }
+                if outcome.active {
+                    report.active += 1;
+                }
+                if outcome.completed {
+                    report.completed += 1;
+                }
             }
         }
+        report
+    }
+
+    pub fn animations_active(&self) -> bool {
+        self.nodes.iter().any(|node| {
+            node.animation
+                .as_ref()
+                .is_some_and(AnimationMachine::is_animating)
+        })
     }
 
     pub fn paint_list(&self) -> PaintList {
@@ -3601,9 +4178,11 @@ impl UiDocument {
             match &node.content {
                 UiContent::Empty => {}
                 UiContent::Text(text) => {
+                    let text_rect =
+                        text_content_rect(node.layout.rect, &node.style.layout, self.ui_scale());
                     list.items.push(PaintItem {
                         node: id,
-                        rect: node.layout.rect,
+                        rect: text_rect,
                         clip_rect: node.layout.clip_rect,
                         z_index,
                         layer_order,
@@ -3614,7 +4193,7 @@ impl UiDocument {
                     });
                     if text.style.underline {
                         let underline = text_underline_segment(
-                            node.layout.rect,
+                            text_rect,
                             node.layout.content_size,
                             text,
                             self.ui_scale(),
@@ -3683,6 +4262,7 @@ impl UiDocument {
                         z_index,
                         layer_order,
                         opacity,
+                        morph: animation_values.morph,
                         transform,
                         shader: node.shader.clone(),
                     };
@@ -3763,6 +4343,7 @@ struct ScenePaintContext {
     z_index: i16,
     layer_order: platform::LayerOrder,
     opacity: f32,
+    morph: f32,
     transform: PaintTransform,
     shader: Option<ShaderEffect>,
 }
@@ -3829,21 +4410,21 @@ fn scene_primitive_to_paint_item(
                 .iter()
                 .map(|point| point_in_rect(context.node_rect, *point))
                 .collect::<Vec<_>>();
-            PaintItem {
-                node: context.node,
-                rect: rect_from_points(&points),
-                clip_rect: context.clip_rect,
-                z_index: context.z_index,
-                layer_order: context.layer_order,
-                opacity: context.opacity,
-                transform: context.transform,
-                shader: context.shader.clone(),
-                kind: PaintKind::Polygon {
-                    points,
-                    fill: *fill,
-                    stroke: *stroke,
-                },
-            }
+            polygon_paint_item(context, points, *fill, *stroke)
+        }
+        ScenePrimitive::MorphPolygon {
+            from_points,
+            to_points,
+            amount,
+            fill,
+            stroke,
+        } => {
+            let amount = (*amount + context.morph).clamp(0.0, 1.0);
+            let points = morph_polygon_points(from_points, to_points, amount)
+                .into_iter()
+                .map(|point| point_in_rect(context.node_rect, point))
+                .collect::<Vec<_>>();
+            polygon_paint_item(context, points, *fill, *stroke)
         }
         ScenePrimitive::Image { key, rect, tint } => PaintItem {
             node: context.node,
@@ -3931,6 +4512,100 @@ fn scene_primitive_to_paint_item(
     }
 }
 
+fn polygon_paint_item(
+    context: &ScenePaintContext,
+    points: Vec<UiPoint>,
+    fill: ColorRgba,
+    stroke: Option<StrokeStyle>,
+) -> PaintItem {
+    PaintItem {
+        node: context.node,
+        rect: rect_from_points(&points),
+        clip_rect: context.clip_rect,
+        z_index: context.z_index,
+        layer_order: context.layer_order,
+        opacity: context.opacity,
+        transform: context.transform,
+        shader: context.shader.clone(),
+        kind: PaintKind::Polygon {
+            points,
+            fill,
+            stroke,
+        },
+    }
+}
+
+fn morph_polygon_points(
+    from_points: &[UiPoint],
+    to_points: &[UiPoint],
+    amount: f32,
+) -> Vec<UiPoint> {
+    if from_points.is_empty() || to_points.is_empty() {
+        return Vec::new();
+    }
+    let count = from_points.len().max(to_points.len()).max(3);
+    let from = resample_closed_polygon(from_points, count);
+    let to = resample_closed_polygon(to_points, count);
+    let amount = finite_or(amount, 0.0).clamp(0.0, 1.0);
+    from.into_iter()
+        .zip(to)
+        .map(|(from, to)| {
+            UiPoint::new(
+                from.x + (to.x - from.x) * amount,
+                from.y + (to.y - from.y) * amount,
+            )
+        })
+        .collect()
+}
+
+fn resample_closed_polygon(points: &[UiPoint], count: usize) -> Vec<UiPoint> {
+    if points.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    if points.len() == 1 {
+        return vec![points[0]; count];
+    }
+    if points.len() == count {
+        return points.to_vec();
+    }
+    let mut lengths = Vec::with_capacity(points.len());
+    let mut perimeter = 0.0;
+    for index in 0..points.len() {
+        let next = points[(index + 1) % points.len()];
+        let length = distance(points[index], next);
+        lengths.push(length);
+        perimeter += length;
+    }
+    if perimeter <= f32::EPSILON {
+        return vec![points[0]; count];
+    }
+    let mut samples = Vec::with_capacity(count);
+    let mut segment = 0;
+    let mut segment_start_distance = 0.0;
+    for sample in 0..count {
+        let target = perimeter * sample as f32 / count as f32;
+        while segment + 1 < points.len() && segment_start_distance + lengths[segment] < target {
+            segment_start_distance += lengths[segment];
+            segment += 1;
+        }
+        let from = points[segment];
+        let to = points[(segment + 1) % points.len()];
+        let length = lengths[segment].max(f32::EPSILON);
+        let t = ((target - segment_start_distance) / length).clamp(0.0, 1.0);
+        samples.push(UiPoint::new(
+            from.x + (to.x - from.x) * t,
+            from.y + (to.y - from.y) * t,
+        ));
+    }
+    samples
+}
+
+fn distance(from: UiPoint, to: UiPoint) -> f32 {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    (dx * dx + dy * dy).sqrt()
+}
+
 fn point_in_rect(rect: UiRect, point: UiPoint) -> UiPoint {
     UiPoint::new(rect.x + point.x, rect.y + point.y)
 }
@@ -3950,6 +4625,145 @@ fn rect_from_points(points: &[UiPoint]) -> UiRect {
         bottom = bottom.max(point.y);
     }
     UiRect::new(left, top, right - left, bottom - top)
+}
+
+fn scene_primitives_intrinsic_size(primitives: &[ScenePrimitive], scale: f32) -> UiSize {
+    let Some(bounds) = primitives
+        .iter()
+        .filter_map(scene_primitive_bounds)
+        .reduce(union_rects)
+    else {
+        return UiSize::ZERO;
+    };
+    rect_intrinsic_size(bounds, scale)
+}
+
+fn scene_primitive_bounds(primitive: &ScenePrimitive) -> Option<UiRect> {
+    match primitive {
+        ScenePrimitive::Line { from, to, stroke } => Some(expand_rect(
+            rect_from_points(&[*from, *to]),
+            stroke.width * 0.5,
+        )),
+        ScenePrimitive::Circle {
+            center,
+            radius,
+            stroke,
+            ..
+        } => {
+            let radius = finite_or(*radius, 0.0).max(0.0)
+                + stroke.map_or(0.0, |stroke| stroke.width.max(0.0) * 0.5);
+            Some(UiRect::new(
+                center.x - radius,
+                center.y - radius,
+                radius * 2.0,
+                radius * 2.0,
+            ))
+        }
+        ScenePrimitive::Polygon { points, stroke, .. } => (!points.is_empty()).then(|| {
+            expand_rect(
+                rect_from_points(points),
+                stroke.map_or(0.0, |stroke| stroke.width.max(0.0) * 0.5),
+            )
+        }),
+        ScenePrimitive::MorphPolygon {
+            from_points,
+            to_points,
+            stroke,
+            ..
+        } => {
+            let from = (!from_points.is_empty()).then(|| rect_from_points(from_points));
+            let to = (!to_points.is_empty()).then(|| rect_from_points(to_points));
+            from.into_iter()
+                .chain(to)
+                .reduce(union_rects)
+                .map(|bounds| {
+                    expand_rect(
+                        bounds,
+                        stroke.map_or(0.0, |stroke| stroke.width.max(0.0) * 0.5),
+                    )
+                })
+        }
+        ScenePrimitive::Image { rect, .. } => Some(finite_rect(*rect)),
+        ScenePrimitive::Rect(rect) => Some(paint_rect_bounds(rect)),
+        ScenePrimitive::Text(text) => Some(finite_rect(text.rect)),
+        ScenePrimitive::Path(path) => Some(expand_rect(
+            path.bounds(),
+            path.stroke
+                .map_or(0.0, |stroke| stroke.style.width.max(0.0) * 0.5),
+        )),
+        ScenePrimitive::ImagePlacement(image) => Some(finite_rect(image.rect)),
+    }
+}
+
+fn paint_rect_intrinsic_size(rect: &PaintRect, scale: f32) -> UiSize {
+    if rect.rect.width <= f32::EPSILON || rect.rect.height <= f32::EPSILON {
+        return UiSize::ZERO;
+    }
+    rect_intrinsic_size(paint_rect_bounds(rect), scale)
+}
+
+fn paint_rect_bounds(rect: &PaintRect) -> UiRect {
+    let mut bounds = finite_rect(rect.rect);
+    if let Some(stroke) = rect.stroke {
+        bounds = expand_rect(bounds, aligned_stroke_outer_extent(stroke));
+    }
+    for effect in &rect.effects {
+        if effect.color.a == 0 {
+            continue;
+        }
+        match effect.kind {
+            PaintEffectKind::Shadow | PaintEffectKind::Glow => {
+                let outset = effect.spread.max(0.0) + effect.blur_radius.max(0.0);
+                let effect_bounds = expand_rect(bounds, outset);
+                let effect_bounds = UiRect::new(
+                    effect_bounds.x + effect.offset.x,
+                    effect_bounds.y + effect.offset.y,
+                    effect_bounds.width,
+                    effect_bounds.height,
+                );
+                bounds = union_rects(bounds, effect_bounds);
+            }
+            PaintEffectKind::InsetShadow => {}
+        }
+    }
+    bounds
+}
+
+fn aligned_stroke_outer_extent(stroke: AlignedStroke) -> f32 {
+    let width = stroke.style.width.max(0.0);
+    match stroke.alignment {
+        StrokeAlignment::Inside => 0.0,
+        StrokeAlignment::Center => width * 0.5,
+        StrokeAlignment::Outside => width,
+    }
+}
+
+fn rect_intrinsic_size(rect: UiRect, scale: f32) -> UiSize {
+    let rect = finite_rect(rect);
+    let width = rect.right().max(rect.width).max(0.0) * scale;
+    let height = rect.bottom().max(rect.height).max(0.0) * scale;
+    UiSize::new(width, height)
+}
+
+fn expand_rect(rect: UiRect, amount: f32) -> UiRect {
+    let rect = finite_rect(rect);
+    let amount = finite_or(amount, 0.0).max(0.0);
+    UiRect::new(
+        rect.x - amount,
+        rect.y - amount,
+        rect.width + amount * 2.0,
+        rect.height + amount * 2.0,
+    )
+}
+
+fn union_rects(a: UiRect, b: UiRect) -> UiRect {
+    let a = finite_rect(a);
+    let b = finite_rect(b);
+    let left = a.x.min(b.x);
+    let top = a.y.min(b.y);
+    let right = a.right().max(b.right());
+    let bottom = a.bottom().max(b.bottom());
+    UiRect::new(left, top, (right - left).max(0.0), (bottom - top).max(0.0))
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -4989,6 +5803,24 @@ pub(crate) fn rect_is_finite(rect: UiRect) -> bool {
     rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()
 }
 
+fn node_blocks_wheel_passthrough(node: &UiNode) -> bool {
+    node.input.pointer
+        || node.input.focusable
+        || node.scroll.is_some()
+        || node.visual.fill.a > 0
+        || node
+            .visual
+            .stroke
+            .is_some_and(|stroke| stroke.width > 0.0 && stroke.color.a > 0)
+        || matches!(
+            &node.content,
+            UiContent::Canvas(_)
+                | UiContent::Image(_)
+                | UiContent::PaintRect(_)
+                | UiContent::Scene(_)
+        )
+}
+
 fn rect_exceeds_unscrollable_axes(rect: UiRect, bounds: UiRect, scroll_axes: ScrollAxes) -> bool {
     let horizontal_exceeds = rect.x < bounds.x || rect.right() > bounds.right();
     let vertical_exceeds = rect.y < bounds.y || rect.bottom() > bounds.bottom();
@@ -5120,33 +5952,14 @@ fn normalize_intrinsic_root_style(style: &mut Style) {
 }
 
 fn normalize_intrinsic_descendant_style(style: &mut Style) {
-    if is_percent_dimension(style.size.width) {
-        style.size.width = Dimension::auto();
-    }
-    if is_percent_dimension(style.size.height) {
-        style.size.height = Dimension::auto();
-    }
-}
-
-fn normalize_intrinsic_scroll_min_style(style: &mut Style, axes: ScrollAxes) {
     style.flex_grow = 0.0;
-    style.flex_shrink = 1.0;
+    style.flex_shrink = 0.0;
     style.flex_basis = Dimension::auto();
     if is_percent_dimension(style.size.width) {
         style.size.width = Dimension::auto();
     }
     if is_percent_dimension(style.size.height) {
         style.size.height = Dimension::auto();
-    }
-    if axes.horizontal {
-        style.size.width = Dimension::length(1.0);
-        style.min_size.width = Dimension::length(0.0);
-        style.max_size.width = Dimension::length(1.0);
-    }
-    if axes.vertical {
-        style.size.height = Dimension::length(1.0);
-        style.min_size.height = Dimension::length(0.0);
-        style.max_size.height = Dimension::length(1.0);
     }
 }
 
@@ -5244,12 +6057,108 @@ fn max_length_dimension(current: Dimension, value: f32) -> Dimension {
     }
 }
 
+fn text_content_rect(rect: UiRect, style: &Style, scale: f32) -> UiRect {
+    let scale = normalized_scale(scale);
+    let padding = style.padding;
+    let left = length_percentage_points(padding.left, rect.width, scale);
+    let right = length_percentage_points(padding.right, rect.width, scale);
+    let top = length_percentage_points(padding.top, rect.height, scale);
+    let bottom = length_percentage_points(padding.bottom, rect.height, scale);
+    let inset_width = (left + right).min(rect.width.max(0.0));
+    let inset_height = (top + bottom).min(rect.height.max(0.0));
+    UiRect::new(
+        rect.x + left.min(rect.width.max(0.0)),
+        rect.y + top.min(rect.height.max(0.0)),
+        (rect.width - inset_width).max(0.0),
+        (rect.height - inset_height).max(0.0),
+    )
+}
+
+fn ceil_layout_size(size: UiSize) -> UiSize {
+    UiSize::new(
+        ceil_layout_extent(size.width),
+        ceil_layout_extent(size.height),
+    )
+}
+
+fn ceil_layout_extent(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0).ceil()
+    } else {
+        0.0
+    }
+}
+
+fn constrain_intrinsic_extent(value: f32, min: Dimension, max: Dimension) -> f32 {
+    let value = dimension_points(min)
+        .map(|min| value.max(min))
+        .unwrap_or(value);
+    dimension_points(max)
+        .map(|max| value.min(max))
+        .unwrap_or(value)
+}
+
+fn resolve_intrinsic_child_width(style: &Style, parent_content_width: Option<f32>) -> Option<f32> {
+    dimension_points(style.size.width).or_else(|| {
+        parent_content_width.and_then(|basis| percent_dimension_points(style.size.width, basis))
+    })
+}
+
+fn percent_dimension_points(value: Dimension, basis: f32) -> Option<f32> {
+    let raw = value.into_raw();
+    (raw.tag() == CompactLength::PERCENT_TAG).then(|| (basis * raw.value()).max(0.0))
+}
+
+fn box_horizontal_spacing(style: &Style, scale: f32) -> f32 {
+    length_percentage_points(style.padding.left, 0.0, scale)
+        + length_percentage_points(style.padding.right, 0.0, scale)
+        + length_percentage_points(style.border.left, 0.0, scale)
+        + length_percentage_points(style.border.right, 0.0, scale)
+}
+
+fn box_vertical_spacing(style: &Style, scale: f32) -> f32 {
+    length_percentage_points(style.padding.top, 0.0, scale)
+        + length_percentage_points(style.padding.bottom, 0.0, scale)
+        + length_percentage_points(style.border.top, 0.0, scale)
+        + length_percentage_points(style.border.bottom, 0.0, scale)
+}
+
+fn outer_intrinsic_size(size: UiSize, style: &Style) -> UiSize {
+    UiSize::new(
+        size.width
+            + length_percentage_auto_points(style.margin.left)
+                .unwrap_or(0.0)
+                .max(0.0)
+            + length_percentage_auto_points(style.margin.right)
+                .unwrap_or(0.0)
+                .max(0.0),
+        size.height
+            + length_percentage_auto_points(style.margin.top)
+                .unwrap_or(0.0)
+                .max(0.0)
+            + length_percentage_auto_points(style.margin.bottom)
+                .unwrap_or(0.0)
+                .max(0.0),
+    )
+}
+
 fn length_percentage_auto_points(value: LengthPercentageAuto) -> Option<f32> {
     let raw = value.into_raw();
     if raw.tag() == CompactLength::LENGTH_TAG {
         Some(raw.value())
     } else {
         None
+    }
+}
+
+fn length_percentage_points(value: LengthPercentage, basis: f32, scale: f32) -> f32 {
+    let raw = value.into_raw();
+    if raw.tag() == CompactLength::LENGTH_TAG {
+        (raw.value() * scale).max(0.0)
+    } else if raw.tag() == CompactLength::PERCENT_TAG {
+        (basis * raw.value()).max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -5275,6 +6184,7 @@ pub struct AnimatedValues {
     pub opacity: f32,
     pub translate: UiPoint,
     pub scale: f32,
+    pub morph: f32,
 }
 
 impl AnimatedValues {
@@ -5283,7 +6193,13 @@ impl AnimatedValues {
             opacity,
             translate,
             scale,
+            morph: 0.0,
         }
+    }
+
+    pub const fn with_morph(mut self, morph: f32) -> Self {
+        self.morph = morph;
+        self
     }
 
     fn lerp(self, to: Self, t: f32) -> Self {
@@ -5295,6 +6211,7 @@ impl AnimatedValues {
                 self.translate.y + (to.translate.y - self.translate.y) * t,
             ),
             scale: self.scale + (to.scale - self.scale) * t,
+            morph: self.morph + (to.morph - self.morph) * t,
         }
     }
 }
@@ -5331,11 +6248,147 @@ pub enum AnimationTrigger {
     Custom(String),
 }
 
-#[derive(Debug, Clone)]
+pub const ANIMATION_INPUT_HOVER: &str = "hover";
+pub const ANIMATION_INPUT_PRESSED: &str = "pressed";
+pub const ANIMATION_INPUT_FOCUSED: &str = "focused";
+pub const ANIMATION_INPUT_ACTIVE: &str = "active";
+pub const ANIMATION_INPUT_ACTIVATED: &str = "activated";
+pub const ANIMATION_INPUT_POINTER_X: &str = "pointer_x";
+pub const ANIMATION_INPUT_POINTER_Y: &str = "pointer_y";
+pub const ANIMATION_INPUT_POINTER_NORM_X: &str = "pointer_norm_x";
+pub const ANIMATION_INPUT_POINTER_NORM_Y: &str = "pointer_norm_y";
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AnimationInputValue {
+    Bool(bool),
+    Number(f32),
+    Trigger(bool),
+}
+
+impl AnimationInputValue {
+    pub const fn bool(value: bool) -> Self {
+        Self::Bool(value)
+    }
+
+    pub fn number(value: f32) -> Self {
+        Self::Number(finite_or(value, 0.0))
+    }
+
+    pub const fn trigger() -> Self {
+        Self::Trigger(false)
+    }
+
+    pub const fn fired_trigger() -> Self {
+        Self::Trigger(true)
+    }
+
+    pub const fn as_bool(self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(value),
+            Self::Number(_) | Self::Trigger(_) => None,
+        }
+    }
+
+    pub const fn as_number(self) -> Option<f32> {
+        match self {
+            Self::Number(value) => Some(value),
+            Self::Bool(_) | Self::Trigger(_) => None,
+        }
+    }
+
+    pub const fn trigger_fired(self) -> bool {
+        matches!(self, Self::Trigger(true))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationNumberComparison {
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    Equal,
+    NotEqual,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnimationCondition {
+    Bool {
+        input: String,
+        value: bool,
+    },
+    Number {
+        input: String,
+        comparison: AnimationNumberComparison,
+        value: f32,
+    },
+    Trigger {
+        input: String,
+    },
+}
+
+impl AnimationCondition {
+    pub fn bool(input: impl Into<String>, value: bool) -> Self {
+        Self::Bool {
+            input: input.into(),
+            value,
+        }
+    }
+
+    pub fn number(
+        input: impl Into<String>,
+        comparison: AnimationNumberComparison,
+        value: f32,
+    ) -> Self {
+        Self::Number {
+            input: input.into(),
+            comparison,
+            value: finite_or(value, 0.0),
+        }
+    }
+
+    pub fn trigger(input: impl Into<String>) -> Self {
+        Self::Trigger {
+            input: input.into(),
+        }
+    }
+
+    fn matches(&self, inputs: &HashMap<String, AnimationInputValue>) -> bool {
+        match self {
+            Self::Bool { input, value } => inputs
+                .get(input)
+                .and_then(|input| input.as_bool())
+                .is_some_and(|input| input == *value),
+            Self::Number {
+                input,
+                comparison,
+                value,
+            } => inputs
+                .get(input)
+                .and_then(|input| input.as_number())
+                .is_some_and(|input| compare_animation_number(input, *comparison, *value)),
+            Self::Trigger { input } => inputs.get(input).is_some_and(|input| input.trigger_fired()),
+        }
+    }
+}
+
+fn compare_animation_number(input: f32, comparison: AnimationNumberComparison, value: f32) -> bool {
+    match comparison {
+        AnimationNumberComparison::LessThan => input < value,
+        AnimationNumberComparison::LessThanOrEqual => input <= value,
+        AnimationNumberComparison::GreaterThan => input > value,
+        AnimationNumberComparison::GreaterThanOrEqual => input >= value,
+        AnimationNumberComparison::Equal => (input - value).abs() <= f32::EPSILON,
+        AnimationNumberComparison::NotEqual => (input - value).abs() > f32::EPSILON,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AnimationTransition {
     pub from: String,
     pub to: String,
-    pub trigger: AnimationTrigger,
+    pub trigger: Option<AnimationTrigger>,
+    pub conditions: Vec<AnimationCondition>,
     pub duration_seconds: f32,
 }
 
@@ -5349,10 +6402,81 @@ impl AnimationTransition {
         Self {
             from: from.into(),
             to: to.into(),
-            trigger,
+            trigger: Some(trigger),
+            conditions: Vec::new(),
             duration_seconds,
         }
     }
+
+    pub fn when(
+        from: impl Into<String>,
+        to: impl Into<String>,
+        condition: AnimationCondition,
+        duration_seconds: f32,
+    ) -> Self {
+        Self {
+            from: from.into(),
+            to: to.into(),
+            trigger: None,
+            conditions: vec![condition],
+            duration_seconds,
+        }
+    }
+
+    pub fn with_condition(mut self, condition: AnimationCondition) -> Self {
+        self.conditions.push(condition);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationBlendBinding {
+    pub input: String,
+    pub from: String,
+    pub to: String,
+    pub min: f32,
+    pub max: f32,
+}
+
+impl AnimationBlendBinding {
+    pub fn new(input: impl Into<String>, from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self {
+            input: input.into(),
+            from: from.into(),
+            to: to.into(),
+            min: 0.0,
+            max: 1.0,
+        }
+    }
+
+    pub fn with_range(mut self, min: f32, max: f32) -> Self {
+        self.min = finite_or(min, 0.0);
+        self.max = finite_or(max, self.min + 1.0);
+        if self.max < self.min {
+            std::mem::swap(&mut self.min, &mut self.max);
+        }
+        self
+    }
+
+    fn amount(&self, inputs: &HashMap<String, AnimationInputValue>) -> Option<f32> {
+        let value = inputs.get(&self.input)?.as_number()?;
+        Some(((value - self.min) / (self.max - self.min).max(f32::EPSILON)).clamp(0.0, 1.0))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AnimationTickOutcome {
+    pub advanced: bool,
+    pub active: bool,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AnimationTickReport {
+    pub ticked: usize,
+    pub advanced: usize,
+    pub active: usize,
+    pub completed: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -5367,6 +6491,8 @@ struct ActiveTransition {
 pub struct AnimationMachine {
     states: Vec<AnimationState>,
     transitions: Vec<AnimationTransition>,
+    inputs: HashMap<String, AnimationInputValue>,
+    blend_bindings: Vec<AnimationBlendBinding>,
     current_state: usize,
     active: Option<ActiveTransition>,
     values: AnimatedValues,
@@ -5386,6 +6512,8 @@ impl AnimationMachine {
         Ok(Self {
             states,
             transitions,
+            inputs: HashMap::new(),
+            blend_bindings: Vec::new(),
             current_state,
             active: None,
             values,
@@ -5400,12 +6528,115 @@ impl AnimationMachine {
         self.values
     }
 
+    pub fn is_animating(&self) -> bool {
+        self.active.is_some()
+    }
+
+    pub fn has_same_definition(&self, other: &Self) -> bool {
+        self.states == other.states
+            && self.transitions == other.transitions
+            && self.blend_bindings == other.blend_bindings
+    }
+
+    pub fn input(&self, name: &str) -> Option<AnimationInputValue> {
+        self.inputs.get(name).copied()
+    }
+
+    pub fn with_input(mut self, name: impl Into<String>, value: AnimationInputValue) -> Self {
+        self.set_input(name, value);
+        self
+    }
+
+    pub fn with_bool_input(self, name: impl Into<String>, value: bool) -> Self {
+        self.with_input(name, AnimationInputValue::bool(value))
+    }
+
+    pub fn with_number_input(self, name: impl Into<String>, value: f32) -> Self {
+        self.with_input(name, AnimationInputValue::number(value))
+    }
+
+    pub fn with_trigger_input(self, name: impl Into<String>) -> Self {
+        self.with_input(name, AnimationInputValue::trigger())
+    }
+
+    pub fn with_blend_binding(mut self, binding: AnimationBlendBinding) -> Self {
+        self.blend_bindings.push(binding);
+        self.apply_blend_bindings();
+        self
+    }
+
+    pub fn set_input(&mut self, name: impl Into<String>, value: AnimationInputValue) -> bool {
+        let name = name.into();
+        let previous = self.inputs.insert(name, value);
+        if previous == Some(value) {
+            return false;
+        }
+        let transitioned = self.evaluate_input_transitions();
+        if !transitioned {
+            self.apply_blend_bindings();
+        }
+        self.consume_trigger_inputs();
+        transitioned || previous != Some(value)
+    }
+
+    pub fn set_bool_input(&mut self, name: impl Into<String>, value: bool) -> bool {
+        self.set_input(name, AnimationInputValue::bool(value))
+    }
+
+    pub fn set_number_input(&mut self, name: impl Into<String>, value: f32) -> bool {
+        self.set_input(name, AnimationInputValue::number(value))
+    }
+
+    pub fn fire_trigger_input(&mut self, name: impl Into<String>) -> bool {
+        self.set_input(name, AnimationInputValue::fired_trigger())
+    }
+
+    pub fn retain_runtime_from(&mut self, previous: &Self) -> bool {
+        if !self.has_same_definition(previous) {
+            return false;
+        }
+        let desired_inputs = self.inputs.clone();
+        self.current_state = previous.current_state;
+        self.active = previous.active.clone();
+        self.values = previous.values;
+        self.inputs = previous.inputs.clone();
+        for (name, value) in desired_inputs {
+            self.set_input(name, value);
+        }
+        if self.active.is_none() {
+            self.apply_blend_bindings();
+        }
+        true
+    }
+
     pub fn trigger(&mut self, trigger: AnimationTrigger) -> bool {
-        let current_name = self.current_state_name();
+        let started = self.start_matching_transition(Some(&trigger));
+        self.consume_trigger_inputs();
+        started
+    }
+
+    fn evaluate_input_transitions(&mut self) -> bool {
+        self.start_matching_transition(None)
+    }
+
+    fn start_matching_transition(&mut self, trigger: Option<&AnimationTrigger>) -> bool {
+        let logical_state = self
+            .active
+            .as_ref()
+            .map(|active| active.to_state)
+            .unwrap_or(self.current_state);
+        let current_name = self.states[logical_state].name.as_str();
         let Some(transition) = self
             .transitions
             .iter()
-            .find(|transition| transition.from == current_name && transition.trigger == trigger)
+            .find(|transition| {
+                transition.from == current_name
+                    && transition_matches_trigger(transition.trigger.as_ref(), trigger)
+                    && transition
+                        .conditions
+                        .iter()
+                        .all(|condition| condition.matches(&self.inputs))
+            })
             .cloned()
         else {
             return false;
@@ -5417,6 +6648,7 @@ impl AnimationMachine {
         else {
             return false;
         };
+        self.current_state = to_state;
         self.active = Some(ActiveTransition {
             from_values: self.values,
             to_state,
@@ -5426,11 +6658,55 @@ impl AnimationMachine {
         true
     }
 
-    pub fn tick(&mut self, dt_seconds: f32) {
+    fn apply_blend_bindings(&mut self) -> bool {
+        if self.active.is_some() {
+            return false;
+        }
+        let mut changed = false;
+        for binding in &self.blend_bindings {
+            let Some(amount) = binding.amount(&self.inputs) else {
+                continue;
+            };
+            let Some(from_state) = self.state_index(&binding.from) else {
+                continue;
+            };
+            let Some(to_state) = self.state_index(&binding.to) else {
+                continue;
+            };
+            let values = self.states[from_state]
+                .values
+                .lerp(self.states[to_state].values, amount);
+            if self.values != values {
+                self.values = values;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn state_index(&self, name: &str) -> Option<usize> {
+        self.states.iter().position(|state| state.name == name)
+    }
+
+    fn consume_trigger_inputs(&mut self) {
+        for input in self.inputs.values_mut() {
+            if matches!(input, AnimationInputValue::Trigger(true)) {
+                *input = AnimationInputValue::Trigger(false);
+            }
+        }
+    }
+
+    pub fn tick(&mut self, dt_seconds: f32) -> AnimationTickOutcome {
         let Some(active) = &mut self.active else {
-            return;
+            return AnimationTickOutcome::default();
         };
-        active.elapsed_seconds = (active.elapsed_seconds + dt_seconds.max(0.0)).max(0.0);
+        let previous_values = self.values;
+        let dt_seconds = if dt_seconds.is_finite() {
+            dt_seconds.max(0.0)
+        } else {
+            0.0
+        };
+        active.elapsed_seconds = (active.elapsed_seconds + dt_seconds).max(0.0);
         let t = if active.duration_seconds <= f32::EPSILON {
             1.0
         } else {
@@ -5442,7 +6718,28 @@ impl AnimationMachine {
             self.current_state = active.to_state;
             self.values = target_values;
             self.active = None;
+            self.evaluate_input_transitions();
+            self.consume_trigger_inputs();
+            if self.active.is_none() {
+                self.apply_blend_bindings();
+            }
         }
+        AnimationTickOutcome {
+            advanced: self.values != previous_values || t >= 1.0,
+            active: self.active.is_some(),
+            completed: t >= 1.0,
+        }
+    }
+}
+
+fn transition_matches_trigger(
+    transition_trigger: Option<&AnimationTrigger>,
+    requested: Option<&AnimationTrigger>,
+) -> bool {
+    match (transition_trigger, requested) {
+        (Some(transition_trigger), Some(requested)) => transition_trigger == requested,
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -6246,6 +7543,49 @@ mod tests {
     }
 
     #[test]
+    fn scene_intrinsic_size_includes_local_primitive_bounds() {
+        let mut doc = UiDocument::new(root_style(320.0, 160.0));
+        let scene = doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "scene",
+                vec![
+                    ScenePrimitive::Rect(
+                        PaintRect::solid(
+                            UiRect::new(24.0, 18.0, 80.0, 32.0),
+                            ColorRgba::new(90, 120, 200, 255),
+                        )
+                        .stroke(AlignedStroke::outside(StrokeStyle::new(
+                            ColorRgba::WHITE,
+                            2.0,
+                        )))
+                        .effect(PaintEffect::shadow(
+                            ColorRgba::new(0, 0, 0, 180),
+                            UiPoint::new(6.0, 4.0),
+                            8.0,
+                            3.0,
+                        )),
+                    ),
+                    ScenePrimitive::Text(PaintText::new(
+                        "Label",
+                        UiRect::new(32.0, 24.0, 96.0, 20.0),
+                        TextStyle::default(),
+                    )),
+                ],
+                LayoutStyle::new().with_height(80.0),
+            ),
+        );
+
+        let intrinsic = doc
+            .intrinsic_size(scene, &mut ApproxTextMeasurer)
+            .expect("scene intrinsic size");
+
+        assert!(intrinsic.min.width >= 128.0, "{intrinsic:?}");
+        assert!(intrinsic.min.height >= 65.0, "{intrinsic:?}");
+        assert_eq!(intrinsic.min, intrinsic.preferred);
+    }
+
+    #[test]
     fn inline_intrinsic_constraint_publishes_chrome_plus_text_width() {
         let mut doc = UiDocument::new(root_style(300.0, 200.0));
         let control = doc.add_child(
@@ -6297,6 +7637,67 @@ mod tests {
     }
 
     #[test]
+    fn layout_pipeline_computes_sizes_before_positions_and_paint() {
+        let viewport = UiSize::new(300.0, 200.0);
+        let mut doc = UiDocument::new(root_style(viewport.width, viewport.height));
+        let control = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "pipeline.control",
+                UiNodeStyle {
+                    layout: LayoutStyle::row().with_height(28.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            ),
+        );
+        let label = doc.add_child(
+            control,
+            UiNode::text(
+                "pipeline.control.label",
+                "Measured before positioned",
+                TextStyle {
+                    wrap: TextWrap::None,
+                    ..Default::default()
+                },
+                LayoutStyle::new(),
+            ),
+        );
+        doc.node_mut(control).layout_constraint =
+            Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
+                sources: vec![label],
+                min_size: UiSize::new(24.0, 28.0),
+            });
+
+        assert_eq!(doc.node(control).layout, ComputedLayout::default());
+        let sizing = doc
+            .compute_layout_sizing_pass(viewport, &mut ApproxTextMeasurer)
+            .expect("sizing pass");
+
+        assert_eq!(doc.node(control).layout, ComputedLayout::default());
+        assert!(
+            doc.paint_list().items.is_empty(),
+            "paint must wait until positions are applied"
+        );
+
+        let control_size = sizing.sizes.get(&control).copied().expect("control size");
+        let label_size = sizing.sizes.get(&label).copied().expect("label size");
+        assert!(
+            control_size.width >= label_size.width + 24.0,
+            "{control_size:?} {label_size:?}"
+        );
+
+        doc.apply_layout_position_pass(&sizing, viewport)
+            .expect("position pass");
+        let control_rect = doc.node(control).layout.rect;
+        assert!(
+            control_rect.width >= label_size.width + 24.0,
+            "{control_rect:?} {label_size:?}"
+        );
+        assert!(doc.paint_list().items.iter().any(|item| item.node == label));
+    }
+
+    #[test]
     fn document_ui_scale_applies_to_layout_and_text_paint() {
         let mut doc = UiDocument::new(
             LayoutStyle::column()
@@ -6336,6 +7737,31 @@ mod tests {
         };
         assert!((text.style.font_size - 18.0).abs() < 0.01);
         assert!((text.style.line_height - 21.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn text_paint_uses_layout_padding_as_content_inset() {
+        let mut doc = UiDocument::new(root_style(160.0, 80.0));
+        let text = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "padded",
+                "FPS",
+                TextStyle::default(),
+                LayoutStyle::size(80.0, 32.0).padding(5.0),
+            ),
+        );
+
+        doc.compute_layout(UiSize::new(160.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let text_item = paint
+            .items
+            .iter()
+            .find(|item| item.node == text && matches!(item.kind, PaintKind::Text(_)))
+            .expect("text paint");
+        assert_eq!(text_item.rect, UiRect::new(5.0, 5.0, 70.0, 22.0));
     }
 
     #[test]
@@ -7063,6 +8489,118 @@ mod tests {
 
         assert_eq!(input.scrolled, Some(scroll_area));
         assert_eq!(doc.scroll_state(scroll_area).unwrap().offset.y, 30.0);
+    }
+
+    #[test]
+    fn wheel_scroll_is_eaten_by_non_scrollable_top_hit() {
+        let mut doc = UiDocument::new(root_style(160.0, 140.0));
+        let back_scroll = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "back.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 60.0)).style,
+                    clip: ClipBehavior::Clip,
+                    z_index: 1,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            back_scroll,
+            UiNode::container("back.content", button_style(100.0, 140.0)),
+        );
+        let front = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "front.panel",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 120.0, 90.0)).style,
+                    clip: ClipBehavior::Clip,
+                    z_index: 10,
+                    ..Default::default()
+                },
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(28, 34, 44, 255), None, 0.0)),
+        );
+        doc.compute_layout(UiSize::new(160.0, 140.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert_eq!(doc.wheel_event_scope(UiPoint::new(30.0, 30.0)), Some(front));
+        let input = doc.handle_input(UiInputEvent::wheel(
+            UiPoint::new(30.0, 30.0),
+            UiPoint::new(0.0, 30.0),
+        ));
+
+        assert_eq!(input.scrolled, None);
+        assert_eq!(doc.scroll_state(back_scroll).unwrap().offset.y, 0.0);
+    }
+
+    #[test]
+    fn wheel_scroll_searches_descendants_of_top_hit_before_lower_layers() {
+        let mut doc = UiDocument::new(root_style(180.0, 150.0));
+        let back_scroll = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "back.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 60.0)).style,
+                    clip: ClipBehavior::Clip,
+                    z_index: 1,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            back_scroll,
+            UiNode::container("back.content", button_style(100.0, 140.0)),
+        );
+        let front = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "front.panel",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 140.0, 110.0)).style,
+                    clip: ClipBehavior::Clip,
+                    z_index: 10,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior {
+                pointer: true,
+                focusable: false,
+                keyboard: false,
+            }),
+        );
+        let front_scroll = doc.add_child(
+            front,
+            UiNode::container(
+                "front.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 90.0, 50.0)).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            front_scroll,
+            UiNode::container("front.content", button_style(90.0, 130.0)),
+        );
+        doc.compute_layout(UiSize::new(180.0, 150.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let input = doc.handle_input(UiInputEvent::wheel(
+            UiPoint::new(35.0, 35.0),
+            UiPoint::new(0.0, 30.0),
+        ));
+
+        assert_eq!(input.scrolled, Some(front_scroll));
+        assert_eq!(doc.scroll_state(front_scroll).unwrap().offset.y, 30.0);
+        assert_eq!(doc.scroll_state(back_scroll).unwrap().offset.y, 0.0);
     }
 
     #[test]
@@ -8550,6 +10088,221 @@ mod tests {
     }
 
     #[test]
+    fn animation_machine_inputs_drive_state_transitions() {
+        let mut machine = AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "closed",
+                    AnimatedValues::new(0.0, UiPoint::new(0.0, 12.0), 0.96),
+                ),
+                AnimationState::new(
+                    "open",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+                ),
+            ],
+            vec![
+                AnimationTransition::when(
+                    "closed",
+                    "open",
+                    AnimationCondition::bool("open", true),
+                    0.10,
+                ),
+                AnimationTransition::when(
+                    "open",
+                    "closed",
+                    AnimationCondition::bool("open", false),
+                    0.10,
+                ),
+            ],
+            "closed",
+        )
+        .expect("animation")
+        .with_bool_input("open", false);
+
+        assert!(machine.set_bool_input("open", true));
+        assert_eq!(machine.current_state_name(), "open");
+        assert!(machine.is_animating());
+        machine.tick(0.10);
+        assert_eq!(machine.values().opacity, 1.0);
+
+        assert!(machine.set_bool_input("open", false));
+        machine.tick(0.10);
+        assert_eq!(machine.current_state_name(), "closed");
+        assert_eq!(machine.values().opacity, 0.0);
+    }
+
+    #[test]
+    fn animation_machine_number_inputs_blend_between_states() {
+        let mut machine = AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "start",
+                    AnimatedValues::new(0.35, UiPoint::new(0.0, 0.0), 0.85),
+                ),
+                AnimationState::new(
+                    "end",
+                    AnimatedValues::new(1.0, UiPoint::new(80.0, -16.0), 1.2).with_morph(1.0),
+                ),
+            ],
+            Vec::new(),
+            "start",
+        )
+        .expect("animation")
+        .with_number_input("scrub", 0.25)
+        .with_blend_binding(AnimationBlendBinding::new("scrub", "start", "end"));
+
+        let values = machine.values();
+        assert!((values.translate.x - 20.0).abs() <= f32::EPSILON);
+        assert!((values.morph - 0.25).abs() <= f32::EPSILON);
+        assert!(values.opacity > 0.35 && values.opacity < 1.0);
+
+        assert!(machine.set_number_input("scrub", 0.75));
+        let values = machine.values();
+        assert!((values.translate.x - 60.0).abs() <= f32::EPSILON);
+        assert!((values.morph - 0.75).abs() <= f32::EPSILON);
+        assert!(!machine.is_animating());
+    }
+
+    #[test]
+    fn morph_polygon_scene_primitive_blends_different_point_counts() {
+        let mut doc = UiDocument::new(root_style(140.0, 100.0));
+        doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "morph",
+                vec![ScenePrimitive::MorphPolygon {
+                    from_points: vec![
+                        UiPoint::new(20.0, 20.0),
+                        UiPoint::new(60.0, 20.0),
+                        UiPoint::new(60.0, 60.0),
+                        UiPoint::new(20.0, 60.0),
+                    ],
+                    to_points: vec![
+                        UiPoint::new(40.0, 12.0),
+                        UiPoint::new(72.0, 34.0),
+                        UiPoint::new(60.0, 72.0),
+                        UiPoint::new(20.0, 72.0),
+                        UiPoint::new(8.0, 34.0),
+                    ],
+                    amount: 0.5,
+                    fill: ColorRgba::new(120, 210, 180, 255),
+                    stroke: Some(StrokeStyle::new(ColorRgba::WHITE, 1.0)),
+                }],
+                LayoutStyle::size(100.0, 80.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(140.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let points = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::Polygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .expect("morphed polygon paint");
+        assert_eq!(points.len(), 5);
+        assert_eq!(points[0], UiPoint::new(30.0, 16.0));
+        assert!(points
+            .iter()
+            .all(|point| point.x.is_finite() && point.y.is_finite()));
+    }
+
+    #[test]
+    fn animated_morph_value_drives_morph_polygon_paint() {
+        let animation = AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "square",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+                ),
+                AnimationState::new(
+                    "diamond",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(1.0),
+                ),
+            ],
+            Vec::new(),
+            "square",
+        )
+        .expect("animation")
+        .with_number_input("amount", 0.5)
+        .with_blend_binding(AnimationBlendBinding::new("amount", "square", "diamond"));
+
+        let mut doc = UiDocument::new(root_style(120.0, 120.0));
+        doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "animated_morph",
+                vec![ScenePrimitive::MorphPolygon {
+                    from_points: vec![
+                        UiPoint::new(20.0, 20.0),
+                        UiPoint::new(60.0, 20.0),
+                        UiPoint::new(60.0, 60.0),
+                        UiPoint::new(20.0, 60.0),
+                    ],
+                    to_points: vec![
+                        UiPoint::new(40.0, 8.0),
+                        UiPoint::new(72.0, 40.0),
+                        UiPoint::new(40.0, 72.0),
+                        UiPoint::new(8.0, 40.0),
+                    ],
+                    amount: 0.0,
+                    fill: ColorRgba::new(160, 120, 220, 255),
+                    stroke: None,
+                }],
+                LayoutStyle::size(100.0, 100.0),
+            )
+            .with_animation(animation),
+        );
+        doc.compute_layout(UiSize::new(120.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let points = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::Polygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .expect("animated morph paint");
+        assert_eq!(points[0], UiPoint::new(30.0, 14.0));
+    }
+
+    #[test]
+    fn retained_animation_runtime_merges_fresh_input_values() {
+        let base_animation = || {
+            AnimationMachine::new(
+                vec![
+                    AnimationState::new(
+                        "start",
+                        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+                    ),
+                    AnimationState::new(
+                        "end",
+                        AnimatedValues::new(1.0, UiPoint::new(100.0, 0.0), 1.0),
+                    ),
+                ],
+                Vec::new(),
+                "start",
+            )
+            .expect("animation")
+            .with_blend_binding(AnimationBlendBinding::new("scrub", "start", "end"))
+        };
+        let previous = base_animation().with_number_input("scrub", 0.80);
+        let mut fresh = base_animation().with_number_input("scrub", 0.20);
+
+        assert!(fresh.retain_runtime_from(&previous));
+        assert_eq!(
+            fresh.input("scrub").and_then(|value| value.as_number()),
+            Some(0.20)
+        );
+        assert!((fresh.values().translate.x - 20.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
     fn document_ticks_node_animation_state_machines() {
         let animation = AnimationMachine::new(
             vec![
@@ -8597,7 +10350,16 @@ mod tests {
             panel,
             AnimationTrigger::Custom("inventory_open".to_string())
         ));
-        doc.tick_animations(0.20);
+        let report = doc.tick_animations(0.20);
+        assert_eq!(
+            report,
+            AnimationTickReport {
+                ticked: 1,
+                advanced: 1,
+                active: 0,
+                completed: 1,
+            }
+        );
         assert_eq!(
             doc.node(panel)
                 .animation
@@ -8605,6 +10367,178 @@ mod tests {
                 .unwrap()
                 .current_state_name(),
             "open"
+        );
+    }
+
+    #[test]
+    fn interaction_input_triggers_interruptible_node_animations() {
+        let animation = AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "idle",
+                    AnimatedValues::new(0.5, UiPoint::new(0.0, 0.0), 1.0),
+                ),
+                AnimationState::new(
+                    "hover",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, -2.0), 1.0),
+                ),
+            ],
+            vec![
+                AnimationTransition::new("idle", "hover", AnimationTrigger::PointerEnter, 0.20),
+                AnimationTransition::new("hover", "idle", AnimationTrigger::PointerLeave, 0.20),
+            ],
+            "idle",
+        )
+        .expect("animation");
+        let mut doc = UiDocument::new(root_style(160.0, 100.0));
+        let button = doc.add_child(
+            doc.root,
+            UiNode::container("button", button_style(80.0, 40.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_animation(animation),
+        );
+        doc.compute_layout(UiSize::new(160.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(20.0, 20.0)));
+        assert!(doc.node(button).animation.as_ref().unwrap().is_animating());
+        doc.tick_animations(0.10);
+        let entered_opacity = doc
+            .node(button)
+            .animation
+            .as_ref()
+            .unwrap()
+            .values()
+            .opacity;
+        assert!(entered_opacity > 0.5 && entered_opacity < 1.0);
+
+        doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(140.0, 80.0)));
+        doc.tick_animations(0.20);
+        let animation = doc.node(button).animation.as_ref().unwrap();
+        assert_eq!(animation.current_state_name(), "idle");
+        assert_eq!(animation.values().opacity, 0.5);
+    }
+
+    #[test]
+    fn stale_focus_state_from_previous_document_is_discarded() {
+        let mut doc = UiDocument::new(root_style(120.0, 80.0));
+        doc.set_focus_state(UiFocusState {
+            hovered: Some(UiNodeId(1509)),
+            focused: Some(UiNodeId(1510)),
+            pressed: Some(UiNodeId(1511)),
+        });
+
+        assert_eq!(doc.focus.hovered, None);
+        assert_eq!(doc.focus.focused, None);
+        assert_eq!(doc.focus.pressed, None);
+
+        let result = doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(4.0, 4.0)));
+        assert_eq!(result.hovered, None);
+        assert_eq!(result.focused, None);
+        assert_eq!(result.pressed, None);
+    }
+
+    #[test]
+    fn interaction_state_is_published_to_animation_inputs() {
+        let animation = AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "idle",
+                    AnimatedValues::new(0.6, UiPoint::new(0.0, 0.0), 1.0),
+                ),
+                AnimationState::new(
+                    "hover",
+                    AnimatedValues::new(1.0, UiPoint::new(8.0, 0.0), 1.0),
+                ),
+                AnimationState::new(
+                    "activated",
+                    AnimatedValues::new(1.0, UiPoint::new(12.0, 0.0), 0.96),
+                ),
+            ],
+            vec![
+                AnimationTransition::when(
+                    "idle",
+                    "hover",
+                    AnimationCondition::bool(ANIMATION_INPUT_HOVER, true),
+                    0.10,
+                ),
+                AnimationTransition::when(
+                    "hover",
+                    "idle",
+                    AnimationCondition::bool(ANIMATION_INPUT_HOVER, false),
+                    0.10,
+                ),
+                AnimationTransition::when(
+                    "hover",
+                    "activated",
+                    AnimationCondition::trigger(ANIMATION_INPUT_ACTIVATED),
+                    0.0,
+                ),
+            ],
+            "idle",
+        )
+        .expect("animation");
+        let mut doc = UiDocument::new(root_style(160.0, 100.0));
+        let button = doc.add_child(
+            doc.root,
+            UiNode::container("button", button_style(80.0, 40.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_animation(animation),
+        );
+        doc.compute_layout(UiSize::new(160.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(20.0, 20.0)));
+        let animation = doc.node(button).animation.as_ref().unwrap();
+        assert_eq!(
+            animation
+                .input(ANIMATION_INPUT_HOVER)
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            animation
+                .input(ANIMATION_INPUT_ACTIVE)
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            animation
+                .input(ANIMATION_INPUT_POINTER_X)
+                .and_then(|value| value.as_number()),
+            Some(20.0)
+        );
+        assert_eq!(
+            animation
+                .input(ANIMATION_INPUT_POINTER_NORM_X)
+                .and_then(|value| value.as_number()),
+            Some(0.25)
+        );
+        assert_eq!(animation.current_state_name(), "hover");
+
+        doc.handle_input(UiInputEvent::PointerDown(UiPoint::new(20.0, 20.0)));
+        let animation = doc.node(button).animation.as_ref().unwrap();
+        assert_eq!(
+            animation
+                .input(ANIMATION_INPUT_PRESSED)
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            animation
+                .input(ANIMATION_INPUT_FOCUSED)
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        doc.handle_input(UiInputEvent::PointerUp(UiPoint::new(20.0, 20.0)));
+        let animation = doc.node(button).animation.as_ref().unwrap();
+        assert_eq!(animation.current_state_name(), "activated");
+        assert_eq!(
+            animation
+                .input(ANIMATION_INPUT_PRESSED)
+                .and_then(|value| value.as_bool()),
+            Some(false)
         );
     }
 

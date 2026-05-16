@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use taffy::prelude::{Dimension, LengthPercentageAuto, Rect, Size as TaffySize, Style};
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -65,6 +67,7 @@ pub fn scrollbar(
     );
     let thumb = scrollbar_thumb(scroll, track, axis);
     let max_offset = axis.value(scroll.max_offset());
+    let is_scrollable = max_offset > f32::EPSILON;
     let mut node = UiNode::container(
         name.clone(),
         UiNodeStyle {
@@ -82,7 +85,7 @@ pub fn scrollbar(
         scroll,
         axis,
     ));
-    if max_offset > f32::EPSILON {
+    if is_scrollable {
         node = node.with_input(InputBehavior::BUTTON);
         if let Some(action) = options.action.clone() {
             node = node.with_pointer_edit_action(action);
@@ -91,14 +94,19 @@ pub fn scrollbar(
     let root = document.add_child(parent, node);
     document.add_child(
         root,
-        UiNode::container(format!("{name}.thumb"), LayoutStyle::absolute_rect(thumb)).with_visual(
-            if max_offset > f32::EPSILON {
-                options.thumb_visual
-            } else {
-                options.disabled_thumb_visual
-            },
-        ),
+        UiNode::container(
+            format!("{name}.thumb"),
+            scrollbar_thumb_layout(scroll, axis, thumb),
+        )
+        .with_visual(if is_scrollable {
+            options.thumb_visual
+        } else {
+            options.disabled_thumb_visual
+        }),
     );
+    if !is_scrollable {
+        set_subtree_visible(document, root, false);
+    }
     root
 }
 
@@ -136,6 +144,73 @@ pub fn scrollbar_thumb(scroll: ScrollState, track: UiRect, axis: ScrollAxis) -> 
             let x = track.x + (track.width - width) * offset_ratio;
             UiRect::new(x, track.y, width, track.height)
         }
+    }
+}
+
+fn scrollbar_thumb_layout(scroll: ScrollState, axis: ScrollAxis, fallback: UiRect) -> LayoutStyle {
+    let max_offset = axis.value(scroll.max_offset());
+    let offset_ratio = if max_offset <= f32::EPSILON {
+        0.0
+    } else {
+        (axis.value(scroll.offset) / max_offset).clamp(0.0, 1.0)
+    };
+    let (cross_size, main_size, main_offset) = match axis {
+        ScrollAxis::Vertical => (
+            Dimension::percent(1.0),
+            Dimension::percent(scrollbar_viewport_ratio(
+                scroll.viewport_size.height,
+                scroll.content_size.height,
+            )),
+            LengthPercentageAuto::percent(
+                (1.0 - scrollbar_viewport_ratio(
+                    scroll.viewport_size.height,
+                    scroll.content_size.height,
+                )) * offset_ratio,
+            ),
+        ),
+        ScrollAxis::Horizontal => (
+            Dimension::percent(1.0),
+            Dimension::percent(scrollbar_viewport_ratio(
+                scroll.viewport_size.width,
+                scroll.content_size.width,
+            )),
+            LengthPercentageAuto::percent(
+                (1.0 - scrollbar_viewport_ratio(
+                    scroll.viewport_size.width,
+                    scroll.content_size.width,
+                )) * offset_ratio,
+            ),
+        ),
+    };
+    match axis {
+        ScrollAxis::Vertical => LayoutStyle::from_taffy_style(Style {
+            position: taffy::prelude::Position::Absolute,
+            inset: Rect {
+                left: LengthPercentageAuto::length(fallback.x),
+                top: main_offset,
+                right: LengthPercentageAuto::auto(),
+                bottom: LengthPercentageAuto::auto(),
+            },
+            size: TaffySize {
+                width: cross_size,
+                height: main_size,
+            },
+            ..Default::default()
+        }),
+        ScrollAxis::Horizontal => LayoutStyle::from_taffy_style(Style {
+            position: taffy::prelude::Position::Absolute,
+            inset: Rect {
+                left: main_offset,
+                top: LengthPercentageAuto::length(fallback.y),
+                right: LengthPercentageAuto::auto(),
+                bottom: LengthPercentageAuto::auto(),
+            },
+            size: TaffySize {
+                width: main_size,
+                height: cross_size,
+            },
+            ..Default::default()
+        }),
     }
 }
 
@@ -350,6 +425,8 @@ impl ScrollAxis {
 mod tests {
     use super::*;
 
+    use crate::ApproxTextMeasurer;
+
     fn edit(phase: WidgetValueEditPhase, y: f32, target_height: f32) -> WidgetPointerEdit {
         WidgetPointerEdit::new(
             phase,
@@ -396,5 +473,77 @@ mod tests {
             ),
             UiPoint::new(0.0, 50.0)
         );
+    }
+
+    #[test]
+    fn scrollbar_thumb_reaches_end_of_actual_flexed_track() {
+        let scroll = ScrollState {
+            axes: ScrollAxes::VERTICAL,
+            offset: UiPoint::new(0.0, 50.0),
+            viewport_size: UiSize::new(8.0, 50.0),
+            content_size: UiSize::new(8.0, 100.0),
+        };
+        let mut document = UiDocument::new(LayoutStyle::size(40.0, 200.0));
+        let root = document.root;
+        let scrollbar = scrollbar(
+            &mut document,
+            root,
+            "scroll",
+            scroll,
+            ScrollAxis::Vertical,
+            ScrollbarOptions::default()
+                .with_layout(LayoutStyle::new().with_width(8.0).with_height(200.0))
+                .with_track_size(UiSize::new(8.0, 100.0)),
+        );
+        document
+            .compute_layout(UiSize::new(40.0, 200.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let track = document.node(scrollbar).layout.rect;
+        let thumb = document
+            .nodes()
+            .iter()
+            .find(|node| node.name == "scroll.thumb")
+            .expect("scrollbar thumb")
+            .layout
+            .rect;
+        assert!((track.height - 200.0).abs() < 0.01, "{track:?}");
+        assert!(
+            (thumb.bottom() - track.bottom()).abs() < 0.01,
+            "{thumb:?} {track:?}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_hides_when_axis_has_no_scroll_range() {
+        let scroll = ScrollState {
+            axes: ScrollAxes::VERTICAL,
+            offset: UiPoint::new(0.0, 0.0),
+            viewport_size: UiSize::new(8.0, 120.0),
+            content_size: UiSize::new(8.0, 120.0),
+        };
+        let mut document = UiDocument::new(LayoutStyle::size(120.0, 160.0));
+        let root = document.root;
+        let scrollbar = scrollbar(
+            &mut document,
+            root,
+            "empty.scrollbar",
+            scroll,
+            ScrollAxis::Vertical,
+            ScrollbarOptions::default().with_action("empty.scrollbar"),
+        );
+
+        assert_eq!(document.node(scrollbar).style.layout.display, Display::None);
+        let input = document.node(scrollbar).input;
+        assert!(!input.pointer && !input.focusable && !input.keyboard);
+        assert!(document
+            .node(scrollbar)
+            .accessibility
+            .as_ref()
+            .is_some_and(|meta| meta.hidden && !meta.focusable));
+        let thumb = document.node(scrollbar).children[0];
+        assert_eq!(document.node(thumb).style.layout.display, Display::None);
+        let input = document.node(thumb).input;
+        assert!(!input.pointer && !input.focusable && !input.keyboard);
     }
 }

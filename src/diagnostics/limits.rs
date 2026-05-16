@@ -105,7 +105,7 @@ pub struct InputLimitPolicy {
 
 impl InputLimitPolicy {
     pub const DEFAULT_MAX_TEXT_INPUT_BYTES: usize = 64 * 1024;
-    pub const DEFAULT_MAX_PASTE_BYTES: usize = 1 * MIB;
+    pub const DEFAULT_MAX_PASTE_BYTES: usize = MIB;
     pub const DEFAULT_MAX_VIRTUALIZED_ROWS: usize = 1_000_000;
     pub const DEFAULT_MAX_DRAG_DROP_PAYLOAD_BYTES: usize = 64 * MIB;
 
@@ -785,7 +785,7 @@ const fn pixel_count(size: PixelSize) -> u64 {
 }
 
 fn saturating_add(left: usize, right: usize) -> usize {
-    left.checked_add(right).unwrap_or(usize::MAX)
+    left.saturating_add(right)
 }
 
 #[cfg(test)]

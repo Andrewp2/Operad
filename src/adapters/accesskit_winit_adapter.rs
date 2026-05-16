@@ -356,12 +356,8 @@ fn accesskit_node(
     if let Some(description) = tree.accessible_description(node.id) {
         accesskit_node.set_description(description);
     }
-    if node.role != AccessibilityRole::Label {
-        if let Some(value) = non_empty_ref(node.value.as_deref()) {
-            accesskit_node.set_value(value.to_string());
-        }
-    } else if accesskit_node.value().is_none() {
-        if let Some(value) = non_empty_ref(node.value.as_deref()) {
+    if let Some(value) = non_empty_ref(node.value.as_deref()) {
+        if node.role != AccessibilityRole::Label || accesskit_node.value().is_none() {
             accesskit_node.set_value(value.to_string());
         }
     }
