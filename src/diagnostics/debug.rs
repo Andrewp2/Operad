@@ -14,9 +14,9 @@ use crate::{
     ComponentRole, ComponentState, ComponentStateSlot, DirtyFlags, FrameTiming, GestureEvent,
     GesturePhase, HostInteractionState, HostNodeInteraction, IconStyle, InputBehavior,
     IntrinsicSize, LayerEffect, LayoutSnapshot, MotionCurve, PaintKind, PaintList,
-    ScopedThemeRegistry, ScrollState, StrokeStyle, TextMeasurer, TextStyle, Theme, ThemeScope,
-    ThemeScopeError, ThemeScopeId, ThemeScopeKind, UiContent, UiDocument, UiNode, UiNodeId,
-    UiPoint, UiRect, UiSize, UiVisual,
+    ScopedThemeRegistry, ScrollState, ScrollbarAuditState, StrokeStyle, TextMeasurer, TextStyle,
+    Theme, ThemeScope, ThemeScopeError, ThemeScopeId, ThemeScopeKind, UiContent, UiDocument,
+    UiNode, UiNodeId, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -266,6 +266,7 @@ pub struct DebugLayoutInspectorNode {
     pub visible: bool,
     pub input: InputBehavior,
     pub scroll: Option<ScrollState>,
+    pub scrollbar: Option<ScrollbarAuditState>,
     pub style: DebugLayoutStyleSummary,
     pub paint: DebugPaintStats,
     pub accessibility: Option<AccessibilityNode>,
@@ -802,6 +803,7 @@ fn collect_layout_inspector_nodes(
         visible: snapshot.visible,
         input: node.input,
         scroll: snapshot.scroll,
+        scrollbar: snapshot.scrollbar,
         style: debug_layout_style_summary(node),
         paint: paint_stats.get(&snapshot.id).copied().unwrap_or_default(),
         accessibility: accessibility_by_node.get(&snapshot.id).cloned(),

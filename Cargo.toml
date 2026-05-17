@@ -24,6 +24,7 @@ include = [
     "docs/v8_0_roadmap.md",
     "docs/widget_inventory.md",
     "examples/**",
+    "scripts/**",
     "src/**",
     "tests/**",
     "web/**",
@@ -41,13 +42,14 @@ default = ["widgets", "native-window"]
 accesskit-winit = ["dep:accesskit", "dep:accesskit_winit", "dep:winit"]
 egui = ["dep:egui"]
 egui-renderer-compat = ["egui"]
-wgpu = ["dep:wgpu", "dep:pollster", "dep:glyphon"]
+wgpu = ["dep:wgpu", "dep:pollster", "dep:glyphon", "dep:epaint_default_fonts"]
 native-window = ["wgpu", "text-cosmic", "dep:winit", "dep:arboard"]
-text-cosmic = ["dep:cosmic-text"]
+text-cosmic = ["dep:cosmic-text", "dep:epaint_default_fonts"]
 widgets = []
 audit = []
 web-runtime = [
     "wgpu",
+    "text-cosmic",
     "dep:console_error_panic_hook",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
@@ -113,6 +115,7 @@ binpack2d = "1.0.1"
 console_error_panic_hook = { version = "0.1.7", optional = true }
 cosmic-text = { version = "0.14.2", optional = true }
 egui = { version = "0.33.3", optional = true }
+epaint_default_fonts = { version = "0.33.3", optional = true }
 glyphon = { version = "0.11.0", optional = true }
 lyon_tessellation = "1.0.20"
 pollster = { version = "0.4.0", optional = true }

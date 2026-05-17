@@ -3,8 +3,8 @@ use std::cell::RefCell;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::mem;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use glyphon::{
     Attrs as GlyphAttrs, Buffer as GlyphBuffer, Cache as GlyphCache, Color as GlyphColor,
@@ -16,6 +16,7 @@ use glyphon::{
     Viewport as GlyphViewport, Weight as GlyphWeight, Wrap as GlyphWrap,
 };
 use pollster::block_on;
+use web_time::Instant;
 use wgpu::{
     BufferUsages, Extent3d, Origin3d, TexelCopyBufferInfo, TexelCopyBufferLayout,
     TexelCopyTextureInfo, TextureFormat, COPY_BYTES_PER_ROW_ALIGNMENT,
@@ -322,18 +323,18 @@ fn rounded_rect_distance(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 
 
 fn sample_composited_layer(uv: vec2<f32>, texel_size: vec2<f32>, blur_radius: f32) -> vec4<f32> {
     if blur_radius <= 0.5 {
-        return textureSample(image_texture, image_sampler, uv);
+        return textureSampleLevel(image_texture, image_sampler, uv, 0.0);
     }
     let offset = texel_size * min(blur_radius, 8.0);
-    var color = textureSample(image_texture, image_sampler, uv) * 4.0;
-    color = color + textureSample(image_texture, image_sampler, uv + vec2<f32>(offset.x, 0.0));
-    color = color + textureSample(image_texture, image_sampler, uv - vec2<f32>(offset.x, 0.0));
-    color = color + textureSample(image_texture, image_sampler, uv + vec2<f32>(0.0, offset.y));
-    color = color + textureSample(image_texture, image_sampler, uv - vec2<f32>(0.0, offset.y));
-    color = color + textureSample(image_texture, image_sampler, uv + offset);
-    color = color + textureSample(image_texture, image_sampler, uv - offset);
-    color = color + textureSample(image_texture, image_sampler, uv + vec2<f32>(offset.x, -offset.y));
-    color = color + textureSample(image_texture, image_sampler, uv + vec2<f32>(-offset.x, offset.y));
+    var color = textureSampleLevel(image_texture, image_sampler, uv, 0.0) * 4.0;
+    color = color + textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(offset.x, 0.0), 0.0);
+    color = color + textureSampleLevel(image_texture, image_sampler, uv - vec2<f32>(offset.x, 0.0), 0.0);
+    color = color + textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(0.0, offset.y), 0.0);
+    color = color + textureSampleLevel(image_texture, image_sampler, uv - vec2<f32>(0.0, offset.y), 0.0);
+    color = color + textureSampleLevel(image_texture, image_sampler, uv + offset, 0.0);
+    color = color + textureSampleLevel(image_texture, image_sampler, uv - offset, 0.0);
+    color = color + textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(offset.x, -offset.y), 0.0);
+    color = color + textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(-offset.x, offset.y), 0.0);
     return color / 12.0;
 }
 
@@ -952,7 +953,7 @@ impl WgpuContext {
             shadow_rect_buffer: None,
             shadow_rect_capacity: 0,
             textures,
-            font_system: GlyphFontSystem::new(),
+            font_system: default_glyph_font_system(),
             swash_cache: GlyphSwashCache::new(),
             glyph_cache,
             glyph_viewport,
@@ -4757,6 +4758,26 @@ fn lerp_color(left: ColorRgba, right: ColorRgba, t: f32) -> ColorRgba {
     )
 }
 
+fn default_glyph_font_system() -> GlyphFontSystem {
+    let mut font_system = GlyphFontSystem::new_with_fonts([
+        embedded_glyph_font(epaint_default_fonts::UBUNTU_LIGHT),
+        embedded_glyph_font(epaint_default_fonts::HACK_REGULAR),
+        embedded_glyph_font(epaint_default_fonts::NOTO_EMOJI_REGULAR),
+    ]);
+    {
+        let db = font_system.db_mut();
+        db.set_sans_serif_family("Ubuntu");
+        db.set_serif_family("Ubuntu");
+        db.set_monospace_family("Hack");
+    }
+    font_system
+}
+
+fn embedded_glyph_font(bytes: &'static [u8]) -> glyphon::cosmic_text::fontdb::Source {
+    let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
+    glyphon::cosmic_text::fontdb::Source::Binary(data)
+}
+
 fn lerp_channel(left: u8, right: u8, t: f32) -> u8 {
     (f32::from(left) + (f32::from(right) - f32::from(left)) * t)
         .round()
@@ -5175,6 +5196,25 @@ mod tests {
     use super::*;
     use crate::platform::LayerOrder;
     use crate::{EmptyResourceResolver, PaintItem, PaintList, RenderOptions, TextContent};
+
+    #[test]
+    fn default_glyph_font_system_includes_embedded_web_fonts() {
+        let font_system = default_glyph_font_system();
+        let families = font_system
+            .db()
+            .faces()
+            .flat_map(|face| face.families.iter().map(|(name, _)| name.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(
+            families.iter().any(|name| *name == "Ubuntu"),
+            "embedded sans-serif font was not loaded: {families:?}"
+        );
+        assert!(
+            families.iter().any(|name| *name == "Hack"),
+            "embedded monospace font was not loaded: {families:?}"
+        );
+    }
 
     #[test]
     fn glyphon_text_chunks_reuse_unchanged_prepared_renderers() {

@@ -37,6 +37,12 @@ jobs:
       - name: Enumerate all-feature tests
         run: cargo test --locked --all-features -- --list
 
+      - name: Just Work showcase regressions
+        run: cargo test --locked --all-features --test showcase_layout -- showcase_ --test-threads=1
+
+      - name: Just Work performance smoke
+        run: cargo test --locked --no-default-features --features widgets --test perf_smoke -- --test-threads=1
+
       - name: Check examples
         run: cargo check --locked --all-features --examples
 
@@ -60,6 +66,11 @@ jobs:
           rustup default stable
           rustup target add wasm32-unknown-unknown
 
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Install wasm-bindgen CLI
         run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
 
@@ -81,15 +92,41 @@ jobs:
 
       - name: Assemble Pages artifact
         run: |
-          rm -rf dist/showcase
-          mkdir -p dist/showcase/pkg
+          rm -rf dist
+          mkdir -p dist/pkg dist/showcase/pkg
+          cp web/showcase/index.html dist/index.html
           cp web/showcase/index.html dist/showcase/index.html
-          touch dist/showcase/.nojekyll
+          touch dist/.nojekyll
           wasm-bindgen \
             --target web \
-            --out-dir dist/showcase/pkg \
+            --out-dir dist/pkg \
             --out-name showcase_web \
             target/wasm32-unknown-unknown/release/examples/showcase_web.wasm
+          cp -R dist/pkg/. dist/showcase/pkg/
+
+      - name: Verify Pages artifact routes
+        run: |
+          test -f dist/index.html
+          test -f dist/pkg/showcase_web.js
+          test -f dist/showcase/index.html
+          test -f dist/showcase/pkg/showcase_web.js
+
+      - name: Browser smoke test web showcase
+        run: |
+          python3 -m http.server 8787 --directory dist > "${RUNNER_TEMP}/operad-pages.log" 2>&1 &
+          server=$!
+          trap 'kill "${server}" 2> /dev/null || true' EXIT
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/ > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "${ready}" -eq 1
+          node scripts/check-web-showcase.mjs http://127.0.0.1:8787/
+          node scripts/check-web-showcase.mjs http://127.0.0.1:8787/showcase/
 
       - name: Configure Pages
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
@@ -99,7 +136,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v4
         with:
-          path: dist/showcase
+          path: dist
 
   deploy-pages:
     name: Deploy Pages

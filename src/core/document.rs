@@ -2,9 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(feature = "text-cosmic")]
 use cosmic_text::{
-    Attrs, Buffer, Family as CosmicFamily, FontSystem, Metrics, Shaping, Stretch as CosmicStretch,
-    Style as CosmicFontStyle, Weight as CosmicWeight, Wrap as CosmicWrap,
+    fontdb, Attrs, Buffer, Family as CosmicFamily, FontSystem, Metrics, Shaping,
+    Stretch as CosmicStretch, Style as CosmicFontStyle, Weight as CosmicWeight, Wrap as CosmicWrap,
 };
+#[cfg(feature = "text-cosmic")]
+use std::sync::Arc;
 use taffy::prelude::{
     AlignItems, AvailableSpace, CompactLength, Dimension, Display, FlexDirection, FlexWrap,
     JustifyContent, LengthPercentage, LengthPercentageAuto, NodeId as TaffyNodeId,
@@ -1496,6 +1498,39 @@ impl ScrollState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollbarAuditState {
+    pub axis: AuditAxis,
+    pub scroll: ScrollState,
+}
+
+impl ScrollbarAuditState {
+    pub const fn new(axis: AuditAxis, scroll: ScrollState) -> Self {
+        Self { axis, scroll }
+    }
+
+    pub fn max_offset(self) -> f32 {
+        match self.axis {
+            AuditAxis::Horizontal => self.scroll.max_offset().x,
+            AuditAxis::Vertical => self.scroll.max_offset().y,
+        }
+    }
+
+    pub fn viewport(self) -> f32 {
+        match self.axis {
+            AuditAxis::Horizontal => self.scroll.viewport_size.width,
+            AuditAxis::Vertical => self.scroll.viewport_size.height,
+        }
+    }
+
+    pub fn content(self) -> f32 {
+        match self.axis {
+            AuditAxis::Horizontal => self.scroll.content_size.width,
+            AuditAxis::Vertical => self.scroll.content_size.height,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutStyle {
     pub(crate) style: Style,
@@ -1702,6 +1737,7 @@ pub struct UiNode {
     pub content: UiContent,
     pub input: InputBehavior,
     pub scroll: Option<ScrollState>,
+    pub scrollbar: Option<ScrollbarAuditState>,
     pub animation: Option<AnimationMachine>,
     pub accessibility: Option<AccessibilityMeta>,
     pub shader: Option<ShaderEffect>,
@@ -1726,6 +1762,7 @@ impl UiNode {
             content: UiContent::Empty,
             input: InputBehavior::NONE,
             scroll: None,
+            scrollbar: None,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1759,6 +1796,7 @@ impl UiNode {
             content: UiContent::Text(TextContent::new(text, text_style)),
             input: InputBehavior::NONE,
             scroll: None,
+            scrollbar: None,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1796,6 +1834,7 @@ impl UiNode {
             ),
             input: InputBehavior::NONE,
             scroll: None,
+            scrollbar: None,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1833,6 +1872,7 @@ impl UiNode {
                 keyboard: true,
             },
             scroll: None,
+            scrollbar: None,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1883,6 +1923,7 @@ impl UiNode {
             content: UiContent::Image(image),
             input: InputBehavior::NONE,
             scroll: None,
+            scrollbar: None,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1916,6 +1957,7 @@ impl UiNode {
             content: UiContent::PaintRect(rect),
             input: InputBehavior::NONE,
             scroll: None,
+            scrollbar: None,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1961,6 +2003,7 @@ impl UiNode {
             content: UiContent::Scene(primitives),
             input: InputBehavior::NONE,
             scroll: None,
+            scrollbar: None,
             animation: None,
             accessibility: None,
             shader: None,
@@ -2025,6 +2068,11 @@ impl UiNode {
     pub fn with_scroll(mut self, axes: ScrollAxes) -> Self {
         self.style.clip = ClipBehavior::Clip;
         self.scroll = Some(ScrollState::new(axes));
+        self
+    }
+
+    pub fn with_scrollbar_audit(mut self, axis: AuditAxis, scroll: ScrollState) -> Self {
+        self.scrollbar = Some(ScrollbarAuditState::new(axis, scroll));
         self
     }
 
@@ -2172,7 +2220,7 @@ pub struct CosmicTextMeasurer {
 impl CosmicTextMeasurer {
     pub fn new() -> Self {
         Self {
-            font_system: FontSystem::new(),
+            font_system: default_cosmic_font_system(),
             cache: HashMap::new(),
             cache_len: 0,
         }
@@ -2246,6 +2294,28 @@ impl TextMeasurer for CosmicTextMeasurer {
         self.cache_len += 1;
         measured
     }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn default_cosmic_font_system() -> FontSystem {
+    let mut font_system = FontSystem::new_with_fonts([
+        embedded_cosmic_font(epaint_default_fonts::UBUNTU_LIGHT),
+        embedded_cosmic_font(epaint_default_fonts::HACK_REGULAR),
+        embedded_cosmic_font(epaint_default_fonts::NOTO_EMOJI_REGULAR),
+    ]);
+    {
+        let db = font_system.db_mut();
+        db.set_sans_serif_family("Ubuntu");
+        db.set_serif_family("Ubuntu");
+        db.set_monospace_family("Hack");
+    }
+    font_system
+}
+
+#[cfg(feature = "text-cosmic")]
+fn embedded_cosmic_font(bytes: &'static [u8]) -> fontdb::Source {
+    let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
+    fontdb::Source::Binary(data)
 }
 
 fn measure_taffy_text(
@@ -2657,11 +2727,30 @@ pub enum EditPhase {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UiInputResult {
+    /// Topmost pointer-interactive node under the latest pointer position.
     pub hovered: Option<UiNodeId>,
+    /// Node that owns keyboard focus after the input is handled.
     pub focused: Option<UiNodeId>,
+    /// Node currently pressed by an active pointer interaction.
     pub pressed: Option<UiNodeId>,
+    /// Node activated by a completed pointer click.
     pub clicked: Option<UiNodeId>,
+    /// Scroll container whose offset changed because of a wheel event.
     pub scrolled: Option<UiNodeId>,
+    /// The input was intentionally handled by the document.
+    ///
+    /// This can be true even when no widget state changed. For example, a
+    /// visually topmost non-scrollable panel consumes wheel input so that a
+    /// lower scroll container cannot move behind it.
+    pub consumed: bool,
+    /// Node that consumed the input, when the document can identify one.
+    pub consumed_by: Option<UiNodeId>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct WheelInputResult {
+    scrolled: Option<UiNodeId>,
+    consumed_by: Option<UiNodeId>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2775,6 +2864,7 @@ impl UiDocument {
     }
 
     pub fn add_child(&mut self, parent: UiNodeId, mut node: UiNode) -> UiNodeId {
+        assert_valid_node_id("UiDocument::add_child parent", parent, self.nodes.len());
         self.invalidate_layout();
         let id = UiNodeId(self.nodes.len());
         node.parent = Some(parent);
@@ -2852,7 +2942,9 @@ impl UiDocument {
     }
 
     pub fn node(&self, id: UiNodeId) -> &UiNode {
-        &self.nodes[id.0]
+        self.nodes
+            .get(id.0)
+            .unwrap_or_else(|| invalid_node_id_panic("UiDocument::node", id, self.nodes.len()))
     }
 
     pub fn nodes(&self) -> &[UiNode] {
@@ -2864,22 +2956,36 @@ impl UiDocument {
     }
 
     pub fn node_mut(&mut self, id: UiNodeId) -> &mut UiNode {
+        assert_valid_node_id("UiDocument::node_mut", id, self.nodes.len());
         self.invalidate_layout();
         &mut self.nodes[id.0]
     }
 
+    fn node_mut_without_invalidation(
+        &mut self,
+        operation: &'static str,
+        id: UiNodeId,
+    ) -> &mut UiNode {
+        let len = self.nodes.len();
+        self.nodes
+            .get_mut(id.0)
+            .unwrap_or_else(|| invalid_node_id_panic(operation, id, len))
+    }
+
     pub fn edit_node(&mut self, id: UiNodeId, edit: impl FnOnce(&mut UiNode)) {
-        edit(&mut self.nodes[id.0]);
+        edit(self.node_mut_without_invalidation("UiDocument::edit_node", id));
         self.invalidate_layout();
     }
 
     pub fn set_node_style(&mut self, id: UiNodeId, style: impl Into<UiNodeStyle>) {
-        self.nodes[id.0].style = style.into();
+        self.node_mut_without_invalidation("UiDocument::set_node_style", id)
+            .style = style.into();
         self.invalidate_layout();
     }
 
     pub fn set_node_content(&mut self, id: UiNodeId, content: UiContent) {
-        self.nodes[id.0].content = content;
+        self.node_mut_without_invalidation("UiDocument::set_node_content", id)
+            .content = content;
         self.invalidate_layout();
     }
 
@@ -2901,11 +3007,13 @@ impl UiDocument {
     }
 
     pub fn set_node_input(&mut self, id: UiNodeId, input: InputBehavior) {
-        self.nodes[id.0].input = input;
+        self.node_mut_without_invalidation("UiDocument::set_node_input", id)
+            .input = input;
     }
 
     pub fn set_node_visual(&mut self, id: UiNodeId, visual: UiVisual) {
-        self.nodes[id.0].visual = visual;
+        self.node_mut_without_invalidation("UiDocument::set_node_visual", id)
+            .visual = visual;
     }
 
     pub fn set_node_action(
@@ -2913,16 +3021,19 @@ impl UiDocument {
         id: UiNodeId,
         action: impl Into<actions::WidgetActionBinding>,
     ) {
-        self.nodes[id.0].action = Some(action.into());
+        self.node_mut_without_invalidation("UiDocument::set_node_action", id)
+            .action = Some(action.into());
     }
 
     pub fn set_node_interaction_visuals(&mut self, id: UiNodeId, visuals: InteractionVisuals) {
-        self.nodes[id.0].interaction_visuals = Some(visuals);
+        self.node_mut_without_invalidation("UiDocument::set_node_interaction_visuals", id)
+            .interaction_visuals = Some(visuals);
         self.refresh_interaction_visual(id);
     }
 
     pub fn clear_node_interaction_visuals(&mut self, id: UiNodeId) {
-        self.nodes[id.0].interaction_visuals = None;
+        self.node_mut_without_invalidation("UiDocument::clear_node_interaction_visuals", id)
+            .interaction_visuals = None;
     }
 
     pub fn set_focus_state(&mut self, focus: UiFocusState) {
@@ -4013,10 +4124,12 @@ impl UiDocument {
         let previous_focused = self.focus.focused;
         let mut scrolled = None;
         let mut pointer = None;
+        let mut consumed_by = None;
         let clicked = match event {
             UiInputEvent::PointerMove(point) => {
                 pointer = Some(point);
                 self.focus.hovered = self.hit_test(point);
+                consumed_by = self.focus.hovered;
                 None
             }
             UiInputEvent::PointerDown(point) => {
@@ -4026,6 +4139,7 @@ impl UiDocument {
                 if hit.is_some_and(|id| self.nodes[id.0].input.focusable) {
                     self.focus.focused = hit;
                 }
+                consumed_by = hit;
                 None
             }
             UiInputEvent::PointerUp(point) => {
@@ -4033,15 +4147,19 @@ impl UiDocument {
                 let hit = self.hit_test(point);
                 let clicked = self.focus.pressed.filter(|pressed| Some(*pressed) == hit);
                 self.focus.pressed = None;
+                consumed_by = hit.or(clicked);
                 clicked
             }
             UiInputEvent::Wheel(wheel) => {
-                scrolled = self.apply_wheel_scroll(wheel);
+                let wheel = self.apply_wheel_scroll(wheel);
+                scrolled = wheel.scrolled;
+                consumed_by = wheel.consumed_by;
                 None
             }
             UiInputEvent::TextInput(_) | UiInputEvent::Key { .. } => None,
             UiInputEvent::Focus(direction) => {
                 self.focus.focused = self.next_focus(self.focus.focused, direction);
+                consumed_by = self.focus.focused;
                 None
             }
         };
@@ -4064,6 +4182,8 @@ impl UiDocument {
             pressed: self.focus.pressed,
             clicked,
             scrolled,
+            consumed: consumed_by.is_some(),
+            consumed_by,
         }
     }
 
@@ -4180,14 +4300,22 @@ impl UiDocument {
             .is_some_and(|animation| animation.trigger(trigger))
     }
 
-    fn apply_wheel_scroll(&mut self, wheel: UiWheelEvent) -> Option<UiNodeId> {
+    fn apply_wheel_scroll(&mut self, wheel: UiWheelEvent) -> WheelInputResult {
         if !wheel.scrolls_document() {
-            return None;
+            return WheelInputResult::default();
         }
         if let Some(scope) = self.wheel_event_scope(wheel.position) {
-            return self.scroll_wheel_from_scope(scope, wheel.position, wheel.delta);
+            let scrolled = self.scroll_wheel_from_scope(scope, wheel.position, wheel.delta);
+            return WheelInputResult {
+                scrolled,
+                consumed_by: scrolled.or(Some(scope)),
+            };
         }
-        self.scroll_topmost_wheel_candidate(wheel.position, wheel.delta, None)
+        let scrolled = self.scroll_topmost_wheel_candidate(wheel.position, wheel.delta, None);
+        WheelInputResult {
+            scrolled,
+            consumed_by: scrolled,
+        }
     }
 
     fn scroll_wheel_from_scope(
@@ -5205,6 +5333,7 @@ pub struct LayoutSnapshot {
     pub pointer: bool,
     pub focusable: bool,
     pub scroll: Option<ScrollState>,
+    pub scrollbar: Option<ScrollbarAuditState>,
     pub children: Vec<LayoutSnapshot>,
 }
 
@@ -5353,6 +5482,13 @@ pub enum AuditWarning {
         offset: f32,
         max_offset: f32,
     },
+    ScrollbarVisibleWithoutRange {
+        node: UiNodeId,
+        name: String,
+        axis: AuditAxis,
+        viewport: f32,
+        content: f32,
+    },
     TextContrastTooLow {
         node: UiNodeId,
         name: String,
@@ -5393,6 +5529,7 @@ impl AuditWarning {
             | Self::TextClipped { node, .. }
             | Self::ScrollRangeHidden { node, .. }
             | Self::ScrollOffsetOutOfRange { node, .. }
+            | Self::ScrollbarVisibleWithoutRange { node, .. }
             | Self::TextContrastTooLow { node, .. }
             | Self::NodeOutsideRoot { node, .. }
             | Self::PaintItemEmptyClip { node } => Some(*node),
@@ -5421,11 +5558,224 @@ impl AuditWarning {
             | Self::TextClipped { name, .. }
             | Self::ScrollRangeHidden { name, .. }
             | Self::ScrollOffsetOutOfRange { name, .. }
+            | Self::ScrollbarVisibleWithoutRange { name, .. }
             | Self::TextContrastTooLow { name, .. }
             | Self::NodeOutsideRoot { name, .. }
             | Self::DuplicateNodeName { name } => Some(name),
             Self::PaintItemEmptyClip { .. } => None,
         }
+    }
+
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::NonFiniteRect { .. } => "layout rect contains non-finite geometry",
+            Self::InvisibleInteractiveNode { .. } => "interactive node is not visible",
+            Self::EmptyInteractiveClip { .. } => "interactive node has an empty clip",
+            Self::InteractiveTooSmall { .. } => "interactive target is smaller than the minimum",
+            Self::DuplicateNodeName { .. } => "node name is duplicated",
+            Self::FocusableMissingFromAccessibilityTree { .. } => {
+                "focusable node is missing from the accessibility tree"
+            }
+            Self::InteractiveAccessibilityMissing { .. } => {
+                "interactive node is missing accessibility metadata"
+            }
+            Self::AccessibleNameMissing { .. } => "accessible node is missing a name",
+            Self::AccessibilityActionMissing { .. } => {
+                "interactive accessible node is missing an action"
+            }
+            Self::AccessibilityActionIdMissing { .. } => "accessibility action is missing an id",
+            Self::AccessibilityActionLabelMissing { .. } => {
+                "accessibility action is missing a label"
+            }
+            Self::AccessibilityActionDuplicate { .. } => "accessibility action id is duplicated",
+            Self::AccessibilityStateMissing { .. } => {
+                "accessibility role is missing required state"
+            }
+            Self::AccessibilityValueMissing { .. } => {
+                "accessibility role is missing a current value"
+            }
+            Self::AccessibilityValueRangeMissing { .. } => {
+                "accessibility role is missing a value range"
+            }
+            Self::AccessibilityValueRangeInvalid { .. } => "accessibility value range is invalid",
+            Self::AccessibilityRelationTargetMissing { .. } => {
+                "accessibility relation points at a missing target"
+            }
+            Self::TextClipped { .. } => "text is clipped without an explicit overflow policy",
+            Self::ScrollRangeHidden { .. } => "scroll content extends beyond a disabled axis",
+            Self::ScrollOffsetOutOfRange { .. } => "scroll offset is outside the reachable range",
+            Self::ScrollbarVisibleWithoutRange { .. } => {
+                "scrollbar is visible even though its axis has no scroll range"
+            }
+            Self::TextContrastTooLow { .. } => "text contrast is below the required ratio",
+            Self::NodeOutsideRoot { .. } => {
+                "node extends outside the root without scroll or overlay intent"
+            }
+            Self::PaintItemEmptyClip { .. } => "paint item has an empty clip",
+        }
+    }
+
+    pub fn measured_values(&self) -> String {
+        match self {
+            Self::InteractiveTooSmall { rect, .. } => format!("rect={rect:?}"),
+            Self::DuplicateNodeName { name } => format!("name={name:?}"),
+            Self::AccessibleNameMissing { role, .. }
+            | Self::AccessibilityActionMissing { role, .. }
+            | Self::AccessibilityValueMissing { role, .. }
+            | Self::AccessibilityValueRangeMissing { role, .. } => format!("role={role:?}"),
+            Self::AccessibilityActionLabelMissing { action_id, .. }
+            | Self::AccessibilityActionDuplicate { action_id, .. } => {
+                format!("action_id={action_id:?}")
+            }
+            Self::AccessibilityStateMissing { role, state, .. } => {
+                format!("role={role:?}, state={state:?}")
+            }
+            Self::AccessibilityValueRangeInvalid {
+                role, issue, range, ..
+            } => {
+                format!("role={role:?}, issue={issue:?}, range={range:?}")
+            }
+            Self::AccessibilityRelationTargetMissing {
+                relation, target, ..
+            } => {
+                format!("relation={relation:?}, target={target:?}")
+            }
+            Self::TextClipped {
+                rect, clip_rect, ..
+            } => {
+                format!("rect={rect:?}, clip_rect={clip_rect:?}")
+            }
+            Self::ScrollRangeHidden {
+                axis,
+                viewport,
+                content,
+                ..
+            } => {
+                format!("axis={axis:?}, viewport={viewport:.2}, content={content:.2}")
+            }
+            Self::ScrollOffsetOutOfRange {
+                axis,
+                offset,
+                max_offset,
+                ..
+            } => {
+                format!("axis={axis:?}, offset={offset:.2}, max_offset={max_offset:.2}")
+            }
+            Self::ScrollbarVisibleWithoutRange {
+                axis,
+                viewport,
+                content,
+                ..
+            } => {
+                format!("axis={axis:?}, viewport={viewport:.2}, content={content:.2}")
+            }
+            Self::TextContrastTooLow {
+                text_color,
+                background_color,
+                contrast_ratio,
+                required_ratio,
+                ..
+            } => {
+                format!(
+                    "text_color={text_color:?}, background_color={background_color:?}, contrast={contrast_ratio:.2}, required={required_ratio:.2}"
+                )
+            }
+            Self::NodeOutsideRoot { rect, .. } => format!("rect={rect:?}"),
+            Self::PaintItemEmptyClip { node } => format!("node={node:?}"),
+            Self::NonFiniteRect { .. }
+            | Self::InvisibleInteractiveNode { .. }
+            | Self::EmptyInteractiveClip { .. }
+            | Self::FocusableMissingFromAccessibilityTree { .. }
+            | Self::InteractiveAccessibilityMissing { .. }
+            | Self::AccessibilityActionIdMissing { .. } => String::new(),
+        }
+    }
+
+    pub fn remediation_hint(&self) -> &'static str {
+        match self {
+            Self::NonFiniteRect { .. } => "sanitize layout inputs before building the document",
+            Self::InvisibleInteractiveNode { .. } => {
+                "hide non-interactive decoration, or remove pointer/focus input from invisible nodes"
+            }
+            Self::EmptyInteractiveClip { .. } => {
+                "increase the computed size or route the control through a scroll/overflow container"
+            }
+            Self::InteractiveTooSmall { .. } => {
+                "publish a larger intrinsic minimum or mark the control as intentionally compact"
+            }
+            Self::DuplicateNodeName { .. } => "give each retained node a stable unique name",
+            Self::FocusableMissingFromAccessibilityTree { .. }
+            | Self::InteractiveAccessibilityMissing { .. } => {
+                "attach role, label, value, and action metadata through AccessibilityMeta"
+            }
+            Self::AccessibleNameMissing { .. } => {
+                "set an accessibility label or connect a labelled-by relation"
+            }
+            Self::AccessibilityActionMissing { .. } => {
+                "publish an accessibility action for the interactive behavior"
+            }
+            Self::AccessibilityActionIdMissing { .. } => {
+                "assign a stable action id so replay and assistive tech can identify it"
+            }
+            Self::AccessibilityActionLabelMissing { .. } => {
+                "give the action a user-facing label"
+            }
+            Self::AccessibilityActionDuplicate { .. } => {
+                "deduplicate action ids on the node"
+            }
+            Self::AccessibilityStateMissing { .. } => {
+                "publish the role-specific checked, expanded, pressed, or selected state"
+            }
+            Self::AccessibilityValueMissing { .. } => {
+                "publish the current accessible value"
+            }
+            Self::AccessibilityValueRangeMissing { .. } => {
+                "publish min, max, current, and step values for range-like controls"
+            }
+            Self::AccessibilityValueRangeInvalid { .. } => {
+                "ensure the range is finite, ordered, and has a positive step"
+            }
+            Self::AccessibilityRelationTargetMissing { .. } => {
+                "create the relation target in the same document or remove the stale relation"
+            }
+            Self::TextClipped { .. } => {
+                "compute text intrinsic size from the active font, or opt into clipping/scrolling explicitly"
+            }
+            Self::ScrollRangeHidden { .. } => {
+                "enable scrolling on the overflowing axis or constrain the content extent"
+            }
+            Self::ScrollOffsetOutOfRange { .. } => {
+                "clamp persisted scroll offsets after content or viewport size changes"
+            }
+            Self::ScrollbarVisibleWithoutRange { .. } => {
+                "hide and disable the scrollbar when ScrollState::max_offset is zero on that axis"
+            }
+            Self::TextContrastTooLow { .. } => {
+                "adjust foreground or background tokens until the required contrast ratio is met"
+            }
+            Self::NodeOutsideRoot { .. } => {
+                "place the node in an overlay, scroll container, or resize the parent constraints"
+            }
+            Self::PaintItemEmptyClip { .. } => {
+                "check the node clip chain and avoid painting items outside their reachable clip"
+            }
+        }
+    }
+
+    pub fn diagnostic_summary(&self) -> String {
+        let mut parts = vec![format!("reason: {}", self.reason())];
+        if let Some(node) = self.node() {
+            parts.push(format!("node: {node:?}"));
+        }
+        if let Some(name) = self.name() {
+            parts.push(format!("name: {name}"));
+        }
+        let measured = self.measured_values();
+        if !measured.is_empty() {
+            parts.push(format!("measured: {measured}"));
+        }
+        parts.push(format!("hint: {}", self.remediation_hint()));
+        parts.join("; ")
     }
 }
 
@@ -5537,6 +5887,7 @@ impl UiDocument {
             pointer: node.input.pointer,
             focusable: node.input.focusable,
             scroll: node.scroll,
+            scrollbar: node.scrollbar,
             children: node
                 .children
                 .iter()
@@ -5629,6 +5980,9 @@ impl UiDocument {
             }
             if let Some(scroll) = node.scroll {
                 push_scroll_audit_warnings(&mut warnings, id, &node.name, scroll);
+            }
+            if let Some(scrollbar) = node.scrollbar {
+                push_scrollbar_audit_warnings(&mut warnings, id, &node.name, node, scrollbar);
             }
             if let Some(accessibility) = node
                 .accessibility
@@ -5886,6 +6240,24 @@ fn push_text_contrast_warning(
             background_color,
             contrast_ratio,
             required_ratio,
+        });
+    }
+}
+
+fn push_scrollbar_audit_warnings(
+    warnings: &mut Vec<AuditWarning>,
+    node_id: UiNodeId,
+    name: &str,
+    node: &UiNode,
+    scrollbar: ScrollbarAuditState,
+) {
+    if node.layout.visible && scrollbar.max_offset() <= f32::EPSILON {
+        warnings.push(AuditWarning::ScrollbarVisibleWithoutRange {
+            node: node_id,
+            name: name.to_string(),
+            axis: scrollbar.axis,
+            viewport: scrollbar.viewport(),
+            content: scrollbar.content(),
         });
     }
 }
@@ -6259,6 +6631,21 @@ fn aspect_fit_rect(rect: UiRect, aspect_ratio: f32) -> UiRect {
         rect.y + (height - fit_height) * 0.5,
         fit_width,
         fit_height,
+    )
+}
+
+fn assert_valid_node_id(operation: &'static str, id: UiNodeId, len: usize) {
+    if id.0 >= len {
+        invalid_node_id_panic(operation, id, len);
+    }
+}
+
+fn invalid_node_id_panic(operation: &'static str, id: UiNodeId, len: usize) -> ! {
+    panic!(
+        "{operation} received stale or invalid node id UiNodeId({}); document has {len} node(s). \
+         Node ids are frame-local; rebuild the id from the current UiDocument instead of reusing \
+         one from an earlier frame.",
+        id.0
     )
 }
 
@@ -8320,6 +8707,27 @@ mod tests {
         assert!(measured.height > 20.0, "{measured:?}");
     }
 
+    #[cfg(feature = "text-cosmic")]
+    #[test]
+    fn cosmic_text_measurer_includes_embedded_default_fonts() {
+        let measurer = CosmicTextMeasurer::new();
+        let families = measurer
+            .font_system
+            .db()
+            .faces()
+            .flat_map(|face| face.families.iter().map(|(name, _)| name.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(
+            families.iter().any(|name| *name == "Ubuntu"),
+            "embedded sans-serif font was not loaded: {families:?}"
+        );
+        assert!(
+            families.iter().any(|name| *name == "Hack"),
+            "embedded monospace font was not loaded: {families:?}"
+        );
+    }
+
     #[test]
     fn clipping_limits_hit_testing_to_visible_rect() {
         let mut doc = UiDocument::new(root_style(200.0, 200.0));
@@ -9431,6 +9839,50 @@ mod tests {
                 && (*offset - 120.0).abs() < 0.01
                 && (*max_offset - 80.0).abs() < 0.01
         )));
+    }
+
+    #[test]
+    fn audit_layout_reports_visible_scrollbar_without_scroll_range() {
+        let scroll = ScrollState {
+            axes: ScrollAxes::VERTICAL,
+            offset: UiPoint::new(0.0, 0.0),
+            viewport_size: UiSize::new(12.0, 120.0),
+            content_size: UiSize::new(12.0, 120.0),
+        };
+        let mut doc = UiDocument::new(root_style(200.0, 160.0));
+        let root = doc.root;
+        let scrollbar = doc.add_child(
+            root,
+            UiNode::container("manual.scrollbar", LayoutStyle::size(12.0, 120.0))
+                .with_scrollbar_audit(AuditAxis::Vertical, scroll)
+                .with_input(InputBehavior::BUTTON),
+        );
+        doc.compute_layout(UiSize::new(200.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let warnings = doc.audit_layout();
+        assert!(warnings.iter().any(|warning| matches!(
+            warning,
+            AuditWarning::ScrollbarVisibleWithoutRange {
+                node,
+                name,
+                axis: AuditAxis::Vertical,
+                viewport,
+                content,
+            } if *node == scrollbar
+                && name == "manual.scrollbar"
+                && (*viewport - 120.0).abs() < 0.01
+                && (*content - 120.0).abs() < 0.01
+        )));
+        let summary = warnings
+            .iter()
+            .find_map(|warning| {
+                matches!(warning, AuditWarning::ScrollbarVisibleWithoutRange { .. })
+                    .then(|| warning.diagnostic_summary())
+            })
+            .expect("scrollbar warning summary");
+        assert!(summary.contains("reason: scrollbar is visible"));
+        assert!(summary.contains("hint: hide and disable"));
     }
 
     #[test]
@@ -11096,6 +11548,23 @@ mod tests {
         assert_eq!(result.hovered, None);
         assert_eq!(result.focused, None);
         assert_eq!(result.pressed, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "UiDocument::add_child parent received stale or invalid node id")]
+    fn invalid_add_child_parent_reports_operad_context() {
+        let mut doc = UiDocument::new(root_style(120.0, 80.0));
+        doc.add_child(
+            UiNodeId(1509),
+            UiNode::container("bad", LayoutStyle::size(20.0, 20.0)),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "UiDocument::node received stale or invalid node id")]
+    fn invalid_node_lookup_reports_operad_context() {
+        let doc = UiDocument::new(root_style(120.0, 80.0));
+        let _ = doc.node(UiNodeId(1509));
     }
 
     #[test]

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cargo check --all-targets --all-features
-cargo check --no-default-features
-cargo test --all-features "$@"
+cargo fmt --all -- --check
+cargo check --locked --no-default-features --all-targets
+cargo check --locked --all-targets --all-features
+cargo test --locked --all-features "$@"
+cargo check --locked --target wasm32-unknown-unknown --no-default-features --features web-showcase --example showcase_web

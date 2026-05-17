@@ -203,11 +203,11 @@ pub use egui_host::{
     EguiHostAdapter, EguiInputAdapter, EguiPlatformOutputPlan, EguiTextureDeltaPlan,
 };
 pub use errors::{
-    classify_platform_error, classify_render_error, runtime_error_overlay, ErrorContext,
-    ErrorDomain, ErrorKind, ErrorReport, ErrorSeverity, FallbackAction, FallbackDecision,
-    FallbackScope, PlatformErrorKind, RendererErrorKind, ResourceErrorKind, RuntimeErrorKind,
-    RuntimeErrorOverlayContextRow, RuntimeErrorOverlayNodes, RuntimeErrorOverlayOptions,
-    UiErrorKind,
+    classify_platform_error, classify_platform_service_response, classify_render_error,
+    runtime_error_overlay, ErrorContext, ErrorDomain, ErrorKind, ErrorReport, ErrorSeverity,
+    FallbackAction, FallbackDecision, FallbackScope, PlatformErrorKind, RendererErrorKind,
+    ResourceErrorKind, RuntimeErrorKind, RuntimeErrorOverlayContextRow, RuntimeErrorOverlayNodes,
+    RuntimeErrorOverlayOptions, UiErrorKind,
 };
 pub use fonts::{
     CachedFontFace, FontCachePolicy, FontEvictionCandidate, FontEvictionPlan, FontFaceDescriptor,
@@ -364,18 +364,19 @@ pub use tasks::{
     TaskProgress, TaskRegistry, TaskResultDisposition, TaskState, TaskStatus,
 };
 pub use testing::{
-    diff_rgba8, is_blocking_just_work_warning, run_ui_state_matrix, AccessibilityAssertions,
-    AccessibilityRequestAssertions, AuditAssertions, CommandReplayReport, CommandReplayStepResult,
-    DirtyFlags, DisplayListInvalidationAssertions, DisplayListReuseAssertions,
-    DisplayListReuseSeries, DisplayListReuseSeriesAssertions, EmptyResourceResolver, EventReplay,
-    EventReplayReport, EventReplayStep, EventReplayStepResult, FrameTiming, FrameTimingAssertions,
-    FrameTimingSection, FrameTimingSeries, FrameTimingSeriesAssertions, InteractionRecorder,
-    JustWorkAssertions, LayoutAssertions, PaintAssertions, PaintKindSelector,
-    PaintRecorderRenderer, PerformanceAssertions, PerformanceSamples, PixelDiffReport,
-    PixelDiffTolerance, PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput,
-    RgbaImageView, ScenarioFrameReport, ScenarioHarness, SnapshotAssertions, TestFailure,
-    TestResult, UiStateMatrixCase, UiStateMatrixDocument, UiStateMatrixInteraction,
-    UiStateMatrixReport, UiStateMatrixTarget, UiStateMatrixViewport,
+    diff_rgba8, is_blocking_just_work_warning, run_ui_state_matrix, test_host_capabilities,
+    AccessibilityAssertions, AccessibilityRequestAssertions, AuditAssertions, CommandReplayReport,
+    CommandReplayStepResult, DirtyFlags, DisplayListInvalidationAssertions,
+    DisplayListReuseAssertions, DisplayListReuseSeries, DisplayListReuseSeriesAssertions,
+    EmptyResourceResolver, EventReplay, EventReplayReport, EventReplayStep, EventReplayStepResult,
+    FrameTiming, FrameTimingAssertions, FrameTimingSection, FrameTimingSectionSummary,
+    FrameTimingSeries, FrameTimingSeriesAssertions, InteractionRecorder, JustWorkAssertions,
+    LayoutAssertions, PaintAssertions, PaintKindSelector, PaintRecorderRenderer,
+    PerformanceAssertions, PerformanceSamples, PixelDiffReport, PixelDiffTolerance,
+    PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput, RgbaImageView,
+    ScenarioFrameReport, ScenarioHarness, SnapshotAssertions, TestFailure, TestResult,
+    UiStateMatrixCase, UiStateMatrixDocument, UiStateMatrixInteraction, UiStateMatrixReport,
+    UiStateMatrixTarget, UiStateMatrixViewport,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,

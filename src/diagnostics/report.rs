@@ -826,6 +826,7 @@ fn just_work_issue_kind(warning: &AuditWarning) -> JustWorkIssueKind {
         AuditWarning::ScrollRangeHidden { .. } | AuditWarning::ScrollOffsetOutOfRange { .. } => {
             JustWorkIssueKind::Scroll
         }
+        AuditWarning::ScrollbarVisibleWithoutRange { .. } => JustWorkIssueKind::Scroll,
         AuditWarning::PaintItemEmptyClip { .. } => JustWorkIssueKind::Paint,
         AuditWarning::DuplicateNodeName { .. } => JustWorkIssueKind::Naming,
     }
@@ -854,6 +855,7 @@ fn just_work_issue_severity(issue: &JustWorkIssueDiagnostic) -> DiagnosticSeveri
         | AuditWarning::TextClipped { .. }
         | AuditWarning::ScrollRangeHidden { .. }
         | AuditWarning::ScrollOffsetOutOfRange { .. }
+        | AuditWarning::ScrollbarVisibleWithoutRange { .. }
         | AuditWarning::NodeOutsideRoot { .. }
         | AuditWarning::PaintItemEmptyClip { .. } => DiagnosticSeverity::Error,
     }
@@ -979,6 +981,18 @@ fn audit_warning_summary(warning: &AuditWarning) -> String {
             offset,
             max_offset
         ),
+        AuditWarning::ScrollbarVisibleWithoutRange {
+            name,
+            axis,
+            viewport,
+            content,
+            ..
+        } => format!(
+            "scrollbar `{name}` is visible without a {} range: viewport {:.1}, content {:.1}",
+            audit_axis_label(*axis),
+            viewport,
+            content
+        ),
         AuditWarning::TextContrastTooLow {
             name,
             contrast_ratio,
@@ -1067,6 +1081,10 @@ fn audit_warning_remediation(warning: &AuditWarning) -> String {
         ),
         AuditWarning::ScrollOffsetOutOfRange { .. } => {
             "Clamp scroll offsets through ScrollState::clamp_offset after content or viewport changes."
+                .to_string()
+        }
+        AuditWarning::ScrollbarVisibleWithoutRange { .. } => {
+            "Hide and disable the scrollbar when the represented scroll axis has no range."
                 .to_string()
         }
         AuditWarning::TextContrastTooLow { .. } => {

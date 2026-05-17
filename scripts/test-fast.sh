@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cargo check --all-targets --all-features
-cargo test --lib --all-features "$@"
-cargo check --no-default-features
+cargo fmt --all -- --check
+cargo check --locked --all-targets --all-features
+cargo test --locked --lib --all-features "$@"
+cargo check --locked --no-default-features --all-targets

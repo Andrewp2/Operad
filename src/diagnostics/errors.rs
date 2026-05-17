@@ -7,7 +7,10 @@ use crate::layout::{
     LayoutSpacing,
 };
 use crate::platform::{
-    PlatformErrorCode, PlatformServiceError, PlatformServiceKind, ResourceId, UiLayer,
+    AppLifecycleResponse, ClipboardResponse, CursorResponse, DragDropResponse, FileDialogResponse,
+    NotificationResponse, OpenUrlResponse, PlatformErrorCode, PlatformResponse,
+    PlatformServiceError, PlatformServiceKind, PlatformServiceResponse, RepaintResponse,
+    ResourceId, ScreenshotResponse, TextImeResponse, UiLayer,
 };
 use crate::renderer::RenderError;
 use crate::{
@@ -743,6 +746,92 @@ pub fn classify_platform_error(
         .fallback(fallback)
 }
 
+pub fn classify_platform_service_response(
+    response: &PlatformServiceResponse,
+) -> Option<ErrorReport> {
+    let service = response.kind();
+    let report = match platform_response_failure(&response.response)? {
+        PlatformResponseFailure::Unsupported => ErrorReport::recoverable(
+            ErrorKind::Platform(PlatformErrorKind::Unsupported),
+            format!("host does not support the {service:?} platform service"),
+        )
+        .context("service", format!("{service:?}"))
+        .context(
+            "next_step",
+            "Check BackendCapabilities before issuing this request, or provide a disabled state, fallback behavior, or explicit diagnostic.",
+        )
+        .fallback(FallbackDecision::disable_feature(
+            "disable unavailable platform service",
+        )),
+        PlatformResponseFailure::Denied(message) => ErrorReport::recoverable(
+            ErrorKind::Platform(PlatformErrorKind::Denied),
+            message,
+        )
+        .context("service", format!("{service:?}"))
+        .context(
+            "next_step",
+            "Keep the control visible only if it can explain the denial; otherwise disable the dependent feature or offer a fallback.",
+        )
+        .fallback(FallbackDecision::disable_feature(
+            "disable denied platform service",
+        )),
+        PlatformResponseFailure::Error(error) => classify_platform_error(service, error).context(
+            "next_step",
+            "Surface the platform error near the dependent control and choose a fallback that matches the error severity.",
+        ),
+    };
+
+    Some(
+        report
+            .context("platform_request_id", response.id.0.to_string())
+            .context("operation", "processing platform service response")
+            .context("host_subsystem", "platform service")
+            .context(
+                "user_visible_consequence",
+                "the requested platform feature did not complete",
+            ),
+    )
+}
+
+enum PlatformResponseFailure<'a> {
+    Unsupported,
+    Denied(&'static str),
+    Error(&'a PlatformServiceError),
+}
+
+fn platform_response_failure(response: &PlatformResponse) -> Option<PlatformResponseFailure<'_>> {
+    match response {
+        PlatformResponse::Clipboard(ClipboardResponse::Unsupported)
+        | PlatformResponse::FileDialog(FileDialogResponse::Unsupported)
+        | PlatformResponse::OpenUrl(OpenUrlResponse::Unsupported)
+        | PlatformResponse::Notification(NotificationResponse::Unsupported)
+        | PlatformResponse::Screenshot(ScreenshotResponse::Unsupported)
+        | PlatformResponse::AppLifecycle(AppLifecycleResponse::Unsupported)
+        | PlatformResponse::TextIme(TextImeResponse::Unsupported)
+        | PlatformResponse::DragDrop(DragDropResponse::Unsupported)
+        | PlatformResponse::Cursor(CursorResponse::Unsupported)
+        | PlatformResponse::Repaint(RepaintResponse::Unsupported) => {
+            Some(PlatformResponseFailure::Unsupported)
+        }
+        PlatformResponse::OpenUrl(OpenUrlResponse::Blocked) => Some(
+            PlatformResponseFailure::Denied("open URL request was blocked by the host"),
+        ),
+        PlatformResponse::Clipboard(ClipboardResponse::Error(error))
+        | PlatformResponse::FileDialog(FileDialogResponse::Error(error))
+        | PlatformResponse::OpenUrl(OpenUrlResponse::Error(error))
+        | PlatformResponse::Notification(NotificationResponse::Error(error))
+        | PlatformResponse::Screenshot(ScreenshotResponse::Error(error))
+        | PlatformResponse::AppLifecycle(AppLifecycleResponse::Error(error))
+        | PlatformResponse::TextIme(TextImeResponse::Error(error))
+        | PlatformResponse::DragDrop(DragDropResponse::Error(error))
+        | PlatformResponse::Cursor(CursorResponse::Error(error))
+        | PlatformResponse::Repaint(RepaintResponse::Error(error)) => {
+            Some(PlatformResponseFailure::Error(error))
+        }
+        _ => None,
+    }
+}
+
 impl FallbackDecision {
     pub fn disable_feature(reason: impl Into<String>) -> Self {
         Self::new(FallbackAction::DisableFeature, FallbackScope::Local, reason).user_visible(true)
@@ -758,7 +847,7 @@ impl From<&RenderError> for ErrorReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{ResourceDomain, ResourceKind};
+    use crate::platform::{PlatformRequestId, ResourceDomain, ResourceKind};
     use crate::{root_style, ApproxTextMeasurer, UiContent, UiSize};
 
     #[test]
@@ -787,6 +876,49 @@ mod tests {
         assert_eq!(report.kind, ErrorKind::Platform(PlatformErrorKind::Denied));
         assert_eq!(report.fallback.action, FallbackAction::DisableFeature);
         assert!(report.fallback.is_local());
+    }
+
+    #[test]
+    fn platform_service_response_classification_reports_unsupported_and_denied_capabilities() {
+        let unsupported = PlatformServiceResponse::new(
+            PlatformRequestId::new(42),
+            PlatformResponse::Cursor(CursorResponse::Unsupported),
+        );
+        let report = classify_platform_service_response(&unsupported)
+            .expect("unsupported platform response should produce report");
+
+        assert_eq!(
+            report.kind,
+            ErrorKind::Platform(PlatformErrorKind::Unsupported)
+        );
+        assert_eq!(report.fallback.action, FallbackAction::DisableFeature);
+        assert!(report.fallback.user_visible);
+        assert!(report
+            .context
+            .iter()
+            .any(|context| context.key == "platform_request_id" && context.value == "42"));
+        assert!(report
+            .context
+            .iter()
+            .any(|context| context.key == "next_step"
+                && context.value.contains("BackendCapabilities")));
+
+        let denied = PlatformServiceResponse::new(
+            PlatformRequestId::new(43),
+            PlatformResponse::OpenUrl(OpenUrlResponse::Blocked),
+        );
+        let report = classify_platform_service_response(&denied)
+            .expect("denied platform response should produce report");
+
+        assert_eq!(report.kind, ErrorKind::Platform(PlatformErrorKind::Denied));
+        assert!(report.message.contains("blocked"));
+        assert_eq!(report.fallback.action, FallbackAction::DisableFeature);
+
+        let applied = PlatformServiceResponse::new(
+            PlatformRequestId::new(44),
+            PlatformResponse::Cursor(CursorResponse::Applied),
+        );
+        assert!(classify_platform_service_response(&applied).is_none());
     }
 
     #[test]

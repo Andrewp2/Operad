@@ -1525,6 +1525,8 @@ pub fn handle_text_input_event_with_metrics_and_options(
             pressed: document.focus.pressed,
             clicked: None,
             scrolled: None,
+            consumed: document.focus.focused.is_some(),
+            consumed_by: document.focus.focused,
         }
     } else {
         document.handle_input(event.clone())

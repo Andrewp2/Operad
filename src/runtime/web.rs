@@ -5,7 +5,7 @@
 //! host loop, input conversion, layout, action dispatch, runtime state
 //! persistence, and WGPU surface presentation.
 
-use std::cell::RefCell;
+use std::cell::{BorrowMutError, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -15,20 +15,17 @@ use wasm_bindgen::{JsCast, JsValue};
 
 use crate::host::{collect_document_widget_actions, process_host_frame_input_with_target_resolver};
 use crate::platform::{
-    BackendAdapterKind, BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode,
-    CursorRequest, CursorResponse, CursorShape, LayerCapabilities, OpenUrlResponse, PixelSize,
-    PlatformErrorCode, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
-    PlatformResponse, PlatformServiceCapabilities, PlatformServiceError, PlatformServiceRequest,
-    PlatformServiceResponse, RenderingCapabilities, RepaintRequest, RepaintResponse,
-    ResourceCapabilities,
+    BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode, CursorRequest,
+    CursorResponse, CursorShape, OpenUrlResponse, PixelSize, PlatformErrorCode, PlatformRequest,
+    PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
+    PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, RepaintResponse,
 };
 use crate::{
-    AccessibilityCapabilities, AnimationMachine, ApproxTextMeasurer, EmptyResourceResolver,
-    HostDocumentFrameState, HostFrameOutput, HostInteractionState, InputCapabilities, KeyCode,
-    KeyModifiers, PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
-    RawPointerEvent, RawTextInputEvent, RawWheelEvent, RenderTarget, RendererAdapter, UiDocument,
-    UiFocusState, UiNodeId, UiPoint, UiSize, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase,
-    WidgetAction, WidgetActionBinding,
+    AnimationMachine, CosmicTextMeasurer, EmptyResourceResolver, HostDocumentFrameState,
+    HostFrameOutput, HostInteractionState, KeyCode, KeyModifiers, PointerButton, PointerButtons,
+    PointerEventKind, RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent,
+    RawWheelEvent, RenderTarget, RendererAdapter, UiDocument, UiFocusState, UiNodeId, UiPoint,
+    UiSize, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase, WidgetAction, WidgetActionBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -201,52 +198,7 @@ impl<State> Default for WebRuntimeHooks<State> {
 }
 
 pub fn web_runtime_capabilities() -> BackendCapabilities {
-    BackendCapabilities::new("web-runtime")
-        .adapter(BackendAdapterKind::Wgpu)
-        .input(InputCapabilities {
-            pointer_move: true,
-            pointer_button: true,
-            pointer_wheel: true,
-            wheel_phase: false,
-            high_resolution_wheel: true,
-            keyboard_press: true,
-            keyboard_release: true,
-            text_input: true,
-            text_ime: false,
-            modifiers: true,
-            raw_mouse_motion: false,
-            pointer_lock: false,
-            gamepad: false,
-            canvas_local_input: true,
-        })
-        .resources(ResourceCapabilities {
-            images: true,
-            icons: true,
-            textures: true,
-            thumbnails: true,
-            tinted_icons: true,
-            partial_texture_updates: true,
-        })
-        .layers(LayerCapabilities::STANDARD)
-        .services(PlatformServiceCapabilities {
-            clipboard_read: true,
-            clipboard_write: true,
-            open_url: true,
-            cursor_shape: true,
-            cursor_visible: true,
-            repaint: true,
-            ..PlatformServiceCapabilities::NONE
-        })
-        .rendering(RenderingCapabilities {
-            high_dpi: true,
-            offscreen: false,
-            deterministic_snapshots: false,
-            partial_updates: true,
-            webgpu_surface: true,
-            native_child_windows: false,
-            platform_overlays: false,
-        })
-        .accessibility(AccessibilityCapabilities::NONE)
+    BackendCapabilities::web_runtime()
 }
 
 pub async fn run(
@@ -345,7 +297,7 @@ struct WebRuntimeApp<State, Update, View> {
     async_platform_responses: Rc<RefCell<Vec<PlatformServiceResponse>>>,
     renderer: WgpuSurfaceRenderer<'static>,
     canvas: web_sys::HtmlCanvasElement,
-    text_measurer: ApproxTextMeasurer,
+    text_measurer: CosmicTextMeasurer,
     pending_input: Vec<RawInputEvent>,
     cursor: Option<UiPoint>,
     buttons: PointerButtons,
@@ -445,7 +397,7 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
             async_platform_responses: Rc::new(RefCell::new(Vec::new())),
             renderer,
             canvas,
-            text_measurer: ApproxTextMeasurer,
+            text_measurer: CosmicTextMeasurer::new(),
             pending_input: Vec::new(),
             cursor: None,
             buttons: PointerButtons::NONE,
@@ -798,10 +750,11 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
                         Ok(text) => ClipboardResponse::Text(text),
                         Err(error) => web_clipboard_error(error),
                     };
-                    responses.borrow_mut().push(PlatformServiceResponse::new(
-                        id,
-                        PlatformResponse::Clipboard(response),
-                    ));
+                    push_async_platform_response(
+                        &responses,
+                        PlatformServiceResponse::new(id, PlatformResponse::Clipboard(response)),
+                        "clipboard read response",
+                    );
                 });
                 None
             }
@@ -812,10 +765,11 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
                         Ok(()) => ClipboardResponse::Completed,
                         Err(error) => web_clipboard_error(error),
                     };
-                    responses.borrow_mut().push(PlatformServiceResponse::new(
-                        id,
-                        PlatformResponse::Clipboard(response),
-                    ));
+                    push_async_platform_response(
+                        &responses,
+                        PlatformServiceResponse::new(id, PlatformResponse::Clipboard(response)),
+                        "clipboard write response",
+                    );
                 });
                 None
             }
@@ -826,10 +780,11 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
                         Ok(()) => ClipboardResponse::Completed,
                         Err(error) => web_clipboard_error(error),
                     };
-                    responses.borrow_mut().push(PlatformServiceResponse::new(
-                        id,
-                        PlatformResponse::Clipboard(response),
-                    ));
+                    push_async_platform_response(
+                        &responses,
+                        PlatformServiceResponse::new(id, PlatformResponse::Clipboard(response)),
+                        "clipboard clear response",
+                    );
                 });
                 None
             }
@@ -843,11 +798,13 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
     }
 
     fn drain_async_platform_responses(&mut self) {
-        let responses = self
-            .async_platform_responses
-            .borrow_mut()
-            .drain(..)
-            .collect::<Vec<_>>();
+        let responses = match self.async_platform_responses.try_borrow_mut() {
+            Ok(mut responses) => responses.drain(..).collect::<Vec<_>>(),
+            Err(error) => {
+                log_web_runtime_reentry("async platform response drain", &error);
+                return;
+            }
+        };
         self.dispatch_platform_responses(&responses);
         self.pending_platform_responses.extend(responses);
     }
@@ -948,13 +905,43 @@ where
                     "pointercancel" => PointerEventKind::Cancel,
                     _ => PointerEventKind::Move,
                 };
-                app.borrow_mut().push_pointer(event, kind);
+                with_web_runtime_app_mut(&app, "pointer event", |app| {
+                    app.push_pointer(event, kind);
+                });
             },
         ));
         canvas.add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())?;
         closure.forget();
     }
     Ok(())
+}
+
+fn with_web_runtime_app_mut<State, Update, View>(
+    app: &Rc<RefCell<WebRuntimeApp<State, Update, View>>>,
+    context: &str,
+    apply: impl FnOnce(&mut WebRuntimeApp<State, Update, View>),
+) {
+    match app.try_borrow_mut() {
+        Ok(mut app) => apply(&mut app),
+        Err(error) => log_web_runtime_reentry(context, &error),
+    }
+}
+
+fn push_async_platform_response(
+    responses: &Rc<RefCell<Vec<PlatformServiceResponse>>>,
+    response: PlatformServiceResponse,
+    context: &str,
+) {
+    match responses.try_borrow_mut() {
+        Ok(mut responses) => responses.push(response),
+        Err(error) => log_web_runtime_reentry(context, &error),
+    }
+}
+
+fn log_web_runtime_reentry(context: &str, error: &BorrowMutError) {
+    web_sys::console::warn_1(&JsValue::from_str(&format!(
+        "Operad web runtime skipped {context}: callback re-entered while runtime state was already borrowed ({error})"
+    )));
 }
 
 fn register_wheel_events<State, Update, View>(
@@ -969,7 +956,9 @@ where
     let closure = Closure::<dyn FnMut(web_sys::WheelEvent)>::wrap(Box::new(
         move |event: web_sys::WheelEvent| {
             event.prevent_default();
-            app.borrow_mut().push_wheel(event);
+            with_web_runtime_app_mut(&app, "wheel event", |app| {
+                app.push_wheel(event);
+            });
         },
     ));
     canvas.add_event_listener_with_callback("wheel", closure.as_ref().unchecked_ref())?;
@@ -993,7 +982,9 @@ where
                 if key_code(&event).is_some() {
                     event.prevent_default();
                 }
-                app.borrow_mut().push_key(event, pressed);
+                with_web_runtime_app_mut(&app, "keyboard event", |app| {
+                    app.push_key(event, pressed);
+                });
             },
         ));
         window.add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())?;
@@ -1014,14 +1005,23 @@ where
     let next_callback = callback.clone();
     *next_callback.borrow_mut() = Some(Closure::<dyn FnMut(f64)>::wrap(Box::new(
         move |timestamp_ms| {
-            if let Err(error) = app.borrow_mut().render(timestamp_ms) {
+            let render_result = match app.try_borrow_mut() {
+                Ok(mut app) => Some(app.render(timestamp_ms)),
+                Err(error) => {
+                    log_web_runtime_reentry("animation frame", &error);
+                    None
+                }
+            };
+            if let Some(Err(error)) = render_result {
                 web_sys::console::error_1(&error);
-                let options = &app.borrow().options;
-                if let Some(status_id) = options.status_id.as_deref() {
-                    set_status(
-                        status_id,
-                        &format!("Render failed: {}", web_message(&error)),
-                    );
+                if let Ok(app) = app.try_borrow() {
+                    let options = &app.options;
+                    if let Some(status_id) = options.status_id.as_deref() {
+                        set_status(
+                            status_id,
+                            &format!("Render failed: {}", web_message(&error)),
+                        );
+                    }
                 }
             }
             if let Some(callback) = callback.borrow().as_ref() {

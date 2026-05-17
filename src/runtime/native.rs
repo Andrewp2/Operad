@@ -12,16 +12,15 @@ use crate::input::{
     RawPointerEvent, RawTextInputEvent, RawWheelEvent,
 };
 use crate::platform::{
-    BackendAdapterKind, BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode,
-    CursorRequest, CursorResponse, CursorShape, InputCapabilities, LayerCapabilities,
-    OpenUrlResponse, PixelSize, PlatformErrorCode, PlatformRequest, PlatformRequestIdAllocator,
-    PlatformResponse, PlatformServiceCapabilities, PlatformServiceError, PlatformServiceRequest,
-    PlatformServiceResponse, RenderingCapabilities, RepaintRequest, RepaintResponse,
-    ResourceCapabilities,
+    BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode, CursorRequest,
+    CursorResponse, CursorShape, LogicalRect, OpenUrlResponse, PixelSize, PlatformErrorCode,
+    PlatformRequest, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
+    PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, RepaintResponse,
+    TextImeRequest, TextImeResponse,
 };
 use crate::{
-    classify_render_error, process_document_frame, AccessibilityCapabilities, AccessibilityRole,
-    AnimationMachine, CanvasContent, CanvasHostCaptureId, CanvasRenderOutput, CanvasRenderReport,
+    classify_render_error, process_document_frame, AccessibilityRole, AnimationMachine,
+    CanvasContent, CanvasHostCaptureId, CanvasRenderOutput, CanvasRenderReport,
     CanvasRenderRequest, CosmicTextMeasurer, DirtyRegionSet, EmptyResourceResolver, ErrorKind,
     ErrorReport, FallbackDecision, HostDocumentFrameState, HostFrameOutput, HostNodeInteraction,
     KeyCode, KeyModifiers, RenderError, RenderTarget, RendererAdapter, RuntimeErrorKind, UiContent,
@@ -578,29 +577,7 @@ impl Default for NativeWindowOptions {
 }
 
 pub fn native_window_capabilities() -> BackendCapabilities {
-    BackendCapabilities::new("native-window")
-        .adapter(BackendAdapterKind::Wgpu)
-        .input(InputCapabilities::DESKTOP)
-        .resources(ResourceCapabilities {
-            images: true,
-            icons: true,
-            textures: true,
-            thumbnails: true,
-            tinted_icons: true,
-            partial_texture_updates: true,
-        })
-        .layers(LayerCapabilities::STANDARD)
-        .services(PlatformServiceCapabilities::DESKTOP)
-        .rendering(RenderingCapabilities {
-            high_dpi: true,
-            offscreen: false,
-            deterministic_snapshots: false,
-            partial_updates: true,
-            webgpu_surface: true,
-            native_child_windows: false,
-            platform_overlays: false,
-        })
-        .accessibility(AccessibilityCapabilities::NONE)
+    BackendCapabilities::native_window()
 }
 
 fn native_startup_report(
@@ -1074,6 +1051,9 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             PlatformRequest::Repaint(request) => {
                 PlatformResponse::Repaint(self.apply_repaint_request(request))
             }
+            PlatformRequest::TextIme(request) => {
+                PlatformResponse::TextIme(self.apply_text_ime_request(request))
+            }
             request => PlatformResponse::unsupported(request.kind()),
         }
     }
@@ -1173,6 +1153,29 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
                 } else {
                     RepaintResponse::Coalesced
                 }
+            }
+        }
+    }
+
+    fn apply_text_ime_request(&self, request: TextImeRequest) -> TextImeResponse {
+        let Some(window) = self.window.as_ref() else {
+            return TextImeResponse::Unsupported;
+        };
+        match request {
+            TextImeRequest::Activate(session) | TextImeRequest::Update(session) => {
+                window.set_ime_allowed(true);
+                set_native_ime_cursor_area(window, session.cursor_rect);
+                TextImeResponse::Activated {
+                    input: session.input,
+                }
+            }
+            TextImeRequest::Deactivate { input } | TextImeRequest::HideKeyboard { input } => {
+                window.set_ime_allowed(false);
+                TextImeResponse::Deactivated { input }
+            }
+            TextImeRequest::ShowKeyboard { input } => {
+                window.set_ime_allowed(true);
+                TextImeResponse::Activated { input }
             }
         }
     }
@@ -1599,6 +1602,19 @@ where
                     }
                 }
             }
+            winit::event::WindowEvent::Ime(ime) => {
+                if let Some(input) = native_text_input_for_ime_event(&ime, self.timestamp_millis())
+                {
+                    self.push_input(input);
+                } else if matches!(
+                    ime,
+                    winit::event::Ime::Preedit(_, _)
+                        | winit::event::Ime::Enabled
+                        | winit::event::Ime::Disabled
+                ) {
+                    self.request_redraw();
+                }
+            }
             winit::event::WindowEvent::RedrawRequested => {
                 if let Err(error) = self.render() {
                     self.fail_and_exit(event_loop, "rendering a frame", error);
@@ -1986,6 +2002,25 @@ fn cursor_error(error: impl ToString) -> CursorResponse {
         PlatformErrorCode::Failed,
         error.to_string(),
     ))
+}
+
+fn set_native_ime_cursor_area(window: &winit::window::Window, rect: LogicalRect) {
+    window.set_ime_cursor_area(
+        winit::dpi::LogicalPosition::new(rect.origin.x as f64, rect.origin.y as f64),
+        winit::dpi::LogicalSize::new(rect.size.width as f64, rect.size.height as f64),
+    );
+}
+
+fn native_text_input_for_ime_event(
+    event: &winit::event::Ime,
+    timestamp_millis: u64,
+) -> Option<RawInputEvent> {
+    match event {
+        winit::event::Ime::Commit(text) if !text.is_empty() => Some(RawInputEvent::Text(
+            RawTextInputEvent::new(text.as_str(), timestamp_millis),
+        )),
+        _ => None,
+    }
 }
 
 fn apply_native_clipboard_request(request: ClipboardRequest) -> ClipboardResponse {
@@ -2398,6 +2433,22 @@ mod tests {
             native_cursor_grab_mode(CursorGrabMode::Locked),
             winit::window::CursorGrabMode::Locked
         );
+    }
+
+    #[test]
+    fn native_ime_commit_events_become_text_input_events() {
+        let input = native_text_input_for_ime_event(&winit::event::Ime::Commit("é".into()), 42)
+            .expect("IME commit should produce text input");
+        assert_eq!(input, RawInputEvent::Text(RawTextInputEvent::new("é", 42)));
+        assert!(
+            native_text_input_for_ime_event(&winit::event::Ime::Commit(String::new()), 42)
+                .is_none()
+        );
+        assert!(native_text_input_for_ime_event(
+            &winit::event::Ime::Preedit("e".into(), Some((0, 1))),
+            42
+        )
+        .is_none());
     }
 
     #[test]

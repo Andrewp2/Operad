@@ -28,6 +28,7 @@ const APP_PLATFORM_REQUEST_ID_START: u64 = 1 << 63;
 pub struct PlatformServiceClient {
     request_ids: PlatformRequestIdAllocator,
     pending_requests: Vec<PlatformServiceRequest>,
+    in_flight_requests: Vec<PlatformRequestId>,
     responses: Vec<PlatformServiceResponse>,
 }
 
@@ -36,6 +37,7 @@ impl PlatformServiceClient {
         Self {
             request_ids: PlatformRequestIdAllocator::new(APP_PLATFORM_REQUEST_ID_START),
             pending_requests: Vec::new(),
+            in_flight_requests: Vec::new(),
             responses: Vec::new(),
         }
     }
@@ -44,6 +46,7 @@ impl PlatformServiceClient {
         let service_request = self.request_ids.allocate(request);
         let id = service_request.id;
         self.pending_requests.push(service_request);
+        self.in_flight_requests.push(id);
         id
     }
 
@@ -75,19 +78,38 @@ impl PlatformServiceClient {
         &self.pending_requests
     }
 
+    pub fn in_flight_requests(&self) -> &[PlatformRequestId] {
+        &self.in_flight_requests
+    }
+
     pub fn drain_requests(&mut self) -> Vec<PlatformServiceRequest> {
         std::mem::take(&mut self.pending_requests)
     }
 
-    pub fn record_response(&mut self, response: PlatformServiceResponse) {
+    pub fn record_response(&mut self, response: PlatformServiceResponse) -> bool {
+        let Some(index) = self
+            .in_flight_requests
+            .iter()
+            .position(|id| *id == response.id)
+        else {
+            return false;
+        };
+        self.in_flight_requests.remove(index);
         self.responses.push(response);
+        true
     }
 
     pub fn record_responses(
         &mut self,
         responses: impl IntoIterator<Item = PlatformServiceResponse>,
-    ) {
-        self.responses.extend(responses);
+    ) -> usize {
+        let mut count = 0;
+        for response in responses {
+            if self.record_response(response) {
+                count += 1;
+            }
+        }
+        count
     }
 
     pub fn responses(&self) -> &[PlatformServiceResponse] {
@@ -1111,6 +1133,7 @@ mod tests {
 
         assert!(write.0 >= APP_PLATFORM_REQUEST_ID_START);
         assert_eq!(open.0, write.0 + 1);
+        assert_eq!(client.in_flight_requests(), &[write, open]);
         let requests = client.drain_requests();
         assert_eq!(requests.len(), 2);
         assert!(client.pending_requests().is_empty());
@@ -1123,9 +1146,15 @@ mod tests {
             write,
             PlatformResponse::Clipboard(crate::platform::ClipboardResponse::Completed),
         );
-        client.record_response(response.clone());
+        let unrelated = completed_platform_response(
+            PlatformRequestId::new(1),
+            PlatformResponse::Clipboard(crate::platform::ClipboardResponse::Completed),
+        );
+        assert!(!client.record_response(unrelated));
+        assert!(client.record_response(response.clone()));
 
         assert_eq!(client.responses(), &[response.clone()]);
+        assert_eq!(client.in_flight_requests(), &[open]);
         assert_eq!(client.take_response(write), Some(response));
         assert!(client.take_response(open).is_none());
     }

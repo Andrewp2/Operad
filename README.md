@@ -85,7 +85,8 @@ cargo add operad
 
 - `widgets`: widget helpers.
 - `native-window`: native winit/WGPU windows.
-- `web-runtime`: WASM/WebGPU runtime entry points.
+- `web-runtime`: WASM/WebGPU runtime entry points with cosmic-text layout
+  measurement.
 - `web-showcase`: web runtime plus showcase widgets.
 - `wgpu`: WGPU rendering.
 - `accesskit-winit`: AccessKit support for winit hosts.
@@ -121,9 +122,9 @@ Use the fast gate while iterating:
 scripts/test-fast.sh
 ```
 
-That runs all-target/all-feature compilation, all-feature library tests, and the
-no-default compile gate without running perf smoke or WGPU snapshot integration
-tests.
+That runs formatting, locked all-target/all-feature compilation, all-feature
+library tests, and the locked no-default compile gate without running perf smoke
+or WGPU snapshot integration tests.
 
 Focused cargo aliases are available for common loops:
 
@@ -139,6 +140,9 @@ Run the full local gate before release-level handoff:
 ```bash
 scripts/test-full.sh
 ```
+
+That adds the full all-feature test suite and the supported WASM showcase check
+for `wasm32-unknown-unknown`.
 
 ## Learn More
 

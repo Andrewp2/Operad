@@ -66,6 +66,7 @@ pub struct HostNodeInteraction {
     pub text_editing: bool,
     pub wheel_targeted: bool,
     pub shortcut_targeted: bool,
+    pub input_consumed: bool,
 }
 
 impl HostNodeInteraction {
@@ -77,6 +78,7 @@ impl HostNodeInteraction {
             || self.text_editing
             || self.wheel_targeted
             || self.shortcut_targeted
+            || self.input_consumed
     }
 }
 
@@ -90,6 +92,8 @@ pub struct HostInteractionState {
     pub text_ime: Option<TextImeSession>,
     pub text_target: Option<UiNodeId>,
     pub wheel_target: Option<UiNodeId>,
+    pub input_consumed: bool,
+    pub input_consumed_by: Option<UiNodeId>,
     pub active_shortcut_scopes: Vec<CommandScope>,
     pub shortcut_route: Option<HostShortcutRoute>,
     pub canvas_host_capture: CanvasHostCaptureState,
@@ -111,6 +115,8 @@ impl HostInteractionState {
         self.focused = result.focused;
         self.pressed = result.pressed;
         self.wheel_target = result.scrolled;
+        self.input_consumed = result.consumed;
+        self.input_consumed_by = result.consumed_by;
     }
 
     pub fn apply_gesture(&mut self, event: &GestureEvent) {
@@ -268,6 +274,7 @@ impl HostInteractionState {
                 .shortcut_route
                 .as_ref()
                 .is_some_and(|route| route.target == Some(node) && route.is_routed()),
+            input_consumed: self.input_consumed_by == Some(node),
         }
     }
 }
@@ -1397,11 +1404,16 @@ mod tests {
             pressed: Some(hovered),
             clicked: None,
             scrolled: Some(scrolled),
+            consumed: true,
+            consumed_by: Some(scrolled),
         });
 
         assert!(state.node_state(hovered).hovered);
         assert!(state.node_state(focused).focused);
         assert!(state.node_state(scrolled).wheel_targeted);
+        assert!(state.node_state(scrolled).input_consumed);
+        assert!(state.input_consumed);
+        assert_eq!(state.input_consumed_by, Some(scrolled));
 
         state.apply_gesture(&drag(dragged, GesturePhase::Begin));
         let drag_state = state.node_state(dragged);

@@ -1691,6 +1691,7 @@ pub enum BackendCapabilityProfile {
     CanvasPointerEditing,
     Flycam3d,
     DockWorkspace,
+    PlatformDragDrop,
     AccessibleApp,
 }
 
@@ -1703,6 +1704,7 @@ impl BackendCapabilityProfile {
             Self::CanvasPointerEditing => "canvas pointer editing",
             Self::Flycam3d => "3D flycam",
             Self::DockWorkspace => "docked workspace",
+            Self::PlatformDragDrop => "platform drag and drop",
             Self::AccessibleApp => "accessible app",
         }
     }
@@ -1766,10 +1768,10 @@ impl BackendCapabilityProfile {
                 BackendCapabilityRequirement::Input(InputCapabilityKind::PointerWheel),
                 BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardPress),
                 BackendCapabilityRequirement::Layer(UiLayer::AppOverlay),
-                BackendCapabilityRequirement::PlatformService(
-                    PlatformServiceCapabilityKind::DragDrop,
-                ),
             ],
+            Self::PlatformDragDrop => vec![BackendCapabilityRequirement::PlatformService(
+                PlatformServiceCapabilityKind::DragDrop,
+            )],
             Self::AccessibleApp => vec![
                 BackendCapabilityRequirement::Accessibility(AccessibilityRequestKind::PublishTree),
                 BackendCapabilityRequirement::Accessibility(AccessibilityRequestKind::MoveFocus),
@@ -1915,6 +1917,112 @@ impl BackendCapabilities {
             rendering: RenderingCapabilities::NONE,
             accessibility: AccessibilityCapabilities::NONE,
         }
+    }
+
+    pub fn native_window() -> Self {
+        Self::new("native-window")
+            .adapter(BackendAdapterKind::Wgpu)
+            .input(InputCapabilities::DESKTOP)
+            .resources(ResourceCapabilities {
+                images: true,
+                icons: true,
+                textures: true,
+                thumbnails: true,
+                tinted_icons: true,
+                partial_texture_updates: true,
+            })
+            .layers(LayerCapabilities::STANDARD)
+            .services(PlatformServiceCapabilities {
+                drag_drop: false,
+                ..PlatformServiceCapabilities::DESKTOP
+            })
+            .rendering(RenderingCapabilities {
+                high_dpi: true,
+                offscreen: false,
+                deterministic_snapshots: false,
+                partial_updates: true,
+                webgpu_surface: true,
+                native_child_windows: false,
+                platform_overlays: false,
+            })
+            .accessibility(AccessibilityCapabilities::NONE)
+    }
+
+    pub fn web_runtime() -> Self {
+        Self::new("web-runtime")
+            .adapter(BackendAdapterKind::Wgpu)
+            .input(InputCapabilities {
+                pointer_move: true,
+                pointer_button: true,
+                pointer_wheel: true,
+                wheel_phase: false,
+                high_resolution_wheel: true,
+                keyboard_press: true,
+                keyboard_release: true,
+                text_input: true,
+                text_ime: false,
+                modifiers: true,
+                raw_mouse_motion: false,
+                pointer_lock: false,
+                gamepad: false,
+                canvas_local_input: true,
+            })
+            .resources(ResourceCapabilities {
+                images: true,
+                icons: true,
+                textures: true,
+                thumbnails: true,
+                tinted_icons: true,
+                partial_texture_updates: true,
+            })
+            .layers(LayerCapabilities::STANDARD)
+            .services(PlatformServiceCapabilities {
+                clipboard_read: true,
+                clipboard_write: true,
+                open_url: true,
+                cursor_shape: true,
+                cursor_visible: true,
+                repaint: true,
+                ..PlatformServiceCapabilities::NONE
+            })
+            .rendering(RenderingCapabilities {
+                high_dpi: true,
+                offscreen: false,
+                deterministic_snapshots: false,
+                partial_updates: true,
+                webgpu_surface: true,
+                native_child_windows: false,
+                platform_overlays: false,
+            })
+            .accessibility(AccessibilityCapabilities::NONE)
+    }
+
+    pub fn test_host() -> Self {
+        Self::new("operad-test-host")
+            .adapter(BackendAdapterKind::Test)
+            .input(InputCapabilities::STANDARD)
+            .resources(ResourceCapabilities::ALL)
+            .layers(LayerCapabilities::STANDARD)
+            .services(PlatformServiceCapabilities {
+                clipboard_read: true,
+                clipboard_write: true,
+                open_url: true,
+                drag_drop: true,
+                cursor_shape: true,
+                cursor_visible: true,
+                repaint: true,
+                ..PlatformServiceCapabilities::NONE
+            })
+            .rendering(RenderingCapabilities {
+                high_dpi: false,
+                offscreen: true,
+                deterministic_snapshots: true,
+                partial_updates: true,
+                webgpu_surface: false,
+                native_child_windows: false,
+                platform_overlays: false,
+            })
+            .accessibility(AccessibilityCapabilities::SCREEN_READER)
     }
 
     pub const fn adapter(mut self, adapter: BackendAdapterKind) -> Self {
@@ -2377,6 +2485,85 @@ mod tests {
                 |diagnostic| diagnostic.decision == CapabilityDecision::EmitDiagnostic
                     && diagnostic.remediation.contains("fallback")
             ));
+    }
+
+    #[test]
+    fn built_in_host_capability_matrix_covers_native_web_and_test_hosts() {
+        let native = BackendCapabilities::native_window();
+        assert_eq!(native.name, "native-window");
+        assert_eq!(native.adapter, BackendAdapterKind::Wgpu);
+        assert!(native.supports_profile(BackendCapabilityProfile::BasicUi));
+        assert!(native.supports_profile(BackendCapabilityProfile::TextEditing));
+        assert!(native.supports_profile(BackendCapabilityProfile::CommandHotkeys));
+        assert!(native.supports_profile(BackendCapabilityProfile::CanvasPointerEditing));
+        assert!(native.supports_profile(BackendCapabilityProfile::Flycam3d));
+        assert!(native.supports_profile(BackendCapabilityProfile::DockWorkspace));
+        assert!(!native.supports_profile(BackendCapabilityProfile::PlatformDragDrop));
+        assert!(!native.supports_profile(BackendCapabilityProfile::AccessibleApp));
+
+        let web = BackendCapabilities::web_runtime();
+        assert_eq!(web.name, "web-runtime");
+        assert_eq!(web.adapter, BackendAdapterKind::Wgpu);
+        assert!(web.supports_input(InputCapabilityKind::KeyboardRelease));
+        assert!(web.supports_profile(BackendCapabilityProfile::BasicUi));
+        assert!(web.supports_profile(BackendCapabilityProfile::TextEditing));
+        assert!(web.supports_profile(BackendCapabilityProfile::CommandHotkeys));
+        assert!(web.supports_profile(BackendCapabilityProfile::CanvasPointerEditing));
+        assert!(!web.supports_profile(BackendCapabilityProfile::Flycam3d));
+        assert!(web.supports_profile(BackendCapabilityProfile::DockWorkspace));
+        assert!(!web.supports_profile(BackendCapabilityProfile::PlatformDragDrop));
+
+        let web_flycam_missing = unsupported_requirement_labels(
+            &web,
+            BackendCapabilityProfile::Flycam3d,
+            CapabilityFallback::EmitDiagnostic,
+        );
+        assert_eq!(
+            web_flycam_missing,
+            vec![
+                "input:raw mouse motion".to_string(),
+                "input:pointer lock".to_string(),
+                "platform:cursor grab".to_string(),
+            ]
+        );
+
+        let web_platform_drag_drop_missing = unsupported_requirement_labels(
+            &web,
+            BackendCapabilityProfile::PlatformDragDrop,
+            CapabilityFallback::UseFallback,
+        );
+        assert_eq!(
+            web_platform_drag_drop_missing,
+            vec!["platform:drag and drop".to_string()]
+        );
+
+        let test = BackendCapabilities::test_host();
+        assert_eq!(test.name, "operad-test-host");
+        assert_eq!(test.adapter, BackendAdapterKind::Test);
+        assert!(test.rendering.deterministic_snapshots);
+        assert!(test.supports_profile(BackendCapabilityProfile::BasicUi));
+        assert!(test.supports_profile(BackendCapabilityProfile::TextEditing));
+        assert!(test.supports_profile(BackendCapabilityProfile::CommandHotkeys));
+        assert!(test.supports_profile(BackendCapabilityProfile::DockWorkspace));
+        assert!(test.supports_profile(BackendCapabilityProfile::PlatformDragDrop));
+        assert!(test.supports_profile(BackendCapabilityProfile::AccessibleApp));
+        assert!(!test.supports_profile(BackendCapabilityProfile::CanvasPointerEditing));
+        assert!(!test.supports_profile(BackendCapabilityProfile::Flycam3d));
+    }
+
+    fn unsupported_requirement_labels(
+        backend: &BackendCapabilities,
+        profile: BackendCapabilityProfile,
+        fallback: CapabilityFallback,
+    ) -> Vec<String> {
+        backend
+            .diagnose_profile(profile, fallback)
+            .into_iter()
+            .filter(|diagnostic| {
+                !diagnostic.supported && diagnostic.decision != CapabilityDecision::UseFeature
+            })
+            .map(|diagnostic| diagnostic.requirement.label())
+            .collect()
     }
 
     #[test]

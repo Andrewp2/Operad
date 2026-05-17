@@ -65,6 +65,10 @@ impl std::error::Error for TestFailure {}
 
 pub type TestResult<T = ()> = Result<T, TestFailure>;
 
+pub fn test_host_capabilities() -> BackendCapabilities {
+    BackendCapabilities::test_host()
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmptyResourceResolver;
 
@@ -765,6 +769,13 @@ impl EventReplayReport {
             .collect()
     }
 
+    pub fn consumed_nodes(&self) -> Vec<UiNodeId> {
+        self.steps
+            .iter()
+            .filter_map(|step| step.result.as_ref()?.consumed_by)
+            .collect()
+    }
+
     pub fn require_clicked(&self, node: UiNodeId) -> TestResult {
         require_replay_node("clicked", node, self.clicked_nodes())
     }
@@ -775,6 +786,26 @@ impl EventReplayReport {
 
     pub fn require_scrolled(&self, node: UiNodeId) -> TestResult {
         require_replay_node("scrolled", node, self.scrolled_nodes())
+    }
+
+    pub fn require_consumed_by(&self, node: UiNodeId) -> TestResult {
+        require_replay_node("consumed by", node, self.consumed_nodes())
+    }
+
+    pub fn require_step_consumed_by(&self, label: &str, node: UiNodeId) -> TestResult {
+        let step = self.step(label)?;
+        if step
+            .result
+            .as_ref()
+            .is_some_and(|result| result.consumed && result.consumed_by == Some(node))
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected event replay step `{label}` to be consumed by {node:?}, got {:?}",
+                step.result
+            )))
+        }
     }
 
     pub fn require_step_count(&self, expected: usize) -> TestResult {
@@ -825,6 +856,17 @@ impl EventReplayReport {
         } else {
             Err(TestFailure::new(format!(
                 "expected no scrolled nodes, got {scrolled:?}"
+            )))
+        }
+    }
+
+    pub fn require_no_consumption(&self) -> TestResult {
+        let consumed = self.consumed_nodes();
+        if consumed.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no consumed events, got {consumed:?}"
             )))
         }
     }
@@ -1394,6 +1436,7 @@ pub fn is_blocking_just_work_warning(warning: &AuditWarning) -> bool {
             | AuditWarning::TextClipped { .. }
             | AuditWarning::ScrollRangeHidden { .. }
             | AuditWarning::ScrollOffsetOutOfRange { .. }
+            | AuditWarning::ScrollbarVisibleWithoutRange { .. }
             | AuditWarning::NodeOutsideRoot { .. }
             | AuditWarning::PaintItemEmptyClip { .. }
     )
@@ -1894,7 +1937,8 @@ impl<'a> JustWorkAssertions<'a> {
             Ok(())
         } else {
             Err(TestFailure::new(format!(
-                "expected no blocking Just Work audit warnings, got {warnings:?}"
+                "expected no blocking Just Work audit warnings:\n{}",
+                format_audit_warning_summaries(warnings)
             )))
         }
     }
@@ -1911,6 +1955,7 @@ impl<'a> JustWorkAssertions<'a> {
                 warning,
                 AuditWarning::ScrollRangeHidden { .. }
                     | AuditWarning::ScrollOffsetOutOfRange { .. }
+                    | AuditWarning::ScrollbarVisibleWithoutRange { .. }
             )
         })
     }
@@ -1943,10 +1988,20 @@ impl<'a> JustWorkAssertions<'a> {
             Ok(())
         } else {
             Err(TestFailure::new(format!(
-                "expected no blocking Just Work {label} warnings, got {warnings:?}"
+                "expected no blocking Just Work {label} warnings:\n{}",
+                format_audit_warning_summaries(warnings)
             )))
         }
     }
+}
+
+fn format_audit_warning_summaries(warnings: Vec<&AuditWarning>) -> String {
+    warnings
+        .into_iter()
+        .enumerate()
+        .map(|(index, warning)| format!("{}. {}", index + 1, warning.diagnostic_summary()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
@@ -3160,9 +3215,10 @@ impl<'a> PlatformAssertions<'a> {
             .find(|response| platform_response_is_unsupported(&response.response))
         {
             Err(TestFailure::new(format!(
-                "platform response id {} kind {:?} was unsupported",
+                "platform response id {} kind {:?} was unsupported{}",
                 response.id.0,
-                response.kind()
+                response.kind(),
+                platform_response_diagnostic_suffix(response)
             )))
         } else {
             Ok(())
@@ -3174,11 +3230,12 @@ impl<'a> PlatformAssertions<'a> {
             platform_response_error(&response.response).map(|error| (response, error))
         }) {
             Err(TestFailure::new(format!(
-                "platform response id {} kind {:?} returned {:?}: {}",
+                "platform response id {} kind {:?} returned {:?}: {}{}",
                 response.id.0,
                 response.kind(),
                 error.code,
-                error.message
+                error.message,
+                platform_response_diagnostic_suffix(response)
             )))
         } else {
             Ok(())
@@ -3204,6 +3261,12 @@ fn platform_response_error(response: &PlatformResponse) -> Option<&PlatformServi
         | PlatformResponse::Repaint(RepaintResponse::Error(error)) => Some(error),
         _ => None,
     }
+}
+
+fn platform_response_diagnostic_suffix(response: &PlatformServiceResponse) -> String {
+    crate::errors::classify_platform_service_response(response)
+        .map(|report| format!("\n{report}"))
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3455,6 +3518,61 @@ pub struct FrameTimingSection {
     pub duration: Duration,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameTimingSectionSummary {
+    pub name: String,
+    pub sample_count: usize,
+    pub total: Duration,
+    pub average: Duration,
+    pub max: Duration,
+    pub total_fraction: f64,
+}
+
+impl FrameTimingSectionSummary {
+    fn new(
+        name: impl Into<String>,
+        sample_count: usize,
+        total: Duration,
+        max: Duration,
+        all_sections_total: Duration,
+    ) -> Self {
+        let average = if sample_count == 0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(total.as_secs_f64() / sample_count as f64)
+        };
+        let total_fraction = if all_sections_total.is_zero() {
+            0.0
+        } else {
+            total.as_secs_f64() / all_sections_total.as_secs_f64()
+        };
+        Self {
+            name: name.into(),
+            sample_count,
+            total,
+            average,
+            max,
+            total_fraction,
+        }
+    }
+
+    pub fn percent_of_total(&self) -> f64 {
+        self.total_fraction * 100.0
+    }
+
+    pub fn diagnostic_summary(&self) -> String {
+        format!(
+            "{}: samples={}, total={:?}, average={:?}, max={:?}, share={:.1}%",
+            self.name,
+            self.sample_count,
+            self.total,
+            self.average,
+            self.max,
+            self.percent_of_total()
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameTiming {
     pub sections: Vec<FrameTimingSection>,
@@ -3482,6 +3600,31 @@ impl FrameTiming {
             .iter()
             .find(|section| section.name == name)
             .map(|section| section.duration)
+    }
+
+    pub fn section_fraction(&self, name: &str) -> Option<f64> {
+        let total = self.total();
+        if total.is_zero() {
+            return self.duration(name).map(|_| 0.0);
+        }
+        self.duration(name)
+            .map(|duration| duration.as_secs_f64() / total.as_secs_f64())
+    }
+
+    pub fn dominant_section(&self) -> Option<FrameTimingSectionSummary> {
+        let total = self.total();
+        self.sections
+            .iter()
+            .max_by_key(|section| section.duration)
+            .map(|section| {
+                FrameTimingSectionSummary::new(
+                    section.name.clone(),
+                    1,
+                    section.duration,
+                    section.duration,
+                    total,
+                )
+            })
     }
 
     pub fn within_budget(&self, budget: Duration) -> bool {
@@ -3527,8 +3670,13 @@ impl<'a> FrameTimingAssertions<'a> {
         if total <= budget {
             Ok(total)
         } else {
+            let dominant = self
+                .timing
+                .dominant_section()
+                .map(|summary| summary.diagnostic_summary())
+                .unwrap_or_else(|| "no sections recorded".to_string());
             Err(TestFailure::new(format!(
-                "frame timing total {total:?} exceeded budget {budget:?}"
+                "frame timing total {total:?} exceeded budget {budget:?}; dominant section: {dominant}"
             )))
         }
     }
@@ -3623,6 +3771,42 @@ impl FrameTimingSeries {
         }
         samples
     }
+
+    pub fn section_summaries(&self) -> Vec<FrameTimingSectionSummary> {
+        let all_sections_total = self
+            .frames
+            .iter()
+            .flat_map(|frame| frame.sections.iter())
+            .map(|section| section.duration)
+            .sum();
+        let mut aggregates = Vec::<(String, usize, Duration, Duration)>::new();
+        for frame in &self.frames {
+            for section in &frame.sections {
+                if let Some((_, sample_count, total, max)) = aggregates
+                    .iter_mut()
+                    .find(|(name, _, _, _)| name == &section.name)
+                {
+                    *sample_count += 1;
+                    *total += section.duration;
+                    *max = (*max).max(section.duration);
+                } else {
+                    aggregates.push((section.name.clone(), 1, section.duration, section.duration));
+                }
+            }
+        }
+        aggregates
+            .into_iter()
+            .map(|(name, sample_count, total, max)| {
+                FrameTimingSectionSummary::new(name, sample_count, total, max, all_sections_total)
+            })
+            .collect()
+    }
+
+    pub fn dominant_section(&self) -> Option<FrameTimingSectionSummary> {
+        self.section_summaries()
+            .into_iter()
+            .max_by_key(|summary| summary.total)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3661,7 +3845,22 @@ impl<'a> FrameTimingSeriesAssertions<'a> {
     }
 
     pub fn require_total_average_within(&self, budget: Duration) -> TestResult<Duration> {
-        PerformanceAssertions::new(&self.series.total_samples()).require_average_within(budget)
+        let samples = self.series.total_samples();
+        let average = samples.average().ok_or_else(|| {
+            TestFailure::new(format!(
+                "{} has no frame timing samples",
+                self.series.name()
+            ))
+        })?;
+        if average <= budget {
+            Ok(average)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} total average {average:?} exceeded budget {budget:?}; dominant section: {}",
+                self.series.name(),
+                dominant_section_summary(self.series)
+            )))
+        }
     }
 
     pub fn require_total_max_within(&self, budget: Duration) -> TestResult<Duration> {
@@ -3704,6 +3903,34 @@ impl<'a> FrameTimingSeriesAssertions<'a> {
         PerformanceAssertions::new(&self.series.section_samples(section_name))
             .require_percentile_within(percentile, budget)
     }
+
+    pub fn require_dominant_section(
+        &self,
+        expected_section_name: &str,
+    ) -> TestResult<FrameTimingSectionSummary> {
+        let summary = self.series.dominant_section().ok_or_else(|| {
+            TestFailure::new(format!(
+                "{} has no frame timing sections",
+                self.series.name()
+            ))
+        })?;
+        if summary.name == expected_section_name {
+            Ok(summary)
+        } else {
+            Err(TestFailure::new(format!(
+                "{} expected dominant frame timing section `{expected_section_name}`, got {}",
+                self.series.name(),
+                summary.diagnostic_summary()
+            )))
+        }
+    }
+}
+
+fn dominant_section_summary(series: &FrameTimingSeries) -> String {
+    series
+        .dominant_section()
+        .map(|summary| summary.diagnostic_summary())
+        .unwrap_or_else(|| "no sections recorded".to_string())
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -4036,6 +4263,61 @@ mod tests {
         assert!(report.require_clicked(scroll_area).is_err());
         assert!(report.step("empty.drag.move.0").is_ok());
         assert!(report.step("missing").is_err());
+    }
+
+    #[test]
+    fn event_replay_reports_topmost_wheel_consumption_without_scroll() {
+        let mut document = UiDocument::new(root_style(160.0, 140.0));
+        let back_scroll = document.add_child(
+            document.root,
+            UiNode::container(
+                "back.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 60.0)).style,
+                    clip: ClipBehavior::Clip,
+                    z_index: 1,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        document.add_child(
+            back_scroll,
+            UiNode::container("back.content", fixed_style(100.0, 140.0)),
+        );
+        let front = document.add_child(
+            document.root,
+            UiNode::container(
+                "front.panel",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 120.0, 90.0)).style,
+                    clip: ClipBehavior::Clip,
+                    z_index: 10,
+                    ..Default::default()
+                },
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(28, 34, 44, 255), None, 0.0)),
+        );
+        document
+            .compute_layout(UiSize::new(160.0, 140.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let report = EventReplay::new()
+            .wheel(
+                "front.wheel",
+                UiPoint::new(30.0, 30.0),
+                UiPoint::new(0.0, 30.0),
+            )
+            .run(&mut document);
+
+        report.require_no_scrolls().expect("no lower scroll");
+        report
+            .require_consumed_by(front)
+            .expect("front panel consumed wheel");
+        report
+            .require_step_consumed_by("front.wheel", front)
+            .expect("front wheel step consumption");
+        assert_eq!(document.scroll_state(back_scroll).unwrap().offset.y, 0.0);
     }
 
     #[test]
@@ -4837,7 +5119,17 @@ mod tests {
             .expect("layout");
 
         let audit = JustWorkAssertions::new(&document);
-        assert!(audit.require_clean().is_err());
+        let clean_error = audit
+            .require_clean()
+            .expect_err("scroll failure should produce Just Work summary");
+        assert!(clean_error
+            .message
+            .contains("reason: scroll content extends beyond a disabled axis"));
+        assert!(clean_error.message.contains("name: vertical.scroll"));
+        assert!(clean_error.message.contains("measured: axis=Horizontal"));
+        assert!(clean_error
+            .message
+            .contains("hint: enable scrolling on the overflowing axis"));
         assert!(audit.require_no_scroll_failures().is_err());
         audit
             .require_no_text_clipping()
@@ -5365,9 +5657,15 @@ mod tests {
                     "clipboard blocked",
                 ))),
             );
-        assert!(PlatformAssertions::from_host_frame(&error_output)
+        let error_message = PlatformAssertions::from_host_frame(&error_output)
             .require_no_error_responses()
-            .is_err());
+            .expect_err("denied clipboard should fail")
+            .to_string();
+        assert!(error_message.contains("next_step"), "{error_message}");
+        assert!(
+            error_message.contains("clipboard blocked"),
+            "{error_message}"
+        );
     }
 
     #[test]
@@ -5392,9 +5690,18 @@ mod tests {
                 .expect("unsupported response"),
             &unsupported
         );
-        assert!(unsupported_platform
+        let unsupported_message = unsupported_platform
             .require_no_unsupported_responses()
-            .is_err());
+            .expect_err("unsupported clipboard should fail")
+            .to_string();
+        assert!(
+            unsupported_message.contains("platform_request_id: 22"),
+            "{unsupported_message}"
+        );
+        assert!(
+            unsupported_message.contains("next_step"),
+            "{unsupported_message}"
+        );
 
         let supported_platform = PlatformAssertions::new(
             std::slice::from_ref(&request),
@@ -5544,6 +5851,11 @@ mod tests {
             .section("render", Duration::from_millis(8));
         assert_eq!(timing.duration("paint"), Some(Duration::from_millis(4)));
         assert_eq!(timing.total(), Duration::from_millis(15));
+        assert_eq!(timing.section_fraction("paint"), Some(4.0_f64 / 15.0_f64));
+        assert_eq!(
+            timing.dominant_section().expect("dominant section").name,
+            "render"
+        );
         assert!(timing.within_budget(Duration::from_millis(16)));
         assert!(!timing.within_budget(Duration::from_millis(10)));
 
@@ -5585,11 +5897,19 @@ mod tests {
         assert_eq!(series.total_samples().samples().len(), 2);
         assert_eq!(series.section_samples("layout").samples().len(), 2);
         assert_eq!(series.section_samples("input").samples().len(), 0);
+        let dominant = series.dominant_section().expect("series dominant section");
+        assert_eq!(dominant.name, "render");
+        assert_eq!(dominant.sample_count, 2);
+        assert_eq!(dominant.total, Duration::from_millis(15));
+        assert!(dominant.diagnostic_summary().contains("share=50.0%"));
 
         let series_assertions = FrameTimingSeriesAssertions::new(&series);
         series_assertions
             .require_frame_count(2)
             .expect("frame count");
+        series_assertions
+            .require_dominant_section("render")
+            .expect("dominant section");
         series_assertions
             .require_section_sample_count("paint", 2)
             .expect("paint sample count");
@@ -5624,6 +5944,15 @@ mod tests {
         assert!(series_assertions
             .require_section_percentile_within("paint", 90.0, Duration::from_millis(5))
             .is_err());
+        let average_error = series_assertions
+            .require_total_average_within(Duration::from_millis(14))
+            .expect_err("average budget should include dominant section");
+        assert!(average_error.message.contains("dominant section: render"));
+        assert!(series_assertions
+            .require_dominant_section("paint")
+            .expect_err("wrong dominant section")
+            .message
+            .contains("got render"));
 
         let mut samples = PerformanceSamples::new("render smoke");
         samples.push(Duration::from_millis(4));

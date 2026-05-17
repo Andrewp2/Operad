@@ -39,8 +39,13 @@ preferred v8 product API unless a specific type documents otherwise.
   requests.
 - Host capability records and product-level `BackendCapabilityProfile` checks,
   so apps can gate command hotkeys, text editing, canvas editing, flycam input,
-  dock workspaces, and accessibility support without hand-copying low-level
-  requirements.
+  dock workspaces, OS/platform drag-drop, and accessibility support without
+  hand-copying low-level requirements. The built-in native, web, and test-host
+  capability profiles are part of this stable contract.
+- Runtime platform service APIs: `PlatformRequest`, `PlatformServiceRequest`,
+  `PlatformServiceResponse`, `PlatformServiceClient`, and native/web runtime
+  hooks for draining app-owned requests and delivering clipboard, open-URL,
+  cursor, repaint, and other service responses.
 - Virtualization planner records for list, table, tree, and grid surfaces,
   including virtual ranges, measured extents, sticky regions, focus/selection
   preservation, stable tree focus preservation by item ID, scroll-anchor
@@ -61,7 +66,11 @@ harnesses, but they should not be exposed as downstream product data contracts
 without a local compatibility wrapper.
 
 - `DebugInspectorSnapshot`, layout/paint/intrinsic-size snapshots, hit traces,
-  audit warnings, scroll diagnostics, and inspector panel widgets.
+  audit warnings, scroll and scrollbar-range diagnostics, and inspector panel
+  widgets.
+- `HostInteractionState` and `HostNodeInteraction` diagnostics for hovered,
+  focused, captured, wheel-targeted, shortcut-targeted, and input-consumed
+  state.
 - `accessibility_debug_overlay`, `accessibility_overlay_panel`, and keyboard
   navigation trace records used to inspect roles, labels, focus order, modal
   scopes, actions, relations, and command shortcut routing.
@@ -74,9 +83,11 @@ without a local compatibility wrapper.
   and debug theme snapshots.
 - `CanvasHostCaptureDiagnosticReport`, capture lifecycle diagnostics, denied
   cursor-response reports, and host capability explanations.
-- `ErrorReport`, render/platform error classifiers, and
-  `runtime_error_overlay` for turning recoverable or fatal runtime failures into
-  actionable in-app debug surfaces.
+- `ErrorReport`, render/platform error classifiers, platform-service response
+  classifiers, and `runtime_error_overlay` for turning recoverable or fatal
+  runtime failures into actionable in-app debug surfaces.
+- `PopupLayout::diagnostic_summary` and its placement fields for inspecting
+  overlay side, flip, clamp, and viewport-overflow decisions.
 - `VirtualizationDiagnostics`, materialization budget reports, overscan/range
   summaries, and large-data performance risk messages.
 - `layout_animation_transitions`,
@@ -97,7 +108,8 @@ The replay and scenario utilities are public because they are valuable to
 consumers, but they are primarily test infrastructure:
 
 - `InteractionRecorder`, `EventReplay`, direct command replay, long wheel
-  scroll helpers, platform-response replay, and window-resize replay.
+  scroll helpers, topmost input-consumption assertions, platform-response
+  replay, and window-resize replay.
 - `ScenarioHarness`, frame reports, render assertions, layout assertions,
   scroll/focus assertions, snapshot helpers, and performance sample assertions.
 - Widget state matrix helpers and showcase regression tests outside

@@ -1029,7 +1029,9 @@ pub fn floating_desktop(
     for placement in placements {
         let descriptor = &windows[placement.source_index];
         let node = add_floating_window(document, root, &name, descriptor, &placement, &options);
-        build_window(document, node.content, descriptor);
+        if !descriptor.collapsed {
+            build_window(document, node.content, descriptor);
+        }
         normalize_window_subtree_z(
             document,
             node.root,
@@ -2318,6 +2320,10 @@ mod tests {
         let window = document.node(nodes.windows[0].root).layout.rect;
         assert!(window.width < 300.0, "{window:?}");
         assert_eq!(window.height, options.title_bar_height);
+        assert!(
+            document.node(nodes.windows[0].content).children.is_empty(),
+            "collapsed windows should not publish hidden body children to layout/audit"
+        );
     }
 
     #[test]

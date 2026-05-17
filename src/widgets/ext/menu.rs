@@ -99,6 +99,27 @@ pub struct PopupLayout {
     pub rect: UiRect,
     pub side: PopupSide,
     pub flipped: bool,
+    pub primary_rect: UiRect,
+    pub unconstrained_rect: UiRect,
+    pub overflow_before_constrain: f32,
+    pub overflow_after_constrain: f32,
+    pub constrained: bool,
+}
+
+impl PopupLayout {
+    pub fn diagnostic_summary(&self) -> String {
+        format!(
+            "popup placement side={:?} flipped={} constrained={} primary={:?} unconstrained={:?} final={:?} overflow_before={:.2} overflow_after={:.2}",
+            self.side,
+            self.flipped,
+            self.constrained,
+            self.primary_rect,
+            self.unconstrained_rect,
+            self.rect,
+            self.overflow_before_constrain,
+            self.overflow_after_constrain
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,14 +198,23 @@ pub fn place_popup(
         }
     }
 
+    let unconstrained_rect = rect;
+    let overflow_before_constrain =
+        layout::rect_overflow_amount(unconstrained_rect, inner_viewport);
     if placement.constrain_to_viewport {
         rect = layout::contain_rect(rect, inner_viewport, UiSize::ZERO);
     }
+    let overflow_after_constrain = layout::rect_overflow_amount(rect, inner_viewport);
 
     PopupLayout {
         rect,
         side,
         flipped,
+        primary_rect: primary,
+        unconstrained_rect,
+        overflow_before_constrain,
+        overflow_after_constrain,
+        constrained: rect != unconstrained_rect,
     }
 }
 
@@ -2060,10 +2090,33 @@ mod tests {
 
         assert_eq!(layout.side, PopupSide::Top);
         assert!(layout.flipped);
+        assert!(!layout.constrained);
+        assert_eq!(layout.overflow_after_constrain, 0.0);
         assert!(layout.rect.x >= 8.0, "{layout:?}");
         assert!(layout.rect.right() <= 292.0, "{layout:?}");
         assert!(layout.rect.y >= 8.0, "{layout:?}");
         assert!(layout.rect.bottom() <= 212.0, "{layout:?}");
+
+        let clamped = place_popup(
+            UiRect::new(260.0, 190.0, 32.0, 24.0),
+            UiSize::new(260.0, 180.0),
+            UiRect::new(0.0, 0.0, 300.0, 220.0),
+            PopupPlacement::new(PopupSide::Bottom, PopupAlign::End)
+                .with_offset(6.0)
+                .with_viewport_margin(8.0)
+                .with_flip(false),
+        );
+
+        assert_eq!(clamped.side, PopupSide::Bottom);
+        assert!(!clamped.flipped);
+        assert!(clamped.constrained);
+        assert!(clamped.overflow_before_constrain > clamped.overflow_after_constrain);
+        assert_eq!(clamped.overflow_after_constrain, 0.0);
+        assert!(
+            clamped.diagnostic_summary().contains("constrained=true"),
+            "{}",
+            clamped.diagnostic_summary()
+        );
     }
 
     #[test]

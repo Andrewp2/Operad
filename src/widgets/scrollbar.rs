@@ -77,6 +77,7 @@ pub fn scrollbar(
         },
     )
     .with_visual(options.track_visual)
+    .with_scrollbar_audit(axis.audit_axis(), scroll)
     .with_accessibility(scrollbar_accessibility(
         options
             .accessibility_label
@@ -419,6 +420,13 @@ impl ScrollAxis {
             Self::Horizontal => "horizontal scrollbar",
         }
     }
+
+    pub const fn audit_axis(self) -> AuditAxis {
+        match self {
+            Self::Vertical => AuditAxis::Vertical,
+            Self::Horizontal => AuditAxis::Horizontal,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -545,5 +553,13 @@ mod tests {
         assert_eq!(document.node(thumb).style.layout.display, Display::None);
         let input = document.node(thumb).input;
         assert!(!input.pointer && !input.focusable && !input.keyboard);
+
+        document
+            .compute_layout(UiSize::new(120.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        assert!(!document.audit_layout().iter().any(|warning| matches!(
+            warning,
+            AuditWarning::ScrollbarVisibleWithoutRange { node, .. } if *node == scrollbar
+        )));
     }
 }

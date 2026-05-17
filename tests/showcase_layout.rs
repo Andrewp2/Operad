@@ -15,8 +15,9 @@ mod showcase_app {
         use operad::{
             process_document_frame, AnimationInputValue, ApproxTextMeasurer, AuditWarning,
             CosmicTextMeasurer, EmptyResourceResolver, HostDocumentFrameRequest, HostFrameOutput,
-            KeyCode, KeyModifiers, PaintKind, RenderTarget, RendererAdapter, TextWrap, UiContent,
-            UiFocusState, UiInputEvent, UiWheelEvent, WidgetPointerEdit, WidgetValueEditPhase,
+            KeyCode, KeyModifiers, PaintKind, RenderTarget, RendererAdapter, TextMeasurer,
+            TextWrap, UiContent, UiFocusState, UiInputEvent, UiWheelEvent, WidgetPointerEdit,
+            WidgetValueEditPhase,
         };
 
         fn state_with_window(id: &str) -> ShowcaseState {
@@ -78,6 +79,7 @@ mod showcase_app {
                     | AuditWarning::TextClipped { .. }
                     | AuditWarning::ScrollRangeHidden { .. }
                     | AuditWarning::ScrollOffsetOutOfRange { .. }
+                    | AuditWarning::ScrollbarVisibleWithoutRange { .. }
                     | AuditWarning::NodeOutsideRoot { .. }
                     | AuditWarning::PaintItemEmptyClip { .. }
             )
@@ -291,6 +293,133 @@ mod showcase_app {
                 );
                 }
             }
+        }
+
+        #[test]
+        fn showcase_state_matrix_audits_every_widget_window_common_states() {
+            let viewport = UiSize::new(940.0, 780.0);
+            for id in SHOWCASE_WIDGET_WINDOW_IDS {
+                audit_showcase_window_variant(id, "normal", viewport, |_, _| {});
+                audit_showcase_window_variant(id, "collapsed", viewport, |state, id| {
+                    state.desktop.collapsed.insert(id.to_string());
+                });
+                audit_showcase_window_variant(id, "narrow", viewport, |state, id| {
+                    state
+                        .desktop
+                        .sizes
+                        .insert(id.to_string(), UiSize::new(220.0, 140.0));
+                    state.desktop.user_sized.insert(id.to_string());
+                });
+                audit_showcase_window_variant(id, "scrolled", viewport, |_, _| {});
+                audit_showcase_window_focus_variant(id, "focused", viewport, true);
+                audit_showcase_window_focus_variant(id, "hovered", viewport, false);
+            }
+        }
+
+        fn audit_showcase_window_variant(
+            id: &str,
+            variant: &str,
+            viewport: UiSize,
+            configure: impl FnOnce(&mut ShowcaseState, &str),
+        ) {
+            let mut state = state_with_window(id);
+            configure(&mut state, id);
+            let mut document = state.view(viewport);
+            let mut measurer = CosmicTextMeasurer::new();
+            document
+                .compute_layout(viewport, &mut measurer)
+                .unwrap_or_else(|error| panic!("{id} {variant} failed layout: {error}"));
+            if variant == "scrolled" {
+                scroll_all_nodes_to_end(&mut document, viewport, &mut measurer);
+            }
+            assert_no_severe_showcase_warnings(id, variant, &document);
+        }
+
+        fn audit_showcase_window_focus_variant(
+            id: &str,
+            variant: &str,
+            viewport: UiSize,
+            focused: bool,
+        ) {
+            let state = state_with_window(id);
+            let mut document = state.view(viewport);
+            let mut measurer = CosmicTextMeasurer::new();
+            document
+                .compute_layout(viewport, &mut measurer)
+                .unwrap_or_else(|error| panic!("{id} {variant} failed layout: {error}"));
+            let window_name = format!("showcase.windows.window.{id}");
+            let window = node_id(&document, &window_name);
+            if let Some(target) = first_interactive_descendant(&document, window) {
+                document.set_focus_state(UiFocusState {
+                    hovered: Some(target),
+                    focused: focused.then_some(target),
+                    pressed: None,
+                });
+            }
+            assert_no_severe_showcase_warnings(id, variant, &document);
+        }
+
+        fn scroll_all_nodes_to_end(
+            document: &mut UiDocument,
+            viewport: UiSize,
+            measurer: &mut impl TextMeasurer,
+        ) {
+            let scrolls = (0..document.node_count())
+                .filter_map(|index| {
+                    let id = UiNodeId(index);
+                    let mut scroll = document.scroll_state(id)?;
+                    scroll.offset = scroll.max_offset();
+                    Some((id, scroll))
+                })
+                .collect::<Vec<_>>();
+            for (id, scroll) in scrolls {
+                document.node_mut(id).scroll = Some(scroll);
+            }
+            document.invalidate_layout();
+            document
+                .compute_layout(viewport, measurer)
+                .expect("scrolled showcase layout");
+        }
+
+        fn first_interactive_descendant(document: &UiDocument, root: UiNodeId) -> Option<UiNodeId> {
+            document
+                .nodes()
+                .iter()
+                .enumerate()
+                .find_map(|(index, node)| {
+                    let id = UiNodeId(index);
+                    (node.action.is_some()
+                        && node.layout.visible
+                        && is_descendant_or_self(document, root, id))
+                    .then_some(id)
+                })
+        }
+
+        fn is_descendant_or_self(
+            document: &UiDocument,
+            ancestor: UiNodeId,
+            node: UiNodeId,
+        ) -> bool {
+            let mut current = Some(node);
+            while let Some(id) = current {
+                if id == ancestor {
+                    return true;
+                }
+                current = document.node(id).parent;
+            }
+            false
+        }
+
+        fn assert_no_severe_showcase_warnings(id: &str, variant: &str, document: &UiDocument) {
+            let warnings = document
+                .audit_layout()
+                .into_iter()
+                .filter(severe_layout_warning)
+                .collect::<Vec<_>>();
+            assert!(
+                warnings.is_empty(),
+                "window {id:?} variant {variant:?} emitted severe layout warnings: {warnings:#?}"
+            );
         }
 
         #[test]

@@ -1223,6 +1223,23 @@ fn layout_rows(node: Option<&DebugLayoutInspectorNode>, max_rows: usize) -> Vec<
             format_size(scroll.content_size),
         ));
     }
+    if let Some(scrollbar) = node.scrollbar {
+        rows.push(row(
+            "scrollbar.axis",
+            "Scrollbar axis",
+            format!("{:?}", scrollbar.axis),
+        ));
+        rows.push(row(
+            "scrollbar.range",
+            "Scrollbar range",
+            format!(
+                "viewport {:.1}, content {:.1}, max {:.1}",
+                scrollbar.viewport(),
+                scrollbar.content(),
+                scrollbar.max_offset()
+            ),
+        ));
+    }
     if let Some(accessibility) = &node.accessibility {
         rows.push(row(
             "accessibility",

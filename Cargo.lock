@@ -1977,6 +1977,7 @@ dependencies = [
  "console_error_panic_hook",
  "cosmic-text 0.14.2",
  "egui",
+ "epaint_default_fonts",
  "glyphon",
  "lyon_tessellation",
  "pollster",
