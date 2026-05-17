@@ -8,11 +8,15 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::platform::UiLayer;
 use crate::{
-    ColorRgba, CommandId, CommandScope, ComponentRole, ComponentState, ComponentStateSlot,
-    DirtyFlags, FrameTiming, GestureEvent, GesturePhase, HostInteractionState, HostNodeInteraction,
-    IconStyle, LayerEffect, LayoutSnapshot, MotionCurve, PaintKind, PaintList, ScopedThemeRegistry,
-    StrokeStyle, TextStyle, Theme, ThemeScope, ThemeScopeError, ThemeScopeId, ThemeScopeKind,
-    UiDocument, UiNodeId, UiPoint, UiRect, UiVisual,
+    AccessibilityNode, AnimatedValues, AnimationActiveTransitionSnapshot, AnimationBlendBinding,
+    AnimationCondition, AnimationInputValue, AnimationNumberComparison, AnimationState,
+    AnimationTransition, AnimationTrigger, AuditWarning, ColorRgba, CommandId, CommandScope,
+    ComponentRole, ComponentState, ComponentStateSlot, DirtyFlags, FrameTiming, GestureEvent,
+    GesturePhase, HostInteractionState, HostNodeInteraction, IconStyle, InputBehavior,
+    IntrinsicSize, LayerEffect, LayoutSnapshot, MotionCurve, PaintKind, PaintList,
+    ScopedThemeRegistry, ScrollState, StrokeStyle, TextMeasurer, TextStyle, Theme, ThemeScope,
+    ThemeScopeError, ThemeScopeId, ThemeScopeKind, UiContent, UiDocument, UiNode, UiNodeId,
+    UiPoint, UiRect, UiSize, UiVisual,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -210,6 +214,294 @@ impl DebugOverlaySnapshot {
         self.nodes
             .iter()
             .filter(|node| node.interaction.any() || node.paint.count > 0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DebugNodeContentKind {
+    Empty,
+    Text,
+    Canvas,
+    Image,
+    PaintRect,
+    Scene,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugLayoutStyleSummary {
+    pub display: String,
+    pub flex_direction: String,
+    pub flex_wrap: String,
+    pub size: String,
+    pub min_size: String,
+    pub max_size: String,
+    pub margin: String,
+    pub padding: String,
+    pub gap: String,
+    pub position: String,
+    pub inset: String,
+    pub align_items: String,
+    pub justify_content: String,
+    pub clip: String,
+    pub clip_scope: String,
+    pub layer: Option<String>,
+    pub z_index: i16,
+    pub opacity: String,
+    pub layout_constraint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugLayoutInspectorNode {
+    pub id: UiNodeId,
+    pub name: String,
+    pub parent: Option<UiNodeId>,
+    pub children: Vec<UiNodeId>,
+    pub content_kind: DebugNodeContentKind,
+    pub text: Option<String>,
+    pub rect: UiRect,
+    pub clip_rect: UiRect,
+    pub final_size: UiSize,
+    pub intrinsic_size: Option<IntrinsicSize>,
+    pub layout_content_size: Option<UiSize>,
+    pub visible: bool,
+    pub input: InputBehavior,
+    pub scroll: Option<ScrollState>,
+    pub style: DebugLayoutStyleSummary,
+    pub paint: DebugPaintStats,
+    pub accessibility: Option<AccessibilityNode>,
+    pub audit_warnings: Vec<AuditWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugAnimationInspectorNode {
+    pub id: UiNodeId,
+    pub name: String,
+    pub current_state: String,
+    pub values: AnimatedValues,
+    pub active_transition: Option<AnimationActiveTransitionSnapshot>,
+    pub inputs: Vec<(String, AnimationInputValue)>,
+    pub states: Vec<AnimationState>,
+    pub transitions: Vec<AnimationTransition>,
+    pub blend_bindings: Vec<AnimationBlendBinding>,
+}
+
+impl DebugAnimationInspectorNode {
+    pub fn state_graph(&self) -> DebugAnimationGraph {
+        DebugAnimationGraph::from_animation(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugAnimationGraph {
+    pub states: Vec<DebugAnimationGraphState>,
+    pub edges: Vec<DebugAnimationGraphEdge>,
+}
+
+impl DebugAnimationGraph {
+    pub fn from_animation(animation: &DebugAnimationInspectorNode) -> Self {
+        let target_state = animation
+            .active_transition
+            .as_ref()
+            .map(|active| active.to_state_name.as_str());
+        let states = animation
+            .states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| DebugAnimationGraphState {
+                index,
+                name: state.name.clone(),
+                current: state.name == animation.current_state,
+                target: target_state == Some(state.name.as_str()),
+            })
+            .collect::<Vec<_>>();
+
+        let mut edges = animation
+            .transitions
+            .iter()
+            .map(|transition| {
+                let active = animation.active_transition.as_ref().is_some_and(|active| {
+                    active.from_state_name == transition.from
+                        && active.to_state_name == transition.to
+                });
+                DebugAnimationGraphEdge {
+                    from: transition.from.clone(),
+                    to: transition.to.clone(),
+                    label: animation_transition_label(transition),
+                    kind: if transition.trigger.is_some() {
+                        DebugAnimationGraphEdgeKind::Trigger
+                    } else {
+                        DebugAnimationGraphEdgeKind::Condition
+                    },
+                    active,
+                    progress: active
+                        .then(|| {
+                            animation
+                                .active_transition
+                                .as_ref()
+                                .map(|active| active.progress)
+                        })
+                        .flatten(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        edges.extend(animation.blend_bindings.iter().map(|binding| {
+            let progress = animation.inputs.iter().find_map(|(name, value)| {
+                if name == &binding.input {
+                    value.as_number().map(|number| {
+                        ((number - binding.min) / (binding.max - binding.min).max(f32::EPSILON))
+                            .clamp(0.0, 1.0)
+                    })
+                } else {
+                    None
+                }
+            });
+            DebugAnimationGraphEdge {
+                from: binding.from.clone(),
+                to: binding.to.clone(),
+                label: format!(
+                    "blend {} [{:.2}..{:.2}]",
+                    binding.input, binding.min, binding.max
+                ),
+                kind: DebugAnimationGraphEdgeKind::Blend,
+                active: progress.is_some(),
+                progress,
+            }
+        }));
+
+        Self { states, edges }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugAnimationGraphState {
+    pub index: usize,
+    pub name: String,
+    pub current: bool,
+    pub target: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugAnimationGraphEdgeKind {
+    Trigger,
+    Condition,
+    Blend,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugAnimationGraphEdge {
+    pub from: String,
+    pub to: String,
+    pub label: String,
+    pub kind: DebugAnimationGraphEdgeKind,
+    pub active: bool,
+    pub progress: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugAccessibilityOverlayNode {
+    pub id: UiNodeId,
+    pub name: String,
+    pub rect: UiRect,
+    pub focus_index: Option<usize>,
+    pub accessibility: Option<AccessibilityNode>,
+    pub warnings: Vec<AuditWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugInspectorSnapshot {
+    pub nodes: Vec<DebugLayoutInspectorNode>,
+    pub animations: Vec<DebugAnimationInspectorNode>,
+    pub accessibility_overlay: Vec<DebugAccessibilityOverlayNode>,
+    pub audits: Vec<AuditWarning>,
+}
+
+impl DebugInspectorSnapshot {
+    pub fn from_document(document: &UiDocument, text_measurer: &mut impl TextMeasurer) -> Self {
+        let layout = document.layout_snapshot();
+        let paint = document.paint_list();
+        let paint_stats = paint_stats_by_node(&paint);
+        let accessibility = document.accessibility_snapshot();
+        let accessibility_by_node = accessibility
+            .nodes
+            .iter()
+            .cloned()
+            .map(|node| (node.id, node))
+            .collect::<HashMap<_, _>>();
+        let focus_order = accessibility
+            .focus_order
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect::<HashMap<_, _>>();
+        let audits = document.audit_layout();
+        let audits_by_node = audits_by_node(&audits);
+
+        let mut nodes = Vec::new();
+        collect_layout_inspector_nodes(
+            document,
+            &layout,
+            &paint_stats,
+            &accessibility_by_node,
+            &audits_by_node,
+            text_measurer,
+            &mut nodes,
+        );
+
+        let animations = document
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let animation = node.animation.as_ref()?;
+                Some(DebugAnimationInspectorNode {
+                    id: UiNodeId(index),
+                    name: node.name.clone(),
+                    current_state: animation.current_state_name().to_owned(),
+                    values: animation.values(),
+                    active_transition: animation.active_transition(),
+                    inputs: sorted_animation_inputs(animation.inputs()),
+                    states: animation.states().to_vec(),
+                    transitions: animation.transitions().to_vec(),
+                    blend_bindings: animation.blend_bindings().to_vec(),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let accessibility_overlay = nodes
+            .iter()
+            .filter(|node| {
+                node.accessibility.is_some()
+                    || !node.audit_warnings.is_empty()
+                    || focus_order.contains_key(&node.id)
+            })
+            .map(|node| DebugAccessibilityOverlayNode {
+                id: node.id,
+                name: node.name.clone(),
+                rect: node.rect,
+                focus_index: focus_order.get(&node.id).copied(),
+                accessibility: node.accessibility.clone(),
+                warnings: node.audit_warnings.clone(),
+            })
+            .collect();
+
+        Self {
+            nodes,
+            animations,
+            accessibility_overlay,
+            audits,
+        }
+    }
+
+    pub fn node(&self, name: &str) -> Option<&DebugLayoutInspectorNode> {
+        self.nodes.iter().find(|node| node.name == name)
+    }
+
+    pub fn animation(&self, name: &str) -> Option<&DebugAnimationInspectorNode> {
+        self.animations
+            .iter()
+            .find(|animation| animation.name == name)
     }
 }
 
@@ -482,6 +774,208 @@ fn collect_debug_nodes(
 
     for child in &snapshot.children {
         collect_debug_nodes(child, paint_stats, host, include_invisible, out);
+    }
+}
+
+fn collect_layout_inspector_nodes(
+    document: &UiDocument,
+    snapshot: &LayoutSnapshot,
+    paint_stats: &HashMap<UiNodeId, DebugPaintStats>,
+    accessibility_by_node: &HashMap<UiNodeId, AccessibilityNode>,
+    audits_by_node: &HashMap<UiNodeId, Vec<AuditWarning>>,
+    text_measurer: &mut impl TextMeasurer,
+    out: &mut Vec<DebugLayoutInspectorNode>,
+) {
+    let node = document.node(snapshot.id);
+    out.push(DebugLayoutInspectorNode {
+        id: snapshot.id,
+        name: node.name.clone(),
+        parent: node.parent,
+        children: node.children.clone(),
+        content_kind: debug_content_kind(node),
+        text: debug_node_text(node),
+        rect: snapshot.rect,
+        clip_rect: snapshot.clip_rect,
+        final_size: UiSize::new(snapshot.rect.width, snapshot.rect.height),
+        intrinsic_size: document.intrinsic_size(snapshot.id, text_measurer).ok(),
+        layout_content_size: node.layout.content_size,
+        visible: snapshot.visible,
+        input: node.input,
+        scroll: snapshot.scroll,
+        style: debug_layout_style_summary(node),
+        paint: paint_stats.get(&snapshot.id).copied().unwrap_or_default(),
+        accessibility: accessibility_by_node.get(&snapshot.id).cloned(),
+        audit_warnings: audits_by_node
+            .get(&snapshot.id)
+            .cloned()
+            .unwrap_or_default(),
+    });
+
+    for child in &snapshot.children {
+        collect_layout_inspector_nodes(
+            document,
+            child,
+            paint_stats,
+            accessibility_by_node,
+            audits_by_node,
+            text_measurer,
+            out,
+        );
+    }
+}
+
+fn debug_content_kind(node: &UiNode) -> DebugNodeContentKind {
+    match &node.content {
+        UiContent::Empty => DebugNodeContentKind::Empty,
+        UiContent::Text(_) => DebugNodeContentKind::Text,
+        UiContent::Canvas(_) => DebugNodeContentKind::Canvas,
+        UiContent::Image(_) => DebugNodeContentKind::Image,
+        UiContent::PaintRect(_) => DebugNodeContentKind::PaintRect,
+        UiContent::Scene(_) => DebugNodeContentKind::Scene,
+    }
+}
+
+fn debug_node_text(node: &UiNode) -> Option<String> {
+    match &node.content {
+        UiContent::Text(text) => Some(text.text.clone()),
+        _ => None,
+    }
+}
+
+fn debug_layout_style_summary(node: &UiNode) -> DebugLayoutStyleSummary {
+    let style = &node.style.layout;
+    DebugLayoutStyleSummary {
+        display: format!("{:?}", style.display),
+        flex_direction: format!("{:?}", style.flex_direction),
+        flex_wrap: format!("{:?}", style.flex_wrap),
+        size: format!("{:?}", style.size),
+        min_size: format!("{:?}", style.min_size),
+        max_size: format!("{:?}", style.max_size),
+        margin: format!("{:?}", style.margin),
+        padding: format!("{:?}", style.padding),
+        gap: format!("{:?}", style.gap),
+        position: format!("{:?}", style.position),
+        inset: format!("{:?}", style.inset),
+        align_items: format!("{:?}", style.align_items),
+        justify_content: format!("{:?}", style.justify_content),
+        clip: format!("{:?}", node.style.clip),
+        clip_scope: format!("{:?}", node.clip_scope),
+        layer: node.layer.map(|layer| format!("{layer:?}")),
+        z_index: node.style.z_index,
+        opacity: format!("{:.3}", node.style.opacity),
+        layout_constraint: node
+            .layout_constraint
+            .as_ref()
+            .map(|constraint| format!("{constraint:?}")),
+    }
+}
+
+fn sorted_animation_inputs(
+    inputs: &HashMap<String, AnimationInputValue>,
+) -> Vec<(String, AnimationInputValue)> {
+    let mut inputs = inputs
+        .iter()
+        .map(|(name, value)| (name.clone(), *value))
+        .collect::<Vec<_>>();
+    inputs.sort_by(|left, right| left.0.cmp(&right.0));
+    inputs
+}
+
+fn animation_transition_label(transition: &AnimationTransition) -> String {
+    let mut parts = Vec::new();
+    if let Some(trigger) = &transition.trigger {
+        parts.push(format!("on {}", animation_trigger_label(trigger)));
+    }
+    if !transition.conditions.is_empty() {
+        parts.push(
+            transition
+                .conditions
+                .iter()
+                .map(animation_condition_label)
+                .collect::<Vec<_>>()
+                .join(" && "),
+        );
+    }
+    if parts.is_empty() {
+        parts.push("always".to_owned());
+    }
+    parts.push(format!("{:.2}s", transition.duration_seconds));
+    parts.join("; ")
+}
+
+fn animation_trigger_label(trigger: &AnimationTrigger) -> String {
+    match trigger {
+        AnimationTrigger::PointerEnter => "pointer enter".to_owned(),
+        AnimationTrigger::PointerLeave => "pointer leave".to_owned(),
+        AnimationTrigger::FocusGained => "focus gained".to_owned(),
+        AnimationTrigger::FocusLost => "focus lost".to_owned(),
+        AnimationTrigger::Pressed => "pressed".to_owned(),
+        AnimationTrigger::Released => "released".to_owned(),
+        AnimationTrigger::Custom(name) => name.clone(),
+    }
+}
+
+fn animation_condition_label(condition: &AnimationCondition) -> String {
+    match condition {
+        AnimationCondition::Bool { input, value } => format!("{input} == {value}"),
+        AnimationCondition::Number {
+            input,
+            comparison,
+            value,
+        } => format!(
+            "{input} {} {:.3}",
+            animation_number_comparison_label(*comparison),
+            value
+        ),
+        AnimationCondition::Trigger { input } => format!("{input} fired"),
+    }
+}
+
+fn animation_number_comparison_label(comparison: AnimationNumberComparison) -> &'static str {
+    match comparison {
+        AnimationNumberComparison::LessThan => "<",
+        AnimationNumberComparison::LessThanOrEqual => "<=",
+        AnimationNumberComparison::GreaterThan => ">",
+        AnimationNumberComparison::GreaterThanOrEqual => ">=",
+        AnimationNumberComparison::Equal => "==",
+        AnimationNumberComparison::NotEqual => "!=",
+    }
+}
+
+fn audits_by_node(audits: &[AuditWarning]) -> HashMap<UiNodeId, Vec<AuditWarning>> {
+    let mut by_node = HashMap::<UiNodeId, Vec<AuditWarning>>::new();
+    for audit in audits {
+        let Some(node) = audit_node_id(audit) else {
+            continue;
+        };
+        by_node.entry(node).or_default().push(audit.clone());
+    }
+    by_node
+}
+
+fn audit_node_id(audit: &AuditWarning) -> Option<UiNodeId> {
+    match audit {
+        AuditWarning::NonFiniteRect { node, .. }
+        | AuditWarning::InvisibleInteractiveNode { node, .. }
+        | AuditWarning::EmptyInteractiveClip { node, .. }
+        | AuditWarning::InteractiveTooSmall { node, .. }
+        | AuditWarning::FocusableMissingFromAccessibilityTree { node, .. }
+        | AuditWarning::InteractiveAccessibilityMissing { node, .. }
+        | AuditWarning::AccessibleNameMissing { node, .. }
+        | AuditWarning::AccessibilityActionMissing { node, .. }
+        | AuditWarning::AccessibilityActionIdMissing { node, .. }
+        | AuditWarning::AccessibilityActionLabelMissing { node, .. }
+        | AuditWarning::AccessibilityActionDuplicate { node, .. }
+        | AuditWarning::AccessibilityStateMissing { node, .. }
+        | AuditWarning::AccessibilityValueMissing { node, .. }
+        | AuditWarning::AccessibilityValueRangeMissing { node, .. }
+        | AuditWarning::AccessibilityValueRangeInvalid { node, .. }
+        | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
+        | AuditWarning::TextClipped { node, .. }
+        | AuditWarning::TextContrastTooLow { node, .. }
+        | AuditWarning::NodeOutsideRoot { node, .. }
+        | AuditWarning::PaintItemEmptyClip { node } => Some(*node),
+        AuditWarning::DuplicateNodeName { .. } => None,
     }
 }
 
@@ -1356,6 +1850,69 @@ mod tests {
         assert_eq!(dump.items[0].node_name.as_deref(), Some("status"));
         assert_eq!(dump.items[0].layer, UiLayer::AppContent);
         assert_eq!(dump.items[0].resolved_z, UiLayer::AppContent.base_z());
+    }
+
+    #[test]
+    fn debug_inspector_snapshot_combines_layout_animation_and_accessibility() {
+        let mut doc = UiDocument::new(fixed_style(240.0, 160.0));
+        let button = doc.add_child(
+            doc.root,
+            UiNode::container("play", fixed_style(96.0, 36.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    crate::AccessibilityMeta::new(crate::AccessibilityRole::Button)
+                        .label("Play")
+                        .focusable()
+                        .action(crate::AccessibilityAction::new("activate", "Activate")),
+                )
+                .with_animation(
+                    crate::AnimationMachine::new(
+                        vec![
+                            crate::AnimationState::new(
+                                "idle",
+                                crate::AnimatedValues::new(1.0, crate::UiPoint::new(0.0, 0.0), 1.0),
+                            ),
+                            crate::AnimationState::new(
+                                "armed",
+                                crate::AnimatedValues::new(1.0, crate::UiPoint::new(4.0, 0.0), 1.0),
+                            ),
+                        ],
+                        Vec::new(),
+                        "idle",
+                    )
+                    .expect("animation")
+                    .with_number_input("hover", 0.25)
+                    .with_blend_binding(crate::AnimationBlendBinding::new(
+                        "hover", "idle", "armed",
+                    )),
+                )
+                .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
+        );
+        doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let snapshot = DebugInspectorSnapshot::from_document(&doc, &mut ApproxTextMeasurer);
+        let node = snapshot.node("play").expect("play inspector node");
+
+        assert_eq!(node.id, button);
+        assert_eq!(node.final_size, UiSize::new(96.0, 36.0));
+        assert!(node.intrinsic_size.is_some());
+        assert_eq!(
+            node.accessibility
+                .as_ref()
+                .and_then(|meta| meta.label.as_deref()),
+            Some("Play")
+        );
+        assert!(snapshot
+            .accessibility_overlay
+            .iter()
+            .any(|overlay| overlay.id == button && overlay.focus_index == Some(0)));
+
+        let animation = snapshot.animation("play").expect("animation inspector");
+        assert_eq!(animation.current_state, "idle");
+        assert_eq!(animation.inputs[0].0, "hover");
+        assert_eq!(animation.states.len(), 2);
+        assert_eq!(animation.blend_bindings.len(), 1);
     }
 
     #[test]

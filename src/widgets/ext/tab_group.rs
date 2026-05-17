@@ -11,7 +11,7 @@ use crate::widgets::{
 use crate::{
     AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, ImageContent, InputBehavior,
     LayoutStyle, ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiVisual,
+    UiNodeStyle, UiSize, UiVisual,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,22 +208,22 @@ pub fn tab_group(
         .with_visual(options.background_visual),
     );
 
+    let strip_layout = Style {
+        display: Display::Flex,
+        flex_direction: FlexDirection::Row,
+        align_items: Some(AlignItems::Center),
+        size: TaffySize {
+            width: Dimension::percent(1.0),
+            height: px(options.tab_strip_height),
+        },
+        ..Default::default()
+    };
     let strip = document.add_child(
         root,
         UiNode::container(
             format!("{name}.strip"),
             UiNodeStyle {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    align_items: Some(AlignItems::Center),
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: px(options.tab_strip_height),
-                    },
-                    ..Default::default()
-                })
-                .style,
+                layout: LayoutStyle::from_taffy_style(strip_layout.clone()).style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
@@ -241,6 +241,7 @@ pub fn tab_group(
 
     let selected_index = state.clamped_selected_index(tabs);
     let focused_index = state.clamped_focused_index(tabs);
+    let mut tab_nodes = Vec::new();
     for (index, tab) in tabs.iter().enumerate() {
         let selected = selected_index == Some(index);
         let focused = focused_index == Some(index);
@@ -297,6 +298,7 @@ pub fn tab_group(
             },
         );
         let tab_node = document.add_child(strip, tab_node);
+        tab_nodes.push(tab_node);
 
         let label = if tab.dirty {
             format!("{} *", tab.label)
@@ -394,6 +396,14 @@ pub fn tab_group(
     if let Some(index) = selected_index {
         build_panel(document, panel, index);
     }
+
+    publish_inline_intrinsic_size(
+        document,
+        strip,
+        tab_nodes,
+        inline_intrinsic_base_size(&strip_layout, &[], tabs.len()),
+    );
+    publish_inline_intrinsic_size(document, root, vec![strip], UiSize::ZERO);
 
     root
 }

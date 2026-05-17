@@ -1,6 +1,7 @@
 //! Tree view and outliner widget implementation.
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use taffy::prelude::{
     AlignItems, Dimension, Display, FlexDirection, LengthPercentage, LengthPercentageAuto,
@@ -8,11 +9,14 @@ use taffy::prelude::{
 };
 
 use crate::{
+    plan_virtualized_range,
     platform::{DragOperation, DragPayload},
     AccessibilityAction, AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, CommandId,
     DragDropSurfaceKind, DragSourceDescriptor, DragSourceId, DropPayloadFilter,
-    DropTargetDescriptor, DropTargetId, ImageContent, InputBehavior, LayoutStyle, ShaderEffect,
-    StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiRect, UiVisual,
+    DropTargetDescriptor, DropTargetId, ImageContent, InputBehavior, LayoutStyle, ScrollAxes,
+    ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle,
+    UiRect, UiVisual, VirtualAxis, VirtualCollectionKind, VirtualFocusPreservation, VirtualItemKey,
+    VirtualOverscan, VirtualPlan, VirtualPlanRequest,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,6 +478,103 @@ impl TreeViewOptions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct VirtualTreeViewSpec {
+    pub row_height: f32,
+    pub viewport_height: f32,
+    pub scroll_offset: f32,
+    pub overscan_rows: u64,
+    pub focus: Option<VirtualFocusPreservation>,
+}
+
+impl VirtualTreeViewSpec {
+    pub fn new(row_height: f32, viewport_height: f32) -> Self {
+        Self {
+            row_height,
+            viewport_height,
+            scroll_offset: 0.0,
+            overscan_rows: 1,
+            focus: None,
+        }
+    }
+
+    pub fn scroll_offset(mut self, scroll_offset: f32) -> Self {
+        self.scroll_offset = finite_nonnegative(scroll_offset);
+        self
+    }
+
+    pub const fn overscan_rows(mut self, overscan_rows: u64) -> Self {
+        self.overscan_rows = overscan_rows;
+        self
+    }
+
+    pub fn focus(mut self, focus: VirtualFocusPreservation) -> Self {
+        self.focus = Some(focus);
+        self
+    }
+
+    pub fn content_height(&self, visible_count: usize) -> f32 {
+        visible_count as f32 * finite_extent(self.row_height)
+    }
+
+    pub fn clamped_scroll_offset(&self, visible_count: usize) -> f32 {
+        let content_height = self.content_height(visible_count);
+        let viewport_height = finite_nonnegative(self.viewport_height);
+        finite_nonnegative(self.scroll_offset).min((content_height - viewport_height).max(0.0))
+    }
+
+    pub fn plan(&self, visible_count: usize) -> VirtualPlan {
+        let mut request = VirtualPlanRequest::new(
+            visible_count as u64,
+            finite_extent(self.row_height),
+            finite_nonnegative(self.viewport_height),
+        )
+        .kind(VirtualCollectionKind::Tree)
+        .axis(VirtualAxis::Vertical)
+        .scroll_offset(self.scroll_offset)
+        .overscan(VirtualOverscan::uniform(self.overscan_rows));
+        if let Some(focus) = self.focus.clone() {
+            request = request.focus(focus);
+        }
+        plan_virtualized_range(request)
+    }
+}
+
+impl Default for VirtualTreeViewSpec {
+    fn default() -> Self {
+        Self::new(26.0, 240.0)
+    }
+}
+
+pub fn tree_focus_preservation_by_id(
+    previous_visible: &[TreeVisibleItem],
+    next_visible: &[TreeVisibleItem],
+    focused_id: impl AsRef<str>,
+) -> VirtualFocusPreservation {
+    let focused_id = focused_id.as_ref();
+    VirtualFocusPreservation::new(
+        VirtualItemKey::Stable(focused_id.to_owned()),
+        previous_visible
+            .iter()
+            .find(|item| item.id == focused_id)
+            .map(|item| item.index as u64),
+        next_visible
+            .iter()
+            .find(|item| item.id == focused_id)
+            .map(|item| item.index as u64),
+    )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VirtualTreeViewNodes {
+    pub root: UiNodeId,
+    pub body: UiNodeId,
+    pub rows: Vec<UiNodeId>,
+    pub top_spacer: Option<UiNodeId>,
+    pub bottom_spacer: Option<UiNodeId>,
+    pub plan: VirtualPlan,
+}
+
 /// Build a tree view/outliner from nested IDs and a visible selection index.
 pub fn tree_view(
     document: &mut UiDocument,
@@ -511,30 +612,69 @@ pub fn tree_view(
 
     let visible_items = state.visible_items(roots);
     let visible_count = visible_items.len();
-    for item in visible_items {
-        let selected = state.selected_index == Some(item.index);
-        let focused = options.focused_index == Some(item.index);
-        let visual = if selected {
-            options.selected_row_visual
-        } else {
-            options.row_visual
-        };
-        let mut row_node = UiNode::container(
-            format!("{name}.row.{}", item.id),
+    for item in &visible_items {
+        add_tree_row(document, root, &name, item, visible_count, state, &options);
+    }
+
+    root
+}
+
+/// Build a tree view that only materializes rows inside the current viewport.
+pub fn virtualized_tree_view(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    roots: &[TreeItem],
+    state: &TreeViewState,
+    spec: VirtualTreeViewSpec,
+    mut options: TreeViewOptions,
+) -> VirtualTreeViewNodes {
+    let name = name.into();
+    options.row_height = finite_extent(spec.row_height);
+    let visible_items = state.visible_items(roots);
+    let visible_count = visible_items.len();
+    let plan = spec.plan(visible_count);
+    let scroll_offset = spec.clamped_scroll_offset(visible_count);
+    let root = document.add_child(
+        parent,
+        UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: options.layout.style.clone(),
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_visual(options.background_visual)
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Tree)
+                .label(accessibility_label_or_name(
+                    &options.accessibility_label,
+                    &name,
+                ))
+                .value(virtual_tree_accessibility_value(
+                    visible_count,
+                    &plan.visible_range,
+                ))
+                .focusable(),
+        ),
+    );
+
+    let body = document.add_child(
+        root,
+        UiNode::container(
+            format!("{name}.body"),
             UiNodeStyle {
                 layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    align_items: Some(AlignItems::Center),
+                    flex_direction: FlexDirection::Column,
                     size: TaffySize {
                         width: Dimension::percent(1.0),
-                        height: px(options.row_height),
+                        height: px(spec.viewport_height),
                     },
-                    padding: TaffyRect {
-                        left: LengthPercentage::length(8.0),
-                        right: LengthPercentage::length(8.0),
-                        top: LengthPercentage::length(0.0),
-                        bottom: LengthPercentage::length(0.0),
+                    min_size: TaffySize {
+                        width: px(0.0),
+                        height: px(0.0),
                     },
                     ..Default::default()
                 })
@@ -543,117 +683,54 @@ pub fn tree_view(
                 ..Default::default()
             },
         )
-        .with_input(if item.disabled {
-            InputBehavior::NONE
-        } else {
-            InputBehavior::BUTTON
-        })
-        .with_visual(visual)
-        .with_accessibility(tree_item_accessibility(
-            &item,
-            visible_count,
-            selected,
-            focused,
-        ));
-        if !item.disabled {
-            if let Some(prefix) = options.row_action_prefix.as_deref() {
-                row_node = row_node.with_action(format!("{prefix}.row.{}", item.id));
-            }
-        }
-        let row = with_optional_shader(
-            row_node,
-            if selected {
-                options.selected_row_shader.as_ref()
-            } else if focused {
-                options.focused_row_shader.as_ref()
-            } else {
-                None
-            },
-        );
-        let row = document.add_child(root, row);
-
-        if item.depth > 0 {
-            document.add_child(
-                row,
-                UiNode::container(
-                    format!("{name}.row.{}.indent", item.id),
-                    UiNodeStyle {
-                        layout: LayoutStyle::from_taffy_style(Style {
-                            size: TaffySize {
-                                width: px(item.depth as f32 * options.indent_width),
-                                height: Dimension::percent(1.0),
-                            },
-                            flex_shrink: 0.0,
-                            ..Default::default()
-                        })
-                        .style,
-                        ..Default::default()
-                    },
-                ),
-            );
-        }
-
-        let disclosure = if item.has_children() {
-            if item.expanded {
-                "v"
-            } else {
-                ">"
-            }
-        } else {
-            ""
-        };
-        document.add_child(
-            row,
-            UiNode::text(
-                format!("{name}.row.{}.disclosure", item.id),
-                disclosure,
-                options.muted_text_style.clone(),
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: px(options.disclosure_width),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
-
-        if let Some(image) = item.leading_image.clone() {
-            document.add_child(
-                row,
-                leading_image_node(
-                    format!("{name}.row.{}.image", item.id),
-                    image,
-                    options.leading_image_size,
-                    Some(item.label.clone()),
-                ),
-            );
-        }
-
-        let style = if item.disabled {
-            options.muted_text_style.clone()
-        } else {
-            options.text_style.clone()
-        };
-        document.add_child(
-            row,
-            UiNode::text(
-                format!("{name}.row.{}.label", item.id),
-                &item.label,
-                style,
-                LayoutStyle::from_taffy_style(Style {
-                    flex_grow: 1.0,
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
+        .with_scroll(ScrollAxes::VERTICAL),
+    );
+    if let Some(scroll) = &mut document.node_mut(body).scroll {
+        scroll.offset.y = scroll_offset;
     }
 
-    root
+    let mut top_spacer = None;
+    let top = plan
+        .items
+        .first()
+        .map(|item| item.start)
+        .unwrap_or_default();
+    if top > 0.0 {
+        top_spacer = Some(document.add_child(body, tree_spacer(format!("{name}.top_spacer"), top)));
+    }
+
+    let mut rows = Vec::new();
+    for item_plan in &plan.items {
+        let Some(item) = visible_items.get(item_plan.index as usize) else {
+            continue;
+        };
+        rows.push(add_tree_row(
+            document,
+            body,
+            &name,
+            item,
+            visible_count,
+            state,
+            &options,
+        ));
+    }
+
+    let bottom = visible_count.saturating_sub(plan.materialized_range.end as usize) as f32
+        * finite_extent(spec.row_height);
+    let mut bottom_spacer = None;
+    if bottom > 0.0 {
+        bottom_spacer =
+            Some(document.add_child(body, tree_spacer(format!("{name}.bottom_spacer"), bottom)));
+    }
+
+    VirtualTreeViewNodes {
+        root,
+        body,
+        rows,
+        top_spacer,
+        bottom_spacer,
+        plan,
+    }
 }
 
 pub fn outliner(
@@ -665,6 +742,159 @@ pub fn outliner(
     options: TreeViewOptions,
 ) -> UiNodeId {
     tree_view(document, parent, name, roots, state, options)
+}
+
+fn add_tree_row(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: &str,
+    item: &TreeVisibleItem,
+    visible_count: usize,
+    state: &TreeViewState,
+    options: &TreeViewOptions,
+) -> UiNodeId {
+    let selected = state.selected_index == Some(item.index);
+    let focused = options.focused_index == Some(item.index);
+    let visual = if selected {
+        options.selected_row_visual
+    } else {
+        options.row_visual
+    };
+    let mut row_node = UiNode::container(
+        format!("{name}.row.{}", item.id),
+        UiNodeStyle {
+            layout: LayoutStyle::from_taffy_style(Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::Center),
+                size: TaffySize {
+                    width: Dimension::percent(1.0),
+                    height: px(options.row_height),
+                },
+                padding: TaffyRect {
+                    left: LengthPercentage::length(8.0),
+                    right: LengthPercentage::length(8.0),
+                    top: LengthPercentage::length(0.0),
+                    bottom: LengthPercentage::length(0.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .style,
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
+    )
+    .with_input(if item.disabled {
+        InputBehavior::NONE
+    } else {
+        InputBehavior::BUTTON
+    })
+    .with_visual(visual)
+    .with_accessibility(tree_item_accessibility(
+        item,
+        visible_count,
+        selected,
+        focused,
+    ));
+    if !item.disabled {
+        if let Some(prefix) = options.row_action_prefix.as_deref() {
+            row_node = row_node.with_action(format!("{prefix}.row.{}", item.id));
+        }
+    }
+    let row = with_optional_shader(
+        row_node,
+        if selected {
+            options.selected_row_shader.as_ref()
+        } else if focused {
+            options.focused_row_shader.as_ref()
+        } else {
+            None
+        },
+    );
+    let row = document.add_child(parent, row);
+
+    if item.depth > 0 {
+        document.add_child(
+            row,
+            UiNode::container(
+                format!("{name}.row.{}.indent", item.id),
+                UiNodeStyle {
+                    layout: LayoutStyle::from_taffy_style(Style {
+                        size: TaffySize {
+                            width: px(item.depth as f32 * options.indent_width),
+                            height: Dimension::percent(1.0),
+                        },
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    })
+                    .style,
+                    ..Default::default()
+                },
+            ),
+        );
+    }
+
+    let disclosure = if item.has_children() {
+        if item.expanded {
+            "v"
+        } else {
+            ">"
+        }
+    } else {
+        ""
+    };
+    document.add_child(
+        row,
+        UiNode::text(
+            format!("{name}.row.{}.disclosure", item.id),
+            disclosure,
+            options.muted_text_style.clone(),
+            LayoutStyle::from_taffy_style(Style {
+                size: TaffySize {
+                    width: px(options.disclosure_width),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            }),
+        ),
+    );
+
+    if let Some(image) = item.leading_image.clone() {
+        document.add_child(
+            row,
+            leading_image_node(
+                format!("{name}.row.{}.image", item.id),
+                image,
+                options.leading_image_size,
+                Some(item.label.clone()),
+            ),
+        );
+    }
+
+    let style = if item.disabled {
+        options.muted_text_style.clone()
+    } else {
+        options.text_style.clone()
+    };
+    document.add_child(
+        row,
+        UiNode::text(
+            format!("{name}.row.{}.label", item.id),
+            &item.label,
+            style,
+            LayoutStyle::from_taffy_style(Style {
+                flex_grow: 1.0,
+                size: TaffySize {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            }),
+        ),
+    );
+
+    row
 }
 
 fn flatten_tree_items(
@@ -859,8 +1089,54 @@ fn muted_text_style() -> TextStyle {
     }
 }
 
+fn tree_spacer(name: impl Into<String>, height: f32) -> UiNode {
+    UiNode::container(
+        name,
+        UiNodeStyle {
+            layout: LayoutStyle::from_taffy_style(Style {
+                size: TaffySize {
+                    width: Dimension::percent(1.0),
+                    height: px(height),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .style,
+            ..Default::default()
+        },
+    )
+}
+
+fn virtual_tree_accessibility_value(visible_count: usize, visible_range: &Range<u64>) -> String {
+    if visible_count == 0 {
+        return "0 visible items".to_owned();
+    }
+    format!(
+        "{} visible items; showing {}-{}",
+        visible_count,
+        visible_range.start.saturating_add(1),
+        visible_range.end.min(visible_count as u64)
+    )
+}
+
 fn px(value: f32) -> Dimension {
     Dimension::length(value.max(0.0))
+}
+
+fn finite_extent(value: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
+    }
+}
+
+fn finite_nonnegative(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
@@ -884,5 +1160,34 @@ mod tests {
 
         assert!(state.activate_visible_item_id(&roots, "target").is_none());
         assert_eq!(state.selected_index, Some(item.index));
+    }
+
+    #[test]
+    fn virtual_tree_focus_preservation_uses_stable_item_ids_across_filtering() {
+        let previous_roots = vec![TreeItem::new("root", "Project").with_children(vec![
+            TreeItem::new("alpha", "Alpha"),
+            TreeItem::new("beta", "Beta"),
+            TreeItem::new("gamma", "Gamma"),
+            TreeItem::new("delta", "Delta"),
+        ])];
+        let next_roots = vec![TreeItem::new("root", "Project").with_children(vec![
+            TreeItem::new("alpha", "Alpha"),
+            TreeItem::new("gamma", "Gamma"),
+            TreeItem::new("delta", "Delta"),
+        ])];
+        let state = TreeViewState::expanded(["root"]);
+        let previous = state.visible_items(&previous_roots);
+        let next = state.visible_items(&next_roots);
+
+        let focus = tree_focus_preservation_by_id(&previous, &next, "gamma");
+        assert_eq!(focus.key, VirtualItemKey::Stable("gamma".to_owned()));
+        assert_eq!(focus.index_before, Some(3));
+        assert_eq!(focus.index_after, Some(2));
+
+        let plan = VirtualTreeViewSpec::new(20.0, 60.0)
+            .scroll_offset(20.0)
+            .focus(focus.clone())
+            .plan(next.len());
+        assert_eq!(plan.focus, Some(focus));
     }
 }

@@ -150,6 +150,7 @@ mod tests {
             &rows,
             PropertyInspectorOptions {
                 selected_index: Some(1),
+                action_prefix: Some("props.edit".to_owned()),
                 ..Default::default()
             },
         );
@@ -159,6 +160,14 @@ mod tests {
         assert!(!first_value.input.pointer);
         let selected_row = doc.node(doc.node(grid).children[1]);
         assert_eq!(selected_row.visual.fill, ColorRgba::new(43, 62, 86, 255));
+        assert_eq!(
+            selected_row
+                .action
+                .as_ref()
+                .and_then(|action| action.action_id())
+                .map(|id| id.as_str()),
+            Some("props.edit.row.gain")
+        );
     }
 
     #[test]
@@ -950,6 +959,133 @@ mod tests {
     }
 
     #[test]
+    fn virtualized_data_table_header_shares_horizontal_scroll_contract() {
+        let mut doc = test_root();
+        let root = doc.root;
+        let columns = vec![
+            DataTableColumn::new("name", "Name", 120.0),
+            DataTableColumn::new("status", "Status", 90.0),
+            DataTableColumn::new("value", "Value", 80.0),
+        ];
+
+        virtualized_data_table(
+            &mut doc,
+            root,
+            "table",
+            &columns,
+            VirtualDataTableSpec {
+                row_count: 4,
+                row_height: 20.0,
+                viewport_width: 200.0,
+                viewport_height: 40.0,
+                scroll_offset: UiPoint::new(40.0, 0.0),
+                overscan_rows: 0,
+            },
+            DataTableOptions::default(),
+            |document, parent, cell| {
+                document.add_child(
+                    parent,
+                    UiNode::text(
+                        format!("cell.{}.{}", cell.row, cell.column),
+                        format!("{}:{}", cell.row, cell.column),
+                        TextStyle::default(),
+                        LayoutStyle::new(),
+                    ),
+                );
+            },
+        );
+
+        let header = node_named(&doc, "table.header");
+        let header_scroll = doc.scroll_state(header).expect("header scroll state");
+        assert_eq!(header_scroll.axes, ScrollAxes::HORIZONTAL);
+        assert_eq!(header_scroll.offset.x, 40.0);
+
+        doc.compute_layout(UiSize::new(640.0, 480.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        assert!(
+            !doc.audit_layout().iter().any(|warning| matches!(
+                warning,
+                AuditWarning::TextClipped { name, .. }
+                    if name == "table.header.value.label"
+            )),
+            "horizontally scrollable header text should not be treated as hard clipping"
+        );
+    }
+
+    #[test]
+    fn virtualized_data_table_exposes_header_commands_and_scroll_action() {
+        let mut doc = test_root();
+        let root = doc.root;
+        let columns = vec![
+            DataTableColumn::new("name", "Name", 120.0)
+                .with_sort(DataTableSortState::ascending())
+                .sortable("table.sort.name"),
+            DataTableColumn::new("status", "Status", 90.0)
+                .with_filter(DataTableFilterState::active("state").with_value("Ready"))
+                .filterable("table.filter.status"),
+            DataTableColumn::new("value", "Value", 80.0).resize_command("table.resize.value"),
+        ];
+        virtualized_data_table(
+            &mut doc,
+            root,
+            "table",
+            &columns,
+            VirtualDataTableSpec {
+                row_count: 20,
+                row_height: 20.0,
+                viewport_width: 240.0,
+                viewport_height: 60.0,
+                scroll_offset: UiPoint::new(0.0, 20.0),
+                overscan_rows: 0,
+            },
+            DataTableOptions::default().with_scroll_action("table.scroll"),
+            |_, _, _| {},
+        );
+
+        let name_header = doc.node(node_named(&doc, "table.header.name"));
+        assert_eq!(
+            name_header
+                .action
+                .as_ref()
+                .and_then(|action| action.action_id())
+                .map(|id| id.as_str()),
+            Some("table.sort.name")
+        );
+        assert!(name_header.input.pointer);
+
+        let status_header = doc.node(node_named(&doc, "table.header.status"));
+        assert_eq!(
+            status_header
+                .action
+                .as_ref()
+                .and_then(|action| action.action_id())
+                .map(|id| id.as_str()),
+            Some("table.filter.status")
+        );
+
+        let resize = doc.node(node_named(&doc, "table.header.value.resize"));
+        assert_eq!(
+            resize
+                .action
+                .as_ref()
+                .and_then(|action| action.action_id())
+                .map(|id| id.as_str()),
+            Some("table.resize.value")
+        );
+        assert_eq!(resize.action_mode, WidgetActionMode::PointerEditParentRect);
+        assert!(resize.input.pointer);
+
+        let body = doc.node(node_named(&doc, "table.body"));
+        assert_eq!(
+            body.action
+                .as_ref()
+                .and_then(|action| action.action_id())
+                .map(|id| id.as_str()),
+            Some("table.scroll")
+        );
+    }
+
+    #[test]
     fn tree_view_state_flattens_expanded_items() {
         let roots = vec![TreeItem::new("project", "Project").with_children(vec![
             TreeItem::new("src", "src").with_children(vec![TreeItem::new("main", "main.rs")]),
@@ -1053,6 +1189,66 @@ mod tests {
         ));
         let disclosure = doc.node(doc.node(first_row).children[0]);
         assert!(matches!(&disclosure.content, UiContent::Text(text) if text.text == "v"));
+    }
+
+    #[test]
+    fn virtualized_tree_view_materializes_visible_rows_and_spacers() {
+        let mut doc = test_root();
+        let root = doc.root;
+        let children = (0..20)
+            .map(|index| TreeItem::new(format!("child-{index}"), format!("Child {index}")))
+            .collect::<Vec<_>>();
+        let roots = vec![TreeItem::new("project", "Project").with_children(children)];
+        let mut state = TreeViewState::expanded(["project"]);
+        state.select(Some(6));
+        let nodes = virtualized_tree_view(
+            &mut doc,
+            root,
+            "tree",
+            &roots,
+            &state,
+            VirtualTreeViewSpec::new(20.0, 60.0)
+                .scroll_offset(100.0)
+                .overscan_rows(1),
+            TreeViewOptions {
+                selected_row_shader: Some(ShaderEffect::new("ui.tree_selected")),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(nodes.plan.visible_range, 5..8);
+        assert_eq!(nodes.plan.materialized_range, 4..9);
+        assert_eq!(nodes.rows.len(), 5);
+        assert!(nodes.top_spacer.is_some());
+        assert!(nodes.bottom_spacer.is_some());
+        assert_eq!(doc.node(nodes.body).children.len(), 7);
+        assert!(doc
+            .node(node_named(&doc, "tree.row.child-3"))
+            .name
+            .ends_with("child-3"));
+        assert_eq!(
+            doc.node(node_named(&doc, "tree.row.child-5"))
+                .shader
+                .as_ref()
+                .unwrap()
+                .key,
+            "ui.tree_selected"
+        );
+        assert!(doc
+            .node(nodes.root)
+            .accessibility
+            .as_ref()
+            .unwrap()
+            .value
+            .as_deref()
+            .unwrap()
+            .contains("showing 6-8"));
+
+        doc.compute_layout(UiSize::new(640.0, 480.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let scroll = doc.scroll_state(nodes.body).expect("tree scroll state");
+        assert_eq!(scroll.offset.y, 100.0);
+        assert_eq!(scroll.content_size.height, 420.0);
     }
 
     #[test]
@@ -1250,5 +1446,43 @@ mod tests {
             &doc.node(node_named(&doc, "tabs.tab.inspect.image")).content,
             UiContent::Image(image) if image.key == "icons.inspect"
         ));
+    }
+
+    #[test]
+    fn tab_group_publishes_strip_minimum_from_all_tabs() {
+        let mut doc = UiDocument::new(root_style(240.0, 160.0));
+        let root = doc.root;
+        let tabs = vec![
+            TabItem::new("one", "One"),
+            TabItem::new("two", "Two"),
+            TabItem::new("three", "Three"),
+        ];
+        let group = tab_group(
+            &mut doc,
+            root,
+            "tabs",
+            &tabs,
+            TabGroupState::selected(0),
+            TabGroupOptions {
+                min_tab_width: 96.0,
+                layout: LayoutStyle::from_taffy_style(Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    size: TaffySize {
+                        width: Dimension::percent(1.0),
+                        height: length(120.0),
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            |_, _, _| {},
+        );
+        doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let strip = doc.node(group).children[0];
+        let strip_rect = doc.node(strip).layout.rect;
+        assert!(strip_rect.width >= 96.0 * 3.0, "strip_rect={strip_rect:?}");
     }
 }

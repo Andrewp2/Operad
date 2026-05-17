@@ -24,15 +24,16 @@ use crate::host::{
 use crate::platform::{
     AppLifecycleResponse, BackendAdapterKind, BackendCapabilities, ClipboardResponse,
     CursorResponse, DragDropResponse, FileDialogResponse, LayerCapabilities, NotificationResponse,
-    OpenUrlResponse, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
-    PlatformServiceKind, PlatformServiceRequest, PlatformServiceResponse, RenderingCapabilities,
-    RepaintResponse, ResourceCapabilities, ResourceId, ScreenshotResponse, TextImeResponse,
+    OpenUrlResponse, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,
+    PlatformServiceCapabilities, PlatformServiceError, PlatformServiceKind, PlatformServiceRequest,
+    PlatformServiceResponse, RenderingCapabilities, RepaintResponse, ResourceCapabilities,
+    ResourceId, ScreenshotResponse, TextImeResponse,
 };
 use crate::renderer::{
-    CanvasHitCollection, CanvasHitTarget, CanvasRenderRegistry, CanvasRenderReport,
-    CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest, RenderError, RenderFrameOutput,
-    RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, RendererAdapter,
-    ResourceDescriptor, ResourceFormat, ResourceResolver,
+    CanvasHitCollection, CanvasHitTarget, CanvasHostCaptureDiagnosticReport, CanvasRenderRegistry,
+    CanvasRenderReport, CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest, RenderError,
+    RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage,
+    RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver,
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
@@ -118,6 +119,9 @@ pub enum ReplayInput {
         line_size: f32,
         page_size: UiSize,
     },
+    Command(CommandId),
+    PlatformResponse(PlatformServiceResponse),
+    WindowResize(UiSize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,12 +135,79 @@ pub struct EventReplayStepResult {
     pub label: String,
     pub input: ReplayInput,
     pub converted: Option<UiInputEvent>,
+    pub platform_response: Option<PlatformServiceResponse>,
+    pub viewport_resize: Option<UiSize>,
     pub result: Option<UiInputResult>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EventReplay {
     pub steps: Vec<EventReplayStep>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InteractionRecorder {
+    replay: EventReplay,
+}
+
+impl InteractionRecorder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_ui(&mut self, label: impl Into<String>, event: UiInputEvent) -> &mut Self {
+        self.replay = std::mem::take(&mut self.replay).ui(label, event);
+        self
+    }
+
+    pub fn record_raw(&mut self, label: impl Into<String>, event: RawInputEvent) -> &mut Self {
+        self.replay = std::mem::take(&mut self.replay).raw(label, event);
+        self
+    }
+
+    pub fn record_wheel(
+        &mut self,
+        label: impl Into<String>,
+        position: UiPoint,
+        delta: UiPoint,
+    ) -> &mut Self {
+        self.record_ui(label, UiInputEvent::wheel(position, delta))
+    }
+
+    pub fn record_command(
+        &mut self,
+        label: impl Into<String>,
+        command: impl Into<CommandId>,
+    ) -> &mut Self {
+        self.replay = std::mem::take(&mut self.replay).command(label, command);
+        self
+    }
+
+    pub fn record_platform_response(
+        &mut self,
+        label: impl Into<String>,
+        response: PlatformServiceResponse,
+    ) -> &mut Self {
+        self.replay = std::mem::take(&mut self.replay).platform_response(label, response);
+        self
+    }
+
+    pub fn record_window_resize(
+        &mut self,
+        label: impl Into<String>,
+        viewport: UiSize,
+    ) -> &mut Self {
+        self.replay = std::mem::take(&mut self.replay).window_resize(label, viewport);
+        self
+    }
+
+    pub fn replay(&self) -> &EventReplay {
+        &self.replay
+    }
+
+    pub fn into_replay(self) -> EventReplay {
+        self.replay
+    }
 }
 
 impl EventReplay {
@@ -194,6 +265,48 @@ impl EventReplay {
         self.ui(label, UiInputEvent::wheel(position, delta))
     }
 
+    pub fn command(mut self, label: impl Into<String>, command: impl Into<CommandId>) -> Self {
+        self.steps.push(EventReplayStep {
+            label: label.into(),
+            input: ReplayInput::Command(command.into()),
+        });
+        self
+    }
+
+    pub fn platform_response(
+        mut self,
+        label: impl Into<String>,
+        response: PlatformServiceResponse,
+    ) -> Self {
+        self.steps.push(EventReplayStep {
+            label: label.into(),
+            input: ReplayInput::PlatformResponse(response),
+        });
+        self
+    }
+
+    pub fn window_resize(mut self, label: impl Into<String>, viewport: UiSize) -> Self {
+        self.steps.push(EventReplayStep {
+            label: label.into(),
+            input: ReplayInput::WindowResize(viewport),
+        });
+        self
+    }
+
+    pub fn long_wheel_scroll(
+        mut self,
+        label: impl Into<String>,
+        position: UiPoint,
+        delta: UiPoint,
+        steps: usize,
+    ) -> Self {
+        let label = label.into();
+        for index in 0..steps {
+            self = self.wheel(format!("{label}.{index}"), position, delta);
+        }
+        self
+    }
+
     pub fn key(self, label: impl Into<String>, key: KeyCode, modifiers: KeyModifiers) -> Self {
         self.ui(label, UiInputEvent::Key { key, modifiers })
     }
@@ -236,11 +349,14 @@ impl EventReplay {
         let mut steps = Vec::with_capacity(self.steps.len());
         for step in &self.steps {
             let converted = replay_input_to_ui_event(&step.input);
+            let platform_response = replay_input_to_platform_response(&step.input);
             let result = converted.clone().map(|event| document.handle_input(event));
             steps.push(EventReplayStepResult {
                 label: step.label.clone(),
                 input: step.input.clone(),
                 converted,
+                platform_response,
+                viewport_resize: replay_input_to_viewport_resize(&step.input),
                 result,
             });
         }
@@ -278,14 +394,31 @@ impl EventReplay {
                     target: route.target,
                 })
             });
+            let direct_command = match &step.input {
+                ReplayInput::Command(command)
+                    if registry
+                        .command(command)
+                        .is_some_and(|command| command.enabled) =>
+                {
+                    Some(command.clone())
+                }
+                ReplayInput::Command(_)
+                | ReplayInput::Ui(_)
+                | ReplayInput::Raw { .. }
+                | ReplayInput::PlatformResponse(_)
+                | ReplayInput::WindowResize(_) => None,
+            };
 
             steps.push(CommandReplayStepResult {
                 label: step.label.clone(),
                 input: step.input.clone(),
                 converted,
                 result,
+                platform_response: replay_input_to_platform_response(&step.input),
+                viewport_resize: replay_input_to_viewport_resize(&step.input),
                 shortcut_route,
                 dispatch,
+                direct_command,
             });
         }
         CommandReplayReport { steps, state }
@@ -304,6 +437,29 @@ fn replay_input_to_ui_event(input: &ReplayInput) -> Option<UiInputEvent> {
             line_size,
             page_size,
         } => event.to_ui_input_event_with_wheel_scale(*line_size, *page_size),
+        ReplayInput::Command(_)
+        | ReplayInput::PlatformResponse(_)
+        | ReplayInput::WindowResize(_) => None,
+    }
+}
+
+fn replay_input_to_platform_response(input: &ReplayInput) -> Option<PlatformServiceResponse> {
+    match input {
+        ReplayInput::PlatformResponse(response) => Some(response.clone()),
+        ReplayInput::Ui(_)
+        | ReplayInput::Raw { .. }
+        | ReplayInput::Command(_)
+        | ReplayInput::WindowResize(_) => None,
+    }
+}
+
+fn replay_input_to_viewport_resize(input: &ReplayInput) -> Option<UiSize> {
+    match input {
+        ReplayInput::WindowResize(viewport) => Some(*viewport),
+        ReplayInput::Ui(_)
+        | ReplayInput::Raw { .. }
+        | ReplayInput::Command(_)
+        | ReplayInput::PlatformResponse(_) => None,
     }
 }
 
@@ -328,6 +484,21 @@ impl ScenarioFrameReport {
 
     pub fn platform_assertions(&self) -> PlatformAssertions<'_> {
         PlatformAssertions::new(
+            &self.platform_requests,
+            &self.document.host_output.platform_responses,
+        )
+    }
+
+    pub fn canvas_capture_diagnostics(
+        &self,
+        capabilities: PlatformServiceCapabilities,
+    ) -> CanvasHostCaptureDiagnosticReport {
+        CanvasHostCaptureDiagnosticReport::from_state_transition(
+            &self.document.host_output.state.canvas_host_capture,
+            &self.document.canvas_host_capture_transition,
+            capabilities,
+        )
+        .with_platform_responses(
             &self.platform_requests,
             &self.document.host_output.platform_responses,
         )
@@ -401,6 +572,10 @@ impl ScenarioHarness {
         resolver: &dyn ResourceResolver,
     ) -> TestResult<ScenarioFrameReport> {
         let label = label.into();
+        if let Some(viewport) = replay_final_viewport(&replay) {
+            self.viewport = viewport;
+            self.target = render_target_with_viewport(&self.target, viewport);
+        }
         let pre_input_layout_started = Instant::now();
         document
             .compute_layout(self.viewport, measurer)
@@ -466,14 +641,37 @@ fn scenario_host_output_from_replay(
         if let Some(event) = converted.clone() {
             output.ui_events.push(event);
         }
+        let platform_response = replay_input_to_platform_response(&step.input);
+        if let Some(response) = platform_response.clone() {
+            output.platform_responses.push(response);
+        }
+        let viewport_resize = replay_input_to_viewport_resize(&step.input);
         steps.push(EventReplayStepResult {
             label: step.label.clone(),
             input: step.input.clone(),
             converted,
+            platform_response,
+            viewport_resize,
             result: None,
         });
     }
     (output, EventReplayReport { steps })
+}
+
+fn replay_final_viewport(replay: &EventReplay) -> Option<UiSize> {
+    replay
+        .steps
+        .iter()
+        .filter_map(|step| replay_input_to_viewport_resize(&step.input))
+        .last()
+}
+
+fn render_target_with_viewport(target: &RenderTarget, viewport: UiSize) -> RenderTarget {
+    match target {
+        RenderTarget::Window { id, .. } => RenderTarget::window(id.clone(), viewport),
+        RenderTarget::AppOwned { id, .. } => RenderTarget::app_owned(id.clone(), viewport),
+        RenderTarget::Offscreen { .. } | RenderTarget::Snapshot { .. } => target.clone(),
+    }
 }
 
 fn attach_scenario_input_results(events: &mut EventReplayReport, input_results: &[UiInputResult]) {
@@ -501,6 +699,48 @@ impl EventReplayReport {
                     self.step_labels()
                 ))
             })
+    }
+
+    pub fn platform_responses(&self) -> impl Iterator<Item = &PlatformServiceResponse> {
+        self.steps
+            .iter()
+            .filter_map(|step| step.platform_response.as_ref())
+    }
+
+    pub fn viewport_resizes(&self) -> impl Iterator<Item = UiSize> + '_ {
+        self.steps.iter().filter_map(|step| step.viewport_resize)
+    }
+
+    pub fn require_platform_response(
+        &self,
+        id: PlatformRequestId,
+    ) -> TestResult<&PlatformServiceResponse> {
+        self.platform_responses()
+            .find(|response| response.id == id)
+            .ok_or_else(|| {
+                TestFailure::new(format!(
+                    "expected platform response `{}`; got {:?}",
+                    id.0,
+                    self.platform_responses()
+                        .map(|response| response.id)
+                        .collect::<Vec<_>>()
+                ))
+            })
+    }
+
+    pub fn require_viewport_resize(&self, viewport: UiSize) -> TestResult {
+        if self
+            .viewport_resizes()
+            .any(|candidate| candidate == viewport)
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected viewport resize {:?}; got {:?}",
+                viewport,
+                self.viewport_resizes().collect::<Vec<_>>()
+            )))
+        }
     }
 
     pub fn clicked_nodes(&self) -> Vec<UiNodeId> {
@@ -534,6 +774,36 @@ impl EventReplayReport {
 
     pub fn require_scrolled(&self, node: UiNodeId) -> TestResult {
         require_replay_node("scrolled", node, self.scrolled_nodes())
+    }
+
+    pub fn require_step_count(&self, expected: usize) -> TestResult {
+        if self.steps.len() == expected {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected {expected} event replay step(s), got {}",
+                self.steps.len()
+            )))
+        }
+    }
+
+    pub fn require_scroll_at_end(&self, document: &UiDocument, node: UiNodeId) -> TestResult {
+        let Some(scroll) = document.scroll_state(node) else {
+            return Err(TestFailure::new(format!(
+                "expected scroll state for node {node:?}"
+            )));
+        };
+        let max = scroll.max_offset();
+        let epsilon = 0.5;
+        if (scroll.offset.x - max.x).abs() <= epsilon && (scroll.offset.y - max.y).abs() <= epsilon
+        {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected scroll node {node:?} at end {max:?}, got {:?}",
+                scroll.offset
+            )))
+        }
     }
 
     pub fn require_no_clicks(&self) -> TestResult {
@@ -858,8 +1128,11 @@ pub struct CommandReplayStepResult {
     pub input: ReplayInput,
     pub converted: Option<UiInputEvent>,
     pub result: Option<UiInputResult>,
+    pub platform_response: Option<PlatformServiceResponse>,
+    pub viewport_resize: Option<UiSize>,
     pub shortcut_route: Option<HostShortcutRoute>,
     pub dispatch: Option<HostCommandDispatch>,
+    pub direct_command: Option<CommandId>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -879,9 +1152,26 @@ impl CommandReplayReport {
         self.steps.iter().filter_map(|step| step.dispatch.as_ref())
     }
 
+    pub fn direct_commands(&self) -> impl Iterator<Item = &CommandId> {
+        self.steps
+            .iter()
+            .filter_map(|step| step.direct_command.as_ref())
+    }
+
+    pub fn platform_responses(&self) -> impl Iterator<Item = &PlatformServiceResponse> {
+        self.steps
+            .iter()
+            .filter_map(|step| step.platform_response.as_ref())
+    }
+
+    pub fn viewport_resizes(&self) -> impl Iterator<Item = UiSize> + '_ {
+        self.steps.iter().filter_map(|step| step.viewport_resize)
+    }
+
     pub fn dispatched_commands(&self) -> Vec<CommandId> {
         self.dispatches()
             .map(|dispatch| dispatch.command.clone())
+            .chain(self.direct_commands().cloned())
             .collect()
     }
 
@@ -890,6 +1180,9 @@ impl CommandReplayReport {
         if self
             .dispatches()
             .any(|dispatch| dispatch.command == command)
+            || self
+                .direct_commands()
+                .any(|direct_command| *direct_command == command)
         {
             Ok(())
         } else {
@@ -905,6 +1198,10 @@ impl CommandReplayReport {
             Err(TestFailure::new(format!(
                 "expected no command dispatches, got `{}`",
                 dispatch.command
+            )))
+        } else if let Some(command) = self.direct_commands().next() {
+            Err(TestFailure::new(format!(
+                "expected no command dispatches, got direct `{command}`"
             )))
         } else {
             Ok(())
@@ -3560,14 +3857,14 @@ mod tests {
     use crate::{
         length, process_document_frame, root_style, AccessibilityAction, AccessibilityLiveRegion,
         AccessibilityMeta, AccessibilityRole, AccessibilitySummary, AccessibilityValueRange,
-        ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy, CanvasRenderContext,
-        CanvasRenderOutput, CanvasRenderRegistry, ClipBehavior, ColorRgba, DirtyRegionSet,
-        HostDocumentFrameRequest, HostFrameOutput, HostInteractionState, ImageContent,
-        ImageRenderContext, ImageRenderOutput, ImageRenderRegistry, InputBehavior, LayoutStyle,
-        PaintBatch, PaintBatchKey, PaintTransform, RawKeyboardEvent, RawWheelEvent,
-        RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage,
-        ResourceFormat, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiContent, UiDocument,
-        UiNode, UiNodeStyle, UiPoint, UiVisual,
+        ApproxTextMeasurer, CanvasContent, CanvasHostCaptureDiagnosticKind,
+        CanvasInteractionPolicy, CanvasRenderContext, CanvasRenderOutput, CanvasRenderRegistry,
+        ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest, HostFrameOutput,
+        HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
+        ImageRenderRegistry, InputBehavior, LayoutStyle, PaintBatch, PaintBatchKey, PaintTransform,
+        RawKeyboardEvent, RawWheelEvent, RenderFrameOutput, RenderFrameRequest, RenderTarget,
+        RenderTargetKind, RenderedImage, ResourceFormat, ScrollAxes, ShaderEffect, StrokeStyle,
+        TextStyle, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -3652,11 +3949,19 @@ mod tests {
             .compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
-        let report = EventReplay::new()
-            .wheel(
+        let mut recorder = InteractionRecorder::new();
+        recorder.record_wheel(
+            "recorded.scroll",
+            UiPoint::new(24.0, 24.0),
+            UiPoint::new(0.0, 32.0),
+        );
+        let report = recorder
+            .into_replay()
+            .long_wheel_scroll(
                 "scroll.down",
                 UiPoint::new(24.0, 24.0),
                 UiPoint::new(0.0, 32.0),
+                8,
             )
             .pointer_drag(
                 "empty.drag",
@@ -3666,7 +3971,13 @@ mod tests {
             )
             .run(&mut document);
 
+        report
+            .require_step_count(14)
+            .expect("recorded scroll plus drag");
         report.require_scrolled(scroll_area).expect("scrolled area");
+        report
+            .require_scroll_at_end(&document, scroll_area)
+            .expect("long synthetic scroll reaches end");
         report.require_no_clicks().expect("drag outside misses");
         assert!(report.require_clicked(scroll_area).is_err());
         assert!(report.step("empty.drag.move.0").is_ok());
@@ -3742,6 +4053,186 @@ mod tests {
         report
             .require_command_dispatched("editor.save")
             .expect("editor command dispatch");
+    }
+
+    #[test]
+    fn event_replay_records_direct_command_steps() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(Command::new(CommandMeta::new("file.save", "Save")))
+            .unwrap();
+        registry
+            .register(Command::new(CommandMeta::new("file.export", "Export")).disabled("clean"))
+            .unwrap();
+
+        let mut recorder = InteractionRecorder::new();
+        recorder
+            .record_command("palette.save", "file.save")
+            .record_command("palette.export", "file.export");
+        let report = recorder.into_replay().run_with_commands(
+            &mut document,
+            HostInteractionState::default(),
+            &registry,
+        );
+
+        assert_eq!(
+            report.dispatched_commands(),
+            vec![CommandId::new("file.save")]
+        );
+        assert_eq!(
+            report.steps[0].direct_command,
+            Some(CommandId::new("file.save"))
+        );
+        assert_eq!(report.steps[0].converted, None);
+        assert_eq!(report.steps[1].direct_command, None);
+        report
+            .require_command_dispatched("file.save")
+            .expect("direct command dispatch");
+        assert!(report.require_command_dispatched("file.export").is_err());
+    }
+
+    #[test]
+    fn event_replay_records_platform_response_steps() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let response = PlatformServiceResponse::new(
+            PlatformRequestId::new(77),
+            PlatformResponse::Clipboard(ClipboardResponse::Text(Some("copied".to_owned()))),
+        );
+
+        let mut recorder = InteractionRecorder::new();
+        recorder.record_platform_response("clipboard.response", response.clone());
+        let report = recorder.into_replay().run(&mut document);
+
+        let step = report
+            .step("clipboard.response")
+            .expect("platform response step");
+        assert_eq!(step.converted, None);
+        assert_eq!(step.result, None);
+        assert_eq!(step.platform_response.as_ref(), Some(&response));
+        assert_eq!(
+            report.platform_responses().cloned().collect::<Vec<_>>(),
+            vec![response.clone()]
+        );
+        assert_eq!(
+            report
+                .require_platform_response(PlatformRequestId::new(77))
+                .expect("recorded platform response"),
+            &response
+        );
+    }
+
+    #[test]
+    fn scenario_harness_replays_platform_responses_into_host_output() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        let mut harness = ScenarioHarness::new(UiSize::new(180.0, 100.0));
+        let response = PlatformServiceResponse::new(
+            PlatformRequestId::new(91),
+            PlatformResponse::Repaint(RepaintResponse::Scheduled {
+                delay: Duration::from_millis(16),
+            }),
+        );
+
+        let frame = harness
+            .run_frame(
+                "host.response",
+                &mut document,
+                EventReplay::new().platform_response("repaint.response", response.clone()),
+            )
+            .expect("scenario frame");
+
+        assert_eq!(
+            frame
+                .events
+                .platform_responses()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![response.clone()]
+        );
+        assert_eq!(
+            frame.document.host_output.platform_responses,
+            vec![response]
+        );
+        frame
+            .events
+            .require_platform_response(PlatformRequestId::new(91))
+            .expect("scenario replayed response");
+    }
+
+    #[test]
+    fn scenario_harness_applies_replayed_window_resize_before_layout() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        let mut harness = ScenarioHarness::new(UiSize::new(180.0, 100.0));
+        let resized = UiSize::new(260.0, 140.0);
+
+        let mut recorder = InteractionRecorder::new();
+        recorder.record_window_resize("window.resize", resized);
+        let frame = harness
+            .run_frame("resized", &mut document, recorder.into_replay())
+            .expect("scenario frame");
+
+        assert_eq!(harness.viewport, resized);
+        assert_eq!(
+            frame.render.target,
+            RenderTarget::window("scenario", resized)
+        );
+        assert_eq!(
+            frame
+                .events
+                .step("window.resize")
+                .expect("resize step")
+                .viewport_resize,
+            Some(resized)
+        );
+        frame
+            .events
+            .require_viewport_resize(resized)
+            .expect("resize recorded");
+    }
+
+    #[test]
+    fn scenario_frame_reports_canvas_capture_diagnostics() {
+        let viewport = UiSize::new(320.0, 200.0);
+        let mut document = UiDocument::new(fixed_style(320.0, 200.0));
+        let canvas = document.add_child(
+            document.root,
+            UiNode::canvas("viewport", "app.viewport", fixed_style(160.0, 96.0).layout),
+        );
+        document.set_node_content(
+            canvas,
+            UiContent::Canvas(
+                CanvasContent::new("app.viewport")
+                    .native_viewport()
+                    .interaction(CanvasInteractionPolicy::NATIVE_VIEWPORT),
+            ),
+        );
+        let mut harness = ScenarioHarness::new(viewport);
+
+        let frame = harness
+            .run_frame("canvas.capture", &mut document, EventReplay::new())
+            .expect("scenario frame");
+
+        let diagnostics = frame.canvas_capture_diagnostics(PlatformServiceCapabilities::DESKTOP);
+        assert!(diagnostics.has_kind(CanvasHostCaptureDiagnosticKind::Acquired));
+        assert_eq!(
+            diagnostics
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.node == Some(canvas))
+                .count(),
+            1
+        );
+
+        let unavailable = frame.canvas_capture_diagnostics(PlatformServiceCapabilities::NONE);
+        assert!(unavailable.has_kind(CanvasHostCaptureDiagnosticKind::Unavailable));
+        assert!(!unavailable.diagnostics[0].unsupported_requests.is_empty());
     }
 
     #[test]

@@ -2,6 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use binpack2d::{
+    dimension::Dimension as PackDimension,
+    maxrects::{Heuristic as MaxRectsHeuristic, MaxRectsBin},
+};
 use taffy::prelude::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentage, Rect,
     Size as TaffySize, Style,
@@ -15,6 +19,8 @@ use crate::{
 };
 
 use super::surfaces::{DEFAULT_SURFACE_BG, DEFAULT_SURFACE_STROKE};
+
+const ORGANIZE_PACK_SCALE: f32 = 4.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FloatingWindowDescriptor {
@@ -166,6 +172,47 @@ impl FloatingWindowDefaults {
             min_size,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FloatingWindowOrganizeSpec<'a> {
+    pub id: &'a str,
+    pub defaults: FloatingWindowDefaults,
+    pub collapsed_size: Option<UiSize>,
+}
+
+impl<'a> FloatingWindowOrganizeSpec<'a> {
+    pub const fn new(id: &'a str, defaults: FloatingWindowDefaults) -> Self {
+        Self {
+            id,
+            defaults,
+            collapsed_size: None,
+        }
+    }
+
+    pub const fn with_collapsed_size(mut self, size: UiSize) -> Self {
+        self.collapsed_size = Some(size);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatingWindowOrganizeMode {
+    /// Every window fit at its current or preferred size.
+    Preferred,
+    /// At least one window was reduced to its minimum size so the layout could fit.
+    Minimum,
+    /// Windows were collapsed to their title bars so the layout could fit.
+    Collapsed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatingWindowOrganizeOutcome {
+    /// The windows were repositioned inside the requested bounds.
+    Organized { mode: FloatingWindowOrganizeMode },
+    /// The windows cannot fit inside the requested bounds even after the compact
+    /// collapsed-title fallback, so the existing desktop state was left unchanged.
+    NoFit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -335,6 +382,116 @@ impl FloatingDesktopState {
             .copied()
             .max()
             .unwrap_or(self.z_policy.base_z_index);
+    }
+
+    pub fn organize_windows<'a>(
+        &mut self,
+        windows: impl IntoIterator<Item = (&'a str, FloatingWindowDefaults)>,
+        bounds: UiSize,
+        options: &FloatingDesktopOptions,
+    ) -> FloatingWindowOrganizeOutcome {
+        let bounds_rect = UiRect::new(
+            0.0,
+            0.0,
+            finite_or(bounds.width, 0.0).max(0.0),
+            finite_or(bounds.height, 0.0).max(0.0),
+        );
+        self.organize_windows_in_rect(windows, bounds_rect, options)
+    }
+
+    pub fn organize_windows_in_rect<'a>(
+        &mut self,
+        windows: impl IntoIterator<Item = (&'a str, FloatingWindowDefaults)>,
+        bounds_rect: UiRect,
+        options: &FloatingDesktopOptions,
+    ) -> FloatingWindowOrganizeOutcome {
+        self.organize_window_specs_in_rect(
+            windows
+                .into_iter()
+                .map(|(id, defaults)| FloatingWindowOrganizeSpec::new(id, defaults)),
+            bounds_rect,
+            options,
+        )
+    }
+
+    pub fn organize_window_specs_in_rect<'a>(
+        &mut self,
+        windows: impl IntoIterator<Item = FloatingWindowOrganizeSpec<'a>>,
+        bounds_rect: UiRect,
+        options: &FloatingDesktopOptions,
+    ) -> FloatingWindowOrganizeOutcome {
+        let margin = finite_or(options.margin, 0.0).max(0.0);
+        let gap = finite_or(options.gap, 0.0).max(0.0);
+        let bounds_rect = UiRect::new(
+            finite_or(bounds_rect.x, 0.0),
+            finite_or(bounds_rect.y, 0.0),
+            finite_or(bounds_rect.width, 0.0).max(0.0),
+            finite_or(bounds_rect.height, 0.0).max(0.0),
+        );
+        let inner_bounds = layout::inset_rect(bounds_rect, margin);
+        let stride = self.z_policy.window_z_stride.max(1);
+        let max_before_stride = self.z_policy.max_z_index.saturating_sub(stride);
+        let mut last_z = self.z_policy.base_z_index;
+        let mut items = Vec::new();
+
+        for spec in windows.into_iter() {
+            let id = spec.id;
+            let defaults = spec.defaults;
+            let mut size = self.size(id, defaults.size);
+            let mut min_size = defaults.min_size;
+            let collapsed_size = normalize_organize_collapsed_size(
+                spec.collapsed_size.unwrap_or_else(|| {
+                    UiSize::new(defaults.min_size.width, options.title_bar_height)
+                }),
+                options.title_bar_height,
+            );
+            if self.is_collapsed(id) {
+                size = collapsed_size;
+                min_size = collapsed_size;
+            }
+            items.push(OrganizeWindowItem {
+                id: id.to_string(),
+                size,
+                min_size,
+                collapsed_size,
+                collapsed: self.is_collapsed(id),
+            });
+        }
+
+        let Some((rects, mode)) =
+            organize_window_rects(&items, inner_bounds, gap, options.title_bar_height)
+        else {
+            return FloatingWindowOrganizeOutcome::NoFit;
+        };
+        for (index, (item, rect)) in items.iter().zip(rects.into_iter()).enumerate() {
+            self.ensure_window(
+                &item.id,
+                FloatingWindowDefaults::new(
+                    UiPoint::new(rect.x, rect.y),
+                    UiSize::new(rect.width, rect.height),
+                    item.min_size,
+                ),
+            );
+            self.drag.remove(&item.id);
+            self.resize.remove(&item.id);
+            self.positions
+                .insert(item.id.clone(), UiPoint::new(rect.x, rect.y));
+            self.sizes
+                .insert(item.id.clone(), UiSize::new(rect.width, rect.height));
+            self.user_sized.insert(item.id.clone());
+            let z = self
+                .z_policy
+                .base_z_index
+                .saturating_add((index as i16).saturating_mul(stride))
+                .min(max_before_stride);
+            self.z_order.insert(item.id.clone(), z);
+            last_z = z;
+            if mode == FloatingWindowOrganizeMode::Collapsed {
+                self.collapsed.insert(item.id.clone());
+            }
+        }
+        self.next_z_index = last_z;
+        FloatingWindowOrganizeOutcome::Organized { mode }
     }
 
     pub fn apply_drag(&mut self, id: &str, edit: WidgetPointerEdit, fallback_position: UiPoint) {
@@ -625,6 +782,15 @@ pub struct FloatingDesktopNodes {
     pub windows: Vec<FloatingWindowNode>,
 }
 
+#[derive(Debug, Clone)]
+struct OrganizeWindowItem {
+    id: String,
+    size: UiSize,
+    min_size: UiSize,
+    collapsed_size: UiSize,
+    collapsed: bool,
+}
+
 pub fn floating_window_layout(
     windows: &[FloatingWindowDescriptor],
     bounds: UiSize,
@@ -650,12 +816,15 @@ pub fn floating_window_layout(
         .enumerate()
         .filter(|(_, window)| window.visible)
     {
-        let mut size = resolved_size(window, bounds, options);
-        let mut min_size = resolved_min_size(window, bounds, options);
-        if window.collapsed {
-            size.height = options.title_bar_height.max(1.0).min(size.height);
-            min_size.height = size.height;
-        }
+        let (size, min_size) = if window.collapsed {
+            let collapsed_size = resolved_collapsed_min_size(window, bounds, options);
+            (collapsed_size, collapsed_size)
+        } else {
+            (
+                resolved_size(window, bounds, options),
+                resolved_min_size(window, bounds, options),
+            )
+        };
         let z_index = window.z_index.unwrap_or_else(|| {
             options.base_z_index.saturating_add(
                 (placements.len().min(i16::MAX as usize) as i16)
@@ -681,6 +850,153 @@ pub fn floating_window_layout(
     }
 
     placements
+}
+
+fn organize_window_rects(
+    items: &[OrganizeWindowItem],
+    bounds: UiRect,
+    gap: f32,
+    title_bar_height: f32,
+) -> Option<(Vec<UiRect>, FloatingWindowOrganizeMode)> {
+    let (preferred, preferred_fits) = organize_window_rects_for_mode(
+        items,
+        bounds,
+        gap,
+        title_bar_height,
+        FloatingWindowOrganizeMode::Preferred,
+    );
+    if preferred_fits {
+        return Some((preferred, FloatingWindowOrganizeMode::Preferred));
+    }
+
+    let (minimum, minimum_fits) = organize_window_rects_for_mode(
+        items,
+        bounds,
+        gap,
+        title_bar_height,
+        FloatingWindowOrganizeMode::Minimum,
+    );
+    if minimum_fits {
+        return Some((minimum, FloatingWindowOrganizeMode::Minimum));
+    }
+
+    let (collapsed, collapsed_fits) = organize_window_rects_for_mode(
+        items,
+        bounds,
+        gap,
+        title_bar_height,
+        FloatingWindowOrganizeMode::Collapsed,
+    );
+    if collapsed_fits {
+        return Some((collapsed, FloatingWindowOrganizeMode::Collapsed));
+    }
+
+    None
+}
+
+fn organize_window_rects_for_mode(
+    items: &[OrganizeWindowItem],
+    bounds: UiRect,
+    gap: f32,
+    title_bar_height: f32,
+    mode: FloatingWindowOrganizeMode,
+) -> (Vec<UiRect>, bool) {
+    pack_organize_window_rects(items, bounds, gap, title_bar_height, mode)
+        .map_or_else(|| (Vec::new(), false), |rects| (rects, true))
+}
+
+fn pack_organize_window_rects(
+    items: &[OrganizeWindowItem],
+    bounds: UiRect,
+    gap: f32,
+    title_bar_height: f32,
+    mode: FloatingWindowOrganizeMode,
+) -> Option<Vec<UiRect>> {
+    let bin_width = organize_pack_bound(bounds.width)?;
+    let bin_height = organize_pack_bound(bounds.height)?;
+    let pack_gap = finite_or(gap, 0.0).max(0.0);
+    let sizes = items
+        .iter()
+        .map(|item| organize_window_item_size(item, title_bar_height, mode))
+        .collect::<Vec<_>>();
+    let dimensions = sizes
+        .iter()
+        .enumerate()
+        .map(|(index, size)| {
+            Some(PackDimension::with_id(
+                index as isize,
+                organize_pack_extent(size.width + pack_gap)?,
+                organize_pack_extent(size.height + pack_gap)?,
+                0,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut bin = MaxRectsBin::with_capacity(bin_width, bin_height, dimensions.len());
+    let (packed, rejected) = bin.insert_list(&dimensions, MaxRectsHeuristic::BestShortSideFit);
+    if !rejected.is_empty() || packed.len() != dimensions.len() {
+        return None;
+    }
+
+    let mut rects = vec![UiRect::new(0.0, 0.0, 0.0, 0.0); items.len()];
+    for packed_rect in packed {
+        let index = usize::try_from(packed_rect.id()).ok()?;
+        let size = *sizes.get(index)?;
+        let rect = UiRect::new(
+            bounds.x + packed_rect.x() as f32 / ORGANIZE_PACK_SCALE,
+            bounds.y + packed_rect.y() as f32 / ORGANIZE_PACK_SCALE,
+            size.width,
+            size.height,
+        );
+        if rect.right() > bounds.right() + f32::EPSILON
+            || rect.bottom() > bounds.bottom() + f32::EPSILON
+        {
+            return None;
+        }
+        rects[index] = rect;
+    }
+    Some(rects)
+}
+
+fn organize_window_item_size(
+    item: &OrganizeWindowItem,
+    title_bar_height: f32,
+    mode: FloatingWindowOrganizeMode,
+) -> UiSize {
+    if item.collapsed || mode == FloatingWindowOrganizeMode::Collapsed {
+        return normalize_organize_collapsed_size(item.collapsed_size, title_bar_height);
+    }
+    let min_width = finite_or(item.min_size.width, 1.0).max(1.0);
+    let min_height = finite_or(item.min_size.height, 1.0).max(1.0);
+    let (width, height) = match mode {
+        FloatingWindowOrganizeMode::Preferred => (
+            finite_or(item.size.width, min_width).max(min_width),
+            finite_or(item.size.height, min_height).max(min_height),
+        ),
+        FloatingWindowOrganizeMode::Minimum => (min_width, min_height),
+        FloatingWindowOrganizeMode::Collapsed => unreachable!("collapsed mode returns early"),
+    };
+    UiSize::new(width, height)
+}
+
+fn normalize_organize_collapsed_size(size: UiSize, title_bar_height: f32) -> UiSize {
+    UiSize::new(
+        finite_or(size.width, 1.0).max(1.0),
+        finite_or(size.height, title_bar_height)
+            .max(finite_or(title_bar_height, 32.0))
+            .max(1.0),
+    )
+}
+
+fn organize_pack_extent(value: f32) -> Option<i32> {
+    let scaled = (finite_or(value, 1.0).max(0.0) * ORGANIZE_PACK_SCALE)
+        .ceil()
+        .max(1.0);
+    (scaled <= i32::MAX as f32).then_some(scaled as i32)
+}
+
+fn organize_pack_bound(value: f32) -> Option<i32> {
+    let scaled = (finite_or(value, 0.0).max(0.0) * ORGANIZE_PACK_SCALE).floor();
+    (scaled >= 1.0 && scaled <= i32::MAX as f32).then_some(scaled as i32)
 }
 
 pub fn floating_desktop(
@@ -919,10 +1235,15 @@ fn add_floating_window(
         ),
         options.margin,
     );
+    let constraint_min_size = if descriptor.collapsed {
+        resolved_collapsed_min_size(descriptor, options.bounds, options)
+    } else {
+        resolved_min_size(descriptor, options.bounds, options)
+    };
     document.node_mut(root).layout_constraint =
         Some(UiNodeLayoutConstraint::StackedIntrinsicSize {
             sources: constraint_sources,
-            min_size: descriptor.min_size,
+            min_size: constraint_min_size,
             bounds,
             fit_to_preferred: descriptor.auto_size_to_content,
         });
@@ -1242,6 +1563,28 @@ fn resolved_min_size(
     )
 }
 
+fn resolved_collapsed_min_size(
+    window: &FloatingWindowDescriptor,
+    bounds: UiSize,
+    options: &FloatingDesktopOptions,
+) -> UiSize {
+    let margin = finite_or(options.margin, 0.0).max(0.0);
+    let available_width =
+        (finite_or(bounds.width, window.preferred_size.width) - margin * 2.0).max(1.0);
+    let padding = finite_or(options.content_padding, 0.0).max(0.0);
+    let title_bar_height = finite_or(options.title_bar_height, 32.0).max(1.0);
+    let title_control_width = title_bar_control_width(window, options);
+    let title_text_width = approximate_title_width(&window.title, &options.title_style);
+    let title_min_width = padding * 2.0 + title_control_width + title_text_width;
+    UiSize::new(
+        finite_or(window.min_size.width, 1.0)
+            .max(title_min_width)
+            .max(1.0)
+            .min(available_width),
+        title_bar_height,
+    )
+}
+
 fn title_bar_control_width(
     window: &FloatingWindowDescriptor,
     options: &FloatingDesktopOptions,
@@ -1300,6 +1643,212 @@ mod tests {
         assert_eq!(descriptor.preferred_size, defaults.size);
         assert!(descriptor.collapsed);
         assert_eq!(descriptor.z_index, Some(20));
+    }
+
+    #[test]
+    fn floating_desktop_state_organizes_windows_into_contained_flow() {
+        let defaults_a = FloatingWindowDefaults::new(
+            UiPoint::new(300.0, 200.0),
+            UiSize::new(140.0, 80.0),
+            UiSize::new(80.0, 50.0),
+        );
+        let defaults_b = FloatingWindowDefaults::new(
+            UiPoint::new(280.0, 180.0),
+            UiSize::new(140.0, 80.0),
+            UiSize::new(80.0, 50.0),
+        );
+        let defaults_c = FloatingWindowDefaults::new(
+            UiPoint::new(260.0, 160.0),
+            UiSize::new(140.0, 80.0),
+            UiSize::new(80.0, 50.0),
+        );
+        let options = FloatingDesktopOptions::new(UiSize::new(330.0, 220.0))
+            .with_margin(10.0)
+            .with_gap(8.0);
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+
+        let outcome = state.organize_windows(
+            [("a", defaults_a), ("b", defaults_b), ("c", defaults_c)],
+            options.bounds,
+            &options,
+        );
+
+        assert_eq!(
+            outcome,
+            FloatingWindowOrganizeOutcome::Organized {
+                mode: FloatingWindowOrganizeMode::Preferred,
+            }
+        );
+        let rects = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| {
+                let position = state.position(id, UiPoint::new(0.0, 0.0));
+                let size = state.size(id, UiSize::ZERO);
+                UiRect::new(position.x, position.y, size.width, size.height)
+            })
+            .collect::<Vec<_>>();
+        for (index, rect) in rects.iter().enumerate() {
+            assert!(
+                rect.x >= 10.0
+                    && rect.y >= 10.0
+                    && rect.right() <= 320.0 + f32::EPSILON
+                    && rect.bottom() <= 210.0 + f32::EPSILON,
+                "{index}: {rect:?}"
+            );
+            for other in rects.iter().skip(index + 1) {
+                assert!(!overlaps(*rect, *other), "{rect:?} overlapped {other:?}");
+            }
+        }
+        assert_eq!(state.size("a", UiSize::ZERO), defaults_a.size);
+        assert_eq!(state.size("b", UiSize::ZERO), defaults_b.size);
+        assert_eq!(state.size("c", UiSize::ZERO), defaults_c.size);
+        assert_eq!(state.z_index("a"), Some(10));
+        assert_eq!(state.z_index("b"), Some(15));
+        assert_eq!(state.z_index("c"), Some(20));
+        assert!(state.user_sized.contains("a"));
+    }
+
+    #[test]
+    fn floating_desktop_state_organizes_windows_with_rectangle_packing() {
+        let tall = FloatingWindowDefaults::new(
+            UiPoint::new(300.0, 200.0),
+            UiSize::new(100.0, 160.0),
+            UiSize::new(100.0, 160.0),
+        );
+        let wide = FloatingWindowDefaults::new(
+            UiPoint::new(280.0, 180.0),
+            UiSize::new(160.0, 80.0),
+            UiSize::new(160.0, 80.0),
+        );
+        let options = FloatingDesktopOptions::new(UiSize::new(260.0, 160.0))
+            .with_margin(0.0)
+            .with_gap(0.0);
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+
+        let outcome = state.organize_windows(
+            [("tall", tall), ("wide-a", wide), ("wide-b", wide)],
+            options.bounds,
+            &options,
+        );
+
+        assert_eq!(
+            outcome,
+            FloatingWindowOrganizeOutcome::Organized {
+                mode: FloatingWindowOrganizeMode::Preferred,
+            }
+        );
+        let rects = ["tall", "wide-a", "wide-b"]
+            .into_iter()
+            .map(|id| {
+                let size = state.size(id, UiSize::new(0.0, 0.0));
+                let position = state.position(id, UiPoint::new(0.0, 0.0));
+                UiRect::new(position.x, position.y, size.width, size.height)
+            })
+            .collect::<Vec<_>>();
+        for (index, rect) in rects.iter().enumerate() {
+            assert!(rect.x >= 0.0 && rect.y >= 0.0, "{index}: {rect:?}");
+            assert!(rect.right() <= 260.0 + f32::EPSILON, "{index}: {rect:?}");
+            assert!(rect.bottom() <= 160.0 + f32::EPSILON, "{index}: {rect:?}");
+            for other in rects.iter().skip(index + 1) {
+                assert!(!overlaps(*rect, *other), "{rect:?} overlapped {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn floating_desktop_state_reports_no_fit_without_mutating_windows() {
+        let defaults_a = FloatingWindowDefaults::new(
+            UiPoint::new(24.0, 30.0),
+            UiSize::new(180.0, 110.0),
+            UiSize::new(120.0, 70.0),
+        );
+        let defaults_b = FloatingWindowDefaults::new(
+            UiPoint::new(48.0, 60.0),
+            UiSize::new(180.0, 110.0),
+            UiSize::new(120.0, 70.0),
+        );
+        let options = FloatingDesktopOptions::new(UiSize::new(100.0, 120.0))
+            .with_margin(10.0)
+            .with_gap(8.0);
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        state.ensure_window("a", defaults_a);
+        state.ensure_window("b", defaults_b);
+        state
+            .sizes
+            .insert("a".to_string(), UiSize::new(190.0, 120.0));
+        state.user_sized.insert("a".to_string());
+        state.collapsed.insert("b".to_string());
+        state.z_order.insert("a".to_string(), 35);
+        state.z_order.insert("b".to_string(), 20);
+        state.next_z_index = 35;
+        let before = state.clone();
+
+        let outcome = state.organize_windows(
+            [("a", defaults_a), ("b", defaults_b)],
+            options.bounds,
+            &options,
+        );
+
+        assert_eq!(outcome, FloatingWindowOrganizeOutcome::NoFit);
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn floating_desktop_state_collapses_windows_when_only_title_bars_fit() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(24.0, 30.0),
+            UiSize::new(180.0, 100.0),
+            UiSize::new(120.0, 70.0),
+        );
+        let options = FloatingDesktopOptions::new(UiSize::new(340.0, 160.0))
+            .with_margin(10.0)
+            .with_gap(8.0);
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+
+        let outcome = state.organize_windows(
+            [
+                ("a", defaults),
+                ("b", defaults),
+                ("c", defaults),
+                ("d", defaults),
+            ],
+            options.bounds,
+            &options,
+        );
+
+        assert_eq!(
+            outcome,
+            FloatingWindowOrganizeOutcome::Organized {
+                mode: FloatingWindowOrganizeMode::Collapsed,
+            }
+        );
+        for id in ["a", "b", "c", "d"] {
+            assert!(state.is_collapsed(id), "{id} should be collapsed");
+            assert_eq!(
+                state.size(id, UiSize::ZERO).height,
+                options.title_bar_height
+            );
+        }
+    }
+
+    #[test]
+    fn floating_desktop_state_organizer_preserves_minimum_width() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(24.0, 30.0),
+            UiSize::new(260.0, 80.0),
+            UiSize::new(220.0, 60.0),
+        );
+        let options = FloatingDesktopOptions::new(UiSize::new(200.0, 180.0))
+            .with_margin(10.0)
+            .with_gap(8.0);
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        state.ensure_window("wide", defaults);
+        let before = state.clone();
+
+        let outcome = state.organize_windows([("wide", defaults)], options.bounds, &options);
+
+        assert_eq!(outcome, FloatingWindowOrganizeOutcome::NoFit);
+        assert_eq!(state, before);
     }
 
     #[test]
@@ -1694,6 +2243,81 @@ mod tests {
             content.right() <= window.right(),
             "content={content:?} window={window:?}"
         );
+    }
+
+    #[test]
+    fn floating_desktop_applies_published_content_minimum_to_window_constraint() {
+        let windows = vec![FloatingWindowDescriptor::new(
+            "published_min",
+            "Published minimum",
+            UiSize::new(140.0, 90.0),
+        )
+        .with_min_size(UiSize::new(80.0, 60.0))
+        .with_content_min_size(UiSize::new(260.0, 120.0))
+        .with_auto_size_to_content(true)
+        .with_position(UiPoint::new(20.0, 20.0))];
+        let options = FloatingDesktopOptions::new(UiSize::new(420.0, 260.0)).with_margin(10.0);
+        let mut document = UiDocument::new(root_style(420.0, 260.0));
+        let root = document.root;
+        let nodes = floating_desktop(
+            &mut document,
+            root,
+            "desk",
+            &windows,
+            options.clone(),
+            |document, parent, _window| {
+                document.add_child(
+                    parent,
+                    UiNode::container("published_min.fill", LayoutStyle::size(24.0, 24.0)),
+                );
+            },
+        );
+        document
+            .compute_layout(UiSize::new(420.0, 260.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let window = document.node(nodes.windows[0].root).layout.rect;
+        let expected_width = 260.0 + options.content_padding * 2.0;
+        let expected_height = 120.0 + options.title_bar_height + options.content_padding * 2.0;
+        assert!(window.width >= expected_width, "{window:?}");
+        assert!(window.height >= expected_height, "{window:?}");
+    }
+
+    #[test]
+    fn floating_desktop_collapsed_window_uses_title_minimum_not_hidden_content_minimum() {
+        let windows = vec![FloatingWindowDescriptor::new(
+            "published_min",
+            "Published minimum",
+            UiSize::new(140.0, 90.0),
+        )
+        .with_min_size(UiSize::new(160.0, 60.0))
+        .with_content_min_size(UiSize::new(620.0, 360.0))
+        .collapsed(true)
+        .with_auto_size_to_content(true)
+        .with_position(UiPoint::new(20.0, 20.0))];
+        let options = FloatingDesktopOptions::new(UiSize::new(720.0, 420.0)).with_margin(10.0);
+        let mut document = UiDocument::new(root_style(720.0, 420.0));
+        let root = document.root;
+        let nodes = floating_desktop(
+            &mut document,
+            root,
+            "desk",
+            &windows,
+            options.clone(),
+            |document, parent, _window| {
+                document.add_child(
+                    parent,
+                    UiNode::container("published_min.fill", LayoutStyle::size(620.0, 360.0)),
+                );
+            },
+        );
+        document
+            .compute_layout(UiSize::new(720.0, 420.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let window = document.node(nodes.windows[0].root).layout.rect;
+        assert!(window.width < 300.0, "{window:?}");
+        assert_eq!(window.height, options.title_bar_height);
     }
 
     #[test]

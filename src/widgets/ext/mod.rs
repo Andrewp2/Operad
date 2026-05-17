@@ -6,10 +6,12 @@ pub mod pickers;
 pub mod surfaces;
 
 pub mod color_picker;
+pub mod command_diagnostics;
 pub mod command_palette;
 pub mod context_menu;
 pub mod data_table;
 pub mod date_picker;
+pub mod debug_inspector;
 pub mod dialog;
 pub mod dock_workspace;
 pub mod dropdown;
@@ -24,6 +26,7 @@ pub mod progress_indicator;
 pub mod property_inspector;
 pub mod split_pane;
 pub mod tab_group;
+pub mod theme_editor;
 pub mod timeline_ruler;
 pub mod toast;
 pub mod toggle_control;
@@ -31,6 +34,8 @@ pub mod tree_view;
 
 #[allow(unused_imports)]
 pub use color_picker::*;
+#[allow(unused_imports)]
+pub use command_diagnostics::*;
 #[allow(unused_imports)]
 pub use command_palette::*;
 #[allow(unused_imports)]
@@ -41,6 +46,8 @@ pub use data::*;
 pub use data_table::*;
 #[allow(unused_imports)]
 pub use date_picker::*;
+#[allow(unused_imports)]
+pub use debug_inspector::*;
 #[allow(unused_imports)]
 pub use dialog::*;
 #[allow(unused_imports)]
@@ -71,6 +78,8 @@ pub use split_pane::*;
 pub use surfaces::*;
 #[allow(unused_imports)]
 pub use tab_group::*;
+#[allow(unused_imports)]
+pub use theme_editor::*;
 #[allow(unused_imports)]
 pub use timeline_ruler::*;
 #[allow(unused_imports)]

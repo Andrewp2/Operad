@@ -316,6 +316,69 @@ impl CommandPaletteOutcome {
             .as_ref()
             .map(CommandPaletteSelection::command_selection)
     }
+
+    pub fn record_selection(&self, history: &mut CommandPaletteHistory) -> Option<CommandId> {
+        let command = self.selected.as_ref()?.command_id();
+        history.record(command.clone());
+        Some(command)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandPaletteHistory {
+    recent: Vec<CommandId>,
+    capacity: usize,
+}
+
+impl CommandPaletteHistory {
+    pub const DEFAULT_CAPACITY: usize = 12;
+
+    pub fn new() -> Self {
+        Self {
+            recent: Vec::new(),
+            capacity: Self::DEFAULT_CAPACITY,
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            recent: Vec::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
+    pub fn recent(&self) -> &[CommandId] {
+        &self.recent
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn clear(&mut self) {
+        self.recent.clear();
+    }
+
+    pub fn record(&mut self, command: impl Into<CommandId>) {
+        let command = command.into();
+        self.recent.retain(|recent| recent != &command);
+        self.recent.insert(0, command);
+        self.recent.truncate(self.capacity);
+    }
+
+    pub fn recency_rank(&self, command: &CommandId) -> Option<usize> {
+        self.recent.iter().position(|recent| recent == command)
+    }
+
+    pub fn is_recent(&self, command: &CommandId) -> bool {
+        self.recency_rank(command).is_some()
+    }
+}
+
+impl Default for CommandPaletteHistory {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn command_palette_item_from_command(
@@ -359,6 +422,41 @@ pub fn command_palette_items_from_registry(
         .into_iter()
         .filter_map(|command| {
             command_palette_item_from_command(registry, command, active_scopes, formatter)
+        })
+        .collect()
+}
+
+pub fn command_palette_items_from_registry_with_history(
+    registry: &CommandRegistry,
+    active_scopes: &[CommandScope],
+    formatter: &ShortcutFormatter,
+    history: &CommandPaletteHistory,
+) -> Vec<CommandPaletteItem> {
+    let mut command_ids = registry
+        .commands()
+        .map(|command| command.meta.id.clone())
+        .collect::<Vec<_>>();
+    command_ids.sort_by(|left, right| {
+        match (history.recency_rank(left), history.recency_rank(right)) {
+            (Some(left_rank), Some(right_rank)) => left_rank.cmp(&right_rank),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => left.cmp(right),
+        }
+    });
+    command_ids
+        .into_iter()
+        .filter_map(|command| {
+            let recent = history.is_recent(&command);
+            command_palette_item_from_command(registry, command, active_scopes, formatter).map(
+                |item| {
+                    if recent {
+                        item.keyword("recent")
+                    } else {
+                        item
+                    }
+                },
+            )
         })
         .collect()
 }

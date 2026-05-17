@@ -2532,13 +2532,13 @@ mod tests {
         state.open(&options);
 
         let contract = searchable_select_contract(
-            "fabricad.filter",
+            "example.filter",
             &options,
             &state,
             SearchableSelectSpec::new()
                 .max_visible_rows(3)
                 .placeholder("Choose")
-                .accessibility_label("Fabricad filter")
+                .accessibility_label("Example filter")
                 .search_label("Filter options")
                 .list_label("Filter results"),
         );
@@ -2550,7 +2550,7 @@ mod tests {
         assert_eq!(contract.rows.len(), 3);
         assert_eq!(
             contract.active_descendant_id.as_deref(),
-            Some("fabricad.filter.option.4")
+            Some("example.filter.option.4")
         );
         assert_eq!(
             contract.trigger_accessibility.role,
@@ -2558,7 +2558,7 @@ mod tests {
         );
         assert_eq!(
             contract.trigger_accessibility.label.as_deref(),
-            Some("Fabricad filter")
+            Some("Example filter")
         );
         assert_eq!(
             contract.trigger_accessibility.value.as_deref(),
@@ -3457,6 +3457,32 @@ mod tests {
         assert_eq!(
             outcome.selected_command().unwrap().command,
             CommandId::from("file.save")
+        );
+
+        let mut history = CommandPaletteHistory::with_capacity(2);
+        assert_eq!(
+            outcome.record_selection(&mut history),
+            Some(CommandId::from("file.save"))
+        );
+        history.record("edit.quantize");
+        history.record("file.save");
+        let items =
+            command_palette_items_from_registry_with_history(&registry, &[], &formatter, &history);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["file.save", "edit.quantize"]
+        );
+        let save = items.iter().find(|item| item.id == "file.save").unwrap();
+        assert!(save.keywords.iter().any(|keyword| keyword == "recent"));
+        assert_eq!(
+            filter_command_palette(&items, "recent", 10)
+                .iter()
+                .map(|palette_match| palette_match.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["file.save", "edit.quantize"]
         );
     }
 

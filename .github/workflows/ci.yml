@@ -45,3 +45,68 @@ jobs:
 
       - name: Package dry run
         run: cargo package --locked
+
+  showcase-pages:
+    name: Showcase Pages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+
+      - name: Build showcase WASM
+        run: >
+          cargo build --locked --release
+          --target wasm32-unknown-unknown
+          --no-default-features
+          --features web-showcase
+          --example showcase_web
+
+      - name: Assemble Pages artifact
+        run: |
+          rm -rf dist/showcase
+          mkdir -p dist/showcase/pkg
+          cp web/showcase/index.html dist/showcase/index.html
+          touch dist/showcase/.nojekyll
+          wasm-bindgen \
+            --target web \
+            --out-dir dist/showcase/pkg \
+            --out-name showcase_web \
+            target/wasm32-unknown-unknown/release/examples/showcase_web.wasm
+
+      - name: Configure Pages
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist/showcase
+
+  deploy-pages:
+    name: Deploy Pages
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    needs: showcase-pages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

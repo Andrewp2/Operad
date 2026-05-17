@@ -212,4 +212,57 @@ mod tests {
         assert_eq!(status.stability(), ApiStability::Stable);
         assert_eq!(status.note().since, Some("5.0.0"));
     }
+
+    #[test]
+    fn v8_api_stability_doc_covers_release_gate_families() {
+        let docs = include_str!("../../docs/v8_0_api_stability.md");
+        for required in [
+            "Stable Product APIs",
+            "Experimental Diagnostics And Devtools",
+            "Testing And Replay Helpers",
+            "Backend-Specific APIs",
+            "Migration-Only Surfaces",
+            "CommandRegistry",
+            "AnimationMachine",
+            "CanvasHostCaptureDiagnosticReport",
+            "InteractionRecorder",
+            "ScenarioHarness",
+            "VirtualizationDiagnostics",
+            "layout_animation_transitions",
+            "Dock workspace",
+            "domain-neutral dock panel drag/drop targets",
+            "floating-panel state",
+            "accessibility_debug_overlay",
+            "ThemePatchExport",
+        ] {
+            assert!(
+                docs.contains(required),
+                "v8 API stability guide should document `{required}`"
+            );
+        }
+    }
+
+    #[test]
+    fn v8_completion_audit_tracks_partial_and_done_release_gates() {
+        let docs = include_str!("../../docs/v8_0_completion_audit.md");
+        for required in [
+            "Roadmap Themes",
+            "Release Gates",
+            "Animation state-machine inspector",
+            "Virtualized tree and table 2.0",
+            "Layout animations",
+            "Docking workspace",
+            "Showcase examples for each major feature",
+            "No tests embedded in showcase source",
+            "Package docs distinguish stable APIs from diagnostics",
+            "Next Work",
+            "Partial",
+            "Done",
+        ] {
+            assert!(
+                docs.contains(required),
+                "v8 completion audit should document `{required}`"
+            );
+        }
+    }
 }

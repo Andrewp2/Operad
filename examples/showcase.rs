@@ -1,34 +1,42 @@
-#![allow(clippy::field_reassign_with_default)]
+use web_time::{Duration, Instant};
 
-use std::time::{Duration, Instant};
-
-use operad::platform::{DragPayload, PixelSize, UiLayer};
+use operad::platform::{DragPayload, UiLayer};
 use operad::widgets::{CalendarDate, TextInputLayoutMetrics, TextInputOptions, TextInputState};
+#[cfg(feature = "text-cosmic")]
+use operad::CosmicTextMeasurer;
 use operad::{
     root_style, widgets, AccessibilityMeta, AccessibilityRole, AlignedStroke, AnimatedValues,
     AnimationBlendBinding, AnimationCondition, AnimationMachine, AnimationState,
-    AnimationTransition, BuiltInIcon, CanvasContent, CanvasRenderOutput, ClipBehavior, ColorRgba,
-    CornerRadii, DragDropSurfaceKind, DropPayloadFilter, DynamicLabelMeta, FocusRestoreTarget,
-    FontFamily, FontWeight, FormState, FormValidationResult, ImageContent, InputBehavior,
-    LayoutFlexWrap, LayoutStyle, LocaleId, LocalizationPolicy, NativeWgpuCanvasRenderContext,
-    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowOptions, NativeWindowResult,
-    PaintEffect, PaintRect, PaintText, RenderError, ScenePrimitive, ScrollAxes, StrokeStyle,
-    TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, TooltipContent, UiDocument,
-    UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual,
-    ValidationMessage, WgpuCanvasContext, WgpuCanvasRenderPass, WidgetAction, WidgetActionBinding,
+    AnimationTransition, ApproxTextMeasurer, BuiltInIcon, CanvasContent, CanvasRenderProgram,
+    ClipBehavior, ColorRgba, CommandId, CommandMeta, CommandRegistry, CommandScope, CornerRadii,
+    DebugInspectorSnapshot, DebugThemeSnapshot, DragDropSurfaceKind, DropPayloadFilter,
+    DynamicLabelMeta, EditPhase, FocusRestoreTarget, FontFamily, FontWeight, FormState,
+    FormValidationResult, ImageContent, InputBehavior, LayoutFlexWrap, LayoutStyle, LocaleId,
+    LocalizationPolicy, PaintEffect, PaintRect, PaintText, ScenePrimitive, ScrollAxes, Shortcut,
+    ShortcutFormatter, StrokeStyle, TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap,
+    Theme, TooltipContent, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget,
+    UiRect, UiSize, UiVisual, ValidationMessage, WidgetAction, WidgetActionBinding,
     WidgetActionKind, WidgetDrag, WidgetDragPhase, WidgetTextEdit, ANIMATION_INPUT_POINTER_NORM_X,
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
+use operad::{
+    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowOptions, NativeWindowResult,
+};
+use taffy::prelude::{CompactLength, Dimension};
 
 const RIGHT_PANEL_WIDTH: f32 = 300.0;
 const SHOWCASE_WINDOW_Z_BASE: i16 = 64;
 const SHOWCASE_WINDOW_Z_STRIDE: i16 = 32;
 const SHOWCASE_WINDOW_Z_MAX: i16 = 960;
-const SHOWCASE_TICK_RATE_HZ: f32 = 60.0;
+const SHOWCASE_TICK_RATE_HZ: f32 = 120.0;
 const SHOWCASE_FPS_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+const SHOWCASE_ORGANIZE_BUTTON_RESERVED_HEIGHT: f32 = 44.0;
+const SHOWCASE_ORGANIZE_MEASURE_HEIGHT: f32 = 64_000.0;
 const SHOWCASE_PROGRESS_RADIANS_PER_SECOND: f32 = 1.08;
 const TEXT_CARET_BLINK_HZ: f32 = 1.1;
 const CONTROLS_WIDGET_ROW_HEIGHT: f32 = 28.0;
 const CONTROLS_WIDGET_ROW_GAP: f32 = 1.0;
+const SHOWCASE_DOCUMENT_NODE_CAPACITY: usize = 2_048;
 const ANIMATION_INPUT_OPEN: &str = "open";
 const ANIMATION_INPUT_PROGRESS: &str = "progress";
 const ANIMATION_INPUT_SCRUB: &str = "scrub";
@@ -40,7 +48,14 @@ const ANIMATION_PANEL_INSET_X: f32 = 24.0;
 const ANIMATION_PANEL_Y: f32 = 62.0;
 const ANIMATION_PANEL_WIDTH: f32 = 136.0;
 const ANIMATION_PANEL_HEIGHT: f32 = 46.0;
-const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 29] = [
+
+#[cfg(feature = "native-window")]
+type ShowcaseClipboard = arboard::Clipboard;
+
+#[cfg(not(feature = "native-window"))]
+struct ShowcaseClipboard;
+
+const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 30] = [
     "labels",
     "buttons",
     "checkbox",
@@ -58,6 +73,7 @@ const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 29] = [
     "animation",
     "lists_tables",
     "property_inspector",
+    "diagnostics",
     "trees",
     "layout_widgets",
     "containers",
@@ -72,11 +88,14 @@ const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 29] = [
     "styling",
 ];
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
 fn main() -> NativeWindowResult {
-    let mut canvas_renderers = NativeWgpuCanvasRenderRegistry::new();
-    canvas_renderers.register("canvas.shader", render_showcase_canvas);
-    let hooks = NativeWindowHooks::new()
-        .with_before_render(|state: &mut ShowcaseState, _metrics| state.record_frame());
+    let canvas_renderers = NativeWgpuCanvasRenderRegistry::new();
+    let hooks =
+        NativeWindowHooks::new().with_before_render(|state: &mut ShowcaseState, metrics| {
+            state.last_desktop_size = desktop_size_for_viewport(metrics.viewport);
+            state.record_frame();
+        });
     operad::run_app_with_canvas_renderers_and_hooks(
         NativeWindowOptions::new("showcase")
             .with_size(900.0, 760.0)
@@ -89,6 +108,728 @@ fn main() -> NativeWindowResult {
         canvas_renderers,
         hooks,
     )
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn run_web() -> Result<(), wasm_bindgen::JsValue> {
+    web_showcase::run().await
+}
+
+#[cfg(target_arch = "wasm32")]
+mod web_showcase {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use operad::host::{
+        collect_document_widget_actions, process_host_frame_input_with_target_resolver,
+    };
+    use operad::platform::PixelSize;
+    use operad::{
+        EmptyResourceResolver, HostDocumentFrameState, HostFrameOutput, KeyCode, KeyModifiers,
+        PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
+        RawPointerEvent, RawTextInputEvent, RawWheelEvent, RenderTarget, RendererAdapter,
+        UiFocusState, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase,
+    };
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::{JsCast, JsValue};
+
+    use super::*;
+
+    const WEB_SHOWCASE_TITLE: &str = "Operad showcase";
+    const WEB_TICK_INTERVAL_MS: f64 = 1000.0 / SHOWCASE_TICK_RATE_HZ as f64;
+
+    pub async fn run() -> Result<(), JsValue> {
+        console_error_panic_hook::set_once();
+        install_document_chrome()?;
+        let window = browser_window()?;
+        let document = window
+            .document()
+            .ok_or_else(|| js_error("browser document is unavailable"))?;
+        let canvas = document
+            .get_element_by_id("operad-showcase-canvas")
+            .ok_or_else(|| js_error("showcase canvas element is missing"))?
+            .dyn_into::<web_sys::HtmlCanvasElement>()?;
+        canvas.set_tab_index(0);
+        let _ = canvas.focus();
+
+        let app = Rc::new(RefCell::new(WebShowcaseApp::new(canvas.clone()).await?));
+        register_pointer_events(&canvas, app.clone())?;
+        register_wheel_events(&canvas, app.clone())?;
+        register_keyboard_events(&window, app.clone())?;
+        start_animation_loop(app)?;
+        Ok(())
+    }
+
+    struct WebShowcaseApp {
+        state: ShowcaseState,
+        frame_state: HostDocumentFrameState,
+        renderer: WgpuSurfaceRenderer<'static>,
+        canvas: web_sys::HtmlCanvasElement,
+        text_measurer: ApproxTextMeasurer,
+        pending_input: Vec<RawInputEvent>,
+        cursor: Option<UiPoint>,
+        buttons: PointerButtons,
+        modifiers: KeyModifiers,
+        scroll_offsets: HashMap<String, UiPoint>,
+        animation_states: HashMap<String, AnimationMachine>,
+        dpi_scale: f32,
+        last_tick_ms: Option<f64>,
+        last_animation_ms: Option<f64>,
+    }
+
+    impl WebShowcaseApp {
+        async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Self, JsValue> {
+            let (viewport, pixel_size, dpi_scale) = canvas_metrics(&canvas)?;
+            canvas.set_width(pixel_size.width);
+            canvas.set_height(pixel_size.height);
+
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let surface = instance
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+                .map_err(|error| js_error(format!("failed to create WebGPU surface: {error}")))?;
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await
+                .map_err(|error| js_error(format!("failed to request WebGPU adapter: {error}")))?;
+            let adapter_features = adapter.features();
+            let required_features = if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+                wgpu::Features::TIMESTAMP_QUERY
+            } else {
+                wgpu::Features::empty()
+            };
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("operad-web-showcase-device"),
+                    required_features,
+                    required_limits: wgpu::Limits::default(),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|error| js_error(format!("failed to request WebGPU device: {error}")))?;
+            let surface_config = surface
+                .get_default_config(&adapter, pixel_size.width, pixel_size.height)
+                .ok_or_else(|| {
+                    js_error("WebGPU surface is not supported by the selected adapter")
+                })?;
+            let renderer = WgpuSurfaceRenderer::new(surface, device, queue, surface_config)
+                .map_err(render_js_error)?;
+
+            let mut state = ShowcaseState::default();
+            state.last_desktop_size = desktop_size_for_viewport(viewport);
+            Ok(Self {
+                state,
+                frame_state: HostDocumentFrameState::new(),
+                renderer,
+                canvas,
+                text_measurer: ApproxTextMeasurer,
+                pending_input: Vec::new(),
+                cursor: None,
+                buttons: PointerButtons::NONE,
+                modifiers: KeyModifiers::NONE,
+                scroll_offsets: HashMap::new(),
+                animation_states: HashMap::new(),
+                dpi_scale,
+                last_tick_ms: None,
+                last_animation_ms: None,
+            })
+        }
+
+        fn render(&mut self, timestamp_ms: f64) -> Result<(), JsValue> {
+            let (viewport, pixel_size, dpi_scale) = canvas_metrics(&self.canvas)?;
+            if self.canvas.width() != pixel_size.width {
+                self.canvas.set_width(pixel_size.width);
+            }
+            if self.canvas.height() != pixel_size.height {
+                self.canvas.set_height(pixel_size.height);
+            }
+            self.dpi_scale = dpi_scale;
+            self.state.last_desktop_size = desktop_size_for_viewport(viewport);
+            self.state.record_frame();
+            self.dispatch_tick(timestamp_ms);
+            let animation_dt = self.animation_delta_seconds(timestamp_ms);
+
+            let mut document = self.build_document(viewport).map_err(layout_js_error)?;
+            document.tick_animations(animation_dt);
+            let raw_input = std::mem::take(&mut self.pending_input);
+            let mut host_request = self.frame_state.host_frame_request(viewport);
+            host_request.raw_input = raw_input;
+            let host_output =
+                process_host_frame_input_with_target_resolver(host_request, |event, state| {
+                    resolve_target(event, state, &document)
+                });
+            let frame_request = self.frame_state.document_frame_request(
+                viewport,
+                RenderTarget::window("showcase", viewport),
+                host_output,
+            );
+            let frame = operad::process_document_frame(
+                &mut document,
+                &mut self.text_measurer,
+                frame_request,
+            )
+            .map_err(layout_js_error)?;
+            self.capture_document_runtime_state(&document);
+            let actions = collect_document_widget_actions(&document, &frame);
+            self.frame_state.apply_document_frame_output(&frame);
+
+            let frame = if actions.is_empty() {
+                frame
+            } else {
+                for action in actions {
+                    self.state.update(action);
+                }
+                let mut document = self.build_document(viewport).map_err(layout_js_error)?;
+                let frame_request = self.frame_state.document_frame_request(
+                    viewport,
+                    RenderTarget::window("showcase", viewport),
+                    HostFrameOutput::new(self.frame_state.interaction.clone()),
+                );
+                let frame = operad::process_document_frame(
+                    &mut document,
+                    &mut self.text_measurer,
+                    frame_request,
+                )
+                .map_err(layout_js_error)?;
+                self.capture_document_runtime_state(&document);
+                self.frame_state.apply_document_frame_output(&frame);
+                frame
+            };
+
+            self.renderer
+                .render_frame(frame.render_request, &EmptyResourceResolver)
+                .map_err(render_js_error)?;
+            Ok(())
+        }
+
+        fn build_document(&mut self, viewport: UiSize) -> Result<UiDocument, taffy::TaffyError> {
+            let mut document = self.state.view(viewport);
+            document.set_dpi_scale(self.dpi_scale);
+            restore_scroll_offsets(&mut document, &self.scroll_offsets);
+            self.restore_animation_states(&mut document);
+            let mut focus = UiFocusState {
+                hovered: self.frame_state.interaction.hovered,
+                pressed: self.frame_state.interaction.pressed,
+                focused: self.frame_state.interaction.focused,
+            };
+            if let Some(cursor) = self.cursor {
+                focus.hovered = document.hit_test(cursor);
+                if self.buttons == PointerButtons::NONE {
+                    focus.pressed = None;
+                }
+            }
+            document.set_focus_state(focus);
+            document.compute_layout(viewport, &mut self.text_measurer)?;
+            if let Some(cursor) = self.cursor {
+                let mut focus = document.focus.clone();
+                focus.hovered = document.hit_test(cursor);
+                if self.buttons == PointerButtons::NONE {
+                    focus.pressed = None;
+                }
+                document.set_focus_state(focus);
+            }
+            if document.clamp_scroll_offsets() {
+                document.compute_layout(viewport, &mut self.text_measurer)?;
+                if let Some(cursor) = self.cursor {
+                    let mut focus = document.focus.clone();
+                    focus.hovered = document.hit_test(cursor);
+                    if self.buttons == PointerButtons::NONE {
+                        focus.pressed = None;
+                    }
+                    document.set_focus_state(focus);
+                }
+            }
+            Ok(document)
+        }
+
+        fn capture_document_runtime_state(&mut self, document: &UiDocument) {
+            self.capture_scroll_offsets(document);
+            self.capture_animation_states(document);
+        }
+
+        fn capture_scroll_offsets(&mut self, document: &UiDocument) {
+            self.scroll_offsets.clear();
+            for index in 0..document.node_count() {
+                let id = UiNodeId(index);
+                let Some(scroll) = document.scroll_state(id) else {
+                    continue;
+                };
+                if scroll_offset_is_zero(scroll.offset) {
+                    continue;
+                }
+                self.scroll_offsets
+                    .insert(node_path_key(document, id), scroll.offset);
+            }
+        }
+
+        fn restore_animation_states(&self, document: &mut UiDocument) -> bool {
+            if self.animation_states.is_empty() {
+                return false;
+            }
+            let mut restored = Vec::new();
+            for index in 0..document.node_count() {
+                let id = UiNodeId(index);
+                let Some(animation) = document.node(id).animation.as_ref() else {
+                    continue;
+                };
+                let Some(stored) = self.animation_states.get(&node_path_key(document, id)) else {
+                    continue;
+                };
+                if animation.has_same_definition(stored) {
+                    let mut restored_animation = animation.clone();
+                    restored_animation.retain_runtime_from(stored);
+                    restored.push((id, restored_animation));
+                }
+            }
+
+            let changed = !restored.is_empty();
+            for (id, animation) in restored {
+                document.node_mut(id).animation = Some(animation);
+            }
+            changed
+        }
+
+        fn capture_animation_states(&mut self, document: &UiDocument) {
+            self.animation_states.clear();
+            for index in 0..document.node_count() {
+                let id = UiNodeId(index);
+                let Some(animation) = document.node(id).animation.as_ref() else {
+                    continue;
+                };
+                self.animation_states
+                    .insert(node_path_key(document, id), animation.clone());
+            }
+        }
+
+        fn dispatch_tick(&mut self, timestamp_ms: f64) {
+            let mut last_tick = self.last_tick_ms.unwrap_or(timestamp_ms);
+            let mut ticks = 0;
+            while timestamp_ms - last_tick >= WEB_TICK_INTERVAL_MS && ticks < 4 {
+                self.state.update(WidgetAction::activate(
+                    UiNodeId(0),
+                    WidgetActionBinding::action("runtime.tick"),
+                ));
+                last_tick += WEB_TICK_INTERVAL_MS;
+                ticks += 1;
+            }
+            self.last_tick_ms = Some(last_tick);
+        }
+
+        fn animation_delta_seconds(&mut self, timestamp_ms: f64) -> f32 {
+            let dt = self
+                .last_animation_ms
+                .map(|last| ((timestamp_ms - last) / 1000.0).max(0.0))
+                .unwrap_or(0.0);
+            self.last_animation_ms = Some(timestamp_ms);
+            (dt as f32).clamp(0.0, 0.1)
+        }
+
+        fn push_pointer(&mut self, event: web_sys::PointerEvent, kind: PointerEventKind) {
+            self.modifiers = pointer_modifiers(&event);
+            self.buttons = match kind {
+                PointerEventKind::Down(button) => self.buttons.with(button),
+                PointerEventKind::Up(button) => self.buttons.without(button),
+                PointerEventKind::Move | PointerEventKind::Cancel => {
+                    web_pointer_buttons(event.buttons())
+                }
+            };
+            let point = pointer_position(&self.canvas, event.client_x(), event.client_y());
+            self.cursor = Some(point);
+            self.pending_input.push(RawInputEvent::Pointer(
+                RawPointerEvent::new(kind, point, event.time_stamp() as u64)
+                    .buttons(self.buttons)
+                    .modifiers(self.modifiers),
+            ));
+        }
+
+        fn push_wheel(&mut self, event: web_sys::WheelEvent) {
+            self.modifiers = wheel_modifiers(&event);
+            let point = pointer_position(&self.canvas, event.client_x(), event.client_y());
+            self.cursor = Some(point);
+            let (delta, unit) = wheel_delta(&event);
+            self.pending_input.push(RawInputEvent::Wheel(RawWheelEvent {
+                position: point,
+                delta,
+                unit,
+                phase: WheelPhase::Moved,
+                modifiers: self.modifiers,
+                timestamp_millis: event.time_stamp() as u64,
+            }));
+        }
+
+        fn push_key(&mut self, event: web_sys::KeyboardEvent, pressed: bool) {
+            self.modifiers = key_modifiers(&event);
+            let Some(key) = key_code(&event) else {
+                return;
+            };
+            let timestamp = event.time_stamp() as u64;
+            let raw = if pressed {
+                RawKeyboardEvent::press(key, self.modifiers, timestamp).repeat(event.repeat())
+            } else {
+                RawKeyboardEvent::release(key, self.modifiers, timestamp)
+            };
+            self.pending_input.push(RawInputEvent::Keyboard(raw));
+            if pressed && !self.modifiers.ctrl && !self.modifiers.meta {
+                if let Some(text) = text_input_for_key(&event) {
+                    self.pending_input
+                        .push(RawInputEvent::Text(RawTextInputEvent::new(text, timestamp)));
+                }
+            }
+        }
+    }
+
+    fn register_pointer_events(
+        canvas: &web_sys::HtmlCanvasElement,
+        app: Rc<RefCell<WebShowcaseApp>>,
+    ) -> Result<(), JsValue> {
+        for event_name in ["pointerdown", "pointermove", "pointerup", "pointercancel"] {
+            let target = canvas.clone();
+            let app = app.clone();
+            let closure = Closure::<dyn FnMut(web_sys::PointerEvent)>::wrap(Box::new(
+                move |event: web_sys::PointerEvent| {
+                    event.prevent_default();
+                    if event.type_() == "pointerdown" {
+                        let _ = target.focus();
+                    }
+                    let kind = match event.type_().as_str() {
+                        "pointerdown" => PointerEventKind::Down(pointer_button(event.button())),
+                        "pointerup" => PointerEventKind::Up(pointer_button(event.button())),
+                        "pointercancel" => PointerEventKind::Cancel,
+                        _ => PointerEventKind::Move,
+                    };
+                    app.borrow_mut().push_pointer(event, kind);
+                },
+            ));
+            canvas
+                .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())?;
+            closure.forget();
+        }
+        Ok(())
+    }
+
+    fn register_wheel_events(
+        canvas: &web_sys::HtmlCanvasElement,
+        app: Rc<RefCell<WebShowcaseApp>>,
+    ) -> Result<(), JsValue> {
+        let closure = Closure::<dyn FnMut(web_sys::WheelEvent)>::wrap(Box::new(
+            move |event: web_sys::WheelEvent| {
+                event.prevent_default();
+                app.borrow_mut().push_wheel(event);
+            },
+        ));
+        canvas.add_event_listener_with_callback("wheel", closure.as_ref().unchecked_ref())?;
+        closure.forget();
+        Ok(())
+    }
+
+    fn register_keyboard_events(
+        window: &web_sys::Window,
+        app: Rc<RefCell<WebShowcaseApp>>,
+    ) -> Result<(), JsValue> {
+        for (event_name, pressed) in [("keydown", true), ("keyup", false)] {
+            let app = app.clone();
+            let closure = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::wrap(Box::new(
+                move |event: web_sys::KeyboardEvent| {
+                    if key_code(&event).is_some() {
+                        event.prevent_default();
+                    }
+                    app.borrow_mut().push_key(event, pressed);
+                },
+            ));
+            window
+                .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())?;
+            closure.forget();
+        }
+        Ok(())
+    }
+
+    fn start_animation_loop(app: Rc<RefCell<WebShowcaseApp>>) -> Result<(), JsValue> {
+        let callback = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
+        let next_callback = callback.clone();
+        *next_callback.borrow_mut() = Some(Closure::<dyn FnMut(f64)>::wrap(Box::new(
+            move |timestamp_ms| {
+                if let Err(error) = app.borrow_mut().render(timestamp_ms) {
+                    web_sys::console::error_1(&error);
+                    set_status(&format!("Showcase render failed: {}", js_message(&error)));
+                }
+                if let Some(callback) = callback.borrow().as_ref() {
+                    let _ = request_animation_frame(callback);
+                }
+            },
+        )));
+        if let Some(callback) = next_callback.borrow().as_ref() {
+            request_animation_frame(callback)?;
+        }
+        Ok(())
+    }
+
+    fn install_document_chrome() -> Result<(), JsValue> {
+        let window = browser_window()?;
+        let document = window
+            .document()
+            .ok_or_else(|| js_error("browser document is unavailable"))?;
+        document.set_title(WEB_SHOWCASE_TITLE);
+        let body = document
+            .body()
+            .ok_or_else(|| js_error("browser document body is unavailable"))?;
+        body.style().set_property("margin", "0")?;
+        body.style().set_property("overflow", "hidden")?;
+        body.style().set_property("background", "#0d1117")?;
+
+        let canvas = document
+            .get_element_by_id("operad-showcase-canvas")
+            .ok_or_else(|| js_error("showcase canvas element is missing"))?
+            .dyn_into::<web_sys::HtmlCanvasElement>()?;
+        let style = canvas.style();
+        style.set_property("display", "block")?;
+        style.set_property("width", "100vw")?;
+        style.set_property("height", "100vh")?;
+        style.set_property("outline", "none")?;
+        Ok(())
+    }
+
+    fn canvas_metrics(
+        canvas: &web_sys::HtmlCanvasElement,
+    ) -> Result<(UiSize, PixelSize, f32), JsValue> {
+        let window = browser_window()?;
+        let rect = canvas.get_bounding_client_rect();
+        let width = rect
+            .width()
+            .max(window.inner_width()?.as_f64().unwrap_or(900.0))
+            .max(1.0) as f32;
+        let height = rect
+            .height()
+            .max(window.inner_height()?.as_f64().unwrap_or(760.0))
+            .max(1.0) as f32;
+        let dpi_scale = window.device_pixel_ratio().max(1.0) as f32;
+        let pixel_size = PixelSize::new(
+            (width * dpi_scale).ceil().max(1.0) as u32,
+            (height * dpi_scale).ceil().max(1.0) as u32,
+        );
+        Ok((UiSize::new(width, height), pixel_size, dpi_scale))
+    }
+
+    fn pointer_position(
+        canvas: &web_sys::HtmlCanvasElement,
+        client_x: i32,
+        client_y: i32,
+    ) -> UiPoint {
+        let rect = canvas.get_bounding_client_rect();
+        UiPoint::new(
+            client_x as f32 - rect.left() as f32,
+            client_y as f32 - rect.top() as f32,
+        )
+    }
+
+    fn pointer_button(button: i16) -> PointerButton {
+        match button {
+            0 => PointerButton::Primary,
+            1 => PointerButton::Auxiliary,
+            2 => PointerButton::Secondary,
+            3 => PointerButton::Back,
+            4 => PointerButton::Forward,
+            other => PointerButton::Other(other.max(0) as u16),
+        }
+    }
+
+    fn web_pointer_buttons(bits: u16) -> PointerButtons {
+        let mut buttons = PointerButtons::NONE;
+        if bits & 1 != 0 {
+            buttons = buttons.with(PointerButton::Primary);
+        }
+        if bits & 2 != 0 {
+            buttons = buttons.with(PointerButton::Secondary);
+        }
+        if bits & 4 != 0 {
+            buttons = buttons.with(PointerButton::Auxiliary);
+        }
+        if bits & 8 != 0 {
+            buttons = buttons.with(PointerButton::Back);
+        }
+        if bits & 16 != 0 {
+            buttons = buttons.with(PointerButton::Forward);
+        }
+        buttons
+    }
+
+    fn wheel_delta(event: &web_sys::WheelEvent) -> (UiPoint, WheelDeltaUnit) {
+        let delta = UiPoint::new(-event.delta_x() as f32, -event.delta_y() as f32);
+        match event.delta_mode() {
+            1 => (delta, WheelDeltaUnit::Line),
+            2 => (delta, WheelDeltaUnit::Page),
+            _ => (delta, WheelDeltaUnit::Pixel),
+        }
+    }
+
+    fn pointer_modifiers(event: &web_sys::MouseEvent) -> KeyModifiers {
+        KeyModifiers {
+            shift: event.shift_key(),
+            ctrl: event.ctrl_key(),
+            alt: event.alt_key(),
+            meta: event.meta_key(),
+        }
+    }
+
+    fn wheel_modifiers(event: &web_sys::WheelEvent) -> KeyModifiers {
+        KeyModifiers {
+            shift: event.shift_key(),
+            ctrl: event.ctrl_key(),
+            alt: event.alt_key(),
+            meta: event.meta_key(),
+        }
+    }
+
+    fn key_modifiers(event: &web_sys::KeyboardEvent) -> KeyModifiers {
+        KeyModifiers {
+            shift: event.shift_key(),
+            ctrl: event.ctrl_key(),
+            alt: event.alt_key(),
+            meta: event.meta_key(),
+        }
+    }
+
+    fn key_code(event: &web_sys::KeyboardEvent) -> Option<KeyCode> {
+        match event.key().as_str() {
+            "Backspace" => Some(KeyCode::Backspace),
+            "Delete" => Some(KeyCode::Delete),
+            "ArrowLeft" => Some(KeyCode::ArrowLeft),
+            "ArrowRight" => Some(KeyCode::ArrowRight),
+            "ArrowUp" => Some(KeyCode::ArrowUp),
+            "ArrowDown" => Some(KeyCode::ArrowDown),
+            "Home" => Some(KeyCode::Home),
+            "End" => Some(KeyCode::End),
+            "Enter" => Some(KeyCode::Enter),
+            "Escape" => Some(KeyCode::Escape),
+            "Tab" => Some(KeyCode::Tab),
+            "F10" => Some(KeyCode::F10),
+            "ContextMenu" => Some(KeyCode::ContextMenu),
+            value => {
+                let mut chars = value.chars();
+                let ch = chars.next()?;
+                chars.next().is_none().then_some(KeyCode::Character(ch))
+            }
+        }
+    }
+
+    fn text_input_for_key(event: &web_sys::KeyboardEvent) -> Option<String> {
+        let key = event.key();
+        let mut chars = key.chars();
+        let ch = chars.next()?;
+        (chars.next().is_none() && !ch.is_control()).then_some(key)
+    }
+
+    fn resolve_target(
+        event: &RawInputEvent,
+        state: &operad::HostInteractionState,
+        document: &UiDocument,
+    ) -> Option<UiNodeId> {
+        match event {
+            RawInputEvent::Pointer(pointer) => state
+                .drag_capture
+                .filter(|capture| {
+                    capture.pointer_id == pointer.pointer_id
+                        && matches!(
+                            pointer.kind,
+                            PointerEventKind::Move
+                                | PointerEventKind::Up(_)
+                                | PointerEventKind::Cancel
+                        )
+                })
+                .map(|capture| capture.target)
+                .or_else(|| document.hit_test(pointer.position)),
+            RawInputEvent::Wheel(wheel) => document.hit_test(wheel.position),
+            RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
+        }
+    }
+
+    fn restore_scroll_offsets(
+        document: &mut UiDocument,
+        offsets: &HashMap<String, UiPoint>,
+    ) -> bool {
+        if offsets.is_empty() {
+            return false;
+        }
+        let mut scroll_offsets = Vec::new();
+        for index in 0..document.node_count() {
+            let id = UiNodeId(index);
+            if document.scroll_state(id).is_none() {
+                continue;
+            }
+            let Some(offset) = offsets.get(&node_path_key(document, id)).copied() else {
+                continue;
+            };
+            scroll_offsets.push((id, offset));
+        }
+
+        let mut changed = false;
+        for (id, offset) in scroll_offsets {
+            let Some(scroll) = document.node_mut(id).scroll.as_mut() else {
+                continue;
+            };
+            let offset = UiPoint::new(offset.x.max(0.0), offset.y.max(0.0));
+            if scroll.offset != offset {
+                scroll.offset = offset;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn scroll_offset_is_zero(offset: UiPoint) -> bool {
+        offset.x.abs() <= f32::EPSILON && offset.y.abs() <= f32::EPSILON
+    }
+
+    fn node_path_key(document: &UiDocument, id: UiNodeId) -> String {
+        let mut path = Vec::new();
+        let mut current = Some(id);
+        while let Some(id) = current {
+            let node = document.node(id);
+            path.push(node.name.as_str());
+            current = node.parent;
+        }
+        path.reverse();
+        path.join("/")
+    }
+
+    fn request_animation_frame(callback: &Closure<dyn FnMut(f64)>) -> Result<i32, JsValue> {
+        browser_window()?.request_animation_frame(callback.as_ref().unchecked_ref())
+    }
+
+    fn browser_window() -> Result<web_sys::Window, JsValue> {
+        web_sys::window().ok_or_else(|| js_error("browser window is unavailable"))
+    }
+
+    fn set_status(message: &str) {
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        if let Some(status) = document.get_element_by_id("operad-showcase-status") {
+            status.set_text_content(Some(message));
+        }
+    }
+
+    fn layout_js_error(error: taffy::TaffyError) -> JsValue {
+        js_error(format!("layout failed: {error}"))
+    }
+
+    fn render_js_error(error: operad::RenderError) -> JsValue {
+        js_error(format!("render failed: {error}"))
+    }
+
+    fn js_error(message: impl AsRef<str>) -> JsValue {
+        JsValue::from_str(message.as_ref())
+    }
+
+    fn js_message(value: &JsValue) -> String {
+        value
+            .as_string()
+            .unwrap_or_else(|| "unknown JavaScript error".to_string())
+    }
 }
 
 struct ShowcaseState {
@@ -136,12 +877,14 @@ struct ShowcaseState {
     password_text: TextInputState,
     focused_text: Option<FocusedTextInput>,
     clipboard_text: String,
-    system_clipboard: Option<arboard::Clipboard>,
+    #[cfg_attr(not(feature = "native-window"), allow(dead_code))]
+    system_clipboard: Option<ShowcaseClipboard>,
     last_button: &'static str,
     toggle_button: bool,
     table_selection: widgets::DataTableSelection,
     tree: widgets::TreeViewState,
     outliner: widgets::TreeViewState,
+    tree_virtual_scroll: f32,
     toast_visible: bool,
     toast_action_status: &'static str,
     popup_open: bool,
@@ -154,10 +897,16 @@ struct ShowcaseState {
     animation_interaction_expanded: bool,
     caret_phase: f32,
     command_palette: widgets::CommandPaletteState,
+    command_history: widgets::CommandPaletteHistory,
     last_command: String,
     list_scroll: f32,
     virtual_scroll: f32,
     table_scroll: f32,
+    virtual_table_scroll: f32,
+    virtual_table_descending: bool,
+    virtual_table_ready_only: bool,
+    virtual_table_value_width: f32,
+    virtual_table_resize: Option<(f32, f32)>,
     layout_preview_scroll: f32,
     layout_left_scroll: f32,
     layout_right_scroll: f32,
@@ -189,14 +938,30 @@ struct ShowcaseState {
     color_button_status: &'static str,
     drag_drop_status: &'static str,
     layout_split: widgets::SplitPaneState,
+    layout_dock: widgets::DockWorkspaceState,
+    diagnostics_animation_paused: bool,
+    diagnostics_animation_scrub: f32,
+    diagnostics_animation_active: bool,
+    diagnostics_animation_hover: f32,
+    diagnostics_animation_pulse_count: u32,
+    diagnostics_snapshot: DebugInspectorSnapshot,
     containers_scroll: operad::ScrollState,
     controls_scroll: operad::ScrollState,
     color_copied_hex: Option<String>,
     fps_last_sample: Instant,
     fps_frames: u32,
     fps: f32,
+    last_desktop_size: UiSize,
     windows: ShowcaseWindows,
     desktop: widgets::FloatingDesktopState,
+}
+
+#[derive(Debug, Clone)]
+struct ShowcaseWindowMeasurement {
+    id: String,
+    size: UiSize,
+    min_size: UiSize,
+    collapsed_size: UiSize,
 }
 
 #[derive(Clone, Copy)]
@@ -348,14 +1113,6 @@ struct CanvasCubeState {
     pitch: f32,
     drag_origin_yaw: f32,
     drag_origin_pitch: f32,
-    rendered: Option<CanvasCubeRenderKey>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct CanvasCubeRenderKey {
-    yaw_bits: u32,
-    pitch_bits: u32,
-    size: PixelSize,
 }
 
 impl Default for CanvasCubeState {
@@ -365,7 +1122,6 @@ impl Default for CanvasCubeState {
             pitch: 0.52,
             drag_origin_yaw: 0.82,
             drag_origin_pitch: 0.52,
-            rendered: None,
         }
     }
 }
@@ -391,22 +1147,6 @@ impl CanvasCubeState {
     fn apply_drag_delta(&mut self, total_delta: UiPoint) {
         self.yaw = self.drag_origin_yaw + total_delta.x * 0.012;
         self.pitch = (self.drag_origin_pitch + total_delta.y * 0.012).clamp(-1.25, 1.25);
-    }
-
-    fn render_key(self, size: PixelSize) -> CanvasCubeRenderKey {
-        CanvasCubeRenderKey {
-            yaw_bits: self.yaw.to_bits(),
-            pitch_bits: self.pitch.to_bits(),
-            size,
-        }
-    }
-
-    fn needs_render(self, size: PixelSize) -> bool {
-        self.rendered != Some(self.render_key(size))
-    }
-
-    fn mark_rendered(&mut self, size: PixelSize) {
-        self.rendered = Some(self.render_key(size));
     }
 }
 
@@ -491,6 +1231,7 @@ impl Default for ShowcaseState {
                 .with_active_cell(widgets::DataTableCellIndex::new(2, 1)),
             tree: widgets::TreeViewState::expanded(["root"]),
             outliner: widgets::TreeViewState::expanded(["root", "assets"]),
+            tree_virtual_scroll: 96.0,
             toast_visible: false,
             toast_action_status: "No toast action",
             popup_open: false,
@@ -507,10 +1248,16 @@ impl Default for ShowcaseState {
                 active_match: Some(0),
                 max_results: 24,
             },
+            command_history: widgets::CommandPaletteHistory::with_capacity(4),
             last_command: "None".to_string(),
             list_scroll: 0.0,
             virtual_scroll: 0.0,
             table_scroll: 0.0,
+            virtual_table_scroll: 0.0,
+            virtual_table_descending: false,
+            virtual_table_ready_only: false,
+            virtual_table_value_width: 70.0,
+            virtual_table_resize: None,
             layout_preview_scroll: 0.0,
             layout_left_scroll: 0.0,
             layout_right_scroll: 0.0,
@@ -551,6 +1298,13 @@ impl Default for ShowcaseState {
             color_button_status: "None",
             drag_drop_status: "Idle",
             layout_split: widgets::SplitPaneState::new(0.44).with_min_sizes(80.0, 80.0),
+            layout_dock: widgets::DockWorkspaceState::new(),
+            diagnostics_animation_paused: false,
+            diagnostics_animation_scrub: 0.35,
+            diagnostics_animation_active: true,
+            diagnostics_animation_hover: 0.35,
+            diagnostics_animation_pulse_count: 0,
+            diagnostics_snapshot: diagnostics_sample_snapshot_for(0.35, true),
             containers_scroll: operad::ScrollState {
                 axes: ScrollAxes::BOTH,
                 offset: UiPoint::new(24.0, 18.0),
@@ -562,6 +1316,7 @@ impl Default for ShowcaseState {
             fps_last_sample: Instant::now(),
             fps_frames: 0,
             fps: 0.0,
+            last_desktop_size: desktop_size_for_viewport(UiSize::new(900.0, 760.0)),
             windows,
             desktop,
         }
@@ -586,6 +1341,7 @@ struct ShowcaseWindows {
     animation: bool,
     lists_tables: bool,
     property_inspector: bool,
+    diagnostics: bool,
     trees: bool,
     layout_widgets: bool,
     containers: bool,
@@ -620,6 +1376,7 @@ impl Default for ShowcaseWindows {
             animation: false,
             lists_tables: false,
             property_inspector: false,
+            diagnostics: false,
             trees: false,
             layout_widgets: false,
             containers: false,
@@ -656,6 +1413,7 @@ impl ShowcaseWindows {
             "animation" => self.animation,
             "lists_tables" => self.lists_tables,
             "property_inspector" => self.property_inspector,
+            "diagnostics" => self.diagnostics,
             "trees" => self.trees,
             "layout_widgets" => self.layout_widgets,
             "containers" => self.containers,
@@ -691,6 +1449,7 @@ impl ShowcaseWindows {
             "animation" => Some(&mut self.animation),
             "lists_tables" => Some(&mut self.lists_tables),
             "property_inspector" => Some(&mut self.property_inspector),
+            "diagnostics" => Some(&mut self.diagnostics),
             "trees" => Some(&mut self.trees),
             "layout_widgets" => Some(&mut self.layout_widgets),
             "containers" => Some(&mut self.containers),
@@ -754,6 +1513,31 @@ fn window_defaults(id: &str) -> widgets::FloatingWindowDefaults {
     )
 }
 
+fn desktop_size_for_viewport(viewport: UiSize) -> UiSize {
+    UiSize::new(
+        (viewport.width - RIGHT_PANEL_WIDTH).max(360.0),
+        viewport.height,
+    )
+}
+
+fn showcase_desktop_options(desktop_size: UiSize) -> widgets::FloatingDesktopOptions {
+    let mut options = widgets::FloatingDesktopOptions::new(desktop_size).with_layout(
+        LayoutStyle::new()
+            .with_width_percent(1.0)
+            .with_height_percent(1.0),
+    );
+    options.base_z_index = SHOWCASE_WINDOW_Z_BASE;
+    options.window_z_stride = SHOWCASE_WINDOW_Z_STRIDE;
+    options.margin = 18.0;
+    options.gap = 14.0;
+    options
+}
+
+fn dimension_length(dimension: Dimension) -> Option<f32> {
+    let raw = dimension.into_raw();
+    (raw.tag() == CompactLength::LENGTH_TAG).then_some(raw.value())
+}
+
 impl ShowcaseState {
     fn record_frame(&mut self) {
         self.fps_frames = self.fps_frames.saturating_add(1);
@@ -768,6 +1552,85 @@ impl ShowcaseState {
         self.fps = self.fps_frames as f32 / seconds;
         self.fps_frames = 0;
         self.fps_last_sample = now;
+    }
+
+    fn organize_open_windows(&mut self) {
+        let desktop_size = self.last_desktop_size;
+        let options = showcase_desktop_options(desktop_size);
+        let arrange_rect = UiRect::new(
+            0.0,
+            SHOWCASE_ORGANIZE_BUTTON_RESERVED_HEIGHT,
+            desktop_size.width,
+            (desktop_size.height - SHOWCASE_ORGANIZE_BUTTON_RESERVED_HEIGHT).max(0.0),
+        );
+        let measured_sizes = self.measured_open_window_sizes(desktop_size);
+        let windows = SHOWCASE_WIDGET_WINDOW_IDS
+            .into_iter()
+            .filter(|id| self.windows.is_visible(id))
+            .map(|id| {
+                let mut defaults = window_defaults(id);
+                let mut collapsed_size =
+                    UiSize::new(defaults.min_size.width, options.title_bar_height);
+                if let Some(measurement) = measured_sizes
+                    .iter()
+                    .find(|measurement| measurement.id == id)
+                {
+                    defaults.size = UiSize::new(
+                        measurement.size.width.max(defaults.size.width),
+                        measurement.size.height.max(defaults.size.height),
+                    );
+                    defaults.min_size = UiSize::new(
+                        defaults.min_size.width.max(measurement.min_size.width),
+                        defaults.min_size.height.max(measurement.min_size.height),
+                    );
+                    collapsed_size = UiSize::new(
+                        collapsed_size.width.max(measurement.collapsed_size.width),
+                        collapsed_size.height.max(measurement.collapsed_size.height),
+                    );
+                }
+                widgets::FloatingWindowOrganizeSpec::new(id, defaults)
+                    .with_collapsed_size(collapsed_size)
+            });
+        let _outcome = self
+            .desktop
+            .organize_window_specs_in_rect(windows, arrange_rect, &options);
+    }
+
+    fn measured_open_window_sizes(&self, desktop_size: UiSize) -> Vec<ShowcaseWindowMeasurement> {
+        let measure_height = desktop_size.height.max(SHOWCASE_ORGANIZE_MEASURE_HEIGHT);
+        let viewport = UiSize::new(desktop_size.width + RIGHT_PANEL_WIDTH, measure_height);
+        let mut document = self.view(viewport);
+        #[cfg(feature = "text-cosmic")]
+        let mut measurer = CosmicTextMeasurer::new();
+        #[cfg(not(feature = "text-cosmic"))]
+        let mut measurer = ApproxTextMeasurer;
+        if document.compute_layout(viewport, &mut measurer).is_err() {
+            return Vec::new();
+        }
+        let options = showcase_desktop_options(desktop_size);
+        SHOWCASE_WIDGET_WINDOW_IDS
+            .into_iter()
+            .filter(|id| self.windows.is_visible(id))
+            .filter_map(|id| {
+                let name = format!("showcase.windows.window.{id}");
+                let collapsed_size = showcase_collapsed_window_size(id, &options);
+                document
+                    .nodes()
+                    .iter()
+                    .find(|node| node.name == name)
+                    .map(|node| ShowcaseWindowMeasurement {
+                        id: id.to_string(),
+                        size: UiSize::new(node.layout.rect.width, node.layout.rect.height),
+                        min_size: UiSize::new(
+                            dimension_length(node.style.layout.min_size.width)
+                                .unwrap_or(node.layout.rect.width),
+                            dimension_length(node.style.layout.min_size.height)
+                                .unwrap_or(node.layout.rect.height),
+                        ),
+                        collapsed_size,
+                    })
+            })
+            .collect()
     }
 
     fn update(&mut self, action: WidgetAction) {
@@ -848,6 +1711,10 @@ impl ShowcaseState {
                 self.desktop.ensure_window(id, window_defaults(id));
                 self.desktop.bring_to_front(id);
             }
+            return;
+        }
+        if action_id == "window.organize_open" {
+            self.organize_open_windows();
             return;
         }
         if let Some(id) = action_id.strip_prefix("window.toggle.") {
@@ -1210,6 +2077,94 @@ impl ShowcaseState {
                 }
                 return;
             }
+            "diagnostics.animation.controls.transport.pause_toggle" => {
+                self.diagnostics_animation_paused = !self.diagnostics_animation_paused;
+                return;
+            }
+            "diagnostics.animation.controls.transport.step" => {
+                self.diagnostics_animation_paused = true;
+                self.diagnostics_animation_scrub =
+                    (self.diagnostics_animation_scrub + 1.0 / 12.0).min(1.0);
+                return;
+            }
+            "diagnostics.animation.controls.transport.scrub" => {
+                if let WidgetActionKind::PointerEdit(edit) = kind {
+                    self.diagnostics_animation_scrub =
+                        scaled_slider(edit.target_rect, edit.position, 0.0, 1.0);
+                }
+                return;
+            }
+            "diagnostics.animation.controls.input.active.toggle" => {
+                self.diagnostics_animation_active = !self.diagnostics_animation_active;
+                self.refresh_diagnostics_snapshot();
+                return;
+            }
+            "diagnostics.animation.controls.input.hover.set" => {
+                if let WidgetActionKind::PointerEdit(edit) = kind {
+                    self.diagnostics_animation_hover =
+                        scaled_slider(edit.target_rect, edit.position, 0.0, 1.0);
+                    self.refresh_diagnostics_snapshot();
+                }
+                return;
+            }
+            "diagnostics.animation.controls.input.pulse.fire" => {
+                self.diagnostics_animation_pulse_count =
+                    self.diagnostics_animation_pulse_count.saturating_add(1);
+                return;
+            }
+            "layout_widgets.float_inspector" => {
+                let panel = widgets::DockPanelDescriptor::new(
+                    "inspector",
+                    "Inspector",
+                    widgets::DockSide::Left,
+                    120.0,
+                );
+                self.layout_dock
+                    .float_panel(&panel, UiRect::new(20.0, 58.0, 236.0, 210.0));
+                return;
+            }
+            "layout_widgets.dock_inspector" => {
+                let panel = widgets::DockPanelDescriptor::new(
+                    "inspector",
+                    "Inspector",
+                    widgets::DockSide::Left,
+                    120.0,
+                );
+                self.layout_dock.dock_panel(&panel, widgets::DockSide::Left);
+                return;
+            }
+            "layout_widgets.drawer.inspector" => {
+                self.layout_dock.toggle_panel_hidden("inspector");
+                return;
+            }
+            "layout_widgets.drawer.assets" => {
+                self.layout_dock.toggle_panel_hidden("assets");
+                return;
+            }
+            "layout_widgets.reorder.assets.before.inspector" => {
+                let mut panels = base_layout_dock_panels();
+                self.layout_dock.apply_order_to_panels(&mut panels);
+                let payload = widgets::dock_panel_drag_payload("assets");
+                self.layout_dock.apply_reorder_to_panels(
+                    &mut panels,
+                    &payload,
+                    "inspector",
+                    widgets::DockPanelReorderPlacement::Before,
+                );
+                return;
+            }
+            "layout_widgets.reorder.assets.after.inspector" => {
+                let mut panels = base_layout_dock_panels();
+                self.layout_dock.apply_order_to_panels(&mut panels);
+                let payload = widgets::dock_panel_drag_payload("assets");
+                self.layout_dock.apply_reorder_to_panels(
+                    &mut panels,
+                    &payload,
+                    "inspector",
+                    widgets::DockPanelReorderPlacement::After,
+                );
+                return;
+            }
             "styling.stroke_color_button" => {
                 self.styling_stroke_picker_open = !self.styling_stroke_picker_open;
                 return;
@@ -1248,12 +2203,16 @@ impl ShowcaseState {
                 "lists_tables.scroll_area.scroll" => self.list_scroll = scroll.offset.y,
                 "lists_tables.virtual_list.scroll" => self.virtual_scroll = scroll.offset.y,
                 "lists_tables.data_table.scroll" => self.table_scroll = scroll.offset.y,
+                "lists_tables.virtualized_table.scroll" => {
+                    self.virtual_table_scroll = scroll.offset.y
+                }
                 "layout.preview.scroll" => self.layout_preview_scroll = scroll.offset.y,
                 "layout.left.scroll" => self.layout_left_scroll = scroll.offset.y,
                 "layout.right.scroll" => self.layout_right_scroll = scroll.offset.y,
                 "layout.inspector.scroll" => self.layout_inspector_scroll = scroll.offset.y,
                 "layout.document.scroll" => self.layout_document_scroll = scroll.offset.y,
                 "layout.assets.scroll" => self.layout_assets_scroll = scroll.offset.y,
+                "trees.virtual.scroll" => self.tree_virtual_scroll = scroll.offset.y,
                 "containers.scroll_area_with_bars.scroll" => {
                     self.containers_scroll.offset =
                         self.containers_scroll.clamp_offset(scroll.offset);
@@ -1343,6 +2302,39 @@ impl ShowcaseState {
                 widgets::DataTableSelection::single_row(cell.row).with_active_cell(cell);
             return;
         }
+        match action_id {
+            "lists_tables.virtualized_table.sort.name" => {
+                self.virtual_table_descending = !self.virtual_table_descending;
+                return;
+            }
+            "lists_tables.virtualized_table.filter.status" => {
+                self.virtual_table_ready_only = !self.virtual_table_ready_only;
+                self.virtual_table_scroll = 0.0;
+                return;
+            }
+            "lists_tables.virtualized_table.resize.reset" => {
+                self.virtual_table_value_width = 70.0;
+                self.virtual_table_resize = None;
+                return;
+            }
+            _ => {}
+        }
+        if let Some(row) = action_id
+            .strip_prefix("lists_tables.virtualized_table.row.")
+            .and_then(|row| row.parse::<usize>().ok())
+        {
+            self.table_selection = widgets::DataTableSelection::single_row(row)
+                .with_active_cell(widgets::DataTableCellIndex::new(row, 0));
+            return;
+        }
+        if let Some(cell) = action_id
+            .strip_prefix("lists_tables.virtualized_table.cell.")
+            .and_then(parse_table_cell)
+        {
+            self.table_selection =
+                widgets::DataTableSelection::single_row(cell.row).with_active_cell(cell);
+            return;
+        }
         if let Some(id) = action_id.strip_prefix("trees.tree.row.") {
             self.apply_tree_row(id, false);
             return;
@@ -1425,6 +2417,41 @@ impl ShowcaseState {
                     )
                     .y;
             }
+            "lists_tables.virtualized_table.scrollbar" => {
+                let row_count = virtual_table_visible_rows(self).len() as f32;
+                let scroll = scroll_state(self.virtual_table_scroll, 128.0, row_count * 28.0);
+                self.virtual_table_scroll = self
+                    .scrollbars
+                    .apply_drag_for_target_rect(
+                        "virtual_table",
+                        scroll,
+                        widgets::ScrollAxis::Vertical,
+                        edit,
+                    )
+                    .y;
+            }
+            "lists_tables.virtualized_table.resize.value" => match edit.phase.edit_phase() {
+                EditPhase::Preview => {}
+                EditPhase::BeginEdit => {
+                    self.virtual_table_resize =
+                        Some((self.virtual_table_value_width, edit.position.x));
+                }
+                EditPhase::UpdateEdit | EditPhase::CommitEdit => {
+                    let (origin_width, origin_x) = self
+                        .virtual_table_resize
+                        .unwrap_or((self.virtual_table_value_width, edit.position.x));
+                    self.virtual_table_value_width =
+                        (origin_width + edit.position.x - origin_x).clamp(56.0, 180.0);
+                    if edit.phase.edit_phase() == EditPhase::CommitEdit {
+                        self.virtual_table_resize = None;
+                    }
+                }
+                EditPhase::CancelEdit => {
+                    if let Some((origin_width, _)) = self.virtual_table_resize.take() {
+                        self.virtual_table_value_width = origin_width;
+                    }
+                }
+            },
             "containers.scroll_area_with_bars.vertical-scrollbar" => {
                 self.containers_scroll.offset = self.scrollbars.apply_drag_for_target_rect(
                     "containers.vertical",
@@ -1533,21 +2560,22 @@ impl ShowcaseState {
     }
 
     fn apply_command_palette_event(&mut self, event: operad::UiInputEvent) {
-        let outcome = self
-            .command_palette
-            .handle_event(&command_palette_items(), &event);
+        let items = command_palette_items_with_history(&self.command_history);
+        let outcome = self.command_palette.handle_event(&items, &event);
         if let Some(selection) = outcome.selected {
             self.select_command_palette_item(&selection.id);
         }
     }
 
     fn select_command_palette_item(&mut self, id: &str) {
-        if let Some(item) = command_palette_items()
+        if let Some(item) = command_palette_items_with_history(&self.command_history)
             .into_iter()
             .find(|item| item.id == id && item.enabled)
         {
+            self.command_history.record(item.id.as_str());
             self.last_command = item.title;
-            self.command_palette.set_query("", &command_palette_items());
+            let items = command_palette_items_with_history(&self.command_history);
+            self.command_palette.set_query("", &items);
         }
     }
 
@@ -1668,23 +2696,37 @@ impl ShowcaseState {
     }
 
     fn copy_text_to_system_clipboard(&mut self, text: &str) {
-        if self.system_clipboard.is_none() {
-            self.system_clipboard = create_system_clipboard();
+        #[cfg(not(feature = "native-window"))]
+        {
+            self.clipboard_text = text.to_string();
         }
-        if let Some(clipboard) = self.system_clipboard.as_mut() {
-            if clipboard.set_text(text.to_string()).is_err() {
-                self.system_clipboard = None;
+        #[cfg(feature = "native-window")]
+        {
+            if self.system_clipboard.is_none() {
+                self.system_clipboard = create_system_clipboard();
+            }
+            if let Some(clipboard) = self.system_clipboard.as_mut() {
+                if clipboard.set_text(text.to_string()).is_err() {
+                    self.system_clipboard = None;
+                }
             }
         }
     }
 
     fn read_text_from_system_clipboard(&mut self) -> Option<String> {
-        if self.system_clipboard.is_none() {
-            self.system_clipboard = create_system_clipboard();
+        #[cfg(not(feature = "native-window"))]
+        {
+            return Some(self.clipboard_text.clone());
         }
-        self.system_clipboard
-            .as_mut()
-            .and_then(|clipboard| clipboard.get_text().ok())
+        #[cfg(feature = "native-window")]
+        {
+            if self.system_clipboard.is_none() {
+                self.system_clipboard = create_system_clipboard();
+            }
+            self.system_clipboard
+                .as_mut()
+                .and_then(|clipboard| clipboard.get_text().ok())
+        }
     }
 
     fn apply_menu_item(&mut self, id: &str) {
@@ -1781,8 +2823,15 @@ impl ShowcaseState {
         self.slider_step_value.abs().max(0.0001)
     }
 
+    fn refresh_diagnostics_snapshot(&mut self) {
+        self.diagnostics_snapshot = diagnostics_sample_snapshot(self);
+    }
+
     fn view(&self, viewport: UiSize) -> UiDocument {
-        let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
+        let mut ui = UiDocument::with_capacity(
+            root_style(viewport.width, viewport.height),
+            SHOWCASE_DOCUMENT_NODE_CAPACITY,
+        );
         ui.node_mut(ui.root).visual = UiVisual::panel(color(16, 20, 26), None, 0.0);
 
         let root = ui.root;
@@ -1793,7 +2842,8 @@ impl ShowcaseState {
                 LayoutStyle::row().with_size(viewport.width, viewport.height),
             ),
         );
-        let desktop_width = (viewport.width - RIGHT_PANEL_WIDTH).max(360.0);
+        let desktop_size = desktop_size_for_viewport(viewport);
+        let desktop_width = desktop_size.width;
         let desktop = ui.add_child(
             shell,
             UiNode::container(
@@ -1823,17 +2873,50 @@ impl ShowcaseState {
             )),
         );
 
-        showcase_windows(
-            &mut ui,
-            desktop,
-            self,
-            UiSize::new(desktop_width, viewport.height),
-        );
+        showcase_windows(&mut ui, desktop, self, desktop_size);
+        organize_windows_button(&mut ui, desktop);
         fps_counter(&mut ui, desktop, self, viewport.height);
         control_panel(&mut ui, controls, self, viewport.height);
 
         ui
     }
+}
+
+fn organize_windows_button(ui: &mut UiDocument, desktop: UiNodeId) {
+    let mut options = widgets::ButtonOptions::new(LayoutStyle::absolute_rect(UiRect::new(
+        12.0, 12.0, 104.0, 28.0,
+    )))
+    .with_action("window.organize_open")
+    .with_accessibility_label("Organize open windows");
+    options.visual = UiVisual::panel(
+        ColorRgba::new(20, 26, 34, 230),
+        Some(StrokeStyle::new(color(76, 88, 106), 1.0)),
+        4.0,
+    );
+    options.hovered_visual = Some(UiVisual::panel(
+        color(45, 56, 70),
+        Some(StrokeStyle::new(color(118, 144, 174), 1.0)),
+        4.0,
+    ));
+    options.pressed_visual = Some(UiVisual::panel(
+        color(18, 24, 32),
+        Some(StrokeStyle::new(color(82, 104, 132), 1.0)),
+        4.0,
+    ));
+    options.pressed_hovered_visual = Some(UiVisual::panel(
+        color(36, 48, 62),
+        Some(StrokeStyle::new(color(138, 170, 206), 1.0)),
+        4.0,
+    ));
+    options.text_style = text(12.0, color(230, 236, 246));
+    let button = widgets::button(
+        ui,
+        desktop,
+        "showcase.organize_windows",
+        "Organize",
+        options,
+    );
+    ui.node_mut(button).style.z_index = SHOWCASE_WINDOW_Z_MAX.saturating_add(20);
 }
 
 fn fps_counter(
@@ -1891,15 +2974,7 @@ fn showcase_windows(
     desktop_size: UiSize,
 ) {
     let windows = showcase_window_descriptors(state, desktop_size);
-    let mut options = widgets::FloatingDesktopOptions::new(desktop_size).with_layout(
-        LayoutStyle::new()
-            .with_width_percent(1.0)
-            .with_height_percent(1.0),
-    );
-    options.base_z_index = SHOWCASE_WINDOW_Z_BASE;
-    options.window_z_stride = SHOWCASE_WINDOW_Z_STRIDE;
-    options.margin = 18.0;
-    options.gap = 14.0;
+    let options = showcase_desktop_options(desktop_size);
     widgets::floating_desktop(
         ui,
         desktop,
@@ -1924,6 +2999,7 @@ fn showcase_windows(
             "animation" => animation_widgets(ui, window, state),
             "lists_tables" => list_and_table_widgets(ui, window, state),
             "property_inspector" => property_inspector(ui, window, state),
+            "diagnostics" => diagnostics_widgets(ui, window, state),
             "trees" => tree_widgets(ui, window, state),
             "layout_widgets" => tab_split_dock_widgets(ui, window, state),
             "containers" => container_widgets(ui, window, state),
@@ -1934,7 +3010,7 @@ fn showcase_windows(
             "timeline" => timeline_ruler(ui, window),
             "toasts" => toast_controls(ui, window, state),
             "popup_panel" => popup_controls(ui, window, state),
-            "canvas" => canvas(ui, window),
+            "canvas" => canvas(ui, window, state),
             "styling" => styling_widgets(ui, window, state),
             _ => {}
         },
@@ -1942,6 +3018,7 @@ fn showcase_windows(
     showcase_overlays(ui, desktop, state, desktop_size);
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn showcase_overlays(
     ui: &mut UiDocument,
     desktop: UiNodeId,
@@ -2178,6 +3255,13 @@ fn showcase_window_descriptors(
     );
     push_window(
         &mut windows,
+        state.windows.diagnostics,
+        "diagnostics",
+        "Diagnostics",
+        UiSize::new(640.0, 760.0),
+    );
+    push_window(
+        &mut windows,
         state.windows.trees,
         "trees",
         "Trees",
@@ -2290,7 +3374,7 @@ fn push_window(
     if visible {
         let mut window = widgets::FloatingWindowDescriptor::new(id, title, preferred_size)
             .with_min_size(default_window_state_min_size(id))
-            .with_auto_size_to_content(id != "canvas")
+            .with_auto_size_to_content(false)
             .with_activate_action(format!("window.activate.{id}"))
             .with_close_action(format!("window.close.{id}"));
         if id == "animation" {
@@ -2298,6 +3382,8 @@ fn push_window(
                 ANIMATION_STAGE_MIN_WIDTH,
                 ANIMATION_STAGE_HEIGHT * 4.0,
             ));
+        } else if id == "layout_widgets" {
+            window = window.with_content_min_size(UiSize::new(620.0, 360.0));
         }
         windows.push(window);
     }
@@ -2322,6 +3408,7 @@ fn default_window_size(id: &str) -> UiSize {
         "animation" => UiSize::new(520.0, 430.0),
         "lists_tables" => UiSize::new(600.0, 700.0),
         "property_inspector" => UiSize::new(330.0, 250.0),
+        "diagnostics" => UiSize::new(640.0, 760.0),
         "trees" => UiSize::new(430.0, 450.0),
         "layout_widgets" => UiSize::new(560.0, 400.0),
         "containers" => UiSize::new(560.0, 640.0),
@@ -2340,6 +3427,58 @@ fn default_window_size(id: &str) -> UiSize {
 
 fn default_window_state_min_size(_id: &str) -> UiSize {
     UiSize::new(160.0, 96.0)
+}
+
+fn showcase_window_title(id: &str) -> &'static str {
+    match id {
+        "labels" => "Labels",
+        "buttons" => "Buttons",
+        "checkbox" => "Checkbox",
+        "toggles" => "Radio and toggles",
+        "slider" => "Slider",
+        "numeric" => "Numeric input",
+        "text_input" => "Text input",
+        "selection" => "Select controls",
+        "menus" => "Menus",
+        "command_palette" => "Command palette",
+        "date_picker" => "Date picker",
+        "color_picker" => "Color picker",
+        "color_buttons" => "Color buttons",
+        "progress" => "Progress indicator",
+        "animation" => "Animation",
+        "lists_tables" => "Lists and tables",
+        "property_inspector" => "Property inspector",
+        "diagnostics" => "Diagnostics",
+        "trees" => "Trees",
+        "layout_widgets" => "Layout widgets",
+        "containers" => "Containers",
+        "forms" => "Forms",
+        "overlays" => "Overlays",
+        "drag_drop" => "Drag and drop",
+        "media" => "Media",
+        "timeline" => "Timeline",
+        "toasts" => "Toasts",
+        "popup_panel" => "Popup panel",
+        "canvas" => "Canvas",
+        "styling" => "Styling",
+        _ => "Window",
+    }
+}
+
+fn showcase_collapsed_window_size(id: &str, options: &widgets::FloatingDesktopOptions) -> UiSize {
+    let min_size = default_window_state_min_size(id);
+    let padding = options.content_padding.max(0.0);
+    let button = options.close_button_size.max(1.0);
+    let control_width = (button + 8.0) * 2.0;
+    let font_size = options.title_style.font_size.max(1.0);
+    let title_width =
+        (showcase_window_title(id).chars().count() as f32 * font_size * 0.55).max(font_size);
+    UiSize::new(
+        min_size
+            .width
+            .max(padding * 2.0 + control_width + title_width),
+        options.title_bar_height.max(1.0),
+    )
 }
 
 fn default_window_position(id: &str) -> UiPoint {
@@ -2361,6 +3500,7 @@ fn default_window_position(id: &str) -> UiPoint {
         "animation" => UiPoint::new(180.0, 170.0),
         "lists_tables" => UiPoint::new(18.0, 90.0),
         "property_inspector" => UiPoint::new(300.0, 420.0),
+        "diagnostics" => UiPoint::new(640.0, 70.0),
         "trees" => UiPoint::new(36.0, 220.0),
         "layout_widgets" => UiPoint::new(18.0, 18.0),
         "containers" => UiPoint::new(48.0, 120.0),
@@ -2402,6 +3542,7 @@ fn window_for_action(action_id: &str) -> Option<&'static str> {
         id if id.starts_with("animation.") => Some("animation"),
         id if id.starts_with("lists_tables.") => Some("lists_tables"),
         id if id.starts_with("property_inspector.") => Some("property_inspector"),
+        id if id.starts_with("diagnostics.") => Some("diagnostics"),
         id if id.starts_with("trees.") => Some("trees"),
         id if id.starts_with("layout.") || id.starts_with("layout_widgets.") => {
             Some("layout_widgets")
@@ -2570,6 +3711,13 @@ fn control_panel(
         "Property inspector",
         state.windows.property_inspector,
     );
+    window_toggle(
+        ui,
+        list,
+        "diagnostics",
+        "Diagnostics",
+        state.windows.diagnostics,
+    );
     window_toggle(ui, list, "trees", "Trees", state.windows.trees);
     window_toggle(
         ui,
@@ -2711,6 +3859,7 @@ fn window_toggle(
     );
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "labels", "Labels");
     ui.node_mut(body).style.layout = LayoutStyle::column()
@@ -2733,7 +3882,8 @@ fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         .label_locale
         .selected_id(&locale_items)
         .unwrap_or("es-MX");
-    let localization = LocalizationPolicy::new(LocaleId::new(locale_id).expect("valid locale"));
+    let localization =
+        LocalizationPolicy::new(LocaleId::new(locale_id).unwrap_or_else(|_| LocaleId::default()));
     let locale_row = ui.add_child(
         body,
         UiNode::container(
@@ -3519,6 +4669,7 @@ fn numeric_inputs(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) 
     );
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "selection", "Select controls");
     let select_width = 180.0;
@@ -3633,6 +4784,7 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
     ui.node_mut(dropdown_nodes.trigger).action = Some("selection.dropdown.toggle".into());
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn select_menu_options(width: f32) -> widgets::SelectMenuOptions {
     let mut options = widgets::SelectMenuOptions::default();
     options.width = width;
@@ -3640,6 +4792,7 @@ fn select_menu_options(width: f32) -> widgets::SelectMenuOptions {
     options
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn text_input(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "text_input", "Text input");
     let mut options = TextInputOptions::default();
@@ -4077,7 +5230,7 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
 
 fn command_palette(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "command_palette", "Command palette");
-    let items = command_palette_items();
+    let items = command_palette_items_with_history(&state.command_history);
     let mut options =
         widgets::CommandPaletteOptions::default().with_action_prefix("command_palette");
     options.width = 480.0;
@@ -4104,6 +5257,7 @@ fn command_palette(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
     );
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn progress_indicator(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "progress", "Progress indicator");
     let animated = smooth_loop(state.progress_phase * 0.85, 0.0) * 100.0;
@@ -4412,36 +5566,29 @@ fn animation_blend_machine(
     end_scale: f32,
     end_opacity: f32,
 ) -> AnimationMachine {
+    let start_values = AnimatedValues::new(0.45, UiPoint::new(0.0, 0.0), start_scale);
+    let end_values = AnimatedValues::new(end_opacity, translate, end_scale).with_morph(1.0);
     AnimationMachine::new(
         vec![
-            AnimationState::new(
-                "start",
-                AnimatedValues::new(0.45, UiPoint::new(0.0, 0.0), start_scale),
-            ),
-            AnimationState::new(
-                "end",
-                AnimatedValues::new(end_opacity, translate, end_scale).with_morph(1.0),
-            ),
+            AnimationState::new("start", start_values),
+            AnimationState::new("end", end_values),
         ],
         Vec::new(),
         "start",
     )
-    .expect("animation blend machine")
+    .unwrap_or_else(|_| AnimationMachine::single_state("start", start_values))
     .with_number_input(input, value)
     .with_blend_binding(AnimationBlendBinding::new(input, "start", "end"))
 }
 
 fn animation_open_machine(open: bool) -> AnimationMachine {
+    let closed_values = AnimatedValues::new(0.35, UiPoint::new(0.0, 0.0), 1.0);
+    let open_values = AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0);
+    let fallback_values = if open { open_values } else { closed_values };
     AnimationMachine::new(
         vec![
-            AnimationState::new(
-                "closed",
-                AnimatedValues::new(0.35, UiPoint::new(0.0, 0.0), 1.0),
-            ),
-            AnimationState::new(
-                "open",
-                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
-            ),
+            AnimationState::new("closed", closed_values),
+            AnimationState::new("open", open_values),
         ],
         vec![
             AnimationTransition::when(
@@ -4459,26 +5606,22 @@ fn animation_open_machine(open: bool) -> AnimationMachine {
         ],
         "closed",
     )
-    .expect("animation open machine")
+    .unwrap_or_else(|_| AnimationMachine::single_state("closed", fallback_values))
     .with_bool_input(ANIMATION_INPUT_OPEN, open)
 }
 
 fn animation_interaction_machine() -> AnimationMachine {
+    let rest_values = AnimatedValues::new(0.72, UiPoint::new(0.0, 0.0), 1.0);
+    let right_values = AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(1.0);
     AnimationMachine::new(
         vec![
-            AnimationState::new(
-                "rest",
-                AnimatedValues::new(0.72, UiPoint::new(0.0, 0.0), 1.0),
-            ),
-            AnimationState::new(
-                "right",
-                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(1.0),
-            ),
+            AnimationState::new("rest", rest_values),
+            AnimationState::new("right", right_values),
         ],
         Vec::new(),
         "rest",
     )
-    .expect("animation interaction machine")
+    .unwrap_or_else(|_| AnimationMachine::single_state("rest", rest_values))
     .with_number_input(ANIMATION_INPUT_POINTER_NORM_X, 0.0)
     .with_blend_binding(AnimationBlendBinding::new(
         ANIMATION_INPUT_POINTER_NORM_X,
@@ -4706,37 +5849,69 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
             .with_action("lists_tables.data_table.scrollbar"),
     );
 
-    let columns = vec![
-        widgets::DataTableColumn::new("name", "Virtualized", 160.0),
-        widgets::DataTableColumn::new("status", "Status", 110.0),
-        widgets::DataTableColumn::new("value", "Value", 70.0)
-            .with_alignment(widgets::DataCellAlignment::End),
-    ];
+    let virtual_controls = wrapping_row(ui, body, "lists_tables.virtualized_table.controls", 8.0);
+    button(
+        ui,
+        virtual_controls,
+        "lists_tables.virtualized_table.sort.name",
+        if state.virtual_table_descending {
+            "Name desc"
+        } else {
+            "Name asc"
+        },
+        "lists_tables.virtualized_table.sort.name",
+        button_visual(38, 52, 70),
+    );
+    button(
+        ui,
+        virtual_controls,
+        "lists_tables.virtualized_table.filter.status",
+        if state.virtual_table_ready_only {
+            "Ready only"
+        } else {
+            "All status"
+        },
+        "lists_tables.virtualized_table.filter.status",
+        button_visual(38, 52, 70),
+    );
+    button(
+        ui,
+        virtual_controls,
+        "lists_tables.virtualized_table.resize.reset",
+        "Reset width",
+        "lists_tables.virtualized_table.resize.reset",
+        button_visual(38, 52, 70),
+    );
+
+    let columns = virtual_table_columns(state);
+    let visible_rows = virtual_table_visible_rows(state);
     let mut table_options = widgets::DataTableOptions::default()
-        .with_row_action_prefix("lists_tables.virtualized_table.row")
-        .with_cell_action_prefix("lists_tables.virtualized_table.cell");
+        .with_row_action_prefix("lists_tables.virtualized_table")
+        .with_cell_action_prefix("lists_tables.virtualized_table")
+        .with_scroll_action("lists_tables.virtualized_table.scroll");
+    table_options.layout = LayoutStyle::column()
+        .with_width(0.0)
+        .with_flex_grow(1.0)
+        .with_flex_shrink(1.0);
     table_options.selection = state.table_selection.clone();
+    let virtual_shell = row(ui, body, "lists_tables.virtualized_table.shell", 8.0);
     widgets::virtualized_data_table(
         ui,
-        body,
+        virtual_shell,
         "lists_tables.virtualized_table",
         &columns,
         widgets::VirtualDataTableSpec {
-            row_count: 32,
+            row_count: visible_rows.len(),
             row_height: 28.0,
             viewport_width: 420.0,
             viewport_height: 128.0,
-            scroll_offset: UiPoint::new(0.0, state.table_scroll),
+            scroll_offset: UiPoint::new(0.0, state.virtual_table_scroll),
             overscan_rows: 1,
         },
         table_options,
         |ui, cell_parent, cell| {
-            let value = match cell.column {
-                0 => format!("Virtual row {}", cell.row + 1),
-                1 if cell.row % 2 == 0 => "Ready".to_string(),
-                1 => "Pending".to_string(),
-                _ => format!("{}%", 30 + cell.row * 2),
-            };
+            let source_row = visible_rows.get(cell.row).copied().unwrap_or(cell.row);
+            let value = virtual_table_cell_value(source_row, cell.column);
             widgets::label(
                 ui,
                 cell_parent,
@@ -4749,6 +5924,21 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
                 LayoutStyle::new().with_width_percent(1.0),
             );
         },
+    );
+    widgets::scrollbar(
+        ui,
+        virtual_shell,
+        "lists_tables.virtualized_table.scrollbar",
+        scroll_state(
+            state.virtual_table_scroll,
+            128.0,
+            visible_rows.len() as f32 * 28.0,
+        ),
+        widgets::ScrollAxis::Vertical,
+        widgets::ScrollbarOptions::default()
+            .with_layout(LayoutStyle::size(8.0, 158.0))
+            .with_track_size(UiSize::new(8.0, 158.0))
+            .with_action("lists_tables.virtualized_table.scrollbar"),
     );
 }
 
@@ -4805,6 +5995,7 @@ fn data_table_row(ui: &mut UiDocument, parent: UiNodeId, row_index: usize, state
     }
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn property_inspector(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "property_inspector", "Property inspector");
     widgets::label(
@@ -4856,6 +6047,331 @@ fn property_inspector(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSta
     );
 }
 
+fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let body = section(ui, parent, "diagnostics", "Diagnostics");
+
+    widgets::label(
+        ui,
+        body,
+        "diagnostics.layout.title",
+        "Layout and animation inspector",
+        text(14.0, color(222, 230, 240)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let debug_snapshot = &state.diagnostics_snapshot;
+    widgets::debug_inspector_panel(
+        ui,
+        body,
+        "diagnostics.inspector",
+        debug_snapshot,
+        widgets::DebugInspectorPanelOptions {
+            selected_node: Some("diagnostics.sample.preview".to_owned()),
+            label_width: 104.0,
+            max_layout_rows: 5,
+            max_animation_rows: 1,
+            show_animation: false,
+            ..Default::default()
+        },
+    );
+    widgets::animation_state_graph_panel(
+        ui,
+        body,
+        "diagnostics.animation.graph",
+        debug_snapshot.animation("diagnostics.sample.preview"),
+        widgets::AnimationStateGraphPanelOptions {
+            state_width: 72.0,
+            state_height: 28.0,
+            edge_row_height: 22.0,
+            max_edges: 2,
+            action_prefix: Some("diagnostics.animation.graph".to_owned()),
+            ..Default::default()
+        },
+    );
+    widgets::animation_inspector_controls_panel(
+        ui,
+        body,
+        "diagnostics.animation.controls",
+        debug_snapshot.animation("diagnostics.sample.preview"),
+        widgets::AnimationInspectorControlsOptions {
+            max_inputs: 3,
+            paused: state.diagnostics_animation_paused,
+            scrub_progress: Some(state.diagnostics_animation_scrub),
+            action_prefix: Some("diagnostics.animation.controls".to_owned()),
+            ..Default::default()
+        },
+    );
+    widgets::label(
+        ui,
+        body,
+        "diagnostics.animation.controls.status",
+        format!(
+            "scrub {:.0}%  hover {:.0}%  pulses {}",
+            state.diagnostics_animation_scrub * 100.0,
+            state.diagnostics_animation_hover * 100.0,
+            state.diagnostics_animation_pulse_count
+        ),
+        text(12.0, color(166, 180, 198)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+
+    widgets::label(
+        ui,
+        body,
+        "diagnostics.a11y.title",
+        "Accessibility overlay",
+        text(14.0, color(222, 230, 240)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let overlay_preview = ui.add_child(
+        body,
+        UiNode::container(
+            "diagnostics.a11y.preview",
+            LayoutStyle::new().with_width(320.0).with_height(140.0),
+        )
+        .with_visual(UiVisual::panel(
+            color(12, 17, 24),
+            Some(StrokeStyle::new(color(47, 62, 82), 1.0)),
+            4.0,
+        )),
+    );
+    widgets::accessibility_debug_overlay(
+        ui,
+        overlay_preview,
+        "diagnostics.a11y.visual",
+        &debug_snapshot,
+        widgets::AccessibilityDebugOverlayOptions {
+            action_prefix: Some("diagnostics.a11y.visual".to_owned()),
+            ..Default::default()
+        },
+    );
+    widgets::accessibility_overlay_panel(
+        ui,
+        body,
+        "diagnostics.a11y",
+        &debug_snapshot,
+        widgets::AccessibilityOverlayPanelOptions {
+            label_width: 118.0,
+            max_rows: 1,
+            action_prefix: Some("diagnostics.a11y".to_owned()),
+            ..Default::default()
+        },
+    );
+
+    let diagnostic_columns = row(ui, body, "diagnostics.columns", 10.0);
+    let command_column = ui.add_child(
+        diagnostic_columns,
+        UiNode::container(
+            "diagnostics.commands.column",
+            LayoutStyle::column()
+                .with_width(0.0)
+                .with_flex_grow(1.0)
+                .with_flex_shrink(1.0)
+                .gap(8.0),
+        ),
+    );
+    let theme_column = ui.add_child(
+        diagnostic_columns,
+        UiNode::container(
+            "diagnostics.theme.column",
+            LayoutStyle::column()
+                .with_width(0.0)
+                .with_flex_grow(1.0)
+                .with_flex_shrink(1.0)
+                .gap(8.0),
+        ),
+    );
+
+    widgets::label(
+        ui,
+        command_column,
+        "diagnostics.commands.title",
+        "Command registry",
+        text(14.0, color(222, 230, 240)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let registry = diagnostics_command_registry();
+    widgets::command_diagnostics_panel(
+        ui,
+        command_column,
+        "diagnostics.commands",
+        &registry,
+        &[CommandScope::Global, CommandScope::Panel],
+        &ShortcutFormatter::default(),
+        widgets::CommandDiagnosticsPanelOptions {
+            label_width: 92.0,
+            max_command_rows: 3,
+            max_conflict_rows: 1,
+            action_prefix: Some("diagnostics.commands".to_owned()),
+            ..Default::default()
+        },
+    );
+
+    widgets::label(
+        ui,
+        theme_column,
+        "diagnostics.theme.title",
+        "Theme editor",
+        text(14.0, color(222, 230, 240)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let theme_snapshot = DebugThemeSnapshot::from_theme(&Theme::dark());
+    widgets::theme_editor_panel(
+        ui,
+        theme_column,
+        "diagnostics.theme",
+        &theme_snapshot,
+        widgets::ThemeEditorPanelOptions {
+            label_width: 92.0,
+            max_token_rows: 1,
+            max_component_rows: 1,
+            action_prefix: Some("diagnostics.theme".to_owned()),
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_sample_snapshot(state: &ShowcaseState) -> DebugInspectorSnapshot {
+    diagnostics_sample_snapshot_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    )
+}
+
+fn diagnostics_sample_snapshot_for(hover: f32, active: bool) -> DebugInspectorSnapshot {
+    let mut sample = UiDocument::new(root_style(320.0, 180.0));
+    let card = sample.add_child(
+        sample.root,
+        UiNode::container(
+            "diagnostics.sample.card",
+            LayoutStyle::column()
+                .with_width_percent(1.0)
+                .with_height(120.0)
+                .padding(12.0)
+                .gap(8.0),
+        )
+        .with_visual(UiVisual::panel(
+            color(16, 22, 30),
+            Some(StrokeStyle::new(color(62, 77, 98), 1.0)),
+            6.0,
+        ))
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Group).label("Diagnostics sample"),
+        ),
+    );
+    sample.add_child(
+        card,
+        UiNode::container(
+            "diagnostics.sample.preview",
+            LayoutStyle::new().with_width(160.0).with_height(38.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        ))
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Button)
+                .label("Preview action")
+                .focusable(),
+        )
+        .with_animation(
+            AnimationMachine::new(
+                vec![
+                    AnimationState::new(
+                        "idle",
+                        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+                    ),
+                    AnimationState::new(
+                        "hot",
+                        AnimatedValues::new(0.92, UiPoint::new(18.0, 0.0), 1.08),
+                    ),
+                ],
+                vec![AnimationTransition::when(
+                    "idle",
+                    "hot",
+                    AnimationCondition::bool("active", true),
+                    0.18,
+                )],
+                "idle",
+            )
+            .expect("sample animation")
+            .with_number_input("hover", hover)
+            .with_blend_binding(AnimationBlendBinding::new("hover", "idle", "hot"))
+            .with_bool_input("active", active)
+            .with_trigger_input("pulse"),
+        ),
+    );
+    widgets::label(
+        &mut sample,
+        card,
+        "diagnostics.sample.label",
+        "Sample node",
+        text(12.0, color(198, 210, 226)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    sample
+        .compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
+        .expect("sample layout");
+    DebugInspectorSnapshot::from_document(&sample, &mut ApproxTextMeasurer)
+}
+
+fn diagnostics_command_registry() -> CommandRegistry {
+    let mut registry = CommandRegistry::new();
+    registry
+        .register(
+            CommandMeta::new("diagnostics.palette", "Open command palette")
+                .description("Show command search")
+                .category("Debug"),
+        )
+        .expect("command");
+    registry
+        .register(
+            CommandMeta::new("diagnostics.inspect", "Inspect selected node")
+                .description("Focus the layout inspector")
+                .category("Debug"),
+        )
+        .expect("command");
+    registry
+        .register(
+            CommandMeta::new("diagnostics.record", "Start interaction recording")
+                .description("Capture replay steps")
+                .category("Testing"),
+        )
+        .expect("command");
+    registry
+        .register(CommandMeta::new(
+            "diagnostics.export_theme",
+            "Export theme patch",
+        ))
+        .expect("command");
+    registry
+        .bind_shortcut(
+            CommandScope::Global,
+            Shortcut::ctrl('k'),
+            "diagnostics.palette",
+        )
+        .expect("shortcut");
+    registry
+        .bind_shortcut(
+            CommandScope::Panel,
+            Shortcut::ctrl('i'),
+            "diagnostics.inspect",
+        )
+        .expect("shortcut");
+    registry
+        .bind_shortcut(
+            CommandScope::Panel,
+            Shortcut::ctrl('r'),
+            "diagnostics.record",
+        )
+        .expect("shortcut");
+    registry
+        .disable("diagnostics.export_theme", "No changes to export")
+        .expect("disable");
+    registry
+}
+
 fn tree_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "trees", "Tree view");
     widgets::tree_view(
@@ -4874,17 +6390,105 @@ fn tree_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         &state.outliner,
         widgets::TreeViewOptions::default().with_row_action_prefix("trees.outliner"),
     );
+    let virtual_state = widgets::TreeViewState::expanded(["root"]);
+    let virtual_nodes = widgets::virtualized_tree_view(
+        ui,
+        body,
+        "trees.virtual",
+        &virtual_tree_items(),
+        &virtual_state,
+        widgets::VirtualTreeViewSpec::new(24.0, 112.0)
+            .scroll_offset(state.tree_virtual_scroll)
+            .overscan_rows(1),
+        widgets::TreeViewOptions::default().with_row_action_prefix("trees.virtual"),
+    );
+    ui.node_mut(virtual_nodes.body).action = Some("trees.virtual.scroll".into());
+    tree_table_widgets(ui, body, state);
+}
+
+fn tree_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let tree_state = widgets::TreeViewState::expanded(["root", "branch-a"]);
+    let rows = tree_state.visible_items(&tree_table_items());
+    let columns = [
+        widgets::DataTableColumn::new("name", "Name", 220.0),
+        widgets::DataTableColumn::new("kind", "Kind", 84.0),
+        widgets::DataTableColumn::new("status", "Status", 92.0),
+    ];
+    let mut options = widgets::DataTableOptions::default()
+        .with_row_action_prefix("trees.table")
+        .with_cell_action_prefix("trees.table");
+    options.layout = LayoutStyle::column()
+        .with_width_percent(1.0)
+        .with_height(132.0)
+        .with_flex_shrink(0.0);
+    widgets::virtualized_data_table(
+        ui,
+        parent,
+        "trees.table",
+        &columns,
+        widgets::VirtualDataTableSpec {
+            row_count: rows.len(),
+            row_height: 24.0,
+            viewport_width: 396.0,
+            viewport_height: 96.0,
+            scroll_offset: UiPoint::new(0.0, state.tree_virtual_scroll),
+            overscan_rows: 1,
+        },
+        options,
+        |ui, cell_parent, cell| {
+            let value = rows
+                .get(cell.row)
+                .map(|item| tree_table_cell_value(item, cell.column))
+                .unwrap_or_default();
+            widgets::label(
+                ui,
+                cell_parent,
+                format!("trees.table.cell.{}.{}.label", cell.row, cell.column),
+                value,
+                text(12.0, color(220, 228, 238)),
+                LayoutStyle::new().with_width_percent(1.0),
+            );
+        },
+    );
+}
+
+fn tree_table_cell_value(item: &widgets::TreeVisibleItem, column: usize) -> String {
+    match column {
+        0 => format!("{}{}", "  ".repeat(item.depth), item.label),
+        1 => {
+            if item.has_children() {
+                "Folder".to_owned()
+            } else {
+                "File".to_owned()
+            }
+        }
+        _ => {
+            if item.disabled {
+                "Locked".to_owned()
+            } else if item.expanded {
+                "Expanded".to_owned()
+            } else {
+                "Ready".to_owned()
+            }
+        }
+    }
 }
 
 fn tab_split_dock_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
-    let body = section(ui, parent, "layout_widgets", "Layout panels");
+    let body = section_with_min_viewport(
+        ui,
+        parent,
+        "layout_widgets",
+        "Dock workspace",
+        UiSize::new(546.0, 360.0),
+    );
     let shell = ui.add_child(
         body,
         UiNode::container(
-            "layout_widgets.egui_shell",
+            "layout_widgets.dock_shell",
             LayoutStyle::column()
                 .with_width_percent(1.0)
-                .with_height(340.0)
+                .with_height(360.0)
                 .with_flex_shrink(0.0),
         )
         .with_visual(UiVisual::panel(
@@ -4893,53 +6497,350 @@ fn tab_split_dock_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
             0.0,
         )),
     );
-    let panels = row(ui, shell, "layout_widgets.egui_panels", 0.0);
-    ui.node_mut(panels).style.layout.size.height = operad::length(340.0);
-    let inspector = ui.add_child(
-        panels,
-        UiNode::container(
-            "layout_widgets.inspector_panel",
-            LayoutStyle::column()
-                .with_width(230.0)
-                .with_height_percent(1.0)
-                .with_flex_shrink(0.0),
-        )
-        .with_visual(UiVisual::panel(
-            color(18, 22, 29),
-            Some(StrokeStyle::new(color(54, 65, 80), 1.0)),
-            0.0,
-        )),
-    );
-    egui_panel_contents(
+
+    let mut panels = base_layout_dock_panels();
+    state.layout_dock.apply_order_to_panels(&mut panels);
+    state.layout_dock.apply_visibility_to_panels(&mut panels);
+
+    let mut drawer_options = widgets::DockDrawerRailOptions::default();
+    drawer_options.layout = LayoutStyle::row()
+        .with_width_percent(1.0)
+        .with_height(34.0)
+        .with_padding(4.0)
+        .with_gap(4.0);
+    widgets::dock_drawer_rail(
         ui,
-        inspector,
-        "layout.inspector",
-        "Inspector",
-        state.layout_inspector_scroll,
+        shell,
+        "layout_widgets.dock.drawers",
+        &[
+            widgets::DockDrawerDescriptor::new(
+                "inspector",
+                "Inspector",
+                "inspector",
+                widgets::DockSide::Left,
+            )
+            .open(!state.layout_dock.is_hidden("inspector"))
+            .with_action("layout_widgets.drawer.inspector"),
+            widgets::DockDrawerDescriptor::new(
+                "assets",
+                "Assets",
+                "assets",
+                widgets::DockSide::Right,
+            )
+            .open(!state.layout_dock.is_hidden("assets"))
+            .with_action("layout_widgets.drawer.assets"),
+        ],
+        drawer_options,
     );
 
-    let assets = ui.add_child(
-        panels,
-        UiNode::container(
-            "layout_widgets.assets_panel",
-            LayoutStyle::column()
-                .with_width(0.0)
-                .with_height_percent(1.0)
-                .with_flex_grow(1.0),
-        )
-        .with_visual(UiVisual::panel(
-            color(15, 19, 25),
-            Some(StrokeStyle::new(color(54, 65, 80), 1.0)),
-            0.0,
-        )),
+    let mut options = widgets::DockWorkspaceOptions::default();
+    options.layout = LayoutStyle::column()
+        .with_width_percent(1.0)
+        .with_height(0.0)
+        .with_flex_grow(1.0);
+    options.show_titles = false;
+    options.panel_visual = UiVisual::panel(
+        color(18, 22, 29),
+        Some(StrokeStyle::new(color(54, 65, 80), 1.0)),
+        0.0,
     );
-    egui_panel_contents(
+    options.center_visual = UiVisual::panel(
+        color(15, 19, 25),
+        Some(StrokeStyle::new(color(54, 65, 80), 1.0)),
+        0.0,
+    );
+
+    widgets::dock_workspace(
         ui,
-        assets,
-        "layout.assets",
-        "Assets",
-        state.layout_assets_scroll,
+        shell,
+        "layout_widgets.dock",
+        &panels,
+        options,
+        |ui, parent, panel| match panel.id.as_str() {
+            "inspector" => egui_panel_contents(
+                ui,
+                parent,
+                "layout.inspector",
+                "Inspector",
+                state.layout_inspector_scroll,
+            ),
+            "assets" => egui_panel_contents(
+                ui,
+                parent,
+                "layout.assets",
+                "Assets",
+                state.layout_assets_scroll,
+            ),
+            _ => dock_document_panel(ui, parent, state),
+        },
     );
+
+    if let Some(floating) = state.layout_dock.floating_panel("inspector") {
+        let floating_panel = ui.add_child(
+            shell,
+            UiNode::container(
+                "layout_widgets.floating.inspector",
+                LayoutStyle::absolute_rect(floating.rect),
+            )
+            .with_visual(UiVisual::panel(
+                color(18, 22, 29),
+                Some(StrokeStyle::new(color(86, 102, 124), 1.0)),
+                4.0,
+            )),
+        );
+        egui_panel_contents(
+            ui,
+            floating_panel,
+            "layout.inspector_floating",
+            "Inspector",
+            state.layout_inspector_scroll,
+        );
+    }
+}
+
+fn base_layout_dock_panels() -> Vec<widgets::DockPanelDescriptor> {
+    vec![
+        widgets::DockPanelDescriptor::new("inspector", "Inspector", widgets::DockSide::Left, 120.0)
+            .with_min_size(104.0)
+            .resizable(true),
+        widgets::DockPanelDescriptor::center("document", "Document"),
+        widgets::DockPanelDescriptor::new("assets", "Assets", widgets::DockSide::Right, 104.0)
+            .with_min_size(94.0)
+            .resizable(true),
+    ]
+}
+
+fn dock_document_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let content = ui.add_child(
+        parent,
+        UiNode::container(
+            "layout_widgets.document.content",
+            LayoutStyle::column()
+                .with_width_percent(1.0)
+                .with_height_percent(1.0)
+                .with_padding(8.0)
+                .with_gap(8.0),
+        ),
+    );
+
+    let controls = wrapping_row(ui, content, "layout_widgets.dock.controls", 8.0);
+    let (action, label) = if state.layout_dock.is_floating("inspector") {
+        ("layout_widgets.dock_inspector", "Dock inspector")
+    } else {
+        ("layout_widgets.float_inspector", "Float inspector")
+    };
+    let mut float_button = widgets::ButtonOptions::new(
+        LayoutStyle::new()
+            .with_width(132.0)
+            .with_height(28.0)
+            .with_flex_shrink(0.0),
+    )
+    .with_action(action);
+    float_button.visual = button_visual(40, 52, 68);
+    float_button.hovered_visual = Some(button_visual(54, 70, 92));
+    float_button.text_style = text(12.0, color(232, 238, 248));
+    widgets::button(
+        ui,
+        controls,
+        "layout_widgets.dock.float_inspector",
+        label,
+        float_button,
+    );
+
+    let mut before_button = widgets::ButtonOptions::new(
+        LayoutStyle::new()
+            .with_width(136.0)
+            .with_height(28.0)
+            .with_flex_shrink(0.0),
+    )
+    .with_action("layout_widgets.reorder.assets.before.inspector");
+    before_button.visual = button_visual(34, 44, 58);
+    before_button.hovered_visual = Some(button_visual(48, 64, 84));
+    before_button.text_style = text(12.0, color(232, 238, 248));
+    widgets::button(
+        ui,
+        controls,
+        "layout_widgets.dock.assets_before_inspector",
+        "Assets before",
+        before_button,
+    );
+
+    let mut after_button = widgets::ButtonOptions::new(
+        LayoutStyle::new()
+            .with_width(126.0)
+            .with_height(28.0)
+            .with_flex_shrink(0.0),
+    )
+    .with_action("layout_widgets.reorder.assets.after.inspector");
+    after_button.visual = button_visual(34, 44, 58);
+    after_button.hovered_visual = Some(button_visual(48, 64, 84));
+    after_button.text_style = text(12.0, color(232, 238, 248));
+    widgets::button(
+        ui,
+        controls,
+        "layout_widgets.dock.assets_after_inspector",
+        "Assets after",
+        after_button,
+    );
+
+    let zones = widgets::dock_workspace_drop_zones(
+        "layout_widgets.dock",
+        UiRect::new(0.0, 0.0, 520.0, 340.0),
+        widgets::DockWorkspaceDragOptions::default()
+            .allowed_sides([
+                widgets::DockSide::Left,
+                widgets::DockSide::Right,
+                widgets::DockSide::Center,
+            ])
+            .edge_thickness(44.0),
+    );
+    let targets = wrapping_row(ui, content, "layout_widgets.dock.targets", 6.0);
+    for zone in zones {
+        dock_drop_target_chip(ui, targets, &zone);
+    }
+
+    let mut panels = base_layout_dock_panels();
+    state.layout_dock.apply_order_to_panels(&mut panels);
+    let reorder_targets: Vec<_> = [
+        widgets::DockSide::Left,
+        widgets::DockSide::Right,
+        widgets::DockSide::Center,
+    ]
+    .into_iter()
+    .flat_map(|side| {
+        widgets::dock_panel_reorder_drop_targets(
+            "layout_widgets.dock",
+            &panels,
+            side,
+            UiRect::new(0.0, 0.0, 180.0, 120.0),
+            widgets::DockWorkspaceReorderOptions::default().target_thickness(20.0),
+        )
+    })
+    .collect();
+    let reorder_row = wrapping_row(ui, content, "layout_widgets.dock.reorder_targets", 6.0);
+    for target in reorder_targets {
+        dock_reorder_target_chip(ui, reorder_row, &target);
+    }
+
+    let tabs = [
+        widgets::TabItem::new("preview", "Preview"),
+        widgets::TabItem::new("log", "Output").dirty(),
+        widgets::TabItem::new("settings", "Settings").closable(),
+    ];
+    let mut tab_options = widgets::TabGroupOptions::default();
+    tab_options.layout = LayoutStyle::column()
+        .with_width_percent(1.0)
+        .with_height(0.0)
+        .with_flex_grow(1.0);
+    tab_options.tab_strip_height = 30.0;
+    tab_options.min_tab_width = 92.0;
+    tab_options.text_style = text(12.0, color(226, 234, 246));
+    tab_options.muted_text_style = text(12.0, color(150, 162, 178));
+    widgets::tab_group(
+        ui,
+        content,
+        "layout_widgets.document.tabs",
+        &tabs,
+        widgets::TabGroupState::selected(0),
+        tab_options,
+        |ui, panel, _index| {
+            widgets::label(
+                ui,
+                panel,
+                "layout_widgets.document.tabs.preview.body",
+                "Workspace preview",
+                text(12.0, color(190, 202, 218)),
+                LayoutStyle::new().with_width_percent(1.0).with_height(26.0),
+            );
+        },
+    );
+}
+
+fn dock_drop_target_chip(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    zone: &widgets::DockWorkspaceDropZone,
+) -> UiNodeId {
+    let chip = ui.add_child(
+        parent,
+        UiNode::container(
+            format!("{}.chip", zone.target.id.0),
+            LayoutStyle::row()
+                .with_width(78.0)
+                .with_height(26.0)
+                .with_padding(6.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(24, 32, 42),
+            Some(StrokeStyle::new(color(78, 94, 116), 1.0)),
+            4.0,
+        ))
+        .with_accessibility(zone.target.accessibility_meta()),
+    );
+    widgets::label(
+        ui,
+        chip,
+        format!("{}.label", zone.target.id.0),
+        dock_drop_target_short_label(zone.placement),
+        text(11.0, color(206, 216, 230)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    chip
+}
+
+fn dock_reorder_target_chip(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    target: &widgets::DockPanelReorderTarget,
+) -> UiNodeId {
+    let chip = ui.add_child(
+        parent,
+        UiNode::container(
+            format!("{}.chip", target.target.id.0),
+            LayoutStyle::row()
+                .with_width(104.0)
+                .with_height(26.0)
+                .with_padding(6.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(22, 34, 42),
+            Some(StrokeStyle::new(color(80, 112, 128), 1.0)),
+            4.0,
+        ))
+        .with_accessibility(target.target.accessibility_meta()),
+    );
+    widgets::label(
+        ui,
+        chip,
+        format!("{}.label", target.target.id.0),
+        dock_reorder_target_short_label(target),
+        text(11.0, color(206, 216, 230)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    chip
+}
+
+fn dock_drop_target_short_label(placement: widgets::DockDropPlacement) -> &'static str {
+    match placement {
+        widgets::DockDropPlacement::Dock(widgets::DockSide::Left) => "Left",
+        widgets::DockDropPlacement::Dock(widgets::DockSide::Right) => "Right",
+        widgets::DockDropPlacement::Dock(widgets::DockSide::Center) => "Center",
+        widgets::DockDropPlacement::Dock(widgets::DockSide::Top) => "Top",
+        widgets::DockDropPlacement::Dock(widgets::DockSide::Bottom) => "Bottom",
+        widgets::DockDropPlacement::Floating => "Float",
+    }
+}
+
+fn dock_reorder_target_short_label(target: &widgets::DockPanelReorderTarget) -> String {
+    let placement = match target.placement {
+        widgets::DockPanelReorderPlacement::Before => "Before",
+        widgets::DockPanelReorderPlacement::After => "After",
+    };
+    format!("{placement} {}", target.panel_id)
 }
 
 fn container_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
@@ -6332,6 +8233,7 @@ fn slider_options(state: &ShowcaseState, width: f32) -> widgets::SliderOptions {
     options
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn slider_number_input(
     ui: &mut UiDocument,
     parent: UiNodeId,
@@ -6351,6 +8253,7 @@ fn slider_number_input(
     widgets::text_input(ui, parent, name, input, options);
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn form_text_field(ui: &mut UiDocument, parent: UiNodeId, name: &'static str, value: &'static str) {
     let mut options = TextInputOptions::default();
     options.layout = LayoutStyle::new().with_width_percent(1.0).with_height(30.0);
@@ -6425,7 +8328,7 @@ fn divider(ui: &mut UiDocument, parent: UiNodeId, name: &'static str) {
     );
 }
 
-fn canvas(ui: &mut UiDocument, parent: UiNodeId) {
+fn canvas(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "canvas", "Canvas");
     let mut options = widgets::CanvasOptions::default()
         .with_accessibility_label("Shader canvas")
@@ -6445,41 +8348,17 @@ fn canvas(ui: &mut UiDocument, parent: UiNodeId) {
         ui,
         body,
         "canvas.shader",
-        CanvasContent::new("canvas.shader").gpu_context(),
+        CanvasContent::new("canvas.shader").program(showcase_canvas_program(state.cube)),
         options,
     );
 }
 
-fn render_showcase_canvas(
-    state: &mut ShowcaseState,
-    context: NativeWgpuCanvasRenderContext<'_>,
-) -> Result<CanvasRenderOutput, RenderError> {
-    let size = context.surface_size();
-    if state.cube.needs_render(size) {
-        render_showcase_canvas_surface(state.cube, &context.surface)?;
-        state.cube.mark_rendered(size);
-    }
-    Ok(CanvasRenderOutput::new())
-}
-
-fn render_showcase_canvas_surface(
-    cube: CanvasCubeState,
-    surface: &WgpuCanvasContext<'_>,
-) -> Result<(), RenderError> {
-    let uniforms = canvas_cube_uniform_bytes(cube);
-    surface.render_pass(
-        WgpuCanvasRenderPass::wgsl(include_str!("shaders/showcase_canvas.wgsl"))
-            .label(Some("showcase.canvas"))
-            .uniform_bytes(&uniforms[..])
-            .clear_color(Some(color(18, 22, 28))),
-    )
-}
-
-fn canvas_cube_uniform_bytes(cube: CanvasCubeState) -> [u8; 16] {
-    let mut bytes = [0_u8; 16];
-    bytes[0..4].copy_from_slice(&cube.yaw.to_ne_bytes());
-    bytes[4..8].copy_from_slice(&cube.pitch.to_ne_bytes());
-    bytes
+fn showcase_canvas_program(cube: CanvasCubeState) -> CanvasRenderProgram {
+    CanvasRenderProgram::wgsl(include_str!("shaders/showcase_canvas.wgsl"))
+        .label("showcase.canvas")
+        .constant("CUBE_YAW", cube.yaw as f64)
+        .constant("CUBE_PITCH", cube.pitch as f64)
+        .clear_color(Some(color(18, 22, 28)))
 }
 
 fn section(
@@ -6506,13 +8385,12 @@ fn section_with_min_viewport(
         .gap(10.0);
     layout.as_taffy_style_mut().min_size.width = operad::length(min_viewport_size.width.max(0.0));
     layout.as_taffy_style_mut().min_size.height = operad::length(min_viewport_size.height.max(0.0));
-    widgets::scroll_area(
-        ui,
-        parent,
-        format!("{name}.section_scroll"),
-        ScrollAxes::VERTICAL,
-        layout,
-    )
+    let axes = if min_viewport_size.width > 0.0 {
+        ScrollAxes::BOTH
+    } else {
+        ScrollAxes::VERTICAL
+    };
+    widgets::scroll_area(ui, parent, format!("{name}.section_scroll"), axes, layout)
 }
 
 fn row(ui: &mut UiDocument, parent: UiNodeId, name: impl Into<String>, gap: f32) -> UiNodeId {
@@ -6797,6 +8675,36 @@ fn command_palette_items() -> Vec<widgets::CommandPaletteItem> {
     ]
 }
 
+fn command_palette_items_with_history(
+    history: &widgets::CommandPaletteHistory,
+) -> Vec<widgets::CommandPaletteItem> {
+    let mut items = command_palette_items()
+        .into_iter()
+        .map(|item| {
+            let command = CommandId::from(item.id.as_str());
+            if history.is_recent(&command) {
+                item.keyword("recent")
+            } else {
+                item
+            }
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        let left_id = CommandId::from(left.id.as_str());
+        let right_id = CommandId::from(right.id.as_str());
+        match (
+            history.recency_rank(&left_id),
+            history.recency_rank(&right_id),
+        ) {
+            (Some(left_rank), Some(right_rank)) => left_rank.cmp(&right_rank),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.title.cmp(&right.title),
+        }
+    });
+    items
+}
+
 fn table_columns() -> Vec<widgets::TableColumn> {
     vec![
         widgets::TableColumn {
@@ -6817,6 +8725,50 @@ fn table_columns() -> Vec<widgets::TableColumn> {
     ]
 }
 
+fn virtual_table_columns(state: &ShowcaseState) -> Vec<widgets::DataTableColumn> {
+    let sort = if state.virtual_table_descending {
+        widgets::DataTableSortState::descending()
+    } else {
+        widgets::DataTableSortState::ascending()
+    };
+    let filter = if state.virtual_table_ready_only {
+        widgets::DataTableFilterState::active("status").with_value("Ready")
+    } else {
+        widgets::DataTableFilterState::inactive()
+    };
+    vec![
+        widgets::DataTableColumn::new("name", "Virtualized", 160.0)
+            .with_sort(sort)
+            .sortable("lists_tables.virtualized_table.sort.name"),
+        widgets::DataTableColumn::new("status", "Status", 110.0)
+            .with_filter(filter)
+            .filterable("lists_tables.virtualized_table.filter.status"),
+        widgets::DataTableColumn::new("value", "Value", state.virtual_table_value_width)
+            .with_min_width(56.0)
+            .with_alignment(widgets::DataCellAlignment::End)
+            .resize_command("lists_tables.virtualized_table.resize.value"),
+    ]
+}
+
+fn virtual_table_visible_rows(state: &ShowcaseState) -> Vec<usize> {
+    let mut rows = (0..32)
+        .filter(|row| !state.virtual_table_ready_only || row % 2 == 0)
+        .collect::<Vec<_>>();
+    if state.virtual_table_descending {
+        rows.reverse();
+    }
+    rows
+}
+
+fn virtual_table_cell_value(source_row: usize, column: usize) -> String {
+    match column {
+        0 => format!("Virtual row {}", source_row + 1),
+        1 if source_row % 2 == 0 => "Ready".to_string(),
+        1 => "Pending".to_string(),
+        _ => format!("{}%", 30 + source_row * 2),
+    }
+}
+
 fn tree_items() -> Vec<widgets::TreeItem> {
     vec![
         widgets::TreeItem::new("root", "Project").with_children(vec![
@@ -6829,6 +8781,37 @@ fn tree_items() -> Vec<widgets::TreeItem> {
                 widgets::TreeItem::new("logo", "logo.png"),
             ]),
             widgets::TreeItem::new("target", "target").disabled(),
+        ]),
+    ]
+}
+
+fn virtual_tree_items() -> Vec<widgets::TreeItem> {
+    vec![
+        widgets::TreeItem::new("root", "Large project").with_children(
+            (0..48)
+                .map(|index| {
+                    widgets::TreeItem::new(
+                        format!("file-{index:02}"),
+                        format!("File {index:02}.rs"),
+                    )
+                })
+                .collect(),
+        ),
+    ]
+}
+
+fn tree_table_items() -> Vec<widgets::TreeItem> {
+    vec![
+        widgets::TreeItem::new("root", "Workspace").with_children(vec![
+            widgets::TreeItem::new("branch-a", "Interface").with_children(vec![
+                widgets::TreeItem::new("widgets", "widgets.rs"),
+                widgets::TreeItem::new("layout", "layout.rs"),
+            ]),
+            widgets::TreeItem::new("branch-b", "Renderer").with_children(vec![
+                widgets::TreeItem::new("wgpu", "wgpu.rs"),
+                widgets::TreeItem::new("paint", "paint.rs").disabled(),
+            ]),
+            widgets::TreeItem::new("docs", "docs"),
         ]),
     ]
 }
@@ -6859,8 +8842,15 @@ fn smooth_loop(phase: f32, offset: f32) -> f32 {
     0.5 - ((phase + offset).cos() * 0.5)
 }
 
-fn create_system_clipboard() -> Option<arboard::Clipboard> {
-    arboard::Clipboard::new().ok()
+fn create_system_clipboard() -> Option<ShowcaseClipboard> {
+    #[cfg(not(feature = "native-window"))]
+    {
+        None
+    }
+    #[cfg(feature = "native-window")]
+    {
+        arboard::Clipboard::new().ok()
+    }
 }
 
 fn profile_form_state() -> FormState {
@@ -6868,7 +8858,7 @@ fn profile_form_state() -> FormState {
         .with_field("name", "Operad")
         .with_field("email", "invalid@example")
         .with_field("role", "Designer");
-    form.update_field("email", "invalid@example").unwrap();
+    let _ = form.update_field("email", "invalid@example");
     let request = form.begin_form_validation();
     let _ = form.apply_form_validation(
         FormValidationResult::new(request.generation)
@@ -6931,16 +8921,23 @@ fn caret_visible(phase: f32) -> bool {
 }
 
 fn open_url(url: &str) {
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    let _ = url;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = web_sys::window().and_then(|window| window.open_with_url(url).ok().flatten());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(url).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let _ = url;
+    }
 }
 
 fn text(size: f32, color: ColorRgba) -> TextStyle {

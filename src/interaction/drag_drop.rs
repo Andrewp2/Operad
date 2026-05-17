@@ -65,6 +65,8 @@ impl From<String> for DropTargetId {
 pub enum DragDropSurfaceKind {
     Asset,
     Button,
+    DockPanel,
+    DockTarget,
     ListRow,
     TableRow,
     TreeItem,
@@ -83,9 +85,12 @@ impl DragDropSurfaceKind {
             Self::TableRow => AccessibilityRole::Row,
             Self::TreeItem => AccessibilityRole::TreeItem,
             Self::EditorSurface => AccessibilityRole::EditorSurface,
-            Self::EditorLane | Self::EditorRangeItem | Self::Canvas | Self::Custom(_) => {
-                AccessibilityRole::Group
-            }
+            Self::DockPanel
+            | Self::DockTarget
+            | Self::EditorLane
+            | Self::EditorRangeItem
+            | Self::Canvas
+            | Self::Custom(_) => AccessibilityRole::Group,
         }
     }
 
@@ -93,6 +98,8 @@ impl DragDropSurfaceKind {
         match self {
             Self::Asset => "Asset",
             Self::Button => "Button",
+            Self::DockPanel => "Dock panel",
+            Self::DockTarget => "Dock target",
             Self::ListRow => "List row",
             Self::TableRow => "Table row",
             Self::TreeItem => "Tree item",

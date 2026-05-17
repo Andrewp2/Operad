@@ -612,7 +612,9 @@ impl TextEditHistory {
             Some(_) => {}
         }
 
-        let mut active = self.active_preview.take().expect("active preview checked");
+        let Some(mut active) = self.active_preview.take() else {
+            return Err(TransactionError::NoActiveTransaction { requested });
+        };
         active.change.after = after.into();
         Ok(self.push_committed(active))
     }
@@ -635,7 +637,9 @@ impl TextEditHistory {
             Some(_) => {}
         }
 
-        let active = self.active_preview.take().expect("active preview checked");
+        let Some(active) = self.active_preview.take() else {
+            return Err(TransactionError::NoActiveTransaction { requested });
+        };
         Ok(EditTransaction::cancel(active.id, active.change)
             .target(active.target)
             .commands(active.commands))

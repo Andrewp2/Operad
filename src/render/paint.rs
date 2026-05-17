@@ -1123,7 +1123,7 @@ fn tessellate_polyline_stroke(
     } else {
         if options.line_cap == StrokeLineCap::Round {
             triangles.extend(circle_triangles(points[0], half));
-            triangles.extend(circle_triangles(*points.last().unwrap(), half));
+            triangles.extend(circle_triangles(points[points.len() - 1], half));
         }
         for index in 1..points.len() - 1 {
             push_join_triangles(

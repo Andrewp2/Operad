@@ -54,6 +54,8 @@ pub mod input_devices;
 pub mod interaction;
 #[path = "core/layout.rs"]
 pub mod layout;
+#[path = "render/layout_animation.rs"]
+pub mod layout_animation;
 #[path = "diagnostics/limits.rs"]
 pub mod limits;
 #[path = "interaction/navigation.rs"]
@@ -106,10 +108,12 @@ pub use accessibility::{
     AccessibilityAdapter, AccessibilityAdapterApplyReport, AccessibilityAdapterRequest,
     AccessibilityAdapterRequestPlan, AccessibilityAdapterResponse, AccessibilityAdapterState,
     AccessibilityAdapterTargetKind, AccessibilityAdapterTargetSummary, AccessibilityAnnouncement,
-    AccessibilityCapabilities, AccessibilityFocusTrapState, AccessibilityLiveRegionEntry,
-    AccessibilityLiveRegionSnapshot, AccessibilityNavigableItem, AccessibilityNavigableItemSource,
-    AccessibilityPreferences, AccessibilityRequestKind, FocusNavigationDirection,
-    FocusRestoreTarget, FocusTrap, HeadlessAccessibilityAdapter,
+    AccessibilityCapabilities, AccessibilityFocusTrapState, AccessibilityKeyboardNavigationTrace,
+    AccessibilityKeyboardTraceBlockedReason, AccessibilityKeyboardTraceInput,
+    AccessibilityKeyboardTraceStep, AccessibilityLiveRegionEntry, AccessibilityLiveRegionSnapshot,
+    AccessibilityNavigableItem, AccessibilityNavigableItemSource, AccessibilityPreferences,
+    AccessibilityRequestKind, FocusNavigationDirection, FocusRestoreTarget, FocusTrap,
+    HeadlessAccessibilityAdapter,
 };
 #[cfg(feature = "accesskit-winit")]
 pub use accesskit_winit_adapter::{
@@ -133,7 +137,8 @@ pub use charts::{
 };
 pub use commands::{
     Command, CommandEffect, CommandEffectInvocation, CommandId, CommandMeta, CommandRegistry,
-    CommandRegistryError, CommandScope, Shortcut, ShortcutBinding, ShortcutConflict,
+    CommandRegistryError, CommandScope, Shortcut, ShortcutBinding, ShortcutConflict, ShortcutRemap,
+    ShortcutRemapReport,
 };
 pub use compositor::{
     plan_render_feature_fallbacks, sort_layers_for_paint, topmost_layer_at, AffineTransform,
@@ -144,10 +149,14 @@ pub use compositor::{
     StackingContext, StackingContextId, SubpixelTextPolicy,
 };
 pub use debug::{
-    layout_snapshot_dump, DebugGestureKind, DebugGestureState, DebugHitCandidate, DebugHitTrace,
-    DebugOverlayContext, DebugOverlayNode, DebugOverlayOptions, DebugOverlaySnapshot,
-    DebugPaintDump, DebugPaintItem, DebugPaintKindCount, DebugPaintStats, DebugThemeComponentState,
-    DebugThemeScopeInfo, DebugThemeSnapshot, DebugThemeToken, DebugThemeTokenKind,
+    layout_snapshot_dump, DebugAccessibilityOverlayNode, DebugAnimationGraph,
+    DebugAnimationGraphEdge, DebugAnimationGraphEdgeKind, DebugAnimationGraphState,
+    DebugAnimationInspectorNode, DebugGestureKind, DebugGestureState, DebugHitCandidate,
+    DebugHitTrace, DebugInspectorSnapshot, DebugLayoutInspectorNode, DebugLayoutStyleSummary,
+    DebugNodeContentKind, DebugOverlayContext, DebugOverlayNode, DebugOverlayOptions,
+    DebugOverlaySnapshot, DebugPaintDump, DebugPaintItem, DebugPaintKindCount, DebugPaintStats,
+    DebugThemeComponentState, DebugThemeScopeInfo, DebugThemeSnapshot, DebugThemeToken,
+    DebugThemeTokenKind,
 };
 pub use diagnostics::{
     node_label, overlay_label, required_cache_diagnostic_kinds, required_pipeline_stages,
@@ -238,6 +247,10 @@ pub use layout::{
     LayoutFlexDirection, LayoutFlexWrap, LayoutGap, LayoutInset, LayoutInsets,
     LayoutJustifyContent, LayoutLength, LayoutPosition, LayoutSize, LayoutSpacing,
 };
+pub use layout_animation::{
+    apply_layout_animation_transitions_to_paint_list, layout_animation_transitions,
+    LayoutAnimationOptions, LayoutAnimationTransition,
+};
 pub use limits::{
     drag_payload_byte_len, truncate_str_to_byte_limit, validate_cache_budget,
     validate_drag_drop_payload, validate_font_bytes, validate_image_dimensions,
@@ -270,18 +283,21 @@ pub use paint::{
 };
 pub use platform::{
     CursorGrabMode, CursorRequest, CursorResponse, CursorShape, LogicalPoint, LogicalRect,
-    LogicalSize, PlatformRequest, RepaintRequest,
+    LogicalSize, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,
+    PlatformServiceCapabilities, PlatformServiceRequest, PlatformServiceResponse, RepaintRequest,
 };
 pub use renderer::{
     CanvasHitCollection, CanvasHitTarget, CanvasHostCaptureChange, CanvasHostCaptureChangeKind,
-    CanvasHostCaptureId, CanvasHostCapturePlan, CanvasHostCaptureState,
-    CanvasHostCaptureTransition, CanvasRenderContext, CanvasRenderHandler, CanvasRenderOutcome,
-    CanvasRenderOutput, CanvasRenderRegistry, CanvasRenderReport, CanvasRenderRequest,
-    DirtyRegionSet, ImageRenderContext, ImageRenderHandler, ImageRenderKind, ImageRenderOutcome,
-    ImageRenderOutput, ImageRenderRegistry, ImageRenderReport, ImageRenderRequest, PaintBatch,
-    PaintBatchKey, PaintBatchKind, PaintBatcher, PixelRect, RenderError, RenderFrameOutput,
-    RenderFrameRequest, RenderOptions, RenderTarget, RenderTargetKind, RenderedImage,
-    RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
+    CanvasHostCaptureDiagnostic, CanvasHostCaptureDiagnosticKind,
+    CanvasHostCaptureDiagnosticReport, CanvasHostCaptureId, CanvasHostCapturePlan,
+    CanvasHostCaptureState, CanvasHostCaptureTransition, CanvasRenderContext, CanvasRenderHandler,
+    CanvasRenderOutcome, CanvasRenderOutput, CanvasRenderRegistry, CanvasRenderReport,
+    CanvasRenderRequest, DirtyRegionSet, ImageRenderContext, ImageRenderHandler, ImageRenderKind,
+    ImageRenderOutcome, ImageRenderOutput, ImageRenderRegistry, ImageRenderReport,
+    ImageRenderRequest, PaintBatch, PaintBatchKey, PaintBatchKind, PaintBatcher, PixelRect,
+    RenderError, RenderFrameOutput, RenderFrameRequest, RenderOptions, RenderTarget,
+    RenderTargetKind, RenderedImage, RendererAdapter, ResourceDescriptor, ResourceFormat,
+    ResourceResolver, ResourceUpdate,
 };
 pub use resource_cache::{
     resource_descriptor_byte_len, validate_resource_update as validate_resource_cache_update,
@@ -341,9 +357,9 @@ pub use testing::{
     DisplayListInvalidationAssertions, DisplayListReuseAssertions, DisplayListReuseSeries,
     DisplayListReuseSeriesAssertions, EmptyResourceResolver, EventReplay, EventReplayReport,
     EventReplayStep, EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
-    FrameTimingSeries, FrameTimingSeriesAssertions, LayoutAssertions, PaintAssertions,
-    PaintKindSelector, PaintRecorderRenderer, PerformanceAssertions, PerformanceSamples,
-    PixelDiffReport, PixelDiffTolerance, PlatformAssertions, RenderAssertions,
+    FrameTimingSeries, FrameTimingSeriesAssertions, InteractionRecorder, LayoutAssertions,
+    PaintAssertions, PaintKindSelector, PaintRecorderRenderer, PerformanceAssertions,
+    PerformanceSamples, PixelDiffReport, PixelDiffTolerance, PlatformAssertions, RenderAssertions,
     RenderOutputAssertions, ReplayInput, RgbaImageView, ScenarioFrameReport, ScenarioHarness,
     SnapshotAssertions, TestFailure, TestResult, UiStateMatrixCase, UiStateMatrixDocument,
     UiStateMatrixInteraction, UiStateMatrixReport, UiStateMatrixTarget, UiStateMatrixViewport,
@@ -386,7 +402,8 @@ pub use virtualization::{
     VirtualFocusPreservation, VirtualItemKey, VirtualItemPlan, VirtualMeasuredExtent,
     VirtualOverscan, VirtualPlan, VirtualPlanRequest, VirtualScrollAnchor,
     VirtualScrollAnchorAdjustment, VirtualSelectionPreservation, VirtualStickyEdge,
-    VirtualStickyRegion,
+    VirtualStickyRegion, VirtualizationBudget, VirtualizationDiagnostics, VirtualizationIssue,
+    VirtualizationIssueKind,
 };
 pub use windows::{
     DocumentId, OverlayId as WindowOverlayId, OverlayOwner, RenderSurfaceOwner, RoutedRenderTarget,

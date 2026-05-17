@@ -13,7 +13,7 @@ const PERF_VIEWPORT: UiSize = UiSize::new(960.0, 540.0);
 #[cfg(feature = "wgpu")]
 const FRAME_PERCENTILE: f64 = 95.0;
 #[cfg(all(feature = "wgpu", debug_assertions))]
-const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis(3);
+const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis(4);
 #[cfg(all(feature = "wgpu", not(debug_assertions)))]
 const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis(1);
 

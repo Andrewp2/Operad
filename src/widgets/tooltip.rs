@@ -165,6 +165,16 @@ pub fn tooltip_fade_slide_animation(
 ) -> AnimationMachine {
     let show_duration = if reduced_motion { 0.0 } else { 0.12 };
     let hide_duration = if reduced_motion { 0.0 } else { 0.08 };
+    let initial = if initially_visible {
+        "visible"
+    } else {
+        "hidden"
+    };
+    let fallback_values = if initially_visible {
+        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0)
+    } else {
+        AnimatedValues::new(0.0, UiPoint::new(0.0, 4.0), 0.99)
+    };
     AnimationMachine::new(
         vec![
             AnimationState::new(
@@ -190,13 +200,9 @@ pub fn tooltip_fade_slide_animation(
                 hide_duration,
             ),
         ],
-        if initially_visible {
-            "visible"
-        } else {
-            "hidden"
-        },
+        initial,
     )
-    .expect("tooltip animation preset should be internally valid")
+    .unwrap_or_else(|_| AnimationMachine::single_state(initial, fallback_values))
 }
 
 pub fn tooltip_trigger_resolution(

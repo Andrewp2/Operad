@@ -443,10 +443,9 @@ impl FormState {
             field.messages.clear();
         }
         for (field_id, messages) in result.field_messages {
-            let field = self
-                .fields
-                .get_mut(&field_id)
-                .expect("field was preflighted");
+            let Some(field) = self.fields.get_mut(&field_id) else {
+                return ValidationApplyDisposition::UnknownField { field_id };
+            };
             field.messages = messages;
         }
         self.form_messages = result.form_messages;

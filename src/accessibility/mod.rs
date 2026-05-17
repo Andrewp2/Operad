@@ -10,7 +10,8 @@ pub use crate::tooltips;
 
 use crate::{
     AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityNode,
-    AccessibilityRole, AccessibilitySummary, AccessibilityTree, UiNodeId, UiRect,
+    AccessibilityRole, AccessibilitySummary, AccessibilityTree, CommandId, CommandRegistry,
+    CommandScope, Shortcut, UiNodeId, UiRect,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -184,6 +185,102 @@ pub enum AccessibilityRequestKind {
 pub enum FocusNavigationDirection {
     Forward,
     Backward,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccessibilityKeyboardTraceInput {
+    MoveFocus {
+        direction: FocusNavigationDirection,
+        wrap: bool,
+        restore: FocusRestoreTarget,
+    },
+    CommandShortcut {
+        shortcut: Shortcut,
+        active_scopes: Vec<CommandScope>,
+    },
+    ActivateFocusedAction {
+        action_id: String,
+    },
+}
+
+impl AccessibilityKeyboardTraceInput {
+    pub const fn move_focus(
+        direction: FocusNavigationDirection,
+        wrap: bool,
+        restore: FocusRestoreTarget,
+    ) -> Self {
+        Self::MoveFocus {
+            direction,
+            wrap,
+            restore,
+        }
+    }
+
+    pub fn command_shortcut(
+        shortcut: Shortcut,
+        active_scopes: impl IntoIterator<Item = CommandScope>,
+    ) -> Self {
+        Self::CommandShortcut {
+            shortcut,
+            active_scopes: active_scopes.into_iter().collect(),
+        }
+    }
+
+    pub fn activate_focused_action(action_id: impl Into<String>) -> Self {
+        Self::ActivateFocusedAction {
+            action_id: action_id.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccessibilityKeyboardTraceBlockedReason {
+    EmptyFocusOrder,
+    FocusBoundary,
+    MissingCommandRegistry,
+    UnresolvedShortcut,
+    UnknownFocusedNode(UiNodeId),
+    MissingFocusedAction(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityKeyboardTraceStep {
+    pub input: AccessibilityKeyboardTraceInput,
+    pub before_focus: Option<UiNodeId>,
+    pub after_focus: Option<UiNodeId>,
+    pub request: Option<AccessibilityAdapterRequest>,
+    pub command: Option<CommandId>,
+    pub action: Option<AccessibilityAction>,
+    pub screen_reader_text: Option<String>,
+    pub blocked_reason: Option<AccessibilityKeyboardTraceBlockedReason>,
+}
+
+impl AccessibilityKeyboardTraceStep {
+    pub fn blocked(&self) -> bool {
+        self.blocked_reason.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityKeyboardNavigationTrace {
+    pub initial_focus: Option<UiNodeId>,
+    pub final_focus: Option<UiNodeId>,
+    pub effective_focus_order: Vec<UiNodeId>,
+    pub steps: Vec<AccessibilityKeyboardTraceStep>,
+}
+
+impl AccessibilityKeyboardNavigationTrace {
+    pub fn blocked_steps(&self) -> impl Iterator<Item = &AccessibilityKeyboardTraceStep> {
+        self.steps.iter().filter(|step| step.blocked())
+    }
+
+    pub fn commands(&self) -> impl Iterator<Item = &CommandId> {
+        self.steps.iter().filter_map(|step| step.command.as_ref())
+    }
+
+    pub fn actions(&self) -> impl Iterator<Item = &AccessibilityAction> {
+        self.steps.iter().filter_map(|step| step.action.as_ref())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1138,6 +1235,105 @@ impl AccessibilityTree {
             .map(|target| AccessibilityAdapterRequest::MoveFocus { target, restore })
     }
 
+    pub fn keyboard_navigation_trace(
+        &self,
+        initial_focus: Option<UiNodeId>,
+        inputs: impl IntoIterator<Item = AccessibilityKeyboardTraceInput>,
+        registry: Option<&CommandRegistry>,
+    ) -> AccessibilityKeyboardNavigationTrace {
+        let mut focus = initial_focus;
+        let mut steps = Vec::new();
+
+        for input in inputs {
+            let before_focus = focus;
+            let mut step = AccessibilityKeyboardTraceStep {
+                input,
+                before_focus,
+                after_focus: before_focus,
+                request: None,
+                command: None,
+                action: None,
+                screen_reader_text: before_focus
+                    .and_then(|focused| self.screen_reader_text(focused)),
+                blocked_reason: None,
+            };
+
+            match step.input.clone() {
+                AccessibilityKeyboardTraceInput::MoveFocus {
+                    direction,
+                    wrap,
+                    restore,
+                } => {
+                    let request = self.move_focus_request(focus, direction, wrap, restore);
+                    if let Some(AccessibilityAdapterRequest::MoveFocus { target, .. }) = request {
+                        focus = Some(target);
+                        step.after_focus = focus;
+                        step.screen_reader_text =
+                            focus.and_then(|focused| self.screen_reader_text(focused));
+                        step.request =
+                            Some(AccessibilityAdapterRequest::MoveFocus { target, restore });
+                    } else {
+                        step.blocked_reason = if self.effective_focus_order().is_empty() {
+                            Some(AccessibilityKeyboardTraceBlockedReason::EmptyFocusOrder)
+                        } else {
+                            Some(AccessibilityKeyboardTraceBlockedReason::FocusBoundary)
+                        };
+                    }
+                }
+                AccessibilityKeyboardTraceInput::CommandShortcut {
+                    shortcut,
+                    active_scopes,
+                } => {
+                    if let Some(registry) = registry {
+                        step.command = registry.resolve(shortcut, &active_scopes);
+                        if step.command.is_none() {
+                            step.blocked_reason =
+                                Some(AccessibilityKeyboardTraceBlockedReason::UnresolvedShortcut);
+                        }
+                    } else {
+                        step.blocked_reason =
+                            Some(AccessibilityKeyboardTraceBlockedReason::MissingCommandRegistry);
+                    }
+                }
+                AccessibilityKeyboardTraceInput::ActivateFocusedAction { action_id } => {
+                    if let Some(focused) = focus {
+                        if let Some(node) = self.node(focused) {
+                            step.action = node
+                                .actions
+                                .iter()
+                                .find(|action| action.id == action_id)
+                                .cloned();
+                            if step.action.is_none() {
+                                step.blocked_reason = Some(
+                                    AccessibilityKeyboardTraceBlockedReason::MissingFocusedAction(
+                                        action_id.clone(),
+                                    ),
+                                );
+                            }
+                        } else {
+                            step.blocked_reason =
+                                Some(AccessibilityKeyboardTraceBlockedReason::UnknownFocusedNode(
+                                    focused,
+                                ));
+                        }
+                    } else {
+                        step.blocked_reason =
+                            Some(AccessibilityKeyboardTraceBlockedReason::FocusBoundary);
+                    }
+                }
+            }
+
+            steps.push(step);
+        }
+
+        AccessibilityKeyboardNavigationTrace {
+            initial_focus,
+            final_focus: focus,
+            effective_focus_order: self.effective_focus_order(),
+            steps,
+        }
+    }
+
     pub fn live_region_nodes(&self) -> impl Iterator<Item = &AccessibilityNode> {
         self.nodes
             .iter()
@@ -1325,7 +1521,8 @@ mod tests {
     use super::*;
     use crate::{
         length, AccessibilityMeta, AccessibilityRole, AccessibilitySummary, ApproxTextMeasurer,
-        InputBehavior, LayoutStyle, UiDocument, UiNode, UiNodeStyle, UiSize,
+        Command, CommandMeta, CommandScope, InputBehavior, KeyModifiers, LayoutStyle, Shortcut,
+        UiDocument, UiNode, UiNodeStyle, UiSize,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
@@ -1628,6 +1825,121 @@ mod tests {
                 target: second,
                 restore: FocusRestoreTarget::Previous,
             })
+        );
+    }
+
+    #[test]
+    fn keyboard_navigation_trace_records_focus_actions_and_commands() {
+        let first = UiNodeId(1);
+        let second = UiNodeId(2);
+        let mut second_node = accessible_node(second, None, true);
+        second_node.label = Some("Second item".to_owned());
+        second_node
+            .actions
+            .push(AccessibilityAction::new("open", "Open"));
+
+        let tree = AccessibilityTree {
+            nodes: vec![accessible_node(first, None, true), second_node],
+            focus_order: vec![first, second],
+            modal_scope: None,
+        };
+
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(Command::new(CommandMeta::new(
+                "palette.open",
+                "Open palette",
+            )))
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('k'), "palette.open")
+            .unwrap();
+
+        let trace = tree.keyboard_navigation_trace(
+            Some(first),
+            vec![
+                AccessibilityKeyboardTraceInput::move_focus(
+                    FocusNavigationDirection::Forward,
+                    false,
+                    FocusRestoreTarget::Previous,
+                ),
+                AccessibilityKeyboardTraceInput::activate_focused_action("open"),
+                AccessibilityKeyboardTraceInput::command_shortcut(
+                    Shortcut::ctrl('k'),
+                    [CommandScope::Global],
+                ),
+                AccessibilityKeyboardTraceInput::move_focus(
+                    FocusNavigationDirection::Forward,
+                    false,
+                    FocusRestoreTarget::Previous,
+                ),
+            ],
+            Some(&registry),
+        );
+
+        assert_eq!(trace.initial_focus, Some(first));
+        assert_eq!(trace.final_focus, Some(second));
+        assert_eq!(trace.effective_focus_order, vec![first, second]);
+        assert_eq!(trace.steps[0].before_focus, Some(first));
+        assert_eq!(trace.steps[0].after_focus, Some(second));
+        assert_eq!(
+            trace.steps[0].request,
+            Some(AccessibilityAdapterRequest::MoveFocus {
+                target: second,
+                restore: FocusRestoreTarget::Previous
+            })
+        );
+        assert_eq!(trace.steps[1].action.as_ref().unwrap().id, "open");
+        assert_eq!(
+            trace.steps[1].screen_reader_text.as_deref(),
+            Some("Second item")
+        );
+        assert_eq!(
+            trace.commands().cloned().collect::<Vec<_>>(),
+            vec![CommandId::from("palette.open")]
+        );
+        assert_eq!(
+            trace.steps[3].blocked_reason,
+            Some(AccessibilityKeyboardTraceBlockedReason::FocusBoundary)
+        );
+    }
+
+    #[test]
+    fn keyboard_navigation_trace_reports_missing_registry_and_actions() {
+        let focused = UiNodeId(1);
+        let tree = AccessibilityTree {
+            nodes: vec![accessible_node(focused, None, true)],
+            focus_order: vec![focused],
+            modal_scope: None,
+        };
+
+        let trace = tree.keyboard_navigation_trace(
+            Some(focused),
+            vec![
+                AccessibilityKeyboardTraceInput::command_shortcut(
+                    Shortcut::new(
+                        crate::KeyCode::Character('p'),
+                        KeyModifiers {
+                            ctrl: true,
+                            ..KeyModifiers::NONE
+                        },
+                    ),
+                    [CommandScope::Global],
+                ),
+                AccessibilityKeyboardTraceInput::activate_focused_action("missing"),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            trace.steps[0].blocked_reason,
+            Some(AccessibilityKeyboardTraceBlockedReason::MissingCommandRegistry)
+        );
+        assert_eq!(
+            trace.steps[1].blocked_reason,
+            Some(
+                AccessibilityKeyboardTraceBlockedReason::MissingFocusedAction("missing".to_owned())
+            )
         );
     }
 

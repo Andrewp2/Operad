@@ -668,10 +668,12 @@ impl<'a> WgpuCanvasContext<'a> {
                         });
                 cache.insert(pipeline_key.clone(), pipeline);
             }
-            cache
-                .get(&pipeline_key)
-                .expect("canvas pipeline is cached before lookup")
-                .clone()
+            let Some(pipeline) = cache.get(&pipeline_key).cloned() else {
+                return Err(RenderError::Backend(
+                    "canvas render pipeline missing from cache".to_string(),
+                ));
+            };
+            pipeline
         };
         let uniform_bind_group = descriptor.uniforms.as_deref().map(|uniforms| {
             let uniform_bytes = padded_uniform_bytes(uniforms);
@@ -973,154 +975,164 @@ impl WgpuContext {
     }
 
     fn triangle_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
-        if !self.triangle_pipelines.contains_key(&format) {
-            let pipeline = self.create_pipeline(
+        let device = &self.device;
+        let shader = &self.shader;
+        let layout = &self.pipeline_layout;
+        self.triangle_pipelines.entry(format).or_insert_with(|| {
+            Self::create_pipeline_with(
+                device,
+                shader,
                 format,
                 "vs_triangle",
                 main_fragment_entry_point(format),
                 &[GpuVertex::layout()],
-                &self.pipeline_layout,
-            );
-            self.triangle_pipelines.insert(format, pipeline);
-        }
-        self.triangle_pipelines
-            .get(&format)
-            .expect("pipeline was inserted before lookup")
+                layout,
+            )
+        })
     }
 
     fn rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
-        if !self.rect_pipelines.contains_key(&format) {
-            let pipeline = self.create_pipeline(
+        let device = &self.device;
+        let shader = &self.shader;
+        let layout = &self.pipeline_layout;
+        self.rect_pipelines.entry(format).or_insert_with(|| {
+            Self::create_pipeline_with(
+                device,
+                shader,
                 format,
                 "vs_rect",
                 main_fragment_entry_point(format),
                 &[GpuRectInstance::layout()],
-                &self.pipeline_layout,
-            );
-            self.rect_pipelines.insert(format, pipeline);
-        }
-        self.rect_pipelines
-            .get(&format)
-            .expect("pipeline was inserted before lookup")
+                layout,
+            )
+        })
     }
 
     fn textured_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
-        if !self.textured_rect_pipelines.contains_key(&format) {
-            let pipeline = self.create_pipeline(
-                format,
-                "vs_textured_rect",
-                textured_fragment_entry_point(format),
-                &[GpuTexturedRectInstance::layout()],
-                &self.texture_pipeline_layout,
-            );
-            self.textured_rect_pipelines.insert(format, pipeline);
-        }
+        let device = &self.device;
+        let shader = &self.shader;
+        let layout = &self.texture_pipeline_layout;
         self.textured_rect_pipelines
-            .get(&format)
-            .expect("pipeline was inserted before lookup")
+            .entry(format)
+            .or_insert_with(|| {
+                Self::create_pipeline_with(
+                    device,
+                    shader,
+                    format,
+                    "vs_textured_rect",
+                    textured_fragment_entry_point(format),
+                    &[GpuTexturedRectInstance::layout()],
+                    layout,
+                )
+            })
     }
 
     fn composited_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
-        if !self.composited_rect_pipelines.contains_key(&format) {
-            let pipeline = self.create_pipeline(
-                format,
-                "vs_composited_rect",
-                composited_fragment_entry_point(format),
-                &[GpuCompositedRectInstance::layout()],
-                &self.texture_pipeline_layout,
-            );
-            self.composited_rect_pipelines.insert(format, pipeline);
-        }
+        let device = &self.device;
+        let shader = &self.shader;
+        let layout = &self.texture_pipeline_layout;
         self.composited_rect_pipelines
-            .get(&format)
-            .expect("pipeline was inserted before lookup")
+            .entry(format)
+            .or_insert_with(|| {
+                Self::create_pipeline_with(
+                    device,
+                    shader,
+                    format,
+                    "vs_composited_rect",
+                    composited_fragment_entry_point(format),
+                    &[GpuCompositedRectInstance::layout()],
+                    layout,
+                )
+            })
     }
 
     fn sdf_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
-        if !self.sdf_rect_pipelines.contains_key(&format) {
-            let pipeline = self.create_pipeline(
+        let device = &self.device;
+        let shader = &self.shader;
+        let layout = &self.pipeline_layout;
+        self.sdf_rect_pipelines.entry(format).or_insert_with(|| {
+            Self::create_pipeline_with(
+                device,
+                shader,
                 format,
                 "vs_sdf_rect",
                 sdf_fragment_entry_point(format),
                 &[GpuSdfRectInstance::layout()],
-                &self.pipeline_layout,
-            );
-            self.sdf_rect_pipelines.insert(format, pipeline);
-        }
-        self.sdf_rect_pipelines
-            .get(&format)
-            .expect("pipeline was inserted before lookup")
+                layout,
+            )
+        })
     }
 
     fn shadow_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
-        if !self.shadow_rect_pipelines.contains_key(&format) {
-            let pipeline = self.create_pipeline(
+        let device = &self.device;
+        let shader = &self.shader;
+        let layout = &self.pipeline_layout;
+        self.shadow_rect_pipelines.entry(format).or_insert_with(|| {
+            Self::create_pipeline_with(
+                device,
+                shader,
                 format,
                 "vs_shadow_rect",
                 shadow_fragment_entry_point(format),
                 &[GpuShadowRectInstance::layout()],
-                &self.pipeline_layout,
-            );
-            self.shadow_rect_pipelines.insert(format, pipeline);
-        }
-        self.shadow_rect_pipelines
-            .get(&format)
-            .expect("pipeline was inserted before lookup")
+                layout,
+            )
+        })
     }
 
-    fn create_pipeline(
-        &self,
+    fn create_pipeline_with(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
         format: TextureFormat,
         vertex_entry_point: &'static str,
         fragment_entry_point: &'static str,
         vertex_buffers: &[wgpu::VertexBufferLayout<'static>],
         layout: &wgpu::PipelineLayout,
     ) -> wgpu::RenderPipeline {
-        self.device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("operad-wgpu-ui-pipeline"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: &self.shader,
-                    entry_point: Some(vertex_entry_point),
-                    buffers: vertex_buffers,
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.shader,
-                    entry_point: Some(fragment_entry_point),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::SrcAlpha,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("operad-wgpu-ui-pipeline"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some(vertex_entry_point),
+                buffers: vertex_buffers,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some(fragment_entry_point),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
     }
 
     fn write_scene_uniform(&self, size: PixelSize) {
@@ -1146,10 +1158,7 @@ impl WgpuContext {
             self.vertex_capacity = capacity;
         }
 
-        let buffer = self
-            .vertex_buffer
-            .as_ref()
-            .expect("vertex buffer is allocated before upload");
+        let buffer = self.vertex_buffer.as_ref()?;
         self.queue.write_buffer(buffer, 0, vertex_bytes);
         Some(buffer.clone())
     }
@@ -1172,10 +1181,7 @@ impl WgpuContext {
             self.rect_capacity = capacity;
         }
 
-        let buffer = self
-            .rect_buffer
-            .as_ref()
-            .expect("rect instance buffer is allocated before upload");
+        let buffer = self.rect_buffer.as_ref()?;
         self.queue.write_buffer(buffer, 0, rect_bytes);
         Some(buffer.clone())
     }
@@ -1201,10 +1207,7 @@ impl WgpuContext {
             self.textured_rect_capacity = capacity;
         }
 
-        let buffer = self
-            .textured_rect_buffer
-            .as_ref()
-            .expect("textured rect instance buffer is allocated before upload");
+        let buffer = self.textured_rect_buffer.as_ref()?;
         self.queue.write_buffer(buffer, 0, rect_bytes);
         Some(buffer.clone())
     }
@@ -1231,10 +1234,7 @@ impl WgpuContext {
             self.composited_rect_capacity = capacity;
         }
 
-        let buffer = self
-            .composited_rect_buffer
-            .as_ref()
-            .expect("composited rect instance buffer is allocated before upload");
+        let buffer = self.composited_rect_buffer.as_ref()?;
         self.queue.write_buffer(buffer, 0, rect_bytes);
         Some(buffer.clone())
     }
@@ -1257,10 +1257,7 @@ impl WgpuContext {
             self.sdf_rect_capacity = capacity;
         }
 
-        let buffer = self
-            .sdf_rect_buffer
-            .as_ref()
-            .expect("sdf rect instance buffer is allocated before upload");
+        let buffer = self.sdf_rect_buffer.as_ref()?;
         self.queue.write_buffer(buffer, 0, rect_bytes);
         Some(buffer.clone())
     }
@@ -1283,10 +1280,7 @@ impl WgpuContext {
             self.shadow_rect_capacity = capacity;
         }
 
-        let buffer = self
-            .shadow_rect_buffer
-            .as_ref()
-            .expect("shadow rect instance buffer is allocated before upload");
+        let buffer = self.shadow_rect_buffer.as_ref()?;
         self.queue.write_buffer(buffer, 0, rect_bytes);
         Some(buffer.clone())
     }
@@ -1679,10 +1673,9 @@ impl WgpuContext {
             }
             cached.last_used_generation = generation;
             if cached.stable_hits >= 1 {
-                let cached = self
-                    .glyph_scratch_buffer_cache
-                    .remove(&text.node)
-                    .expect("scratch glyph buffer exists before promotion");
+                let Some(cached) = self.glyph_scratch_buffer_cache.remove(&text.node) else {
+                    return;
+                };
                 self.glyph_buffer_cache.insert(buffer_key.clone(), cached);
             }
             return;
@@ -1776,7 +1769,7 @@ impl WgpuContext {
         let atlas = self
             .glyph_atlas
             .as_mut()
-            .expect("glyph atlas is initialized before scene text renderer");
+            .ok_or_else(|| RenderError::Backend("glyph atlas is not initialized".to_string()))?;
         let mut renderer =
             GlyphTextRenderer::new(atlas, &self.device, wgpu::MultisampleState::default(), None);
         renderer
@@ -1885,7 +1878,11 @@ impl WgpuContext {
         )))
     }
 
-    fn discard_view(&mut self, size: PixelSize, format: TextureFormat) -> wgpu::TextureView {
+    fn discard_view(
+        &mut self,
+        size: PixelSize,
+        format: TextureFormat,
+    ) -> Result<wgpu::TextureView, RenderError> {
         let recreate = self
             .discard_target
             .as_ref()
@@ -1915,9 +1912,8 @@ impl WgpuContext {
         }
         self.discard_target
             .as_ref()
-            .expect("discard target is cached before use")
-            .view
-            .clone()
+            .map(|target| target.view.clone())
+            .ok_or_else(|| RenderError::Backend("discard render target is unavailable".to_string()))
     }
 }
 
@@ -3193,7 +3189,7 @@ fn record_discard_frame(
     if size.width == 0 || size.height == 0 {
         return Ok(false);
     }
-    let view = context.discard_view(size, OFFSCREEN_FORMAT);
+    let view = context.discard_view(size, OFFSCREEN_FORMAT)?;
     record_render_pass(
         context,
         encoder,
@@ -3498,7 +3494,11 @@ fn build_geometry_into(
     target_scale: f32,
 ) -> Result<(), RenderError> {
     let target_scale = normalized_render_scale(target_scale);
-    for item in &paint.items {
+    let occluded = paint_occlusion_mask(paint, origin, target_scale);
+    for (index, item) in paint.items.iter().enumerate() {
+        if occluded.get(index).copied().unwrap_or(false) {
+            continue;
+        }
         let clip = paint_rect_in_target(item.clip_rect, origin, target_scale);
         let transform = paint_transform_in_target(item.transform, origin, target_scale);
         match &item.kind {
@@ -3676,6 +3676,71 @@ fn build_geometry_into(
         }
     }
     Ok(())
+}
+
+fn paint_occlusion_mask(paint: &crate::PaintList, origin: UiPoint, target_scale: f32) -> Vec<bool> {
+    const OCCLUSION_MIN_ITEMS: usize = 128;
+    if paint.items.len() < OCCLUSION_MIN_ITEMS {
+        return Vec::new();
+    }
+
+    let mut covered = Vec::<UiRect>::new();
+    let mut occluded = vec![false; paint.items.len()];
+    for (index, item) in paint.items.iter().enumerate().rev() {
+        if let Some(rect) = paint_item_visible_rect_in_target(item, origin, target_scale) {
+            if covered.iter().any(|cover| rect_contains_rect(*cover, rect)) {
+                occluded[index] = true;
+                continue;
+            }
+        }
+        if let Some(rect) = opaque_cover_rect_for_item(item, origin, target_scale) {
+            covered.push(rect);
+        }
+    }
+    occluded
+}
+
+fn opaque_cover_rect_for_item(
+    item: &crate::PaintItem,
+    origin: UiPoint,
+    target_scale: f32,
+) -> Option<UiRect> {
+    const OCCLUSION_COVER_MIN_AREA: f32 = 4096.0;
+    let PaintKind::Rect {
+        fill,
+        corner_radius,
+        ..
+    } = &item.kind
+    else {
+        return None;
+    };
+    if fill.a < u8::MAX
+        || item.opacity < 0.999
+        || item.shader.is_some()
+        || corner_radius.abs() > f32::EPSILON
+    {
+        return None;
+    }
+    let rect = paint_item_visible_rect_in_target(item, origin, target_scale)?;
+    (rect.width * rect.height >= OCCLUSION_COVER_MIN_AREA).then_some(rect)
+}
+
+fn paint_item_visible_rect_in_target(
+    item: &crate::PaintItem,
+    origin: UiPoint,
+    target_scale: f32,
+) -> Option<UiRect> {
+    let clip = paint_rect_in_target(item.clip_rect, origin, target_scale);
+    let transform = paint_transform_in_target(item.transform, origin, target_scale);
+    transform.transform_rect(item.rect).intersection(clip)
+}
+
+fn rect_contains_rect(outer: UiRect, inner: UiRect) -> bool {
+    const EPSILON: f32 = 0.5;
+    inner.x + EPSILON >= outer.x
+        && inner.y + EPSILON >= outer.y
+        && inner.right() <= outer.right() + EPSILON
+        && inner.bottom() <= outer.bottom() + EPSILON
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4558,9 +4623,7 @@ fn push_polyline(
     if closed && points.len() > 2 {
         push_line(
             geometry,
-            *points
-                .last()
-                .expect("closed polyline has at least one point"),
+            points[points.len() - 1],
             points[0],
             clip,
             stroke,
@@ -5171,6 +5234,71 @@ mod tests {
     }
 
     #[test]
+    fn paint_occlusion_mask_culls_only_items_hidden_by_later_opaque_rects() {
+        let mut items = Vec::new();
+        items.push(test_rect_item(
+            UiNodeId(1),
+            UiRect::new(20.0, 20.0, 20.0, 20.0),
+            ColorRgba::new(220, 40, 40, 255),
+            0.0,
+            1.0,
+        ));
+        for index in 0..127 {
+            items.push(test_rect_item(
+                UiNodeId(10 + index),
+                UiRect::new(200.0 + index as f32, 200.0, 1.0, 1.0),
+                ColorRgba::new(40, 40, 40, 255),
+                0.0,
+                1.0,
+            ));
+        }
+        items.push(test_rect_item(
+            UiNodeId(2),
+            UiRect::new(10.0, 10.0, 72.0, 72.0),
+            ColorRgba::new(20, 120, 80, 255),
+            0.0,
+            1.0,
+        ));
+        items.push(test_rect_item(
+            UiNodeId(3),
+            UiRect::new(72.0, 20.0, 20.0, 20.0),
+            ColorRgba::new(220, 40, 40, 255),
+            0.0,
+            1.0,
+        ));
+        items.push(test_rect_item(
+            UiNodeId(4),
+            UiRect::new(70.0, 18.0, 72.0, 72.0),
+            ColorRgba::new(20, 120, 80, 255),
+            8.0,
+            1.0,
+        ));
+        items.push(test_rect_item(
+            UiNodeId(5),
+            UiRect::new(130.0, 18.0, 72.0, 72.0),
+            ColorRgba::new(20, 120, 80, 240),
+            0.0,
+            1.0,
+        ));
+
+        let mask = paint_occlusion_mask(&PaintList { items }, UiPoint::new(0.0, 0.0), 1.0);
+
+        assert!(mask[0], "covered item behind opaque rect should be culled");
+        assert!(
+            !mask[128],
+            "opaque covering rect must remain in the paint stream"
+        );
+        assert!(
+            !mask[129],
+            "rounded rects are not conservative full-coverage masks"
+        );
+        assert!(
+            !mask[131],
+            "translucent rects are not conservative full-coverage masks"
+        );
+    }
+
+    #[test]
     fn srgb_pipelines_compile_on_wgpu_device() {
         let mut renderer = WgpuRenderer::default();
         renderer.warm_up().expect("wgpu renderer warm-up");
@@ -5182,6 +5310,30 @@ mod tests {
         let _ = context.composited_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
         let _ = context.sdf_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
         let _ = context.shadow_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
+    }
+
+    fn test_rect_item(
+        node: UiNodeId,
+        rect: UiRect,
+        fill: ColorRgba,
+        corner_radius: f32,
+        opacity: f32,
+    ) -> PaintItem {
+        PaintItem {
+            node,
+            rect,
+            clip_rect: UiRect::new(0.0, 0.0, 320.0, 240.0),
+            z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity,
+            transform: PaintTransform::default(),
+            shader: None,
+            kind: PaintKind::Rect {
+                fill,
+                stroke: None,
+                corner_radius,
+            },
+        }
     }
 
     #[test]

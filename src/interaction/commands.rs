@@ -311,6 +311,36 @@ pub struct ShortcutConflict {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutRemap {
+    pub scope: CommandScope,
+    pub shortcut: Shortcut,
+    pub command: CommandId,
+}
+
+impl ShortcutRemap {
+    pub fn new(scope: CommandScope, shortcut: Shortcut, command: impl Into<CommandId>) -> Self {
+        Self {
+            scope,
+            shortcut,
+            command: command.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutRemapReport {
+    pub request: ShortcutRemap,
+    pub removed: Vec<ShortcutBinding>,
+    pub added: Option<ShortcutBinding>,
+}
+
+impl ShortcutRemapReport {
+    pub fn changed(&self) -> bool {
+        !self.removed.is_empty() || self.added.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandRegistryError {
     DuplicateCommand(CommandId),
     UnknownCommand(CommandId),
@@ -386,6 +416,15 @@ impl CommandRegistry {
 
     pub fn bindings(&self) -> &[ShortcutBinding] {
         &self.bindings
+    }
+
+    pub fn command_bindings(&self, command: impl Into<CommandId>) -> Vec<ShortcutBinding> {
+        let command = command.into();
+        self.bindings
+            .iter()
+            .filter(|binding| binding.command == command)
+            .cloned()
+            .collect()
     }
 
     pub fn effect(&self, command: impl Into<CommandId>) -> Option<&CommandEffect> {
@@ -490,6 +529,57 @@ impl CommandRegistry {
         }
 
         Ok(())
+    }
+
+    pub fn remap_shortcut(
+        &mut self,
+        request: ShortcutRemap,
+    ) -> Result<ShortcutRemapReport, CommandRegistryError> {
+        if !self.commands.contains_key(&request.command) {
+            return Err(CommandRegistryError::UnknownCommand(request.command));
+        }
+
+        let next_binding = ShortcutBinding::new(
+            request.scope.clone(),
+            request.shortcut,
+            request.command.clone(),
+        );
+        if let Some(conflict) = self.conflict_for_binding(&next_binding) {
+            return Err(CommandRegistryError::ShortcutConflict(conflict));
+        }
+
+        let mut removed = Vec::new();
+        self.bindings.retain(|binding| {
+            let should_remove = binding.scope == request.scope
+                && binding.command == request.command
+                && binding.shortcut != request.shortcut;
+            if should_remove {
+                removed.push(binding.clone());
+            }
+            !should_remove
+        });
+
+        let added = if self.bindings.contains(&next_binding) {
+            None
+        } else {
+            self.bindings.push(next_binding.clone());
+            Some(next_binding)
+        };
+
+        Ok(ShortcutRemapReport {
+            request,
+            removed,
+            added,
+        })
+    }
+
+    pub fn rebind_shortcut(
+        &mut self,
+        scope: CommandScope,
+        shortcut: Shortcut,
+        command: impl Into<CommandId>,
+    ) -> Result<ShortcutRemapReport, CommandRegistryError> {
+        self.remap_shortcut(ShortcutRemap::new(scope, shortcut, command))
     }
 
     pub fn set_enabled(
@@ -863,6 +953,115 @@ mod tests {
                 &[]
             ),
             Some(CommandId::from("save"))
+        );
+    }
+
+    #[test]
+    fn shortcut_remap_replaces_command_binding_in_scope() {
+        let mut registry = registry_with(&["file.save", "editor.save"]);
+        let ctrl_shift_s = Shortcut::character(
+            's',
+            KeyModifiers {
+                ctrl: true,
+                shift: true,
+                ..KeyModifiers::NONE
+            },
+        );
+
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('s'), "file.save")
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, ctrl_shift_s, "file.save")
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Editor, Shortcut::ctrl('s'), "editor.save")
+            .unwrap();
+
+        let report = registry
+            .rebind_shortcut(CommandScope::Global, Shortcut::ctrl('p'), "file.save")
+            .unwrap();
+
+        assert!(report.changed());
+        assert_eq!(
+            report.removed,
+            vec![
+                ShortcutBinding::new(CommandScope::Global, Shortcut::ctrl('s'), "file.save"),
+                ShortcutBinding::new(CommandScope::Global, ctrl_shift_s, "file.save"),
+            ]
+        );
+        assert_eq!(
+            report.added,
+            Some(ShortcutBinding::new(
+                CommandScope::Global,
+                Shortcut::ctrl('p'),
+                "file.save"
+            ))
+        );
+        assert_eq!(registry.resolve(Shortcut::ctrl('s'), &[]), None);
+        assert_eq!(
+            registry.resolve(Shortcut::ctrl('p'), &[]),
+            Some(CommandId::from("file.save"))
+        );
+        assert_eq!(
+            registry.resolve(Shortcut::ctrl('s'), &[CommandScope::Editor]),
+            Some(CommandId::from("editor.save"))
+        );
+    }
+
+    #[test]
+    fn shortcut_remap_is_atomic_when_new_shortcut_conflicts() {
+        let mut registry = registry_with(&["file.save", "file.search"]);
+
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('s'), "file.save")
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('f'), "file.search")
+            .unwrap();
+
+        let error = registry
+            .rebind_shortcut(CommandScope::Global, Shortcut::ctrl('f'), "file.save")
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            CommandRegistryError::ShortcutConflict(ShortcutConflict {
+                scope: CommandScope::Global,
+                shortcut: Shortcut::ctrl('f'),
+                commands: vec![CommandId::from("file.save"), CommandId::from("file.search")],
+            })
+        );
+        assert_eq!(
+            registry.resolve(Shortcut::ctrl('s'), &[]),
+            Some(CommandId::from("file.save"))
+        );
+        assert_eq!(
+            registry.resolve(Shortcut::ctrl('f'), &[]),
+            Some(CommandId::from("file.search"))
+        );
+    }
+
+    #[test]
+    fn command_bindings_report_registered_shortcuts_for_preferences_ui() {
+        let mut registry = registry_with(&["file.save", "file.open"]);
+
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('s'), "file.save")
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Panel, Shortcut::ctrl('s'), "file.save")
+            .unwrap();
+        registry
+            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('o'), "file.open")
+            .unwrap();
+
+        assert_eq!(
+            registry.command_bindings("file.save"),
+            vec![
+                ShortcutBinding::new(CommandScope::Global, Shortcut::ctrl('s'), "file.save"),
+                ShortcutBinding::new(CommandScope::Panel, Shortcut::ctrl('s'), "file.save"),
+            ]
         );
     }
 

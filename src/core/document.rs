@@ -1411,7 +1411,7 @@ pub enum UiContent {
     Scene(Vec<ScenePrimitive>),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputBehavior {
     pub pointer: bool,
     pub focusable: bool,
@@ -2099,7 +2099,7 @@ pub enum UiNodeLayoutConstraint {
 
 #[derive(Debug, Clone)]
 enum MeasureContext {
-    Text(TextContent),
+    Text { node: UiNodeId, text: TextContent },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2112,9 +2112,9 @@ enum IntrinsicMeasureMode {
 struct LayoutSizingPass {
     root: TaffyNodeId,
     taffy: TaffyTree<MeasureContext>,
-    mapping: HashMap<UiNodeId, TaffyNodeId>,
-    measured_content: HashMap<TaffyNodeId, UiSize>,
-    sizes: HashMap<UiNodeId, UiSize>,
+    mapping: Vec<Option<TaffyNodeId>>,
+    measured_content: Vec<Option<UiSize>>,
+    sizes: Vec<UiSize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2159,9 +2159,13 @@ impl TextMeasurer for ApproxTextMeasurer {
 }
 
 #[cfg(feature = "text-cosmic")]
+const COSMIC_TEXT_MEASURE_CACHE_LIMIT: usize = 32_768;
+
+#[cfg(feature = "text-cosmic")]
 pub struct CosmicTextMeasurer {
     font_system: FontSystem,
-    cache: HashMap<TextMeasureKey, UiSize>,
+    cache: HashMap<u64, Vec<(TextMeasureKey, UiSize)>>,
+    cache_len: usize,
 }
 
 #[cfg(feature = "text-cosmic")]
@@ -2170,6 +2174,7 @@ impl CosmicTextMeasurer {
         Self {
             font_system: FontSystem::new(),
             cache: HashMap::new(),
+            cache_len: 0,
         }
     }
 }
@@ -2189,8 +2194,12 @@ impl TextMeasurer for CosmicTextMeasurer {
         known: KnownSize,
         available: AvailableSize,
     ) -> UiSize {
-        let key = TextMeasureKey::new(text, known, available);
-        if let Some(measured) = self.cache.get(&key).copied() {
+        let hash = TextMeasureKey::cache_hash(text, known, available);
+        if let Some(measured) = self.cache.get(&hash).and_then(|bucket| {
+            bucket.iter().find_map(|(key, measured)| {
+                key.matches(text, known, available).then_some(*measured)
+            })
+        }) {
             return measured;
         }
         let font_size = text.style.font_size.max(1.0);
@@ -2226,10 +2235,15 @@ impl TextMeasurer for CosmicTextMeasurer {
             known.width.unwrap_or(measured.width),
             known.height.unwrap_or(measured.height),
         );
-        if self.cache.len() > 4096 {
+        if self.cache_len > COSMIC_TEXT_MEASURE_CACHE_LIMIT {
             self.cache.clear();
+            self.cache_len = 0;
         }
-        self.cache.insert(key, measured);
+        self.cache
+            .entry(hash)
+            .or_default()
+            .push((TextMeasureKey::new(text, known, available), measured));
+        self.cache_len += 1;
         measured
     }
 }
@@ -2433,6 +2447,24 @@ struct TextMeasureKey {
 
 #[cfg(feature = "text-cosmic")]
 impl TextMeasureKey {
+    fn cache_hash(text: &TextContent, known: KnownSize, available: AvailableSize) -> u64 {
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in text.text.as_bytes() {
+            hash = fnv_mix(hash, *byte as u64);
+        }
+        hash = fnv_mix(hash, text.style.font_size.to_bits() as u64);
+        hash = fnv_mix(hash, text.style.line_height.to_bits() as u64);
+        hash = fnv_mix(hash, font_family_key(&text.style.family));
+        hash = fnv_mix(hash, text.style.weight.0 as u64);
+        hash = fnv_mix(hash, font_style_key(text.style.style));
+        hash = fnv_mix(hash, font_stretch_key(text.style.stretch));
+        hash = fnv_mix(hash, wrap_key(text.style.wrap) as u64);
+        hash = fnv_mix(hash, option_f32_key(known.width));
+        hash = fnv_mix(hash, option_f32_key(known.height));
+        hash = fnv_mix(hash, option_f32_key(available.width));
+        fnv_mix(hash, option_f32_key(available.height))
+    }
+
     fn new(text: &TextContent, known: KnownSize, available: AvailableSize) -> Self {
         Self {
             text: text.text.clone(),
@@ -2449,6 +2481,21 @@ impl TextMeasureKey {
             available_height_bits: available.height.map(f32::to_bits),
         }
     }
+
+    fn matches(&self, text: &TextContent, known: KnownSize, available: AvailableSize) -> bool {
+        self.text == text.text
+            && self.font_size_bits == text.style.font_size.to_bits()
+            && self.line_height_bits == text.style.line_height.to_bits()
+            && self.family == text.style.family
+            && self.weight == text.style.weight.0
+            && self.style == text.style.style
+            && self.stretch == text.style.stretch
+            && self.wrap == wrap_key(text.style.wrap)
+            && self.known_width_bits == known.width.map(f32::to_bits)
+            && self.known_height_bits == known.height.map(f32::to_bits)
+            && self.available_width_bits == available.width.map(f32::to_bits)
+            && self.available_height_bits == available.height.map(f32::to_bits)
+    }
 }
 
 #[cfg(feature = "text-cosmic")]
@@ -2458,6 +2505,47 @@ fn wrap_key(wrap: TextWrap) -> u8 {
         TextWrap::Glyph => 1,
         TextWrap::Word => 2,
         TextWrap::WordOrGlyph => 3,
+    }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn fnv_mix(hash: u64, value: u64) -> u64 {
+    (hash ^ value).wrapping_mul(0x100000001b3)
+}
+
+#[cfg(feature = "text-cosmic")]
+fn option_f32_key(value: Option<f32>) -> u64 {
+    value.map_or(0xffff_ffff_ffff_ffff, |value| value.to_bits() as u64)
+}
+
+#[cfg(feature = "text-cosmic")]
+fn font_family_key(family: &FontFamily) -> u64 {
+    match family {
+        FontFamily::SansSerif => 1,
+        FontFamily::Serif => 2,
+        FontFamily::Monospace => 3,
+        FontFamily::Named(name) => name
+            .as_bytes()
+            .iter()
+            .fold(4_u64, |hash, byte| fnv_mix(hash, *byte as u64)),
+    }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn font_style_key(style: FontStyle) -> u64 {
+    match style {
+        FontStyle::Normal => 1,
+        FontStyle::Italic => 2,
+        FontStyle::Oblique => 3,
+    }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn font_stretch_key(stretch: FontStretch) -> u64 {
+    match stretch {
+        FontStretch::Condensed => 1,
+        FontStretch::Normal => 2,
+        FontStretch::Expanded => 3,
     }
 }
 
@@ -2634,11 +2722,17 @@ pub struct UiDocument {
 
 impl UiDocument {
     pub fn new(root_style: impl Into<UiNodeStyle>) -> Self {
+        Self::with_capacity(root_style, 1)
+    }
+
+    pub fn with_capacity(root_style: impl Into<UiNodeStyle>, capacity: usize) -> Self {
         let root_style = root_style.into();
         let root = UiNodeId(0);
+        let mut nodes = Vec::with_capacity(capacity.max(1));
+        nodes.push(UiNode::container("root", root_style));
         Self {
             root,
-            nodes: vec![UiNode::container("root", root_style)],
+            nodes,
             focus: UiFocusState::default(),
             scale: UiDocumentScale::default(),
             portal_hosts: HashMap::new(),
@@ -3019,34 +3113,37 @@ impl UiDocument {
     ) -> Result<LayoutSizingPass, taffy::TaffyError> {
         self.resolve_layout_constraints(text_measurer)?;
         let mut taffy = TaffyTree::<MeasureContext>::new();
-        let mut mapping = HashMap::<UiNodeId, TaffyNodeId>::new();
+        let mut mapping = vec![None; self.nodes.len()];
         let root = self.build_taffy_subtree(self.root, &mut taffy, &mut mapping)?;
-        let mut measured_content = HashMap::<TaffyNodeId, UiSize>::new();
+        let mut measured_content = vec![None; self.nodes.len()];
         taffy.compute_layout_with_measure(
             root,
             TaffySize {
                 width: AvailableSpace::Definite(viewport.width),
                 height: AvailableSpace::Definite(viewport.height),
             },
-            |known, available, node_id, context, _style| {
-                let Some(MeasureContext::Text(text)) = context else {
+            |known, available, _node_id, context, _style| {
+                let Some(MeasureContext::Text { node, text }) = context else {
                     return TaffySize::ZERO;
                 };
                 let measured = measure_taffy_text(text_measurer, text, known, available);
-                measured_content.insert(node_id, measured);
+                if let Some(slot) = measured_content.get_mut(node.0) {
+                    *slot = Some(measured);
+                }
                 TaffySize {
                     width: measured.width,
                     height: measured.height,
                 }
             },
         )?;
-        let sizes = mapping
-            .iter()
-            .map(|(node, taffy_node)| {
-                let layout = taffy.layout(*taffy_node)?;
-                Ok((*node, UiSize::new(layout.size.width, layout.size.height)))
-            })
-            .collect::<Result<HashMap<_, _>, taffy::TaffyError>>()?;
+        let mut sizes = vec![UiSize::ZERO; self.nodes.len()];
+        for (index, taffy_node) in mapping.iter().enumerate() {
+            let Some(taffy_node) = *taffy_node else {
+                continue;
+            };
+            let layout = taffy.layout(taffy_node)?;
+            sizes[index] = UiSize::new(layout.size.width, layout.size.height);
+        }
 
         Ok(LayoutSizingPass {
             root,
@@ -3088,11 +3185,7 @@ impl UiDocument {
                 AvailableSpace::MinContent,
                 text_measurer,
             )?,
-            preferred: self.intrinsic_size_for_available_space(
-                id,
-                AvailableSpace::MaxContent,
-                text_measurer,
-            )?,
+            preferred: self.intrinsic_preferred_size(id, text_measurer),
         })
     }
 
@@ -3105,13 +3198,16 @@ impl UiDocument {
         if width == AvailableSpace::MinContent {
             return Ok(self.intrinsic_min_size(id, text_measurer));
         }
+        if width == AvailableSpace::MaxContent {
+            return Ok(self.intrinsic_preferred_size(id, text_measurer));
+        }
         if let Some(size) =
             self.fast_leaf_intrinsic_size_for_available_space(id, width, text_measurer)
         {
             return Ok(size);
         }
         let mut taffy = TaffyTree::<MeasureContext>::new();
-        let mut mapping = HashMap::<UiNodeId, TaffyNodeId>::new();
+        let mut mapping = vec![None; self.nodes.len()];
         let mode = match width {
             AvailableSpace::MinContent => IntrinsicMeasureMode::Min,
             AvailableSpace::Definite(_) | AvailableSpace::MaxContent => {
@@ -3132,7 +3228,7 @@ impl UiDocument {
                 height: AvailableSpace::MaxContent,
             },
             |known, available, _node_id, context, _style| {
-                let Some(MeasureContext::Text(text)) = context else {
+                let Some(MeasureContext::Text { text, .. }) = context else {
                     return TaffySize::ZERO;
                 };
                 let measured = measure_taffy_text(text_measurer, text, known, available);
@@ -3168,6 +3264,16 @@ impl UiDocument {
         UiSize::new(size.width / scale, size.height / scale)
     }
 
+    fn intrinsic_preferred_size(
+        &self,
+        id: UiNodeId,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> UiSize {
+        let scale = normalized_scale(self.ui_scale());
+        let size = self.intrinsic_preferred_size_scaled(id, text_measurer, scale, None);
+        UiSize::new(size.width / scale, size.height / scale)
+    }
+
     fn intrinsic_min_size_scaled(
         &self,
         id: UiNodeId,
@@ -3187,6 +3293,58 @@ impl UiDocument {
             self.intrinsic_leaf_min_size_scaled(node, &style, text_measurer, scale, allocated_width)
         } else {
             self.intrinsic_children_min_size_scaled(
+                node,
+                &style,
+                text_measurer,
+                scale,
+                allocated_width,
+            )
+        };
+
+        if let Some(width) = dimension_points(style.size.width).or(allocated_width) {
+            content_size.width = content_size.width.max(width);
+        }
+        if let Some(height) = dimension_points(style.size.height) {
+            content_size.height = content_size.height.max(height);
+        }
+        content_size.width = constrain_intrinsic_extent(
+            content_size.width,
+            style.min_size.width,
+            style.max_size.width,
+        );
+        content_size.height = constrain_intrinsic_extent(
+            content_size.height,
+            style.min_size.height,
+            style.max_size.height,
+        );
+        content_size
+    }
+
+    fn intrinsic_preferred_size_scaled(
+        &self,
+        id: UiNodeId,
+        text_measurer: &mut impl TextMeasurer,
+        scale: f32,
+        allocated_width: Option<f32>,
+    ) -> UiSize {
+        let Some(node) = self.nodes.get(id.0) else {
+            return UiSize::ZERO;
+        };
+        let style = scaled_taffy_style(&node.style.layout, scale);
+        if style.display == Display::None {
+            return UiSize::ZERO;
+        }
+
+        let mut content_size = if node.children.is_empty() {
+            self.intrinsic_leaf_preferred_size_scaled(
+                node,
+                &style,
+                text_measurer,
+                scale,
+                allocated_width,
+            )
+        } else {
+            self.intrinsic_children_preferred_size_scaled(
                 node,
                 &style,
                 text_measurer,
@@ -3249,6 +3407,41 @@ impl UiDocument {
         }
     }
 
+    fn intrinsic_leaf_preferred_size_scaled(
+        &self,
+        node: &UiNode,
+        style: &Style,
+        text_measurer: &mut impl TextMeasurer,
+        scale: f32,
+        allocated_width: Option<f32>,
+    ) -> UiSize {
+        let known = TaffySize {
+            width: dimension_points(style.size.width).or(allocated_width),
+            height: dimension_points(style.size.height),
+        };
+        match &node.content {
+            UiContent::Text(text) => {
+                let text = scaled_text_content(text, scale);
+                measure_taffy_text(
+                    text_measurer,
+                    &text,
+                    known,
+                    TaffySize {
+                        width: known
+                            .width
+                            .map_or(AvailableSpace::MaxContent, AvailableSpace::Definite),
+                        height: AvailableSpace::MaxContent,
+                    },
+                )
+            }
+            UiContent::PaintRect(rect) => paint_rect_intrinsic_size(rect, scale),
+            UiContent::Scene(primitives) => scene_primitives_intrinsic_size(primitives, scale),
+            UiContent::Empty | UiContent::Canvas(_) | UiContent::Image(_) => {
+                UiSize::new(known.width.unwrap_or(0.0), known.height.unwrap_or(0.0))
+            }
+        }
+    }
+
     fn intrinsic_children_min_size_scaled(
         &self,
         node: &UiNode,
@@ -3276,6 +3469,62 @@ impl UiDocument {
                 let child_width = resolve_intrinsic_child_width(&child_style, content_width);
                 let child_size =
                     self.intrinsic_min_size_scaled(*child, text_measurer, scale, child_width);
+                Some(outer_intrinsic_size(child_size, &child_style))
+            })
+            .collect::<Vec<_>>();
+
+        if children.is_empty() {
+            return UiSize::new(spacing_width, spacing_height);
+        }
+
+        let gap_count = children.len().saturating_sub(1) as f32;
+        match style.flex_direction {
+            FlexDirection::Row | FlexDirection::RowReverse => UiSize::new(
+                children.iter().map(|child| child.width).sum::<f32>()
+                    + length_percentage_points(style.gap.width, 0.0, 1.0) * gap_count
+                    + spacing_width,
+                children
+                    .iter()
+                    .map(|child| child.height)
+                    .fold(0.0, f32::max)
+                    + spacing_height,
+            ),
+            FlexDirection::Column | FlexDirection::ColumnReverse => UiSize::new(
+                children.iter().map(|child| child.width).fold(0.0, f32::max) + spacing_width,
+                children.iter().map(|child| child.height).sum::<f32>()
+                    + length_percentage_points(style.gap.height, 0.0, 1.0) * gap_count
+                    + spacing_height,
+            ),
+        }
+    }
+
+    fn intrinsic_children_preferred_size_scaled(
+        &self,
+        node: &UiNode,
+        style: &Style,
+        text_measurer: &mut impl TextMeasurer,
+        scale: f32,
+        allocated_width: Option<f32>,
+    ) -> UiSize {
+        let spacing_width = box_horizontal_spacing(style, scale);
+        let spacing_height = box_vertical_spacing(style, scale);
+        let content_width = dimension_points(style.size.width)
+            .or(allocated_width)
+            .map(|width| (width - spacing_width).max(0.0));
+        let children = node
+            .children
+            .iter()
+            .filter_map(|child| {
+                let child_node = self.nodes.get(child.0)?;
+                if child_node.style.layout.display == Display::None
+                    || child_node.style.layout.position == taffy::prelude::Position::Absolute
+                {
+                    return None;
+                }
+                let child_style = scaled_taffy_style(&child_node.style.layout, scale);
+                let child_width = resolve_intrinsic_child_width(&child_style, content_width);
+                let child_size =
+                    self.intrinsic_preferred_size_scaled(*child, text_measurer, scale, child_width);
                 Some(outer_intrinsic_size(child_size, &child_style))
             })
             .collect::<Vec<_>>();
@@ -3533,7 +3782,7 @@ impl UiDocument {
         &self,
         id: UiNodeId,
         taffy: &mut TaffyTree<MeasureContext>,
-        mapping: &mut HashMap<UiNodeId, TaffyNodeId>,
+        mapping: &mut [Option<TaffyNodeId>],
     ) -> Result<TaffyNodeId, taffy::TaffyError> {
         self.build_taffy_subtree_for_intrinsic(id, taffy, mapping, None, None)
     }
@@ -3542,7 +3791,7 @@ impl UiDocument {
         &self,
         id: UiNodeId,
         taffy: &mut TaffyTree<MeasureContext>,
-        mapping: &mut HashMap<UiNodeId, TaffyNodeId>,
+        mapping: &mut [Option<TaffyNodeId>],
         intrinsic_root: Option<UiNodeId>,
         intrinsic_mode: Option<IntrinsicMeasureMode>,
     ) -> Result<TaffyNodeId, taffy::TaffyError> {
@@ -3563,7 +3812,10 @@ impl UiDocument {
             match &node.content {
                 UiContent::Text(text) => taffy.new_leaf_with_context(
                     style,
-                    MeasureContext::Text(scaled_text_content(text, layout_scale)),
+                    MeasureContext::Text {
+                        node: id,
+                        text: scaled_text_content(text, layout_scale),
+                    },
                 )?,
                 UiContent::Empty
                 | UiContent::Canvas(_)
@@ -3587,7 +3839,9 @@ impl UiDocument {
                 .collect::<Result<Vec<_>, _>>()?;
             taffy.new_with_children(style, &children)?
         };
-        mapping.insert(id, taffy_node);
+        if let Some(slot) = mapping.get_mut(id.0) {
+            *slot = Some(taffy_node);
+        }
         Ok(taffy_node)
     }
 
@@ -3600,13 +3854,13 @@ impl UiDocument {
         parent_origin: UiPoint,
         parent_clip: UiRect,
         viewport_clip: UiRect,
-        mapping: &HashMap<UiNodeId, TaffyNodeId>,
-        measured_content: &HashMap<TaffyNodeId, UiSize>,
-        sizes: &HashMap<UiNodeId, UiSize>,
+        mapping: &[Option<TaffyNodeId>],
+        measured_content: &[Option<UiSize>],
+        sizes: &[UiSize],
     ) -> Result<(), taffy::TaffyError> {
         let layout = taffy.layout(taffy_node)?;
         let resolved_size = sizes
-            .get(&id)
+            .get(id.0)
             .copied()
             .unwrap_or_else(|| UiSize::new(layout.size.width, layout.size.height));
         let mut rect = UiRect::new(
@@ -3641,7 +3895,7 @@ impl UiDocument {
             clip_rect,
             visible: rect.intersects(inherited_clip),
             opacity: self.nodes[id.0].style.opacity,
-            content_size: measured_content.get(&taffy_node).copied(),
+            content_size: measured_content.get(id.0).copied().flatten(),
         };
         let children = self.nodes[id.0].children.clone();
         let child_origin = if has_scroll {
@@ -3650,7 +3904,9 @@ impl UiDocument {
             UiPoint::new(rect.x, rect.y)
         };
         for child in children {
-            let child_taffy = mapping[&child];
+            let Some(child_taffy) = mapping.get(child.0).copied().flatten() else {
+                continue;
+            };
             self.apply_layout_position_subtree(
                 child,
                 child_taffy,
@@ -3666,12 +3922,10 @@ impl UiDocument {
         if has_scroll {
             let mut content_size = UiSize::new(rect.width, rect.height);
             self.include_descendant_content_bounds(id, child_origin, &mut content_size);
-            let scroll = self.nodes[id.0]
-                .scroll
-                .as_mut()
-                .expect("scroll state exists when has_scroll is true");
-            scroll.viewport_size = UiSize::new(rect.width, rect.height);
-            scroll.content_size = content_size;
+            if let Some(scroll) = self.nodes[id.0].scroll.as_mut() {
+                scroll.viewport_size = UiSize::new(rect.width, rect.height);
+                scroll.content_size = content_size;
+            }
         }
         Ok(())
     }
@@ -6481,10 +6735,24 @@ pub struct AnimationTickReport {
 
 #[derive(Debug, Clone)]
 struct ActiveTransition {
+    from_state: usize,
     from_values: AnimatedValues,
     to_state: usize,
     duration_seconds: f32,
     elapsed_seconds: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationActiveTransitionSnapshot {
+    pub from_state: usize,
+    pub from_state_name: String,
+    pub to_state: usize,
+    pub to_state_name: String,
+    pub from_values: AnimatedValues,
+    pub to_values: AnimatedValues,
+    pub duration_seconds: f32,
+    pub elapsed_seconds: f32,
+    pub progress: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -6499,6 +6767,19 @@ pub struct AnimationMachine {
 }
 
 impl AnimationMachine {
+    pub fn single_state(name: impl Into<String>, values: AnimatedValues) -> Self {
+        let state = AnimationState::new(name, values);
+        Self {
+            states: vec![state],
+            transitions: Vec::new(),
+            inputs: HashMap::new(),
+            blend_bindings: Vec::new(),
+            current_state: 0,
+            active: None,
+            values,
+        }
+    }
+
     pub fn new(
         states: Vec<AnimationState>,
         transitions: Vec<AnimationTransition>,
@@ -6524,12 +6805,50 @@ impl AnimationMachine {
         &self.states[self.current_state].name
     }
 
+    pub fn states(&self) -> &[AnimationState] {
+        &self.states
+    }
+
+    pub fn transitions(&self) -> &[AnimationTransition] {
+        &self.transitions
+    }
+
+    pub fn inputs(&self) -> &HashMap<String, AnimationInputValue> {
+        &self.inputs
+    }
+
+    pub fn blend_bindings(&self) -> &[AnimationBlendBinding] {
+        &self.blend_bindings
+    }
+
     pub fn values(&self) -> AnimatedValues {
         self.values
     }
 
     pub fn is_animating(&self) -> bool {
         self.active.is_some()
+    }
+
+    pub fn active_transition(&self) -> Option<AnimationActiveTransitionSnapshot> {
+        let active = self.active.as_ref()?;
+        let from_state = self.states.get(active.from_state)?;
+        let to_state = self.states.get(active.to_state)?;
+        let progress = if active.duration_seconds <= f32::EPSILON {
+            1.0
+        } else {
+            (active.elapsed_seconds / active.duration_seconds).clamp(0.0, 1.0)
+        };
+        Some(AnimationActiveTransitionSnapshot {
+            from_state: active.from_state,
+            from_state_name: from_state.name.clone(),
+            to_state: active.to_state,
+            to_state_name: to_state.name.clone(),
+            from_values: active.from_values,
+            to_values: to_state.values,
+            duration_seconds: active.duration_seconds,
+            elapsed_seconds: active.elapsed_seconds,
+            progress,
+        })
     }
 
     pub fn has_same_definition(&self, other: &Self) -> bool {
@@ -6650,6 +6969,7 @@ impl AnimationMachine {
         };
         self.current_state = to_state;
         self.active = Some(ActiveTransition {
+            from_state: logical_state,
             from_values: self.values,
             to_state,
             duration_seconds: transition.duration_seconds.max(0.0),
@@ -7680,8 +8000,8 @@ mod tests {
             "paint must wait until positions are applied"
         );
 
-        let control_size = sizing.sizes.get(&control).copied().expect("control size");
-        let label_size = sizing.sizes.get(&label).copied().expect("label size");
+        let control_size = sizing.sizes.get(control.0).copied().expect("control size");
+        let label_size = sizing.sizes.get(label.0).copied().expect("label size");
         assert!(
             control_size.width >= label_size.width + 24.0,
             "{control_size:?} {label_size:?}"
@@ -9769,7 +10089,7 @@ mod tests {
             doc.root,
             UiNode::canvas(
                 "mask",
-                "fabricad.mask.viewport",
+                "editor.mask.viewport",
                 LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: length(80.0),
@@ -9796,7 +10116,7 @@ mod tests {
         );
 
         assert_eq!(image_keys, vec!["icons.play", "thumbs.lot"]);
-        assert_eq!(canvas_keys, vec!["fabricad.mask.viewport"]);
+        assert_eq!(canvas_keys, vec!["editor.mask.viewport"]);
     }
 
     #[test]

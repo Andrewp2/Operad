@@ -443,10 +443,13 @@ impl ResourceCache {
                 report
             }
             Some(ResourceUpdateKind::Partial) => {
-                let entry = self
-                    .entries
-                    .get_mut(&handle)
-                    .expect("partial uploads require an existing cache entry");
+                let Some(entry) = self.entries.get_mut(&handle) else {
+                    return self.rejected_report(
+                        update,
+                        before,
+                        ResourceUpdateIssue::PartialUpdateMissingBase,
+                    );
+                };
                 entry.apply_partial_update(update.descriptor.clone(), upload_bytes, self.frame);
                 report_from_entry(
                     entry,

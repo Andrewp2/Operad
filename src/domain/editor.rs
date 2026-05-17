@@ -1389,7 +1389,7 @@ impl LaneValueGeometry {
         );
 
         let end_rect = edge_handle_rect(
-            *rects.last().expect("rects is not empty"),
+            rects[rects.len() - 1],
             handle_width,
             TimelineRangeItemEdge::End,
         );

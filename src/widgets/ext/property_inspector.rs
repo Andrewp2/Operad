@@ -101,6 +101,7 @@ pub struct PropertyInspectorOptions {
     pub layout: LayoutStyle,
     pub label_width: f32,
     pub row_height: f32,
+    pub action_prefix: Option<String>,
     pub selected_index: Option<usize>,
     pub focused_index: Option<usize>,
     pub background_visual: UiVisual,
@@ -131,6 +132,7 @@ impl Default for PropertyInspectorOptions {
             }),
             label_width: 140.0,
             row_height: 28.0,
+            action_prefix: None,
             selected_index: None,
             focused_index: None,
             background_visual: UiVisual::panel(
@@ -146,10 +148,17 @@ impl Default for PropertyInspectorOptions {
             status_row_shader: None,
             label_style: muted_text_style(),
             value_style: TextStyle::default(),
-            read_only_value_style: muted_text_style(),
+            read_only_value_style: read_only_value_text_style(),
             leading_image_size: 16.0,
             accessibility_label: None,
         }
+    }
+}
+
+impl PropertyInspectorOptions {
+    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.action_prefix = Some(prefix.into());
+        self
     }
 }
 
@@ -188,39 +197,42 @@ pub fn property_inspector_grid(
         let focused = options.focused_index == Some(index);
         let visual = property_row_visual(row, selected, &options);
         let shader = property_row_shader(row, selected, focused, &options);
-        let row_node = with_optional_shader(
-            UiNode::container(
-                format!("{name}.row.{}", row.id),
-                UiNodeStyle {
-                    layout: LayoutStyle::from_taffy_style(Style {
-                        display: Display::Flex,
-                        flex_direction: FlexDirection::Row,
-                        align_items: Some(AlignItems::Center),
-                        size: TaffySize {
-                            width: Dimension::percent(1.0),
-                            height: px(options.row_height),
-                        },
+        let row_node = with_optional_action(
+            with_optional_shader(
+                UiNode::container(
+                    format!("{name}.row.{}", row.id),
+                    UiNodeStyle {
+                        layout: LayoutStyle::from_taffy_style(Style {
+                            display: Display::Flex,
+                            flex_direction: FlexDirection::Row,
+                            align_items: Some(AlignItems::Center),
+                            size: TaffySize {
+                                width: Dimension::percent(1.0),
+                                height: px(options.row_height),
+                            },
+                            ..Default::default()
+                        })
+                        .style,
+                        clip: ClipBehavior::Clip,
                         ..Default::default()
-                    })
-                    .style,
-                    clip: ClipBehavior::Clip,
-                    ..Default::default()
-                },
-            )
-            .with_input(if row.disabled {
-                InputBehavior::NONE
-            } else {
-                InputBehavior::BUTTON
-            })
-            .with_visual(visual)
-            .with_accessibility(property_row_accessibility(
-                row,
-                index,
-                rows.len(),
-                selected,
-                focused,
-            )),
-            shader.as_ref(),
+                    },
+                )
+                .with_input(if row.disabled {
+                    InputBehavior::NONE
+                } else {
+                    InputBehavior::BUTTON
+                })
+                .with_visual(visual)
+                .with_accessibility(property_row_accessibility(
+                    row,
+                    index,
+                    rows.len(),
+                    selected,
+                    focused,
+                )),
+                shader.as_ref(),
+            ),
+            row_action(&options.action_prefix, row),
         );
         let row_node = document.add_child(root, row_node);
 
@@ -269,8 +281,10 @@ pub fn property_inspector_grid(
                 value_style,
                 LayoutStyle::from_taffy_style(Style {
                     flex_grow: 1.0,
+                    flex_shrink: 1.0,
+                    flex_basis: Dimension::length(0.0),
                     size: TaffySize {
-                        width: Dimension::percent(1.0),
+                        width: Dimension::auto(),
                         height: Dimension::percent(1.0),
                     },
                     padding: taffy::prelude::Rect::length(6.0),
@@ -515,6 +529,23 @@ fn with_optional_shader(mut node: UiNode, shader: Option<&ShaderEffect>) -> UiNo
     node
 }
 
+fn with_optional_action(mut node: UiNode, action: Option<String>) -> UiNode {
+    if let Some(action) = action {
+        node = node.with_action(action);
+    }
+    node
+}
+
+fn row_action(prefix: &Option<String>, row: &PropertyGridRow) -> Option<String> {
+    if row.disabled {
+        None
+    } else {
+        prefix
+            .as_ref()
+            .map(|prefix| format!("{prefix}.row.{}", row.id))
+    }
+}
+
 fn accessibility_label_or_name(label: &Option<String>, name: &str) -> String {
     label.clone().unwrap_or_else(|| name.to_owned())
 }
@@ -538,6 +569,13 @@ fn muted_text_style() -> TextStyle {
         color: ColorRgba::new(151, 162, 178, 255),
         wrap: TextWrap::None,
         ..Default::default()
+    }
+}
+
+fn read_only_value_text_style() -> TextStyle {
+    TextStyle {
+        wrap: TextWrap::WordOrGlyph,
+        ..muted_text_style()
     }
 }
 

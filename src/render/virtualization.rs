@@ -247,6 +247,209 @@ impl VirtualPlan {
             .end
             .saturating_sub(self.materialized_range.start)
     }
+
+    pub fn diagnostics(&self) -> VirtualizationDiagnostics {
+        VirtualizationDiagnostics::from_plan(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VirtualizationBudget {
+    pub max_materialized_items: u64,
+    pub max_overscan_items: u64,
+    pub max_materialization_ratio: f32,
+}
+
+impl VirtualizationBudget {
+    pub const STRICT: Self = Self {
+        max_materialized_items: 512,
+        max_overscan_items: 128,
+        max_materialization_ratio: 0.05,
+    };
+
+    pub const INTERACTIVE: Self = Self {
+        max_materialized_items: 2_000,
+        max_overscan_items: 512,
+        max_materialization_ratio: 0.10,
+    };
+
+    pub const RELAXED: Self = Self {
+        max_materialized_items: 10_000,
+        max_overscan_items: 2_000,
+        max_materialization_ratio: 0.25,
+    };
+
+    pub const fn new(
+        max_materialized_items: u64,
+        max_overscan_items: u64,
+        max_materialization_ratio: f32,
+    ) -> Self {
+        Self {
+            max_materialized_items,
+            max_overscan_items,
+            max_materialization_ratio,
+        }
+    }
+
+    pub fn diagnose(self, plan: &VirtualPlan) -> VirtualizationDiagnostics {
+        plan.diagnostics().with_budget(self)
+    }
+}
+
+impl Default for VirtualizationBudget {
+    fn default() -> Self {
+        Self::INTERACTIVE
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtualizationIssueKind {
+    MaterializedTooManyItems,
+    OverscanTooLarge,
+    MaterializationRatioTooHigh,
+    MaterializesFullCollection,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VirtualizationIssue {
+    pub kind: VirtualizationIssueKind,
+    pub metric: &'static str,
+    pub actual: f32,
+    pub limit: f32,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VirtualizationDiagnostics {
+    pub kind: VirtualCollectionKind,
+    pub axis: VirtualAxis,
+    pub item_count: u64,
+    pub visible_range: Range<u64>,
+    pub materialized_range: Range<u64>,
+    pub visible_count: u64,
+    pub materialized_count: u64,
+    pub overscan_before: u64,
+    pub overscan_after: u64,
+    pub sticky_count: usize,
+    pub content_extent: f32,
+    pub materialization_ratio: f32,
+    pub issues: Vec<VirtualizationIssue>,
+}
+
+impl VirtualizationDiagnostics {
+    pub fn from_plan(plan: &VirtualPlan) -> Self {
+        let visible_count = plan.visible_count();
+        let materialized_count = plan.materialized_count();
+        let materialization_ratio = if plan.item_count == 0 {
+            0.0
+        } else {
+            materialized_count as f32 / plan.item_count as f32
+        };
+
+        Self {
+            kind: plan.kind,
+            axis: plan.axis,
+            item_count: plan.item_count,
+            visible_range: plan.visible_range.clone(),
+            materialized_range: plan.materialized_range.clone(),
+            visible_count,
+            materialized_count,
+            overscan_before: plan
+                .visible_range
+                .start
+                .saturating_sub(plan.materialized_range.start),
+            overscan_after: plan
+                .materialized_range
+                .end
+                .saturating_sub(plan.visible_range.end),
+            sticky_count: plan.sticky_items.len(),
+            content_extent: plan.content_extent,
+            materialization_ratio,
+            issues: Vec::new(),
+        }
+    }
+
+    pub fn with_budget(mut self, budget: VirtualizationBudget) -> Self {
+        self.issues.clear();
+        if self.materialized_count > budget.max_materialized_items {
+            self.issues.push(VirtualizationIssue {
+                kind: VirtualizationIssueKind::MaterializedTooManyItems,
+                metric: "materialized_count",
+                actual: self.materialized_count as f32,
+                limit: budget.max_materialized_items as f32,
+                message: format!(
+                    "materialized {} items, exceeding budget of {}",
+                    self.materialized_count, budget.max_materialized_items
+                ),
+            });
+        }
+
+        let overscan = self.overscan_count();
+        if overscan > budget.max_overscan_items {
+            self.issues.push(VirtualizationIssue {
+                kind: VirtualizationIssueKind::OverscanTooLarge,
+                metric: "overscan_count",
+                actual: overscan as f32,
+                limit: budget.max_overscan_items as f32,
+                message: format!(
+                    "materialized {overscan} overscan items, exceeding budget of {}",
+                    budget.max_overscan_items
+                ),
+            });
+        }
+
+        let ratio_limit = normalized_ratio_limit(budget.max_materialization_ratio);
+        if self.materialization_ratio > ratio_limit {
+            self.issues.push(VirtualizationIssue {
+                kind: VirtualizationIssueKind::MaterializationRatioTooHigh,
+                metric: "materialization_ratio",
+                actual: self.materialization_ratio,
+                limit: ratio_limit,
+                message: format!(
+                    "materialized {:.2}% of the collection, exceeding budget of {:.2}%",
+                    self.materialization_ratio * 100.0,
+                    ratio_limit * 100.0
+                ),
+            });
+        }
+
+        if self.item_count > self.visible_count && self.materialized_count == self.item_count {
+            self.issues.push(VirtualizationIssue {
+                kind: VirtualizationIssueKind::MaterializesFullCollection,
+                metric: "materialized_count",
+                actual: self.materialized_count as f32,
+                limit: self.visible_count as f32,
+                message: "materialized the full collection even though only part of it is visible"
+                    .to_owned(),
+            });
+        }
+
+        self
+    }
+
+    pub fn is_within_budget(&self) -> bool {
+        self.issues.is_empty()
+    }
+
+    pub fn overscan_count(&self) -> u64 {
+        self.overscan_before.saturating_add(self.overscan_after)
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "{:?} {:?}: visible {}..{}, materialized {}..{} ({} of {} items, {:.2}%); sticky {}",
+            self.kind,
+            self.axis,
+            self.visible_range.start,
+            self.visible_range.end,
+            self.materialized_range.start,
+            self.materialized_range.end,
+            self.materialized_count,
+            self.item_count,
+            self.materialization_ratio * 100.0,
+            self.sticky_count
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -533,6 +736,14 @@ fn finite_non_negative(value: f32) -> f32 {
     }
 }
 
+fn normalized_ratio_limit(value: f32) -> f32 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,5 +899,56 @@ mod tests {
         assert_eq!(adjustment.offset_after, 125.0);
         assert_eq!(adjustment.delta, 25.0);
         assert_eq!(adjustment.scroll_offset_after, 95.0);
+    }
+
+    #[test]
+    fn virtualization_diagnostics_summarize_large_collection_budget() {
+        let plan = plan_virtualized_range(
+            VirtualPlanRequest::new(1_000_000, 20.0, 100.0)
+                .kind(VirtualCollectionKind::Table)
+                .scroll_offset(2_000.0)
+                .overscan(VirtualOverscan::new(2, 3)),
+        );
+
+        let diagnostics = VirtualizationBudget::INTERACTIVE.diagnose(&plan);
+
+        assert!(diagnostics.is_within_budget());
+        assert_eq!(diagnostics.kind, VirtualCollectionKind::Table);
+        assert_eq!(diagnostics.visible_range, 100..105);
+        assert_eq!(diagnostics.materialized_range, 98..108);
+        assert_eq!(diagnostics.visible_count, 5);
+        assert_eq!(diagnostics.materialized_count, 10);
+        assert_eq!(diagnostics.overscan_count(), 5);
+        assert!(diagnostics.materialization_ratio < 0.001);
+        assert!(diagnostics.summary().contains("materialized 98..108"));
+    }
+
+    #[test]
+    fn virtualization_diagnostics_flag_full_materialization_and_overscan() {
+        let plan = plan_virtualized_range(
+            VirtualPlanRequest::new(10_000, 20.0, 100.0)
+                .kind(VirtualCollectionKind::Tree)
+                .overscan(VirtualOverscan::new(0, 10_000)),
+        );
+
+        let diagnostics = VirtualizationBudget::new(200, 100, 0.10).diagnose(&plan);
+
+        assert!(!diagnostics.is_within_budget());
+        assert_eq!(
+            diagnostics
+                .issues
+                .iter()
+                .map(|issue| issue.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                VirtualizationIssueKind::MaterializedTooManyItems,
+                VirtualizationIssueKind::OverscanTooLarge,
+                VirtualizationIssueKind::MaterializationRatioTooHigh,
+                VirtualizationIssueKind::MaterializesFullCollection,
+            ]
+        );
+        assert_eq!(diagnostics.materialized_count, 10_000);
+        assert_eq!(diagnostics.overscan_after, 9_995);
+        assert!(diagnostics.issues[0].message.contains("exceeding budget"));
     }
 }

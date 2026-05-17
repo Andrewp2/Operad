@@ -1,33 +1,35 @@
 use operad::{
-    layout, root_style, ApproxTextMeasurer, ClipBehavior, ColorRgba, InputBehavior, ScrollAxes,
-    StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeStyle, UiPoint, UiSize,
-    UiVisual,
+    layout, root_style, AccessibilityAction, AccessibilityMeta, AccessibilityRole,
+    ApproxTextMeasurer, ClipBehavior, ColorRgba, InputBehavior, ScrollAxes, StrokeStyle, TextStyle,
+    UiDocument, UiInputEvent, UiNode, UiNodeStyle, UiPoint, UiSize, UiVisual,
 };
 
-fn main() {
+fn main() -> Result<(), String> {
     let probes = [
-        ("game_hud", build_game_hud()),
-        ("fabricad_panel", build_fabricad_panel()),
-        ("orbifold_editor", build_orbifold_editor()),
+        ("game_overlay", build_game_overlay()),
+        ("tool_panel", build_tool_panel()),
+        ("timeline_editor", build_timeline_editor()),
     ];
 
     for (name, mut document) in probes {
         document
             .compute_layout(UiSize::new(800.0, 600.0), &mut ApproxTextMeasurer)
-            .expect("probe layout should compute");
-        assert!(
-            document.audit_layout().is_empty(),
-            "{name} should have no basic layout audit warnings"
-        );
-        assert!(
-            !document.paint_list().is_empty(),
-            "{name} should produce renderer-neutral paint"
-        );
+            .map_err(|error| format!("{name} layout failed: {error}"))?;
+        let warnings = document.audit_layout();
+        if !warnings.is_empty() {
+            return Err(format!(
+                "{name} should have no basic layout audit warnings: {warnings:#?}"
+            ));
+        }
+        if document.paint_list().is_empty() {
+            return Err(format!("{name} should produce renderer-neutral paint"));
+        }
         println!("{name}: {} paint items", document.paint_list().items.len());
     }
+    Ok(())
 }
 
-fn build_game_hud() -> UiDocument {
+fn build_game_overlay() -> UiDocument {
     let mut document = UiDocument::new(root_style(800.0, 600.0));
     let hotbar = document.add_child(
         document.root,
@@ -61,6 +63,12 @@ fn build_game_hud() -> UiDocument {
                 layout::node_style(layout::with_margin_all(layout::fixed(36.0, 36.0), 4.0)),
             )
             .with_input(InputBehavior::BUTTON)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label(format!("Hotbar slot {}", slot + 1))
+                    .focusable()
+                    .action(AccessibilityAction::new("activate", "Activate")),
+            )
             .with_visual(UiVisual::panel(
                 ColorRgba::new(40, 49, 62, 255),
                 Some(StrokeStyle::new(ColorRgba::new(105, 124, 153, 255), 1.0)),
@@ -72,12 +80,12 @@ fn build_game_hud() -> UiDocument {
     document
 }
 
-fn build_fabricad_panel() -> UiDocument {
+fn build_tool_panel() -> UiDocument {
     let mut document = UiDocument::new(root_style(800.0, 600.0));
     let panel = document.add_child(
         document.root,
         UiNode::container(
-            "fabricad.sidebar.modules",
+            "tool.sidebar.modules",
             UiNodeStyle {
                 clip: ClipBehavior::Clip,
                 ..layout::node_style(layout::with_size(
@@ -96,15 +104,22 @@ fn build_fabricad_panel() -> UiDocument {
     );
 
     for row in 0..12 {
+        let label = format!("Layer module {}", row + 1);
         document.add_child(
             panel,
             UiNode::text(
-                format!("fabricad.module.{row}"),
-                format!("Layer module {row}"),
+                format!("tool.module.{row}"),
+                label.clone(),
                 TextStyle::default(),
                 layout::size(layout::percent(1.0), layout::px(32.0)),
             )
-            .with_input(InputBehavior::BUTTON),
+            .with_input(InputBehavior::BUTTON)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label(label)
+                    .focusable()
+                    .action(AccessibilityAction::new("activate", "Activate")),
+            ),
         );
     }
 
@@ -116,12 +131,12 @@ fn build_fabricad_panel() -> UiDocument {
     document
 }
 
-fn build_orbifold_editor() -> UiDocument {
+fn build_timeline_editor() -> UiDocument {
     let mut document = UiDocument::new(root_style(800.0, 600.0));
     let shell = document.add_child(
         document.root,
         UiNode::container(
-            "orbifold.shell",
+            "timeline.shell",
             UiNodeStyle {
                 clip: ClipBehavior::Clip,
                 ..layout::node_style(layout::with_size(
@@ -136,7 +151,7 @@ fn build_orbifold_editor() -> UiDocument {
     document.add_child(
         shell,
         UiNode::text(
-            "orbifold.transport",
+            "timeline.transport",
             "Transport",
             TextStyle::default(),
             layout::size(layout::percent(1.0), layout::px(32.0)),
@@ -150,9 +165,14 @@ fn build_orbifold_editor() -> UiDocument {
     document.add_child(
         shell,
         UiNode::canvas(
-            "orbifold.piano_roll",
-            "orbifold.piano_roll.display_list_surface",
+            "timeline.editor",
+            "timeline.editor.display_list_surface",
             layout::size(layout::percent(1.0), layout::px(260.0)),
+        )
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::EditorSurface)
+                .label("Timeline editor")
+                .focusable(),
         )
         .with_visual(UiVisual::panel(
             ColorRgba::new(16, 19, 23, 255),

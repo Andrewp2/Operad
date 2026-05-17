@@ -28,8 +28,11 @@ use crate::renderer::{
 };
 use crate::shell::{ShellLayoutPlan, ShellWorkspaceState};
 use crate::{
-    AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers, TextMeasurer, UiDocument, UiInputEvent,
-    UiInputResult, UiNodeId, UiPoint, UiRect, UiSize,
+    apply_layout_animation_transitions_to_paint_list, layout_animation_transitions,
+    AccessibilityRole, AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers,
+    LayoutAnimationOptions, LayoutAnimationTransition, LayoutSnapshot, TextMeasurer, UiDocument,
+    UiInputEvent, UiInputResult, UiNodeId, UiPoint, UiRect, UiSize, WidgetAction,
+    WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,6 +572,8 @@ pub struct HostDocumentFrameRequest {
     pub previous_accessibility_tree: Option<AccessibilityTree>,
     pub previous_focused: Option<Option<UiNodeId>>,
     pub previous_accessibility_preferences: Option<AccessibilityPreferences>,
+    pub previous_layout_snapshot: Option<LayoutSnapshot>,
+    pub layout_animation_options: Option<LayoutAnimationOptions>,
     pub accessibility_capabilities: AccessibilityCapabilities,
     pub accessibility_preferences: AccessibilityPreferences,
     pub render_options: RenderOptions,
@@ -585,6 +590,8 @@ impl HostDocumentFrameRequest {
             previous_accessibility_tree: None,
             previous_focused: None,
             previous_accessibility_preferences: None,
+            previous_layout_snapshot: None,
+            layout_animation_options: None,
             accessibility_capabilities: AccessibilityCapabilities::NONE,
             accessibility_preferences: AccessibilityPreferences::DEFAULT,
             render_options: RenderOptions::default(),
@@ -620,6 +627,21 @@ impl HostDocumentFrameRequest {
         self.previous_focused = previous.focused;
         self.previous_live_regions = previous.live_regions;
         self.previous_accessibility_preferences = previous.preferences;
+        self
+    }
+
+    pub fn previous_layout_snapshot(mut self, previous: LayoutSnapshot) -> Self {
+        self.previous_layout_snapshot = Some(previous);
+        self
+    }
+
+    pub fn with_previous_layout_snapshot(mut self, previous: Option<LayoutSnapshot>) -> Self {
+        self.previous_layout_snapshot = previous;
+        self
+    }
+
+    pub const fn layout_animation_options(mut self, options: LayoutAnimationOptions) -> Self {
+        self.layout_animation_options = Some(options);
         self
     }
 
@@ -661,6 +683,8 @@ pub struct HostDocumentFrameOutput {
     pub accessibility_requests: Vec<AccessibilityAdapterRequest>,
     pub accessibility_state: HostAccessibilityState,
     pub canvas_host_capture_transition: CanvasHostCaptureTransition,
+    pub layout_snapshot: LayoutSnapshot,
+    pub layout_animation_transitions: Vec<LayoutAnimationTransition>,
 }
 
 impl HostDocumentFrameOutput {
@@ -681,6 +705,7 @@ impl HostDocumentFrameOutput {
 pub struct HostDocumentFrameState {
     pub interaction: HostInteractionState,
     pub accessibility: HostAccessibilityState,
+    pub layout: Option<LayoutSnapshot>,
 }
 
 impl HostDocumentFrameState {
@@ -695,6 +720,7 @@ impl HostDocumentFrameState {
         Self {
             interaction,
             accessibility,
+            layout: None,
         }
     }
 
@@ -720,6 +746,7 @@ impl HostDocumentFrameState {
     ) -> HostDocumentFrameRequest {
         HostDocumentFrameRequest::new(viewport, target, host_output)
             .previous_accessibility_state(self.accessibility.clone())
+            .with_previous_layout_snapshot(self.layout.clone())
     }
 
     pub fn apply_host_frame_output(&mut self, output: &HostFrameOutput) {
@@ -729,6 +756,7 @@ impl HostDocumentFrameState {
     pub fn apply_document_frame_output(&mut self, output: &HostDocumentFrameOutput) {
         self.interaction = output.host_output.state.clone();
         self.accessibility = output.accessibility_state.clone();
+        self.layout = Some(output.layout_snapshot.clone());
     }
 }
 
@@ -899,6 +927,8 @@ pub fn process_document_frame(
         previous_accessibility_tree,
         previous_focused,
         previous_accessibility_preferences,
+        previous_layout_snapshot,
+        layout_animation_options,
         accessibility_capabilities,
         accessibility_preferences,
         render_options,
@@ -915,6 +945,16 @@ pub fn process_document_frame(
     host_output.state = state.clone();
 
     document.compute_layout(viewport, measurer)?;
+    let layout_snapshot = document.layout_snapshot();
+    let layout_animation_transitions = if accessibility_preferences.should_reduce_motion() {
+        Vec::new()
+    } else if let (Some(previous), Some(options)) =
+        (previous_layout_snapshot.as_ref(), layout_animation_options)
+    {
+        layout_animation_transitions(previous, &layout_snapshot, options)
+    } else {
+        Vec::new()
+    };
 
     let accessibility_tree = document.accessibility_snapshot();
     let live_regions = AccessibilityLiveRegionSnapshot::from_tree(&accessibility_tree);
@@ -960,7 +1000,8 @@ pub fn process_document_frame(
         accessibility_preferences,
     );
 
-    let paint = document.paint_list();
+    let mut paint = document.paint_list();
+    apply_layout_animation_transitions_to_paint_list(&mut paint, &layout_animation_transitions);
     let mut node_interactions = paint
         .items
         .iter()
@@ -996,7 +1037,153 @@ pub fn process_document_frame(
         accessibility_requests,
         accessibility_state,
         canvas_host_capture_transition,
+        layout_snapshot,
+        layout_animation_transitions,
     })
+}
+
+pub fn collect_document_widget_actions(
+    document: &UiDocument,
+    frame: &HostDocumentFrameOutput,
+) -> Vec<WidgetAction> {
+    let mut queue = WidgetActionQueue::new();
+    for event in &frame.host_output.ui_events {
+        if let Some((target, phase, position, selecting)) =
+            text_pointer_edit_target(document, frame, event)
+        {
+            if let Some(binding) = action_binding(document, target) {
+                let target_rect = document
+                    .nodes()
+                    .get(target.0)
+                    .map(|node| node.layout.rect)
+                    .unwrap_or_else(|| UiRect::new(0.0, 0.0, 0.0, 0.0));
+                queue.push(WidgetAction::text_pointer_edit(
+                    target,
+                    binding,
+                    event.clone(),
+                    phase,
+                    position,
+                    target_rect,
+                    selecting,
+                ));
+                continue;
+            }
+        }
+        let Some(target) = document.focus.focused else {
+            continue;
+        };
+        let Some(binding) = action_binding(document, target) else {
+            continue;
+        };
+        if text_edit_target(document, target)
+            && matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. })
+        {
+            queue.push(WidgetAction::text_edit(target, binding, event.clone()));
+            continue;
+        }
+        if text_edit_target(document, target) {
+            if let Some((phase, position, selecting)) =
+                text_pointer_edit_event(event, frame.host_output.state.pressed == Some(target))
+            {
+                let target_rect = document
+                    .nodes()
+                    .get(target.0)
+                    .map(|node| node.layout.rect)
+                    .unwrap_or_else(|| UiRect::new(0.0, 0.0, 0.0, 0.0));
+                queue.push(WidgetAction::text_pointer_edit(
+                    target,
+                    binding,
+                    event.clone(),
+                    phase,
+                    position,
+                    target_rect,
+                    selecting,
+                ));
+                continue;
+            }
+        }
+        if let UiInputEvent::Key { key, modifiers } = event {
+            queue.push_key_activation(target, binding, *key, *modifiers);
+        }
+    }
+    for gesture in &frame.host_output.gestures {
+        queue.push_gesture_event_for_document(document, gesture, |id| action_binding(document, id));
+    }
+    for input in &frame.input_results {
+        let Some(target) = input.scrolled else {
+            continue;
+        };
+        let Some(binding) = action_binding(document, target) else {
+            continue;
+        };
+        if let Some(scroll) = document.scroll_state(target) {
+            queue.push(WidgetAction::scroll(target, binding, scroll));
+        }
+    }
+    queue.into_vec()
+}
+
+fn text_pointer_edit_target(
+    document: &UiDocument,
+    frame: &HostDocumentFrameOutput,
+    event: &UiInputEvent,
+) -> Option<(UiNodeId, WidgetValueEditPhase, UiPoint, bool)> {
+    let (phase, position, selecting) = match event {
+        UiInputEvent::PointerDown(point) => (WidgetValueEditPhase::Begin, *point, false),
+        UiInputEvent::PointerMove(point) => {
+            let target = frame.host_output.state.pressed?;
+            if !text_edit_target(document, target) {
+                return None;
+            }
+            return Some((target, WidgetValueEditPhase::Update, *point, true));
+        }
+        UiInputEvent::PointerUp(point) => {
+            let target = frame.host_output.state.pressed.or(document.focus.pressed)?;
+            if !text_edit_target(document, target) {
+                return None;
+            }
+            return Some((target, WidgetValueEditPhase::Commit, *point, false));
+        }
+        _ => return None,
+    };
+    let target = document.hit_test(position)?;
+    text_edit_target(document, target).then_some((target, phase, position, selecting))
+}
+
+fn text_pointer_edit_event(
+    event: &UiInputEvent,
+    pressed: bool,
+) -> Option<(WidgetValueEditPhase, UiPoint, bool)> {
+    match event {
+        UiInputEvent::PointerDown(point) => Some((WidgetValueEditPhase::Begin, *point, false)),
+        UiInputEvent::PointerMove(point) if pressed => {
+            Some((WidgetValueEditPhase::Update, *point, true))
+        }
+        UiInputEvent::PointerUp(point) if pressed => {
+            Some((WidgetValueEditPhase::Commit, *point, false))
+        }
+        _ => None,
+    }
+}
+
+fn text_edit_target(document: &UiDocument, target: UiNodeId) -> bool {
+    document
+        .nodes()
+        .get(target.0)
+        .and_then(|node| node.accessibility.as_ref())
+        .is_some_and(|accessibility| {
+            matches!(
+                accessibility.role,
+                AccessibilityRole::TextBox | AccessibilityRole::SearchBox
+            )
+        })
+}
+
+fn action_binding(document: &UiDocument, id: UiNodeId) -> Option<WidgetActionBinding> {
+    document
+        .nodes()
+        .get(id.0)
+        .and_then(|node| node.action.clone())
 }
 
 fn normalized_host_scale(scale: f32) -> f32 {
@@ -1026,8 +1213,9 @@ mod tests {
     };
     use crate::{
         length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
-        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, InputBehavior, LayoutStyle,
-        ShellPanelState, ShellRegion, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint,
+        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ColorRgba, InputBehavior,
+        LayoutStyle, ShellPanelState, ShellRegion, StrokeStyle, UiContent, UiDocument, UiNode,
+        UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Size as TaffySize, Style};
 
@@ -1866,10 +2054,113 @@ mod tests {
         assert_eq!(state.interaction, frame.host_output.state);
         assert_eq!(state.accessibility, frame.accessibility_state);
         assert!(state
+            .layout
+            .as_ref()
+            .is_some_and(|layout| layout.children.iter().any(|child| child.name == "button")));
+        assert!(state
             .accessibility
             .tree
             .as_ref()
             .is_some_and(|tree| tree.node(button).is_some()));
+        let next_request = state.document_frame_request(
+            viewport,
+            RenderTarget::window("main", viewport),
+            HostFrameOutput::new(state.interaction.clone()),
+        );
+        assert!(next_request.previous_layout_snapshot.is_some());
+    }
+
+    #[test]
+    fn document_frame_emits_layout_animation_transitions_from_previous_snapshot() {
+        let viewport = UiSize::new(220.0, 100.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut previous = UiDocument::new(fixed_style(220.0, 100.0));
+        previous.add_child(
+            previous.root,
+            UiNode::container("panel", fixed_style(80.0, 32.0)).with_visual(UiVisual::panel(
+                ColorRgba::new(24, 30, 36, 255),
+                Some(StrokeStyle::new(ColorRgba::new(90, 100, 120, 255), 1.0)),
+                4.0,
+            )),
+        );
+        previous.compute_layout(viewport, &mut measurer).unwrap();
+        let previous_snapshot = previous.layout_snapshot();
+
+        let mut current = UiDocument::new(fixed_style(220.0, 100.0));
+        current.add_child(
+            current.root,
+            UiNode::container("panel", fixed_style(140.0, 52.0)).with_visual(UiVisual::panel(
+                ColorRgba::new(24, 30, 36, 255),
+                Some(StrokeStyle::new(ColorRgba::new(90, 100, 120, 255), 1.0)),
+                4.0,
+            )),
+        );
+        let frame = process_document_frame(
+            &mut current,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            )
+            .previous_layout_snapshot(previous_snapshot)
+            .layout_animation_options(LayoutAnimationOptions {
+                progress: 0.5,
+                ..Default::default()
+            }),
+        )
+        .expect("frame");
+
+        assert_eq!(frame.layout_animation_transitions.len(), 1);
+        let transition = &frame.layout_animation_transitions[0];
+        assert_eq!(transition.name, "panel");
+        assert_eq!(transition.visual_rect.width, 110.0);
+        assert_eq!(transition.visual_rect.height, 42.0);
+        assert_eq!(transition.to_rect.width, 140.0);
+        let painted_panel = frame
+            .render_request
+            .paint
+            .items
+            .iter()
+            .find(|item| item.node == transition.node)
+            .expect("painted animated panel");
+        assert_eq!(painted_panel.transform, transition.transform);
+    }
+
+    #[test]
+    fn document_frame_suppresses_layout_animation_when_reduced_motion_is_requested() {
+        let viewport = UiSize::new(220.0, 100.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut previous = UiDocument::new(fixed_style(220.0, 100.0));
+        previous.add_child(
+            previous.root,
+            UiNode::container("panel", fixed_style(80.0, 32.0)),
+        );
+        previous.compute_layout(viewport, &mut measurer).unwrap();
+
+        let mut current = UiDocument::new(fixed_style(220.0, 100.0));
+        current.add_child(
+            current.root,
+            UiNode::container("panel", fixed_style(140.0, 52.0)),
+        );
+        let frame = process_document_frame(
+            &mut current,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            )
+            .previous_layout_snapshot(previous.layout_snapshot())
+            .layout_animation_options(LayoutAnimationOptions {
+                progress: 0.5,
+                ..Default::default()
+            })
+            .accessibility_preferences(AccessibilityPreferences::DEFAULT.reduced_motion(true)),
+        )
+        .expect("frame");
+
+        assert!(frame.layout_animation_transitions.is_empty());
     }
 
     #[test]

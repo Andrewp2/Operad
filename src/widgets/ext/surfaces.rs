@@ -15,6 +15,12 @@ pub const TOAST_ENTER_TRIGGER: &str = "toast.enter";
 pub const TOAST_EXIT_TRIGGER: &str = "toast.exit";
 
 pub fn surface_open_close_animation(initially_open: bool) -> AnimationMachine {
+    let initial = if initially_open { "open" } else { "closed" };
+    let fallback_values = if initially_open {
+        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0)
+    } else {
+        AnimatedValues::new(0.0, UiPoint::new(0.0, 12.0), 0.98)
+    };
     AnimationMachine::new(
         vec![
             AnimationState::new(
@@ -40,12 +46,22 @@ pub fn surface_open_close_animation(initially_open: bool) -> AnimationMachine {
                 0.12,
             ),
         ],
-        if initially_open { "open" } else { "closed" },
+        initial,
     )
-    .expect("surface open/close animation preset should be internally valid")
+    .unwrap_or_else(|_| AnimationMachine::single_state(initial, fallback_values))
 }
 
 pub fn toast_enter_exit_animation(initially_visible: bool) -> AnimationMachine {
+    let initial = if initially_visible {
+        "visible"
+    } else {
+        "hidden"
+    };
+    let fallback_values = if initially_visible {
+        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0)
+    } else {
+        AnimatedValues::new(0.0, UiPoint::new(18.0, 0.0), 0.98)
+    };
     AnimationMachine::new(
         vec![
             AnimationState::new(
@@ -71,13 +87,9 @@ pub fn toast_enter_exit_animation(initially_visible: bool) -> AnimationMachine {
                 0.12,
             ),
         ],
-        if initially_visible {
-            "visible"
-        } else {
-            "hidden"
-        },
+        initial,
     )
-    .expect("toast enter/exit animation preset should be internally valid")
+    .unwrap_or_else(|_| AnimationMachine::single_state(initial, fallback_values))
 }
 
 fn surface_animation_trigger(name: &str) -> AnimationTrigger {
@@ -88,6 +100,7 @@ fn surface_animation_trigger(name: &str) -> AnimationTrigger {
 mod tests {
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
+    use crate::platform::{DragOperation, DragPayload};
     use crate::*;
 
     use super::*;
@@ -329,6 +342,309 @@ mod tests {
             .expect("resize accessibility");
         assert_eq!(resize_accessibility.role, AccessibilityRole::Slider);
         assert!(resize_accessibility.focusable);
+    }
+
+    #[test]
+    fn dock_workspace_layout_snapshot_restores_panel_size_side_and_visibility() {
+        let original = vec![
+            DockPanelDescriptor::new("assets", "Assets", DockSide::Left, 180.0)
+                .with_min_size(120.0),
+            DockPanelDescriptor::new("inspector", "Inspector", DockSide::Right, 240.0),
+            DockPanelDescriptor::center("canvas", "Canvas"),
+        ];
+        let mut snapshot = DockWorkspaceLayoutSnapshot::from_descriptors(&original);
+        snapshot.panels[0].side = DockSide::Bottom;
+        snapshot.panels[0].size = 40.0;
+        snapshot.panels[1].visible = false;
+        snapshot.panels.push(DockPanelLayoutSnapshot {
+            id: "missing".to_owned(),
+            side: DockSide::Left,
+            size: 100.0,
+            visible: true,
+        });
+
+        let mut restored = original.clone();
+        let report = snapshot.apply_to(&mut restored);
+
+        assert_eq!(report.updated, vec!["assets", "inspector", "canvas"]);
+        assert_eq!(report.missing, vec!["missing"]);
+        assert_eq!(restored[0].side, DockSide::Bottom);
+        assert_eq!(restored[0].size, 120.0);
+        assert!(!restored[1].visible);
+        assert_eq!(snapshot.panel("canvas").unwrap().side, DockSide::Center);
+    }
+
+    #[test]
+    fn dock_workspace_drag_sources_and_drop_zones_cover_dock_float_targets() {
+        let panel = DockPanelDescriptor::new("assets", "Assets", DockSide::Left, 180.0);
+        let source = panel
+            .drag_source(UiRect::new(10.0, 20.0, 120.0, 24.0))
+            .expect("panel drag source");
+
+        assert_eq!(source.kind, DragDropSurfaceKind::DockPanel);
+        assert_eq!(dock_panel_id_from_payload(&source.payload), Some("assets"));
+        assert_eq!(source.allowed_operations, vec![DragOperation::Move]);
+        assert!(source.can_start());
+        assert_eq!(
+            source.accessibility_meta().label.as_deref(),
+            Some("Assets panel")
+        );
+
+        let zones = dock_workspace_drop_zones(
+            "dock",
+            UiRect::new(0.0, 0.0, 400.0, 300.0),
+            DockWorkspaceDragOptions::default().edge_thickness(40.0),
+        );
+        assert_eq!(zones.len(), 6);
+        assert!(zones
+            .iter()
+            .any(|zone| zone.placement == DockDropPlacement::Floating));
+        assert!(zones
+            .iter()
+            .any(|zone| zone.placement == DockDropPlacement::Dock(DockSide::Center)));
+
+        let targets: Vec<_> = zones.iter().map(|zone| zone.target.clone()).collect();
+        let top_hit = DropTargetDescriptor::hit_test(
+            &targets,
+            UiPoint::new(200.0, 12.0),
+            &source.payload,
+            &source.allowed_operations,
+        )
+        .expect("top hit");
+        assert_eq!(top_hit.target_id.0, "dock.drop.top");
+        assert_eq!(top_hit.kind, DragDropSurfaceKind::DockTarget);
+
+        let center_hit = DropTargetDescriptor::hit_test(
+            &targets,
+            UiPoint::new(200.0, 150.0),
+            &source.payload,
+            &source.allowed_operations,
+        )
+        .expect("center hit");
+        assert_eq!(center_hit.target_id.0, "dock.drop.center");
+
+        let platform_payload = DragPayload::text("not a dock panel");
+        assert_eq!(dock_panel_id_from_payload(&platform_payload), None);
+        let bridged_hit = DropTargetDescriptor::hit_test(
+            &targets,
+            UiPoint::new(12.0, 12.0),
+            &platform_payload,
+            &source.allowed_operations,
+        );
+        assert!(
+            bridged_hit.is_some(),
+            "dock zones accept text payloads so hosts can bridge platform drags"
+        );
+    }
+
+    #[test]
+    fn dock_workspace_state_applies_dock_and_float_drops_to_descriptors() {
+        let mut panels = vec![
+            DockPanelDescriptor::new("assets", "Assets", DockSide::Left, 180.0),
+            DockPanelDescriptor::new("inspect", "Inspector", DockSide::Right, 220.0),
+        ];
+        let mut state = DockWorkspaceState::new();
+        let payload = dock_panel_drag_payload("inspect");
+        let floating_rect = UiRect::new(40.0, 48.0, 220.0, 180.0);
+
+        let change = state
+            .apply_drop_to_panels(
+                &mut panels,
+                &payload,
+                DockDropPlacement::Floating,
+                floating_rect,
+            )
+            .expect("float update");
+        assert_eq!(change.panel_id, "inspect");
+        assert_eq!(change.previous, DockPanelPlacement::Docked(DockSide::Right));
+        assert_eq!(change.next, DockPanelPlacement::Floating(floating_rect));
+        assert!(state.is_floating("inspect"));
+        assert!(!panels[1].visible);
+
+        let change = state
+            .apply_drop_to_panels(
+                &mut panels,
+                &payload,
+                DockDropPlacement::Dock(DockSide::Left),
+                floating_rect,
+            )
+            .expect("dock update");
+        assert_eq!(change.previous, DockPanelPlacement::Floating(floating_rect));
+        assert_eq!(change.next, DockPanelPlacement::Docked(DockSide::Left));
+        assert!(!state.is_floating("inspect"));
+        assert_eq!(panels[1].side, DockSide::Left);
+        assert!(panels[1].visible);
+    }
+
+    #[test]
+    fn dock_workspace_state_tracks_drawer_visibility_and_reorder() {
+        let mut panels = vec![
+            DockPanelDescriptor::new("inspector", "Inspector", DockSide::Left, 120.0),
+            DockPanelDescriptor::new("assets", "Assets", DockSide::Left, 104.0),
+            DockPanelDescriptor::center("document", "Document"),
+        ];
+        let mut state = DockWorkspaceState::new();
+
+        let visibility = state.hide_panel("assets");
+        assert_eq!(visibility.previous_visible, true);
+        assert_eq!(visibility.next_visible, false);
+        state.apply_visibility_to_panels(&mut panels);
+        assert!(!panels[1].visible);
+        assert!(state.is_hidden("assets"));
+
+        let payload = dock_panel_drag_payload("assets");
+        let reorder = state
+            .apply_reorder_to_panels(
+                &mut panels,
+                &payload,
+                "inspector",
+                DockPanelReorderPlacement::Before,
+            )
+            .expect("reorder hidden drawer panel");
+
+        assert_eq!(reorder.panel_id, "assets");
+        assert_eq!(reorder.target_panel_id, "inspector");
+        assert_eq!(reorder.previous_side, DockSide::Left);
+        assert_eq!(reorder.next_side, DockSide::Left);
+        assert_eq!(panels[0].id, "assets");
+        assert!(panels[0].visible);
+        assert!(!state.is_hidden("assets"));
+        let order: Vec<_> = state.panel_order().iter().map(String::as_str).collect();
+        assert_eq!(order, vec!["assets", "inspector", "document"]);
+        assert_eq!(state.focused_panel.as_deref(), Some("assets"));
+    }
+
+    #[test]
+    fn dock_workspace_reorder_targets_and_drawer_rail_are_public_widgets() {
+        let panels = vec![
+            DockPanelDescriptor::new("inspector", "Inspector", DockSide::Left, 120.0),
+            DockPanelDescriptor::new("assets", "Assets", DockSide::Left, 104.0),
+            DockPanelDescriptor::center("document", "Document"),
+        ];
+        let targets = dock_panel_reorder_drop_targets(
+            "dock",
+            &panels,
+            DockSide::Left,
+            UiRect::new(10.0, 20.0, 100.0, 240.0),
+            DockWorkspaceReorderOptions::default().target_thickness(20.0),
+        );
+        assert_eq!(targets.len(), 4);
+        assert_eq!(targets[0].target.id.0, "dock.reorder.left.inspector.before");
+        assert_eq!(targets[1].target.id.0, "dock.reorder.left.inspector.after");
+        assert_eq!(
+            targets[0].target.bounds,
+            UiRect::new(10.0, 20.0, 100.0, 20.0)
+        );
+        assert_eq!(
+            targets[1].target.bounds,
+            UiRect::new(10.0, 120.0, 100.0, 20.0)
+        );
+
+        let mut doc = UiDocument::new(root_style(320.0, 160.0));
+        let drawers = [
+            DockDrawerDescriptor::for_panel(&panels[0], true).with_action("dock.drawer.inspector"),
+            DockDrawerDescriptor::for_panel(&panels[1], false).with_action("dock.drawer.assets"),
+        ];
+        let root = doc.root;
+        let nodes = dock_drawer_rail(
+            &mut doc,
+            root,
+            "dock.drawers",
+            &drawers,
+            DockDrawerRailOptions::default(),
+        );
+        doc.compute_layout(UiSize::new(320.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("drawer rail layout");
+
+        assert_eq!(nodes.items.len(), 2);
+        assert_eq!(
+            doc.node(nodes.items[0].root)
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .map(WidgetActionId::as_str),
+            Some("dock.drawer.inspector")
+        );
+        let accessibility = doc.accessibility_tree();
+        let drawer_accessibility = accessibility
+            .iter()
+            .find(|node| node.id == nodes.items[0].root)
+            .expect("drawer accessibility");
+        assert_eq!(drawer_accessibility.role, AccessibilityRole::Button);
+        assert_eq!(drawer_accessibility.label.as_deref(), Some("Inspector"));
+    }
+
+    #[test]
+    fn dock_workspace_commits_host_drop_hits_to_dock_and_reorder_state() {
+        let mut panels = vec![
+            DockPanelDescriptor::new("inspector", "Inspector", DockSide::Left, 120.0),
+            DockPanelDescriptor::new("assets", "Assets", DockSide::Right, 104.0),
+            DockPanelDescriptor::center("document", "Document"),
+        ];
+        let mut state = DockWorkspaceState::new();
+        let source = panels[0]
+            .drag_source(UiRect::new(0.0, 0.0, 120.0, 28.0))
+            .expect("drag source");
+        assert!(source.start_request(UiPoint::new(12.0, 12.0)).is_some());
+
+        let zones = dock_workspace_drop_zones(
+            "dock",
+            UiRect::new(0.0, 0.0, 400.0, 240.0),
+            DockWorkspaceDragOptions::default().allowed_sides([DockSide::Right]),
+        );
+        let zone_targets = zones
+            .iter()
+            .map(|zone| zone.target.clone())
+            .collect::<Vec<_>>();
+        let dock_hit = DropTargetDescriptor::hit_test(
+            &zone_targets,
+            UiPoint::new(390.0, 100.0),
+            &source.payload,
+            &source.allowed_operations,
+        )
+        .expect("right dock hit");
+        let dock_change = state
+            .apply_drop_hit_to_panels(
+                &mut panels,
+                &source.payload,
+                &dock_hit,
+                UiRect::new(40.0, 48.0, 220.0, 180.0),
+            )
+            .expect("dock commit");
+
+        assert_eq!(
+            dock_change.next,
+            DockPanelPlacement::Docked(DockSide::Right)
+        );
+        assert_eq!(panels[0].side, DockSide::Right);
+
+        let reorder_targets = dock_panel_reorder_drop_targets(
+            "dock",
+            &panels,
+            DockSide::Right,
+            UiRect::new(0.0, 0.0, 180.0, 220.0),
+            DockWorkspaceReorderOptions::default().target_thickness(24.0),
+        );
+        let target_descriptors = reorder_targets
+            .iter()
+            .map(|target| target.target.clone())
+            .collect::<Vec<_>>();
+        let reorder_hit = DropTargetDescriptor::hit_test(
+            &target_descriptors,
+            UiPoint::new(12.0, 206.0),
+            &source.payload,
+            &source.allowed_operations,
+        )
+        .expect("reorder hit");
+        let reorder_change = state
+            .apply_reorder_hit_to_panels(&mut panels, &source.payload, &reorder_hit)
+            .expect("reorder commit");
+
+        assert_eq!(reorder_change.panel_id, "inspector");
+        assert_eq!(reorder_change.next_side, DockSide::Right);
+        assert_eq!(panels[1].id, "inspector");
+        let order: Vec<_> = state.panel_order().iter().map(String::as_str).collect();
+        assert_eq!(order, vec!["assets", "inspector", "document"]);
     }
 
     #[test]

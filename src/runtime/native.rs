@@ -17,13 +17,13 @@ use crate::platform::{
     PlatformServiceResponse, RepaintRequest, RepaintResponse,
 };
 use crate::{
-    process_document_frame, AccessibilityRole, AnimationMachine, CanvasContent, CanvasRenderOutput,
-    CanvasRenderReport, CanvasRenderRequest, CosmicTextMeasurer, DirtyRegionSet,
-    EmptyResourceResolver, HostDocumentFrameState, HostFrameOutput, HostNodeInteraction, KeyCode,
-    KeyModifiers, RenderError, RenderTarget, RendererAdapter, UiContent, UiDocument, UiFocusState,
-    UiInputEvent, UiNodeId, UiPoint, UiRect, UiSize, WgpuCanvasContext, WgpuSurfaceRenderer,
-    WheelDeltaUnit, WheelPhase, WidgetAction, WidgetActionBinding, WidgetActionQueue,
-    WidgetValueEditPhase,
+    process_document_frame, AccessibilityRole, AnimationMachine, CanvasContent,
+    CanvasHostCaptureId, CanvasRenderOutput, CanvasRenderReport, CanvasRenderRequest,
+    CosmicTextMeasurer, DirtyRegionSet, EmptyResourceResolver, HostDocumentFrameState,
+    HostFrameOutput, HostNodeInteraction, KeyCode, KeyModifiers, RenderError, RenderTarget,
+    RendererAdapter, UiContent, UiDocument, UiFocusState, UiInputEvent, UiNodeId, UiPoint, UiRect,
+    UiSize, WgpuCanvasContext, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase, WidgetAction,
+    WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
 };
 
 pub type NativeWindowResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -134,11 +134,12 @@ pub struct NativeKeyboardInput {
     pub text: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct NativeRawMouseMotion {
     pub device_id: winit::event::DeviceId,
     pub delta: (f64, f64),
     pub timestamp_millis: u64,
+    pub captured_canvas: Option<CanvasHostCaptureId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -698,7 +699,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let surface = instance.create_surface(window.clone())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
-            power_preference: wgpu::PowerPreference::default(),
+            power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
         }))?;
         let (device, queue) =
@@ -1396,6 +1397,7 @@ where
                         device_id,
                         delta,
                         timestamp_millis,
+                        captured_canvas: captured_raw_mouse_canvas(&self.frame_state.interaction),
                     },
                 )
             });
@@ -1674,6 +1676,15 @@ fn active_canvas_capture<'a>(
         .iter()
         .find(|plan| accepts(plan))
         .and_then(|plan| canvas_target(document, plan.node))
+}
+
+fn captured_raw_mouse_canvas(state: &crate::HostInteractionState) -> Option<CanvasHostCaptureId> {
+    state
+        .canvas_host_capture
+        .active_plans()
+        .iter()
+        .find(|plan| plan.pointer_lock)
+        .map(CanvasHostCaptureId::from_plan)
 }
 
 fn native_canvas_input(
@@ -2079,6 +2090,24 @@ mod tests {
         let keyboard_input =
             native_canvas_input_for_raw_event(&document, &state, &keyboard).unwrap();
         assert_eq!(keyboard_input.node, canvas_id);
+
+        let mut capture_state = crate::HostInteractionState::default();
+        capture_state
+            .canvas_host_capture
+            .sync([crate::CanvasHostCapturePlan {
+                node: canvas_id,
+                key: "viewport".to_string(),
+                rect: document.node(canvas_id).layout.rect,
+                pointer_capture: true,
+                keyboard_capture: true,
+                wheel_capture: true,
+                pointer_lock: true,
+                domain_hit_testing: true,
+            }]);
+        assert_eq!(
+            captured_raw_mouse_canvas(&capture_state),
+            Some(crate::CanvasHostCaptureId::new(canvas_id, "viewport"))
+        );
     }
 
     #[test]

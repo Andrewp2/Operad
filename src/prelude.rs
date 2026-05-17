@@ -5,35 +5,48 @@
 //! need without pulling backend adapters into backend-neutral builds.
 
 pub use crate::{
-    length, root_style, AccessibilityAction, AccessibilityChecked, AccessibilityLiveRegion,
+    length, root_style, AccessibilityAction, AccessibilityChecked,
+    AccessibilityKeyboardNavigationTrace, AccessibilityKeyboardTraceBlockedReason,
+    AccessibilityKeyboardTraceInput, AccessibilityKeyboardTraceStep, AccessibilityLiveRegion,
     AccessibilityMeta, AccessibilityRole, AccessibilityValueRange, AnimatedValues,
     AnimationBlendBinding, AnimationCondition, AnimationInputValue, AnimationMachine,
     AnimationNumberComparison, AnimationState, AnimationTickOutcome, AnimationTickReport,
     AnimationTransition, AnimationTrigger, CanvasContent, CanvasContextDescriptor,
-    CanvasContextKind, CanvasInteractionPolicy, CanvasRenderMode, ClipBehavior, ClipScope,
-    ColorRgba, ComputedLayout, DragDropSurfaceKind, DragSourceDescriptor, DragSourceId,
-    DropPayloadFilter, DropTargetDescriptor, DropTargetHit, DropTargetId, EditPhase, FieldId,
-    FieldState, FocusDirection, FontFamily, FontStretch, FontStyle, FontWeight, FormId, FormState,
-    ImageContent, InputBehavior, InteractionVisuals, KeyCode, KeyModifiers, LayoutStyle, PaintItem,
-    PaintKind, PaintList, PaintTransform, ScenePrimitive, ScrollAxes, ScrollState,
-    ScrollbarVisibility, ShaderEffect, ShaderUniform, StrokeStyle, TextContent, TextStyle,
-    TextWrap, UiContent, UiDocument, UiDocumentScale, UiFocusState, UiInputEvent, UiInputResult,
-    UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalId, UiPortalTarget, UiRect, UiSize, UiVisual,
-    UiWheelEvent, ValidationMessage, ValidationSeverity, WidgetAction, WidgetActionBinding,
-    WidgetActionId, WidgetActionKind, WidgetActionMode, WidgetActionQueue, WidgetActionTrigger,
-    ANIMATION_INPUT_ACTIVATED, ANIMATION_INPUT_ACTIVE, ANIMATION_INPUT_FOCUSED,
-    ANIMATION_INPUT_HOVER, ANIMATION_INPUT_POINTER_NORM_X, ANIMATION_INPUT_POINTER_NORM_Y,
-    ANIMATION_INPUT_POINTER_X, ANIMATION_INPUT_POINTER_Y, ANIMATION_INPUT_PRESSED,
-    APP_OVERLAY_PORTAL,
+    CanvasContextKind, CanvasHostCaptureDiagnostic, CanvasHostCaptureDiagnosticKind,
+    CanvasHostCaptureDiagnosticReport, CanvasHostCaptureId, CanvasHostCapturePlan,
+    CanvasHostCaptureState, CanvasHostCaptureTransition, CanvasInteractionPolicy, CanvasRenderMode,
+    ClipBehavior, ClipScope, ColorRgba, ComputedLayout, DragDropSurfaceKind, DragSourceDescriptor,
+    DragSourceId, DropPayloadFilter, DropTargetDescriptor, DropTargetHit, DropTargetId, EditPhase,
+    FieldId, FieldState, FocusDirection, FocusNavigationDirection, FocusRestoreTarget, FontFamily,
+    FontStretch, FontStyle, FontWeight, FormId, FormState, ImageContent, InputBehavior,
+    InteractionVisuals, KeyCode, KeyModifiers, LayoutAnimationOptions, LayoutAnimationTransition,
+    LayoutStyle, PaintItem, PaintKind, PaintList, PaintTransform, ScenePrimitive, ScrollAxes,
+    ScrollState, ScrollbarVisibility, ShaderEffect, ShaderUniform, StrokeStyle, TextContent,
+    TextStyle, TextWrap, UiContent, UiDocument, UiDocumentScale, UiFocusState, UiInputEvent,
+    UiInputResult, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalId, UiPortalTarget, UiRect,
+    UiSize, UiVisual, UiWheelEvent, ValidationMessage, ValidationSeverity,
+    VirtualAccessibilityRecord, VirtualAxis, VirtualCollectionKind, VirtualFocusPreservation,
+    VirtualItemKey, VirtualItemPlan, VirtualMeasuredExtent, VirtualOverscan, VirtualPlan,
+    VirtualPlanRequest, VirtualScrollAnchor, VirtualScrollAnchorAdjustment,
+    VirtualSelectionPreservation, VirtualStickyEdge, VirtualStickyRegion, VirtualizationBudget,
+    VirtualizationDiagnostics, VirtualizationIssue, VirtualizationIssueKind, WidgetAction,
+    WidgetActionBinding, WidgetActionId, WidgetActionKind, WidgetActionMode, WidgetActionQueue,
+    WidgetActionTrigger, ANIMATION_INPUT_ACTIVATED, ANIMATION_INPUT_ACTIVE,
+    ANIMATION_INPUT_FOCUSED, ANIMATION_INPUT_HOVER, ANIMATION_INPUT_POINTER_NORM_X,
+    ANIMATION_INPUT_POINTER_NORM_Y, ANIMATION_INPUT_POINTER_X, ANIMATION_INPUT_POINTER_Y,
+    ANIMATION_INPUT_PRESSED, APP_OVERLAY_PORTAL,
 };
 
-pub use crate::layout;
 pub use crate::platform::{
     CursorGrabMode, CursorRequest, CursorResponse, CursorShape, DragBytes, DragDropRequest,
     DragImage, DragOperation, DragPayload, LogicalPoint, LogicalRect, LogicalSize, PlatformRequest,
-    RepaintRequest,
+    PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceCapabilities,
+    PlatformServiceRequest, PlatformServiceResponse, RepaintRequest,
 };
 pub use crate::scrolling::{ProgrammaticScrollBehavior, RevealOptions, RevealScrollPlan};
+pub use crate::{
+    apply_layout_animation_transitions_to_paint_list, layout, layout_animation_transitions,
+};
 
 #[cfg(feature = "widgets")]
 pub use crate::widgets::{

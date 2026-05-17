@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentageAuto,
+    AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentageAuto, Position,
     Size as TaffySize, Style,
 };
 
@@ -16,6 +16,7 @@ use crate::{
     DragSourceDescriptor, DragSourceId, DropPayloadFilter, DropTargetDescriptor, DropTargetId,
     ImageContent, InputBehavior, LayoutStyle, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle,
     TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiVisual,
+    WidgetActionMode,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1399,6 +1400,7 @@ pub struct DataTableOptions {
     pub accessibility_label: Option<String>,
     pub row_action_prefix: Option<String>,
     pub cell_action_prefix: Option<String>,
+    pub scroll_action: Option<String>,
 }
 
 impl Default for DataTableOptions {
@@ -1436,6 +1438,7 @@ impl Default for DataTableOptions {
             accessibility_label: None,
             row_action_prefix: None,
             cell_action_prefix: None,
+            scroll_action: None,
         }
     }
 }
@@ -1448,6 +1451,11 @@ impl DataTableOptions {
 
     pub fn with_cell_action_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.cell_action_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn with_scroll_action(mut self, action: impl Into<String>) -> Self {
+        self.scroll_action = Some(action.into());
         self
     }
 }
@@ -1491,7 +1499,14 @@ pub fn virtualized_data_table(
         ),
     );
 
-    data_table_header(document, root, format!("{name}.header"), columns, &options);
+    data_table_header(
+        document,
+        root,
+        format!("{name}.header"),
+        columns,
+        &options,
+        scroll_offset.x,
+    );
 
     let body = document.add_child(
         root,
@@ -1521,6 +1536,9 @@ pub fn virtualized_data_table(
 
     if let Some(scroll) = &mut document.node_mut(body).scroll {
         scroll.offset = scroll_offset;
+    }
+    if let Some(action) = options.scroll_action.clone() {
+        document.node_mut(body).action = Some(action.into());
     }
 
     let visible_rows = spec.visible_rows();
@@ -1768,6 +1786,7 @@ fn data_table_header(
     name: impl Into<String>,
     columns: &[DataTableColumn],
     options: &DataTableOptions,
+    scroll_x: f32,
 ) -> UiNodeId {
     let name = name.into();
     let header = document.add_child(
@@ -1794,39 +1813,50 @@ fn data_table_header(
             AccessibilityMeta::new(AccessibilityRole::ListItem)
                 .label("Column headers")
                 .value(format!("{} columns", columns.len())),
-        ),
+        )
+        .with_scroll(ScrollAxes::HORIZONTAL),
     );
+    if let Some(scroll) = &mut document.node_mut(header).scroll {
+        scroll.offset.x = finite_nonnegative(scroll_x);
+    }
 
     for (column_index, column) in columns.iter().enumerate() {
-        let cell = document.add_child(
-            header,
-            UiNode::container(
-                format!("{name}.{}", column.id),
-                UiNodeStyle {
-                    layout: LayoutStyle::from_taffy_style(Style {
-                        display: Display::Flex,
-                        flex_direction: FlexDirection::Row,
-                        align_items: Some(AlignItems::Center),
-                        justify_content: Some(justify_content(column.alignment)),
-                        size: TaffySize {
-                            width: px(column.resolved_width()),
-                            height: Dimension::percent(1.0),
-                        },
-                        padding: taffy::prelude::Rect::length(6.0),
-                        flex_shrink: 0.0,
-                        ..Default::default()
-                    })
-                    .style,
-                    clip: ClipBehavior::Clip,
+        let mut cell_node = UiNode::container(
+            format!("{name}.{}", column.id),
+            UiNodeStyle {
+                layout: LayoutStyle::from_taffy_style(Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    align_items: Some(AlignItems::Center),
+                    justify_content: Some(justify_content(column.alignment)),
+                    size: TaffySize {
+                        width: px(column.resolved_width()),
+                        height: Dimension::percent(1.0),
+                    },
+                    padding: taffy::prelude::Rect::length(6.0),
+                    flex_shrink: 0.0,
                     ..Default::default()
-                },
-            )
-            .with_accessibility(data_table_header_accessibility(
-                column,
-                column_index,
-                columns.len(),
-            )),
-        );
+                })
+                .style,
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_accessibility(data_table_header_accessibility(
+            column,
+            column_index,
+            columns.len(),
+        ));
+        if let Some(action) = column
+            .sort_command
+            .as_ref()
+            .or(column.filter_command.as_ref())
+        {
+            cell_node = cell_node
+                .with_input(InputBehavior::BUTTON)
+                .with_action(action.as_str());
+        }
+        let cell = document.add_child(header, cell_node);
         if let Some(image) = column.leading_image.clone() {
             document.add_child(
                 cell,
@@ -1854,6 +1884,47 @@ fn data_table_header(
                 }),
             ),
         );
+        if column.resizable {
+            if let Some(command) = &column.resize_command {
+                document.add_child(
+                    cell,
+                    UiNode::container(
+                        format!("{name}.{}.resize", column.id),
+                        UiNodeStyle {
+                            layout: LayoutStyle::from_taffy_style(Style {
+                                position: Position::Absolute,
+                                inset: taffy::prelude::Rect {
+                                    left: LengthPercentageAuto::auto(),
+                                    right: LengthPercentageAuto::length(0.0),
+                                    top: LengthPercentageAuto::length(0.0),
+                                    bottom: LengthPercentageAuto::length(0.0),
+                                },
+                                size: TaffySize {
+                                    width: px(8.0),
+                                    height: Dimension::percent(1.0),
+                                },
+                                ..Default::default()
+                            })
+                            .style,
+                            ..Default::default()
+                        },
+                    )
+                    .with_input(InputBehavior::BUTTON)
+                    .with_action(command.as_str())
+                    .with_action_mode(WidgetActionMode::PointerEditParentRect)
+                    .with_visual(UiVisual::panel(
+                        ColorRgba::new(108, 122, 144, 110),
+                        None,
+                        0.0,
+                    ))
+                    .with_accessibility(
+                        AccessibilityMeta::new(AccessibilityRole::Button)
+                            .label(format!("Resize {}", column.label))
+                            .focusable(),
+                    ),
+                );
+            }
+        }
     }
 
     header

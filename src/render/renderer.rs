@@ -12,8 +12,8 @@ use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
 use crate::platform::{
     BackendCapabilities, CursorGrabMode, CursorRequest, LayerOrder, LogicalRect, PixelSize,
-    PlatformRequest, PlatformRequestIdAllocator, PlatformServiceRequest, ResourceHandle,
-    ResourceId, ResourceKind,
+    PlatformRequest, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceCapabilities,
+    PlatformServiceRequest, PlatformServiceResponse, ResourceHandle, ResourceId, ResourceKind,
 };
 use crate::{
     AccessibilityMeta, AccessibilityRole, AccessibilitySummary, CanvasContent, ColorRgba,
@@ -659,6 +659,130 @@ impl CanvasHostCaptureTransition {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CanvasHostCaptureDiagnosticKind {
+    Active,
+    Acquired,
+    Updated,
+    Released,
+    Unavailable,
+    Denied,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasHostCaptureDiagnostic {
+    pub kind: CanvasHostCaptureDiagnosticKind,
+    pub id: Option<CanvasHostCaptureId>,
+    pub node: Option<UiNodeId>,
+    pub key: Option<String>,
+    pub reason: String,
+    pub previous: Option<CanvasHostCapturePlan>,
+    pub current: Option<CanvasHostCapturePlan>,
+    pub platform_requests: Vec<PlatformRequest>,
+    pub unsupported_requests: Vec<PlatformRequest>,
+    pub platform_responses: Vec<PlatformServiceResponse>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CanvasHostCaptureDiagnosticReport {
+    pub diagnostics: Vec<CanvasHostCaptureDiagnostic>,
+}
+
+impl CanvasHostCaptureDiagnosticReport {
+    pub fn from_state_transition(
+        state: &CanvasHostCaptureState,
+        transition: &CanvasHostCaptureTransition,
+        capabilities: PlatformServiceCapabilities,
+    ) -> Self {
+        let mut report = Self::default();
+
+        if transition.is_empty() {
+            report.diagnostics.extend(
+                state
+                    .active_plans()
+                    .iter()
+                    .cloned()
+                    .map(active_capture_diagnostic),
+            );
+            return report;
+        }
+
+        report.diagnostics.extend(
+            transition
+                .changes
+                .iter()
+                .map(|change| transition_capture_diagnostic(change, capabilities)),
+        );
+        report
+    }
+
+    pub fn with_platform_responses(
+        mut self,
+        requests: &[PlatformServiceRequest],
+        responses: &[PlatformServiceResponse],
+    ) -> Self {
+        for response in responses {
+            if !is_denied_cursor_response(response) {
+                continue;
+            }
+
+            let request = requests
+                .iter()
+                .find(|request| response.is_for(request))
+                .map(|request| request.request.clone());
+            let source = request
+                .as_ref()
+                .and_then(|request| {
+                    self.diagnostics.iter().find(|diagnostic| {
+                        diagnostic
+                            .platform_requests
+                            .iter()
+                            .any(|candidate| candidate == request)
+                    })
+                })
+                .map(|diagnostic| {
+                    (
+                        diagnostic.id.clone(),
+                        diagnostic.node,
+                        diagnostic.key.clone(),
+                        diagnostic.previous.clone(),
+                        diagnostic.current.clone(),
+                    )
+                })
+                .unwrap_or((None, None, None, None, None));
+            self.diagnostics.push(CanvasHostCaptureDiagnostic {
+                kind: CanvasHostCaptureDiagnosticKind::Denied,
+                id: source.0,
+                node: source.1,
+                key: source.2,
+                reason: "Host denied or failed a cursor request used by canvas capture.".to_owned(),
+                previous: source.3,
+                current: source.4,
+                platform_requests: request.into_iter().collect(),
+                unsupported_requests: Vec::new(),
+                platform_responses: vec![response.clone()],
+            });
+        }
+        self
+    }
+
+    pub fn has_kind(&self, kind: CanvasHostCaptureDiagnosticKind) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == kind)
+    }
+
+    pub fn diagnostics_for(
+        &self,
+        id: &CanvasHostCaptureId,
+    ) -> impl Iterator<Item = &CanvasHostCaptureDiagnostic> {
+        let id = id.clone();
+        self.diagnostics
+            .iter()
+            .filter(move |diagnostic| diagnostic.id.as_ref() == Some(&id))
+    }
+}
+
 fn normalized_capture_plans(
     plans: impl IntoIterator<Item = CanvasHostCapturePlan>,
 ) -> Vec<CanvasHostCapturePlan> {
@@ -696,6 +820,106 @@ fn change_order(kind: CanvasHostCaptureChangeKind) -> u8 {
 
 fn capture_id_order(a: &CanvasHostCaptureId, b: &CanvasHostCaptureId) -> Ordering {
     a.node.0.cmp(&b.node.0).then_with(|| a.key.cmp(&b.key))
+}
+
+fn active_capture_diagnostic(plan: CanvasHostCapturePlan) -> CanvasHostCaptureDiagnostic {
+    let id = CanvasHostCaptureId::from_plan(&plan);
+    CanvasHostCaptureDiagnostic {
+        kind: CanvasHostCaptureDiagnosticKind::Active,
+        id: Some(id),
+        node: Some(plan.node),
+        key: Some(plan.key.clone()),
+        reason: "Canvas host capture is active and unchanged.".to_owned(),
+        previous: Some(plan.clone()),
+        current: Some(plan),
+        platform_requests: Vec::new(),
+        unsupported_requests: Vec::new(),
+        platform_responses: Vec::new(),
+    }
+}
+
+fn transition_capture_diagnostic(
+    change: &CanvasHostCaptureChange,
+    capabilities: PlatformServiceCapabilities,
+) -> CanvasHostCaptureDiagnostic {
+    let platform_requests = capture_platform_requests_for_change(change);
+    let unsupported_requests = platform_requests
+        .iter()
+        .filter(|request| !capabilities.supports(request))
+        .cloned()
+        .collect::<Vec<_>>();
+    let kind = if unsupported_requests.is_empty() {
+        match change.kind {
+            CanvasHostCaptureChangeKind::Acquired => CanvasHostCaptureDiagnosticKind::Acquired,
+            CanvasHostCaptureChangeKind::Updated => CanvasHostCaptureDiagnosticKind::Updated,
+            CanvasHostCaptureChangeKind::Released => CanvasHostCaptureDiagnosticKind::Released,
+        }
+    } else {
+        CanvasHostCaptureDiagnosticKind::Unavailable
+    };
+    let plan = change.current.as_ref().or(change.previous.as_ref());
+    CanvasHostCaptureDiagnostic {
+        kind,
+        id: Some(change.id.clone()),
+        node: plan.map(|plan| plan.node),
+        key: plan.map(|plan| plan.key.clone()),
+        reason: capture_diagnostic_reason(change.kind, kind, unsupported_requests.len()),
+        previous: change.previous.clone(),
+        current: change.current.clone(),
+        platform_requests,
+        unsupported_requests,
+        platform_responses: Vec::new(),
+    }
+}
+
+fn capture_platform_requests_for_change(change: &CanvasHostCaptureChange) -> Vec<PlatformRequest> {
+    let mut requests = Vec::new();
+    if matches!(
+        change.kind,
+        CanvasHostCaptureChangeKind::Updated | CanvasHostCaptureChangeKind::Released
+    ) {
+        if let Some(previous) = &change.previous {
+            requests.extend(previous.release_platform_requests());
+        }
+    }
+    if matches!(
+        change.kind,
+        CanvasHostCaptureChangeKind::Acquired | CanvasHostCaptureChangeKind::Updated
+    ) {
+        if let Some(current) = &change.current {
+            requests.extend(current.platform_requests());
+        }
+    }
+    requests
+}
+
+fn capture_diagnostic_reason(
+    change: CanvasHostCaptureChangeKind,
+    kind: CanvasHostCaptureDiagnosticKind,
+    unsupported_count: usize,
+) -> String {
+    if kind == CanvasHostCaptureDiagnosticKind::Unavailable {
+        return format!(
+            "Canvas host capture {:?} needs {unsupported_count} platform request(s) unsupported by current backend capabilities.",
+            change
+        );
+    }
+
+    match change {
+        CanvasHostCaptureChangeKind::Acquired => "Canvas host capture was acquired.".to_owned(),
+        CanvasHostCaptureChangeKind::Updated => {
+            "Canvas host capture requirements changed.".to_owned()
+        }
+        CanvasHostCaptureChangeKind::Released => "Canvas host capture was released.".to_owned(),
+    }
+}
+
+fn is_denied_cursor_response(response: &PlatformServiceResponse) -> bool {
+    matches!(
+        &response.response,
+        PlatformResponse::Cursor(crate::platform::CursorResponse::Unsupported)
+            | PlatformResponse::Cursor(crate::platform::CursorResponse::Error(_))
+    )
 }
 
 #[derive(Debug)]
@@ -1905,7 +2129,7 @@ mod tests {
 
     #[test]
     fn render_request_extracts_embedded_canvas_requests() {
-        let canvas = CanvasContent::new("fabricad.mask.viewport")
+        let canvas = CanvasContent::new("editor.mask.viewport")
             .native_viewport()
             .interaction(CanvasInteractionPolicy::NATIVE_VIEWPORT);
         let mut paint = PaintList::default();
@@ -1924,7 +2148,7 @@ mod tests {
 
         assert_eq!(canvases.len(), 1);
         assert_eq!(canvases[0].node, UiNodeId(7));
-        assert_eq!(canvases[0].canvas.key, "fabricad.mask.viewport");
+        assert_eq!(canvases[0].canvas.key, "editor.mask.viewport");
         assert_eq!(
             canvases[0].canvas.render_mode,
             CanvasRenderMode::NativeViewport
@@ -1937,7 +2161,7 @@ mod tests {
 
     #[test]
     fn canvas_host_capture_plan_maps_pointer_lock_to_cursor_requests() {
-        let canvas = CanvasContent::new("fabricad.mask.viewport")
+        let canvas = CanvasContent::new("editor.mask.viewport")
             .native_viewport()
             .interaction(CanvasInteractionPolicy::NATIVE_VIEWPORT);
         let mut paint = PaintList::default();
@@ -1956,7 +2180,7 @@ mod tests {
 
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].node, UiNodeId(7));
-        assert_eq!(plans[0].key, "fabricad.mask.viewport");
+        assert_eq!(plans[0].key, "editor.mask.viewport");
         assert_eq!(plans[0].rect, UiRect::new(12.0, 16.0, 320.0, 180.0));
         assert!(plans[0].pointer_capture);
         assert!(plans[0].keyboard_capture);
@@ -2034,7 +2258,7 @@ mod tests {
         let mut state = CanvasHostCaptureState::new();
         let plan = capture_plan(
             7,
-            "fabricad.mask.viewport",
+            "editor.mask.viewport",
             UiRect::new(12.0, 16.0, 320.0, 180.0),
         );
 
@@ -2048,7 +2272,7 @@ mod tests {
         );
         assert_eq!(
             transition.changes[0].id,
-            CanvasHostCaptureId::new(UiNodeId(7), "fabricad.mask.viewport")
+            CanvasHostCaptureId::new(UiNodeId(7), "editor.mask.viewport")
         );
         assert_eq!(
             transition.platform_requests(),
@@ -2081,7 +2305,7 @@ mod tests {
         let mut state = CanvasHostCaptureState::new();
         let plan = capture_plan(
             7,
-            "fabricad.mask.viewport",
+            "editor.mask.viewport",
             UiRect::new(12.0, 16.0, 320.0, 180.0),
         );
         assert!(!state.sync([plan.clone()]).is_empty());
@@ -2097,12 +2321,12 @@ mod tests {
         let mut state = CanvasHostCaptureState::new();
         let initial = capture_plan(
             7,
-            "fabricad.mask.viewport",
+            "editor.mask.viewport",
             UiRect::new(12.0, 16.0, 320.0, 180.0),
         );
         let moved = capture_plan(
             7,
-            "fabricad.mask.viewport",
+            "editor.mask.viewport",
             UiRect::new(24.0, 32.0, 400.0, 220.0),
         );
         state.sync([initial]);
@@ -2130,7 +2354,7 @@ mod tests {
         let mut state = CanvasHostCaptureState::new();
         state.sync([capture_plan(
             7,
-            "fabricad.mask.viewport",
+            "editor.mask.viewport",
             UiRect::new(12.0, 16.0, 320.0, 180.0),
         )]);
 
@@ -2149,6 +2373,113 @@ mod tests {
                 PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
             ]
         );
+    }
+
+    #[test]
+    fn canvas_host_capture_diagnostics_report_capture_lifecycle_and_capabilities() {
+        let mut state = CanvasHostCaptureState::new();
+        let plan = capture_plan(
+            7,
+            "editor.mask.viewport",
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+        );
+        let id = CanvasHostCaptureId::new(UiNodeId(7), "editor.mask.viewport");
+
+        let transition = state.sync([plan.clone()]);
+        let report = CanvasHostCaptureDiagnosticReport::from_state_transition(
+            &state,
+            &transition,
+            PlatformServiceCapabilities::DESKTOP,
+        );
+
+        assert!(report.has_kind(CanvasHostCaptureDiagnosticKind::Acquired));
+        let diagnostic = report.diagnostics_for(&id).next().unwrap();
+        assert_eq!(diagnostic.kind, CanvasHostCaptureDiagnosticKind::Acquired);
+        assert_eq!(diagnostic.node, Some(UiNodeId(7)));
+        assert_eq!(diagnostic.key.as_deref(), Some("editor.mask.viewport"));
+        assert_eq!(diagnostic.current.as_ref(), Some(&plan));
+        assert_eq!(
+            diagnostic.platform_requests,
+            vec![
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+            ]
+        );
+        assert!(diagnostic.unsupported_requests.is_empty());
+
+        let unavailable = CanvasHostCaptureDiagnosticReport::from_state_transition(
+            &state,
+            &transition,
+            PlatformServiceCapabilities::NONE,
+        );
+        let unavailable = unavailable.diagnostics_for(&id).next().unwrap();
+        assert_eq!(
+            unavailable.kind,
+            CanvasHostCaptureDiagnosticKind::Unavailable
+        );
+        assert_eq!(
+            unavailable.unsupported_requests,
+            transition.platform_requests()
+        );
+
+        let active = CanvasHostCaptureDiagnosticReport::from_state_transition(
+            &state,
+            &CanvasHostCaptureTransition::new(),
+            PlatformServiceCapabilities::DESKTOP,
+        );
+        let active = active.diagnostics_for(&id).next().unwrap();
+        assert_eq!(active.kind, CanvasHostCaptureDiagnosticKind::Active);
+        assert_eq!(active.previous.as_ref(), Some(&plan));
+        assert_eq!(active.current.as_ref(), Some(&plan));
+
+        let release = state.sync([]);
+        let release_report = CanvasHostCaptureDiagnosticReport::from_state_transition(
+            &state,
+            &release,
+            PlatformServiceCapabilities::DESKTOP,
+        );
+        let release = release_report.diagnostics_for(&id).next().unwrap();
+        assert_eq!(release.kind, CanvasHostCaptureDiagnosticKind::Released);
+        assert_eq!(release.previous.as_ref(), Some(&plan));
+        assert_eq!(release.current, None);
+    }
+
+    #[test]
+    fn canvas_host_capture_diagnostics_attach_denied_cursor_responses_to_capture() {
+        let mut state = CanvasHostCaptureState::new();
+        let plan = capture_plan(
+            7,
+            "editor.mask.viewport",
+            UiRect::new(12.0, 16.0, 320.0, 180.0),
+        );
+        let id = CanvasHostCaptureId::new(UiNodeId(7), "editor.mask.viewport");
+        let transition = state.sync([plan.clone()]);
+        let mut allocator = PlatformRequestIdAllocator::new(400);
+        let service_requests = transition.platform_service_requests(&mut allocator);
+        let responses = vec![service_requests[0].unsupported_response()];
+
+        let report = CanvasHostCaptureDiagnosticReport::from_state_transition(
+            &state,
+            &transition,
+            PlatformServiceCapabilities::DESKTOP,
+        )
+        .with_platform_responses(&service_requests, &responses);
+
+        assert!(report.has_kind(CanvasHostCaptureDiagnosticKind::Denied));
+        let denied = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == CanvasHostCaptureDiagnosticKind::Denied)
+            .unwrap();
+        assert_eq!(denied.id, Some(id));
+        assert_eq!(denied.node, Some(UiNodeId(7)));
+        assert_eq!(denied.key.as_deref(), Some("editor.mask.viewport"));
+        assert_eq!(denied.current.as_ref(), Some(&plan));
+        assert_eq!(
+            denied.platform_requests,
+            vec![service_requests[0].request.clone()]
+        );
+        assert_eq!(denied.platform_responses, responses);
     }
 
     #[derive(Debug, Default)]
@@ -2199,7 +2530,7 @@ mod tests {
 
     #[test]
     fn canvas_render_registry_dispatches_requests_with_context() {
-        let canvas = CanvasContent::new("fabricad.mask.viewport")
+        let canvas = CanvasContent::new("editor.mask.viewport")
             .callback()
             .pointer_capture(true)
             .keyboard_capture(true)
@@ -2228,7 +2559,7 @@ mod tests {
         );
         let mut backend = CanvasBackend::default();
         let mut registry = CanvasRenderRegistry::new();
-        assert!(!registry.register("fabricad.mask.viewport", RecordingCanvasHandler));
+        assert!(!registry.register("editor.mask.viewport", RecordingCanvasHandler));
 
         let report = registry
             .render_frame_canvases_strict(&request, &mut backend)
@@ -2238,7 +2569,7 @@ mod tests {
         assert_eq!(report.missing_count(), 0);
         assert_eq!(report.failed_count(), 0);
         assert!(report.repaint_requested());
-        assert_eq!(backend.rendered, vec!["fabricad.mask.viewport".to_string()]);
+        assert_eq!(backend.rendered, vec!["editor.mask.viewport".to_string()]);
         assert_eq!(backend.scale_factors, vec![2.0]);
         assert_eq!(backend.focused, vec![true]);
         assert_eq!(backend.dirty, vec![true]);
@@ -2247,7 +2578,7 @@ mod tests {
         let hit_collections = report.hit_collections();
         assert_eq!(hit_collections.len(), 1);
         assert_eq!(hit_collections[0].node, UiNodeId(7));
-        assert_eq!(hit_collections[0].key, "fabricad.mask.viewport");
+        assert_eq!(hit_collections[0].key, "editor.mask.viewport");
         assert_eq!(hit_collections[0].len(), 3);
         assert_eq!(hit_collections[0].targets[2].id, "primary-range");
         assert_eq!(
