@@ -12,18 +12,22 @@ use crate::input::{
     RawPointerEvent, RawTextInputEvent, RawWheelEvent,
 };
 use crate::platform::{
-    CursorGrabMode, CursorRequest, CursorResponse, CursorShape, PixelSize, PlatformErrorCode,
-    PlatformRequest, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceRequest,
-    PlatformServiceResponse, RepaintRequest, RepaintResponse,
+    BackendAdapterKind, BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode,
+    CursorRequest, CursorResponse, CursorShape, InputCapabilities, LayerCapabilities,
+    OpenUrlResponse, PixelSize, PlatformErrorCode, PlatformRequest, PlatformRequestIdAllocator,
+    PlatformResponse, PlatformServiceCapabilities, PlatformServiceError, PlatformServiceRequest,
+    PlatformServiceResponse, RenderingCapabilities, RepaintRequest, RepaintResponse,
+    ResourceCapabilities,
 };
 use crate::{
-    process_document_frame, AccessibilityRole, AnimationMachine, CanvasContent,
-    CanvasHostCaptureId, CanvasRenderOutput, CanvasRenderReport, CanvasRenderRequest,
-    CosmicTextMeasurer, DirtyRegionSet, EmptyResourceResolver, HostDocumentFrameState,
-    HostFrameOutput, HostNodeInteraction, KeyCode, KeyModifiers, RenderError, RenderTarget,
-    RendererAdapter, UiContent, UiDocument, UiFocusState, UiInputEvent, UiNodeId, UiPoint, UiRect,
-    UiSize, WgpuCanvasContext, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase, WidgetAction,
-    WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
+    classify_render_error, process_document_frame, AccessibilityCapabilities, AccessibilityRole,
+    AnimationMachine, CanvasContent, CanvasHostCaptureId, CanvasRenderOutput, CanvasRenderReport,
+    CanvasRenderRequest, CosmicTextMeasurer, DirtyRegionSet, EmptyResourceResolver, ErrorKind,
+    ErrorReport, FallbackDecision, HostDocumentFrameState, HostFrameOutput, HostNodeInteraction,
+    KeyCode, KeyModifiers, RenderError, RenderTarget, RendererAdapter, RuntimeErrorKind, UiContent,
+    UiDocument, UiFocusState, UiInputEvent, UiNodeId, UiPoint, UiRect, UiSize, WgpuCanvasContext,
+    WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase, WidgetAction, WidgetActionBinding,
+    WidgetActionQueue, WidgetValueEditPhase,
 };
 
 pub type NativeWindowResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -33,7 +37,8 @@ struct NativeWindowRunError {
     title: String,
     phase: &'static str,
     message: String,
-    app_error: Option<String>,
+    report: Option<ErrorReport>,
+    app_error: Option<NativeRuntimeFailure>,
     last_frame: Option<NativeFrameTimingReport>,
 }
 
@@ -42,14 +47,48 @@ impl NativeWindowRunError {
         title: impl Into<String>,
         phase: &'static str,
         message: impl Into<String>,
-        app_error: Option<String>,
+        app_error: Option<NativeRuntimeFailure>,
         last_frame: Option<NativeFrameTimingReport>,
     ) -> Self {
         Self {
             title: title.into(),
             phase,
             message: message.into(),
+            report: None,
             app_error,
+            last_frame,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_report(
+        title: impl Into<String>,
+        phase: &'static str,
+        report: ErrorReport,
+        app_error: Option<NativeRuntimeFailure>,
+        last_frame: Option<NativeFrameTimingReport>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            phase,
+            message: report.message.clone(),
+            report: Some(report),
+            app_error,
+            last_frame,
+        }
+    }
+
+    fn from_failure(
+        title: impl Into<String>,
+        failure: NativeRuntimeFailure,
+        last_frame: Option<NativeFrameTimingReport>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            phase: failure.phase,
+            message: failure.message,
+            report: failure.report,
+            app_error: None,
             last_frame,
         }
     }
@@ -62,6 +101,9 @@ impl fmt::Display for NativeWindowRunError {
             "native window {:?} failed while {}: {}",
             self.title, self.phase, self.message
         )?;
+        if let Some(report) = &self.report {
+            write!(f, "\nerror report: {report}")?;
+        }
         if let Some(app_error) = &self.app_error {
             write!(f, "\nlast application error: {app_error}")?;
         }
@@ -73,6 +115,39 @@ impl fmt::Display for NativeWindowRunError {
 }
 
 impl Error for NativeWindowRunError {}
+
+#[derive(Debug, Clone)]
+struct NativeRuntimeFailure {
+    phase: &'static str,
+    message: String,
+    report: Option<ErrorReport>,
+}
+
+impl NativeRuntimeFailure {
+    fn from_error(phase: &'static str, error: Box<dyn Error>) -> Self {
+        let message = error.to_string();
+        let report = error.downcast_ref::<ErrorReport>().cloned().or_else(|| {
+            error
+                .downcast_ref::<RenderError>()
+                .map(classify_render_error)
+        });
+        Self {
+            phase,
+            message,
+            report,
+        }
+    }
+}
+
+impl fmt::Display for NativeRuntimeFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.phase, self.message)?;
+        if let Some(report) = &self.report {
+            write!(formatter, "\n{report}")?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct NativeFrameTimingReport {
@@ -160,6 +235,9 @@ type RawMouseMotionHook<State> = Box<dyn FnMut(&mut State, NativeRawMouseMotion)
 type CanvasInputHook<State> = Box<dyn FnMut(&mut State, NativeCanvasInput) -> bool>;
 type PlatformRequestsHook<State> =
     Box<dyn FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformRequest>>;
+type PlatformServiceRequestsHook<State> =
+    Box<dyn FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformServiceRequest>>;
+type PlatformResponsesHook<State> = Box<dyn FnMut(&mut State, &[PlatformServiceResponse])>;
 type BeforeRenderHook<State> = Box<dyn FnMut(&mut State, NativeWindowMetrics)>;
 type IdleRedrawHook<State> = Box<dyn Fn(&State) -> bool>;
 
@@ -172,6 +250,8 @@ pub struct NativeWindowHooks<State> {
     pub raw_mouse_motion: Option<RawMouseMotionHook<State>>,
     pub canvas_input: Option<CanvasInputHook<State>>,
     pub platform_requests: Option<PlatformRequestsHook<State>>,
+    pub platform_service_requests: Option<PlatformServiceRequestsHook<State>>,
+    pub platform_responses: Option<PlatformResponsesHook<State>>,
     pub before_render: Option<BeforeRenderHook<State>>,
     pub idle_redraw: Option<IdleRedrawHook<State>>,
 }
@@ -242,6 +322,23 @@ impl<State> NativeWindowHooks<State> {
         self
     }
 
+    pub fn with_platform_service_requests(
+        mut self,
+        platform_service_requests: impl FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformServiceRequest>
+            + 'static,
+    ) -> Self {
+        self.platform_service_requests = Some(Box::new(platform_service_requests));
+        self
+    }
+
+    pub fn with_platform_responses(
+        mut self,
+        platform_responses: impl FnMut(&mut State, &[PlatformServiceResponse]) + 'static,
+    ) -> Self {
+        self.platform_responses = Some(Box::new(platform_responses));
+        self
+    }
+
     pub fn with_before_render(
         mut self,
         before_render: impl FnMut(&mut State, NativeWindowMetrics) + 'static,
@@ -267,6 +364,8 @@ impl<State> Default for NativeWindowHooks<State> {
             raw_mouse_motion: None,
             canvas_input: None,
             platform_requests: None,
+            platform_service_requests: None,
+            platform_responses: None,
             before_render: None,
             idle_redraw: None,
         }
@@ -478,6 +577,74 @@ impl Default for NativeWindowOptions {
     }
 }
 
+pub fn native_window_capabilities() -> BackendCapabilities {
+    BackendCapabilities::new("native-window")
+        .adapter(BackendAdapterKind::Wgpu)
+        .input(InputCapabilities::DESKTOP)
+        .resources(ResourceCapabilities {
+            images: true,
+            icons: true,
+            textures: true,
+            thumbnails: true,
+            tinted_icons: true,
+            partial_texture_updates: true,
+        })
+        .layers(LayerCapabilities::STANDARD)
+        .services(PlatformServiceCapabilities::DESKTOP)
+        .rendering(RenderingCapabilities {
+            high_dpi: true,
+            offscreen: false,
+            deterministic_snapshots: false,
+            partial_updates: true,
+            webgpu_surface: true,
+            native_child_windows: false,
+            platform_overlays: false,
+        })
+        .accessibility(AccessibilityCapabilities::NONE)
+}
+
+fn native_startup_report(
+    title: &str,
+    kind: RuntimeErrorKind,
+    operation: &'static str,
+    message: impl Into<String>,
+    next_step: &'static str,
+) -> ErrorReport {
+    ErrorReport::fatal(ErrorKind::Runtime(kind), message)
+        .context("backend", "native-window")
+        .context("target", title)
+        .context("operation", operation)
+        .context("host_subsystem", "winit/wgpu startup")
+        .context("user_visible_consequence", "the native window did not open")
+        .context("next_step", next_step)
+        .fallback(FallbackDecision::abort_frame(
+            "native startup cannot continue without a window and WGPU surface",
+        ))
+}
+
+fn native_renderer_startup_report(title: &str, error: RenderError) -> ErrorReport {
+    classify_render_error(&error)
+        .context("backend", "native-window")
+        .context("target", title)
+        .context("operation", "initializing the WGPU surface renderer")
+        .context("host_subsystem", "WgpuSurfaceRenderer")
+        .context("user_visible_consequence", "the native window did not open")
+        .context(
+            "next_step",
+            "Check GPU adapter support, surface format support, and renderer initialization logs.",
+        )
+        .fallback(FallbackDecision::abort_frame(
+            "native startup cannot continue without a renderer",
+        ))
+}
+
+pub fn run(
+    title: impl Into<String>,
+    view: impl FnMut(UiSize) -> UiDocument + 'static,
+) -> NativeWindowResult {
+    run_ui_document(title, view)
+}
+
 pub fn run_ui_document(
     title: impl Into<String>,
     view: impl FnMut(UiSize) -> UiDocument + 'static,
@@ -594,11 +761,9 @@ where
         .into());
     }
     if let Some(error) = app.error {
-        Err(NativeWindowRunError::new(
+        Err(NativeWindowRunError::from_failure(
             app.options.title.clone(),
-            "rendering a frame",
             error,
-            None,
             app.last_frame_report,
         )
         .into())
@@ -633,7 +798,7 @@ struct NativeWindowApp<State, Update, View> {
     last_tick: Instant,
     last_animation_tick: Instant,
     last_frame_report: Option<NativeFrameTimingReport>,
-    error: Option<String>,
+    error: Option<NativeRuntimeFailure>,
 }
 
 impl<State, Update, View> NativeWindowApp<State, Update, View> {
@@ -692,36 +857,75 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         if let Some(min_size) = self.options.min_size {
             attributes = attributes.with_min_inner_size(logical_size(min_size));
         }
-        let window = Arc::new(event_loop.create_window(attributes)?);
+        let window = Arc::new(event_loop.create_window(attributes).map_err(|error| {
+            native_startup_report(
+                &self.options.title,
+                RuntimeErrorKind::WindowCreation,
+                "creating the native window",
+                error.to_string(),
+                "Check the windowing backend, display server, and platform permissions.",
+            )
+        })?);
         let size = nonzero_window_size(window.inner_size());
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let surface = instance.create_surface(window.clone())?;
+        let surface = instance.create_surface(window.clone()).map_err(|error| {
+            native_startup_report(
+                &self.options.title,
+                RuntimeErrorKind::SurfaceCreation,
+                "creating the WGPU surface",
+                error.to_string(),
+                "Verify that the native window exposes a compatible raw window/display handle.",
+            )
+        })?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
-        }))?;
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("native-window-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            }))?;
+        }))
+        .map_err(|error| {
+            native_startup_report(
+                &self.options.title,
+                RuntimeErrorKind::AdapterRequest,
+                "requesting a WGPU adapter",
+                error.to_string(),
+                "Install a supported GPU driver or enable a WGPU backend available on this platform.",
+            )
+        })?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("native-window-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .map_err(|error| {
+            native_startup_report(
+                &self.options.title,
+                RuntimeErrorKind::DeviceRequest,
+                "requesting a WGPU device",
+                error.to_string(),
+                "Lower required WGPU features/limits or update the GPU driver.",
+            )
+        })?;
         let surface_config = surface
             .get_default_config(&adapter, size.width, size.height)
-            .ok_or("adapter does not support the native window surface")?;
+            .ok_or_else(|| {
+                native_startup_report(
+                    &self.options.title,
+                    RuntimeErrorKind::SurfaceConfiguration,
+                    "selecting the WGPU surface configuration",
+                    "adapter does not support the native window surface",
+                    "Try another WGPU backend or run on a GPU/display combination with surface presentation support.",
+                )
+            })?;
 
         self.window_id = Some(window.id());
-        self.renderer = Some(WgpuSurfaceRenderer::new(
-            surface,
-            device,
-            queue,
-            surface_config,
-        )?);
+        self.renderer = Some(
+            WgpuSurfaceRenderer::new(surface, device, queue, surface_config)
+                .map_err(|error| native_renderer_startup_report(&self.options.title, error))?,
+        );
         self.window = Some(window);
         Ok(())
     }
@@ -843,6 +1047,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             .into_iter()
             .map(|request| self.apply_platform_service_request(request))
             .collect::<Vec<_>>();
+        self.dispatch_platform_responses(&responses);
         self.pending_platform_responses.extend(responses);
     }
 
@@ -857,6 +1062,12 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
 
     fn apply_platform_request(&mut self, request: PlatformRequest) -> PlatformResponse {
         match request {
+            PlatformRequest::Clipboard(request) => {
+                PlatformResponse::Clipboard(apply_native_clipboard_request(request))
+            }
+            PlatformRequest::OpenUrl(request) => {
+                PlatformResponse::OpenUrl(open_native_url(&request.url))
+            }
             PlatformRequest::Cursor(request) => {
                 PlatformResponse::Cursor(self.apply_cursor_request(request))
             }
@@ -868,12 +1079,35 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     }
 
     fn apply_hook_platform_requests(&mut self, metrics: NativeWindowMetrics) {
-        let Some(platform_requests) = self.hooks.platform_requests.as_mut() else {
+        if self.hooks.platform_requests.is_none() && self.hooks.platform_service_requests.is_none()
+        {
             return;
-        };
-        let requests = platform_requests(&mut self.state, metrics);
-        for request in requests {
-            self.apply_platform_request(request);
+        }
+
+        let mut requests = Vec::new();
+        if let Some(platform_requests) = self.hooks.platform_requests.as_mut() {
+            requests.extend(
+                self.platform_request_ids
+                    .allocate_all(platform_requests(&mut self.state, metrics)),
+            );
+        }
+        if let Some(platform_service_requests) = self.hooks.platform_service_requests.as_mut() {
+            requests.extend(platform_service_requests(&mut self.state, metrics));
+        }
+        let responses = requests
+            .into_iter()
+            .map(|request| self.apply_platform_service_request(request))
+            .collect::<Vec<_>>();
+        self.dispatch_platform_responses(&responses);
+        self.pending_platform_responses.extend(responses);
+    }
+
+    fn dispatch_platform_responses(&mut self, responses: &[PlatformServiceResponse]) {
+        if responses.is_empty() {
+            return;
+        }
+        if let Some(platform_responses) = self.hooks.platform_responses.as_mut() {
+            platform_responses(&mut self.state, responses);
         }
     }
 
@@ -1204,9 +1438,10 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     fn fail_and_exit(
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
-        error: impl ToString,
+        phase: &'static str,
+        error: Box<dyn Error>,
     ) {
-        self.error = Some(error.to_string());
+        self.error = Some(NativeRuntimeFailure::from_error(phase, error));
         event_loop.exit();
     }
 }
@@ -1223,7 +1458,7 @@ where
             return;
         }
         if let Err(error) = self.init_window(event_loop) {
-            self.fail_and_exit(event_loop, error);
+            self.fail_and_exit(event_loop, "initializing native window", error);
             return;
         }
         self.request_redraw();
@@ -1366,7 +1601,7 @@ where
             }
             winit::event::WindowEvent::RedrawRequested => {
                 if let Err(error) = self.render() {
-                    self.fail_and_exit(event_loop, error);
+                    self.fail_and_exit(event_loop, "rendering a frame", error);
                 }
             }
             winit::event::WindowEvent::ScaleFactorChanged { .. } => {
@@ -1753,6 +1988,112 @@ fn cursor_error(error: impl ToString) -> CursorResponse {
     ))
 }
 
+fn apply_native_clipboard_request(request: ClipboardRequest) -> ClipboardResponse {
+    match request {
+        ClipboardRequest::ReadText => with_native_clipboard(|clipboard| {
+            clipboard
+                .get_text()
+                .map(|text| ClipboardResponse::Text(Some(text)))
+        }),
+        ClipboardRequest::WriteText(text) => with_native_clipboard(|clipboard| {
+            clipboard
+                .set_text(text)
+                .map(|_| ClipboardResponse::Completed)
+        }),
+        ClipboardRequest::Clear => with_native_clipboard(|clipboard| {
+            clipboard
+                .set_text(String::new())
+                .map(|_| ClipboardResponse::Completed)
+        }),
+        ClipboardRequest::ReadFiles | ClipboardRequest::WriteFiles(_) => {
+            ClipboardResponse::Unsupported
+        }
+    }
+}
+
+fn with_native_clipboard(
+    operation: impl FnOnce(&mut arboard::Clipboard) -> Result<ClipboardResponse, arboard::Error>,
+) -> ClipboardResponse {
+    match arboard::Clipboard::new() {
+        Ok(mut clipboard) => operation(&mut clipboard).unwrap_or_else(native_clipboard_error),
+        Err(error) => native_clipboard_error(error),
+    }
+}
+
+fn native_clipboard_error(error: arboard::Error) -> ClipboardResponse {
+    ClipboardResponse::Error(PlatformServiceError::new(
+        PlatformErrorCode::Failed,
+        error.to_string(),
+    ))
+}
+
+fn open_native_url(url: &str) -> OpenUrlResponse {
+    if url.trim().is_empty() {
+        return OpenUrlResponse::Error(PlatformServiceError::new(
+            PlatformErrorCode::InvalidRequest,
+            "URL is empty",
+        ));
+    }
+
+    let command = native_open_url_command(url);
+    match std::process::Command::new(command.program)
+        .args(command.args)
+        .status()
+    {
+        Ok(status) if status.success() => OpenUrlResponse::Opened,
+        Ok(status) => OpenUrlResponse::Error(PlatformServiceError::new(
+            PlatformErrorCode::Failed,
+            format!("open URL command exited with status {status}"),
+        )),
+        Err(error) => OpenUrlResponse::Error(PlatformServiceError::new(
+            PlatformErrorCode::Failed,
+            error.to_string(),
+        )),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeOpenUrlCommand {
+    program: &'static str,
+    args: Vec<String>,
+}
+
+fn native_open_url_command(url: &str) -> NativeOpenUrlCommand {
+    #[cfg(target_os = "windows")]
+    {
+        NativeOpenUrlCommand {
+            program: "cmd",
+            args: vec![
+                "/C".to_string(),
+                "start".to_string(),
+                String::new(),
+                url.to_string(),
+            ],
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        NativeOpenUrlCommand {
+            program: "open",
+            args: vec![url.to_string()],
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        NativeOpenUrlCommand {
+            program: "xdg-open",
+            args: vec![url.to_string()],
+        }
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        NativeOpenUrlCommand {
+            program: "",
+            args: vec![url.to_string()],
+        }
+    }
+}
+
 fn canvas_pixel_size(width: f32, height: f32, scale: f32) -> Option<PixelSize> {
     let width = pixel_extent(width, scale)?;
     let height = pixel_extent(height, scale)?;
@@ -1999,6 +2340,47 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_rejects_unsupported_clipboard_file_requests_without_host_glue() {
+        assert_eq!(
+            apply_native_clipboard_request(ClipboardRequest::ReadFiles),
+            ClipboardResponse::Unsupported
+        );
+        assert_eq!(
+            apply_native_clipboard_request(ClipboardRequest::WriteFiles(vec![])),
+            ClipboardResponse::Unsupported
+        );
+    }
+
+    #[test]
+    fn native_open_url_uses_platform_launcher_and_validates_empty_url() {
+        assert!(matches!(
+            open_native_url(""),
+            OpenUrlResponse::Error(error)
+                if error.code == PlatformErrorCode::InvalidRequest
+                    && error.message.contains("empty")
+        ));
+
+        let command = native_open_url_command("https://example.test");
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(command.program, "cmd");
+            assert_eq!(command.args[0], "/C");
+            assert_eq!(command.args[1], "start");
+            assert_eq!(command.args[3], "https://example.test");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(command.program, "open");
+            assert_eq!(command.args, vec!["https://example.test".to_string()]);
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert_eq!(command.program, "xdg-open");
+            assert_eq!(command.args, vec!["https://example.test".to_string()]);
+        }
+    }
+
+    #[test]
     fn native_cursor_helpers_map_public_cursor_contracts_to_winit() {
         assert_eq!(
             native_cursor_icon(CursorShape::Pointer),
@@ -2156,7 +2538,11 @@ mod tests {
             "showcase",
             "running the platform event loop",
             "ExitFailure(1)",
-            Some("Io error: Broken pipe (os error 32)".to_string()),
+            Some(NativeRuntimeFailure {
+                phase: "rendering a frame",
+                message: "Io error: Broken pipe (os error 32)".to_string(),
+                report: None,
+            }),
             Some(NativeFrameTimingReport {
                 viewport: UiSize::new(1200.0, 900.0),
                 nodes: 1635,
@@ -2179,5 +2565,30 @@ mod tests {
         assert!(error.contains("last completed frame"));
         assert!(error.contains("build_document=423ms"));
         assert!(error.contains("nodes=1635"));
+    }
+
+    #[test]
+    fn native_startup_report_includes_operation_consequence_and_next_step() {
+        let report = native_startup_report(
+            "showcase",
+            RuntimeErrorKind::AdapterRequest,
+            "requesting a WGPU adapter",
+            "No compatible adapter was found",
+            "Install a supported GPU driver.",
+        );
+        let error = NativeWindowRunError::from_report(
+            "showcase",
+            "initializing native window",
+            report,
+            None,
+            None,
+        )
+        .to_string();
+
+        assert!(error.contains("native window \"showcase\" failed"));
+        assert!(error.contains("requesting a WGPU adapter"));
+        assert!(error.contains("user_visible_consequence: the native window did not open"));
+        assert!(error.contains("next_step: Install a supported GPU driver."));
+        assert!(error.contains("fallback: AbortFrame"));
     }
 }

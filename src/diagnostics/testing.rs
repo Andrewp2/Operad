@@ -88,6 +88,7 @@ impl RendererAdapter for PaintRecorderRenderer {
                 offscreen: false,
                 deterministic_snapshots: false,
                 partial_updates: true,
+                ..RenderingCapabilities::NONE
             })
     }
 
@@ -1348,11 +1349,14 @@ pub fn run_ui_state_matrix<'a>(
                         case.label, viewport.label
                     ))
                 })?;
-            require_state_matrix_blocking_audit_clean(
-                &case.label,
-                viewport,
-                &matrix_document.document,
-            )?;
+            JustWorkAssertions::new(&matrix_document.document)
+                .require_clean()
+                .map_err(|error| {
+                    TestFailure::new(format!(
+                        "state matrix `{}` at viewport `{}` ({:?}) had blocking audit warnings: {}",
+                        case.label, viewport.label, viewport.size, error
+                    ))
+                })?;
             for target in &matrix_document.targets {
                 require_state_matrix_target_geometry(
                     &case.label,
@@ -1379,27 +1383,7 @@ pub fn run_ui_state_matrix<'a>(
     Ok(report)
 }
 
-fn require_state_matrix_blocking_audit_clean(
-    case_label: &str,
-    viewport: &UiStateMatrixViewport,
-    document: &UiDocument,
-) -> TestResult {
-    let warnings = document
-        .audit_layout()
-        .into_iter()
-        .filter(state_matrix_blocking_warning)
-        .collect::<Vec<_>>();
-    if warnings.is_empty() {
-        Ok(())
-    } else {
-        Err(TestFailure::new(format!(
-            "state matrix `{case_label}` at viewport `{}` ({:?}) had blocking audit warnings: {warnings:?}",
-            viewport.label, viewport.size
-        )))
-    }
-}
-
-fn state_matrix_blocking_warning(warning: &AuditWarning) -> bool {
+pub fn is_blocking_just_work_warning(warning: &AuditWarning) -> bool {
     matches!(
         warning,
         AuditWarning::NonFiniteRect { .. }
@@ -1408,6 +1392,8 @@ fn state_matrix_blocking_warning(warning: &AuditWarning) -> bool {
             | AuditWarning::InteractiveTooSmall { .. }
             | AuditWarning::DuplicateNodeName { .. }
             | AuditWarning::TextClipped { .. }
+            | AuditWarning::ScrollRangeHidden { .. }
+            | AuditWarning::ScrollOffsetOutOfRange { .. }
             | AuditWarning::NodeOutsideRoot { .. }
             | AuditWarning::PaintItemEmptyClip { .. }
     )
@@ -1873,6 +1859,96 @@ impl<'a> AuditAssertions<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct JustWorkAssertions<'a> {
+    document: &'a UiDocument,
+    warnings: Vec<AuditWarning>,
+}
+
+impl<'a> JustWorkAssertions<'a> {
+    pub fn new(document: &'a UiDocument) -> Self {
+        Self {
+            document,
+            warnings: document.audit_layout(),
+        }
+    }
+
+    pub const fn document(&self) -> &'a UiDocument {
+        self.document
+    }
+
+    pub fn warnings(&self) -> &[AuditWarning] {
+        &self.warnings
+    }
+
+    pub fn blocking_warnings(&self) -> Vec<&AuditWarning> {
+        self.warnings
+            .iter()
+            .filter(|warning| is_blocking_just_work_warning(warning))
+            .collect()
+    }
+
+    pub fn require_clean(&self) -> TestResult {
+        let warnings = self.blocking_warnings();
+        if warnings.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no blocking Just Work audit warnings, got {warnings:?}"
+            )))
+        }
+    }
+
+    pub fn require_no_text_clipping(&self) -> TestResult {
+        self.require_no_blocking_kind("text clipping", |warning| {
+            matches!(warning, AuditWarning::TextClipped { .. })
+        })
+    }
+
+    pub fn require_no_scroll_failures(&self) -> TestResult {
+        self.require_no_blocking_kind("scroll range", |warning| {
+            matches!(
+                warning,
+                AuditWarning::ScrollRangeHidden { .. }
+                    | AuditWarning::ScrollOffsetOutOfRange { .. }
+            )
+        })
+    }
+
+    pub fn require_no_geometry_failures(&self) -> TestResult {
+        self.require_no_blocking_kind("geometry", |warning| {
+            matches!(
+                warning,
+                AuditWarning::NonFiniteRect { .. }
+                    | AuditWarning::InvisibleInteractiveNode { .. }
+                    | AuditWarning::EmptyInteractiveClip { .. }
+                    | AuditWarning::InteractiveTooSmall { .. }
+                    | AuditWarning::NodeOutsideRoot { .. }
+                    | AuditWarning::PaintItemEmptyClip { .. }
+            )
+        })
+    }
+
+    fn require_no_blocking_kind(
+        &self,
+        label: &str,
+        mut predicate: impl FnMut(&AuditWarning) -> bool,
+    ) -> TestResult {
+        let warnings = self
+            .warnings
+            .iter()
+            .filter(|warning| is_blocking_just_work_warning(warning) && predicate(warning))
+            .collect::<Vec<_>>();
+        if warnings.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no blocking Just Work {label} warnings, got {warnings:?}"
+            )))
+        }
+    }
+}
+
 fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
     matches!(
         warning,
@@ -1893,29 +1969,7 @@ fn is_accessibility_audit_warning(warning: &AuditWarning) -> bool {
 }
 
 fn warning_node(warning: &AuditWarning) -> Option<UiNodeId> {
-    match warning {
-        AuditWarning::NonFiniteRect { node, .. }
-        | AuditWarning::InvisibleInteractiveNode { node, .. }
-        | AuditWarning::EmptyInteractiveClip { node, .. }
-        | AuditWarning::InteractiveTooSmall { node, .. }
-        | AuditWarning::FocusableMissingFromAccessibilityTree { node, .. }
-        | AuditWarning::InteractiveAccessibilityMissing { node, .. }
-        | AuditWarning::AccessibleNameMissing { node, .. }
-        | AuditWarning::AccessibilityActionMissing { node, .. }
-        | AuditWarning::AccessibilityActionIdMissing { node, .. }
-        | AuditWarning::AccessibilityActionLabelMissing { node, .. }
-        | AuditWarning::AccessibilityActionDuplicate { node, .. }
-        | AuditWarning::AccessibilityStateMissing { node, .. }
-        | AuditWarning::AccessibilityValueMissing { node, .. }
-        | AuditWarning::AccessibilityValueRangeMissing { node, .. }
-        | AuditWarning::AccessibilityValueRangeInvalid { node, .. }
-        | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
-        | AuditWarning::TextClipped { node, .. }
-        | AuditWarning::TextContrastTooLow { node, .. }
-        | AuditWarning::NodeOutsideRoot { node, .. }
-        | AuditWarning::PaintItemEmptyClip { node } => Some(*node),
-        AuditWarning::DuplicateNodeName { .. } => None,
-    }
+    warning.node()
 }
 
 #[derive(Debug, Clone)]
@@ -4747,6 +4801,52 @@ mod tests {
         audit
             .require_no_text_contrast_gap("readable_text")
             .expect("readable contrast");
+    }
+
+    #[test]
+    fn just_work_assertions_expose_blocking_edge_falloff_warnings() {
+        let mut document = UiDocument::new(root_style(180.0, 90.0));
+        let scroll = document.add_child(
+            document.root,
+            UiNode::container(
+                "vertical.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::from_taffy_style(Style {
+                        size: TaffySize {
+                            width: length(80.0),
+                            height: length(40.0),
+                        },
+                        ..Default::default()
+                    })
+                    .style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        document.add_child(
+            scroll,
+            UiNode::container(
+                "wide.content",
+                LayoutStyle::size(160.0, 40.0).with_flex_shrink(0.0),
+            ),
+        );
+        document
+            .compute_layout(UiSize::new(180.0, 90.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let audit = JustWorkAssertions::new(&document);
+        assert!(audit.require_clean().is_err());
+        assert!(audit.require_no_scroll_failures().is_err());
+        audit
+            .require_no_text_clipping()
+            .expect("scroll issue is not text clipping");
+        assert!(audit
+            .blocking_warnings()
+            .iter()
+            .any(|warning| matches!(warning, AuditWarning::ScrollRangeHidden { name, .. } if name == "vertical.scroll")));
+        assert!(audit.warnings().iter().any(is_blocking_just_work_warning));
     }
 
     #[test]

@@ -20,8 +20,8 @@ use crate::input::{
 };
 use crate::platform::{
     BackendAdapterKind, BackendCapabilities, ClipboardRequest, CursorGrabMode, CursorRequest,
-    CursorShape, LayerCapabilities, PlatformRequest, PlatformRequestIdAllocator, PlatformResponse,
-    PlatformServiceCapabilities, PlatformServiceRequest, PlatformServiceResponse,
+    CursorShape, InputCapabilities, LayerCapabilities, PlatformRequest, PlatformRequestIdAllocator,
+    PlatformResponse, PlatformServiceCapabilities, PlatformServiceRequest, PlatformServiceResponse,
     RenderingCapabilities, RepaintRequest, ResourceCapabilities, ResourceDomain, ResourceHandle,
     ResourceKind,
 };
@@ -162,10 +162,13 @@ pub fn egui_host_capabilities() -> BackendCapabilities {
             partial_texture_updates: true,
         })
         .layers(LayerCapabilities::STANDARD)
+        .input(InputCapabilities::STANDARD)
         .services(PlatformServiceCapabilities {
             clipboard_write: true,
             open_url: true,
             cursor_shape: true,
+            cursor_visible: true,
+            cursor_grab: true,
             cursor_confine: true,
             repaint: true,
             ..PlatformServiceCapabilities::NONE

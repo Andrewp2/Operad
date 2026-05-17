@@ -7,13 +7,18 @@
 
 use std::time::Duration;
 
+use crate::host::HostDocumentFrameOutput;
+use crate::platform::{
+    BackendCapabilities, BackendCapabilityDiagnostic, CapabilityDecision, CapabilityFallback,
+};
 use crate::{
     AccessibilityAdapterApplyReport, AccessibilityAdapterRequest, AccessibilityAdapterResponse,
     AccessibilityAdapterState, AccessibilityAnnouncement, AccessibilityPreferences,
-    AccessibilityRequestKind, DirtyFlags, EffectiveGeometryRecord, EffectiveHitRejection,
-    FocusRestoreTarget, FocusTrap, FrameTiming, OverlayEntry, OverlayHitTestDecision, OverlayId,
-    OverlayStack, PerformanceSnapshot, UiInputResult, UiNodeId, WidgetAction, WidgetActionBinding,
-    WidgetActionKind, WidgetActionTrigger, WidgetDragPhase, WidgetValueEditPhase,
+    AccessibilityRequestKind, AuditAxis, AuditWarning, DirtyFlags, EffectiveGeometryRecord,
+    EffectiveHitRejection, FocusRestoreTarget, FocusTrap, FrameTiming, OverlayEntry,
+    OverlayHitTestDecision, OverlayId, OverlayStack, PerformanceSnapshot, UiDocument,
+    UiInputResult, UiNodeId, WidgetAction, WidgetActionBinding, WidgetActionKind,
+    WidgetActionTrigger, WidgetDragPhase, WidgetValueEditPhase,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -26,10 +31,12 @@ pub enum DiagnosticSeverity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagnosticCategory {
+    JustWork,
     InputRouting,
     WidgetAction,
     OverlayStack,
     Accessibility,
+    HostCapability,
     GeometryHit,
     RenderTiming,
     Performance,
@@ -385,8 +392,57 @@ impl From<DirtyFlags> for DirtyFlagsDiagnostic {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JustWorkIssueKind {
+    Geometry,
+    Interaction,
+    Accessibility,
+    Text,
+    Scroll,
+    Paint,
+    Naming,
+}
+
+impl JustWorkIssueKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Geometry => "geometry",
+            Self::Interaction => "interaction",
+            Self::Accessibility => "accessibility",
+            Self::Text => "text",
+            Self::Scroll => "scroll",
+            Self::Paint => "paint",
+            Self::Naming => "naming",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JustWorkIssueDiagnostic {
+    pub warning: AuditWarning,
+    pub kind: JustWorkIssueKind,
+    pub node: Option<UiNodeId>,
+    pub name: Option<String>,
+    pub summary: String,
+    pub remediation: String,
+}
+
+impl From<&AuditWarning> for JustWorkIssueDiagnostic {
+    fn from(warning: &AuditWarning) -> Self {
+        Self {
+            warning: warning.clone(),
+            kind: just_work_issue_kind(warning),
+            node: warning.node(),
+            name: warning.name().map(str::to_owned),
+            summary: audit_warning_summary(warning),
+            remediation: audit_warning_remediation(warning),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiagnosticRecord {
+    JustWorkIssue(JustWorkIssueDiagnostic),
     InputRouting(InputRoutingDiagnostic),
     WidgetAction(WidgetActionDiagnostic),
     OverlayStack(OverlayStackDiagnostic),
@@ -394,6 +450,7 @@ pub enum DiagnosticRecord {
     AccessibilityRequest(AccessibilityRequestDiagnostic),
     AccessibilityResponse(AccessibilityResponseDiagnostic),
     AccessibilityOutput(AccessibilityOutputDiagnostic),
+    HostCapability(BackendCapabilityDiagnostic),
     GeometryHit(GeometryHitDiagnostic),
     RenderTiming(RenderTimingDiagnostic),
     PerformanceSnapshot(PerformanceSnapshotDiagnostic),
@@ -404,7 +461,9 @@ pub enum DiagnosticRecord {
 impl DiagnosticRecord {
     pub fn severity(&self) -> DiagnosticSeverity {
         match self {
+            Self::JustWorkIssue(issue) => just_work_issue_severity(issue),
             Self::AccessibilityResponse(response) => response.severity,
+            Self::HostCapability(capability) => host_capability_severity(capability),
             Self::GeometryHit(hit) if !hit.rejected_by.is_empty() => DiagnosticSeverity::Trace,
             Self::PerformanceSnapshot(performance)
                 if !performance.missing_stage_labels.is_empty()
@@ -420,12 +479,14 @@ impl DiagnosticRecord {
 
     pub fn category(&self) -> DiagnosticCategory {
         match self {
+            Self::JustWorkIssue(_) => DiagnosticCategory::JustWork,
             Self::InputRouting(_) => DiagnosticCategory::InputRouting,
             Self::WidgetAction(_) => DiagnosticCategory::WidgetAction,
             Self::OverlayStack(_) | Self::OverlayRouting(_) => DiagnosticCategory::OverlayStack,
             Self::AccessibilityRequest(_)
             | Self::AccessibilityResponse(_)
             | Self::AccessibilityOutput(_) => DiagnosticCategory::Accessibility,
+            Self::HostCapability(_) => DiagnosticCategory::HostCapability,
             Self::GeometryHit(_) => DiagnosticCategory::GeometryHit,
             Self::RenderTiming(_) => DiagnosticCategory::RenderTiming,
             Self::PerformanceSnapshot(_) => DiagnosticCategory::Performance,
@@ -436,6 +497,12 @@ impl DiagnosticRecord {
 
     pub fn summary(&self) -> DiagnosticSummaryRecord {
         match self {
+            Self::JustWorkIssue(issue) => DiagnosticSummaryRecord::new(
+                self.severity(),
+                self.category(),
+                format!("just-work:{}", issue.kind.label()),
+                issue.summary.clone(),
+            ),
             Self::InputRouting(input) => DiagnosticSummaryRecord::new(
                 self.severity(),
                 self.category(),
@@ -493,6 +560,12 @@ impl DiagnosticRecord {
                     output.target_summaries
                 ),
             ),
+            Self::HostCapability(capability) => DiagnosticSummaryRecord::new(
+                self.severity(),
+                self.category(),
+                capability.requirement.label(),
+                capability.summary.clone(),
+            ),
             Self::GeometryHit(hit) => DiagnosticSummaryRecord::new(
                 self.severity(),
                 self.category(),
@@ -546,6 +619,25 @@ impl DiagnosticReport {
         self.summaries.push(record.summary());
         self.records.push(record);
         self
+    }
+
+    pub fn just_work_warning(&mut self, warning: &AuditWarning) -> &mut Self {
+        self.push(DiagnosticRecord::JustWorkIssue(warning.into()))
+    }
+
+    pub fn just_work_warnings<'a>(
+        &mut self,
+        warnings: impl IntoIterator<Item = &'a AuditWarning>,
+    ) -> &mut Self {
+        for warning in warnings {
+            self.just_work_warning(warning);
+        }
+        self
+    }
+
+    pub fn just_work_document(&mut self, document: &UiDocument) -> &mut Self {
+        let warnings = document.audit_layout();
+        self.just_work_warnings(&warnings)
     }
 
     pub fn input_routing(&mut self, result: &UiInputResult) -> &mut Self {
@@ -604,6 +696,29 @@ impl DiagnosticReport {
 
     pub fn accessibility_output(&mut self, state: &AccessibilityAdapterState) -> &mut Self {
         self.push(DiagnosticRecord::AccessibilityOutput(state.into()))
+    }
+
+    pub fn host_capability(&mut self, diagnostic: BackendCapabilityDiagnostic) -> &mut Self {
+        self.push(DiagnosticRecord::HostCapability(diagnostic))
+    }
+
+    pub fn host_capabilities(
+        &mut self,
+        diagnostics: impl IntoIterator<Item = BackendCapabilityDiagnostic>,
+    ) -> &mut Self {
+        for diagnostic in diagnostics {
+            self.host_capability(diagnostic);
+        }
+        self
+    }
+
+    pub fn host_document_frame_capabilities(
+        &mut self,
+        frame: &HostDocumentFrameOutput,
+        backend: &BackendCapabilities,
+        fallback: CapabilityFallback,
+    ) -> &mut Self {
+        self.host_capabilities(frame.host_capability_diagnostics(backend, fallback))
     }
 
     pub fn geometry_hit(&mut self, record: &EffectiveGeometryRecord) -> &mut Self {
@@ -682,6 +797,298 @@ fn optional_overlay_label(overlay: Option<OverlayId>) -> String {
     overlay
         .map(overlay_label)
         .unwrap_or_else(|| "none".to_string())
+}
+
+fn just_work_issue_kind(warning: &AuditWarning) -> JustWorkIssueKind {
+    match warning {
+        AuditWarning::NonFiniteRect { .. }
+        | AuditWarning::EmptyInteractiveClip { .. }
+        | AuditWarning::NodeOutsideRoot { .. } => JustWorkIssueKind::Geometry,
+        AuditWarning::InvisibleInteractiveNode { .. }
+        | AuditWarning::InteractiveTooSmall { .. } => JustWorkIssueKind::Interaction,
+        AuditWarning::FocusableMissingFromAccessibilityTree { .. }
+        | AuditWarning::InteractiveAccessibilityMissing { .. }
+        | AuditWarning::AccessibleNameMissing { .. }
+        | AuditWarning::AccessibilityActionMissing { .. }
+        | AuditWarning::AccessibilityActionIdMissing { .. }
+        | AuditWarning::AccessibilityActionLabelMissing { .. }
+        | AuditWarning::AccessibilityActionDuplicate { .. }
+        | AuditWarning::AccessibilityStateMissing { .. }
+        | AuditWarning::AccessibilityValueMissing { .. }
+        | AuditWarning::AccessibilityValueRangeMissing { .. }
+        | AuditWarning::AccessibilityValueRangeInvalid { .. }
+        | AuditWarning::AccessibilityRelationTargetMissing { .. } => {
+            JustWorkIssueKind::Accessibility
+        }
+        AuditWarning::TextClipped { .. } | AuditWarning::TextContrastTooLow { .. } => {
+            JustWorkIssueKind::Text
+        }
+        AuditWarning::ScrollRangeHidden { .. } | AuditWarning::ScrollOffsetOutOfRange { .. } => {
+            JustWorkIssueKind::Scroll
+        }
+        AuditWarning::PaintItemEmptyClip { .. } => JustWorkIssueKind::Paint,
+        AuditWarning::DuplicateNodeName { .. } => JustWorkIssueKind::Naming,
+    }
+}
+
+fn just_work_issue_severity(issue: &JustWorkIssueDiagnostic) -> DiagnosticSeverity {
+    match &issue.warning {
+        AuditWarning::FocusableMissingFromAccessibilityTree { .. }
+        | AuditWarning::InteractiveAccessibilityMissing { .. }
+        | AuditWarning::AccessibleNameMissing { .. }
+        | AuditWarning::AccessibilityActionMissing { .. }
+        | AuditWarning::AccessibilityActionIdMissing { .. }
+        | AuditWarning::AccessibilityActionLabelMissing { .. }
+        | AuditWarning::AccessibilityActionDuplicate { .. }
+        | AuditWarning::AccessibilityStateMissing { .. }
+        | AuditWarning::AccessibilityValueMissing { .. }
+        | AuditWarning::AccessibilityValueRangeMissing { .. }
+        | AuditWarning::AccessibilityValueRangeInvalid { .. }
+        | AuditWarning::AccessibilityRelationTargetMissing { .. }
+        | AuditWarning::TextContrastTooLow { .. }
+        | AuditWarning::DuplicateNodeName { .. } => DiagnosticSeverity::Warning,
+        AuditWarning::NonFiniteRect { .. }
+        | AuditWarning::InvisibleInteractiveNode { .. }
+        | AuditWarning::EmptyInteractiveClip { .. }
+        | AuditWarning::InteractiveTooSmall { .. }
+        | AuditWarning::TextClipped { .. }
+        | AuditWarning::ScrollRangeHidden { .. }
+        | AuditWarning::ScrollOffsetOutOfRange { .. }
+        | AuditWarning::NodeOutsideRoot { .. }
+        | AuditWarning::PaintItemEmptyClip { .. } => DiagnosticSeverity::Error,
+    }
+}
+
+fn host_capability_severity(diagnostic: &BackendCapabilityDiagnostic) -> DiagnosticSeverity {
+    if diagnostic.supported {
+        return DiagnosticSeverity::Info;
+    }
+
+    match diagnostic.decision {
+        CapabilityDecision::EmitDiagnostic => DiagnosticSeverity::Warning,
+        CapabilityDecision::UseFallback | CapabilityDecision::DisableFeature => {
+            DiagnosticSeverity::Info
+        }
+        CapabilityDecision::UseFeature => DiagnosticSeverity::Info,
+    }
+}
+
+fn audit_warning_summary(warning: &AuditWarning) -> String {
+    match warning {
+        AuditWarning::NonFiniteRect { name, .. } => {
+            format!("node `{name}` has non-finite layout geometry")
+        }
+        AuditWarning::InvisibleInteractiveNode { name, .. } => {
+            format!("interactive node `{name}` is not visible")
+        }
+        AuditWarning::EmptyInteractiveClip { name, .. } => {
+            format!("interactive node `{name}` has an empty effective clip")
+        }
+        AuditWarning::InteractiveTooSmall { name, rect, .. } => format!(
+            "interactive node `{name}` is too small for reliable input: {:.1}x{:.1}",
+            rect.width, rect.height
+        ),
+        AuditWarning::DuplicateNodeName { name } => {
+            format!("node name `{name}` is used more than once")
+        }
+        AuditWarning::FocusableMissingFromAccessibilityTree { name, .. } => {
+            format!("focusable node `{name}` is missing from the accessibility tree")
+        }
+        AuditWarning::InteractiveAccessibilityMissing { name, .. } => {
+            format!("interactive node `{name}` has no accessibility metadata")
+        }
+        AuditWarning::AccessibleNameMissing { name, role, .. } => {
+            format!("accessible {:?} node `{name}` has no name", role)
+        }
+        AuditWarning::AccessibilityActionMissing { name, role, .. } => {
+            format!("accessible {:?} node `{name}` has no action", role)
+        }
+        AuditWarning::AccessibilityActionIdMissing { name, .. } => {
+            format!("accessibility action on `{name}` has no stable id")
+        }
+        AuditWarning::AccessibilityActionLabelMissing {
+            name, action_id, ..
+        } => {
+            format!("accessibility action `{action_id}` on `{name}` has no label")
+        }
+        AuditWarning::AccessibilityActionDuplicate {
+            name, action_id, ..
+        } => {
+            format!("accessibility action `{action_id}` is duplicated on `{name}`")
+        }
+        AuditWarning::AccessibilityStateMissing {
+            name, role, state, ..
+        } => {
+            format!(
+                "accessible {:?} node `{name}` is missing {:?} state",
+                role, state
+            )
+        }
+        AuditWarning::AccessibilityValueMissing { name, role, .. } => {
+            format!("accessible {:?} node `{name}` has no value", role)
+        }
+        AuditWarning::AccessibilityValueRangeMissing { name, role, .. } => {
+            format!("accessible {:?} node `{name}` has no value range", role)
+        }
+        AuditWarning::AccessibilityValueRangeInvalid {
+            name, role, issue, ..
+        } => format!(
+            "accessible {:?} node `{name}` has an invalid value range: {:?}",
+            role, issue
+        ),
+        AuditWarning::AccessibilityRelationTargetMissing {
+            name,
+            relation,
+            target,
+            ..
+        } => format!(
+            "accessible node `{name}` has a {:?} relation to missing {}",
+            relation,
+            node_label(*target)
+        ),
+        AuditWarning::TextClipped {
+            name,
+            rect,
+            clip_rect,
+            ..
+        } => format!(
+            "text node `{name}` is clipped: rect {:.1}x{:.1}, clip {:.1}x{:.1}",
+            rect.width, rect.height, clip_rect.width, clip_rect.height
+        ),
+        AuditWarning::ScrollRangeHidden {
+            name,
+            axis,
+            viewport,
+            content,
+            ..
+        } => format!(
+            "scroll node `{name}` hides {} content: viewport {:.1}, content {:.1}",
+            audit_axis_label(*axis),
+            viewport,
+            content
+        ),
+        AuditWarning::ScrollOffsetOutOfRange {
+            name,
+            axis,
+            offset,
+            max_offset,
+            ..
+        } => format!(
+            "scroll node `{name}` has {} offset {:.1} outside 0..{:.1}",
+            audit_axis_label(*axis),
+            offset,
+            max_offset
+        ),
+        AuditWarning::TextContrastTooLow {
+            name,
+            contrast_ratio,
+            required_ratio,
+            ..
+        } => format!(
+            "text node `{name}` contrast is {:.2}:1, below required {:.2}:1",
+            contrast_ratio, required_ratio
+        ),
+        AuditWarning::NodeOutsideRoot { name, rect, .. } => format!(
+            "node `{name}` is outside the root bounds at {:.1},{:.1} {:.1}x{:.1}",
+            rect.x, rect.y, rect.width, rect.height
+        ),
+        AuditWarning::PaintItemEmptyClip { node } => {
+            format!("paint item for {} has an empty clip", node_label(*node))
+        }
+    }
+}
+
+fn audit_warning_remediation(warning: &AuditWarning) -> String {
+    match warning {
+        AuditWarning::NonFiniteRect { .. } => {
+            "Check size, position, transform, and layout constraint inputs for NaN or infinity."
+                .to_string()
+        }
+        AuditWarning::InvisibleInteractiveNode { .. } => {
+            "Disable input for hidden content or keep the node visible while it can receive input."
+                .to_string()
+        }
+        AuditWarning::EmptyInteractiveClip { .. } => {
+            "Increase the computed size or change the clipping/scroll policy for this control."
+                .to_string()
+        }
+        AuditWarning::InteractiveTooSmall { .. } => {
+            "Publish a larger minimum size, padding, or explicit compact hit-target policy."
+                .to_string()
+        }
+        AuditWarning::DuplicateNodeName { .. } => {
+            "Give repeated nodes stable unique names so diagnostics and tests can target them."
+                .to_string()
+        }
+        AuditWarning::FocusableMissingFromAccessibilityTree { .. }
+        | AuditWarning::InteractiveAccessibilityMissing { .. } => {
+            "Attach accessibility metadata or hide the node from input and focus traversal."
+                .to_string()
+        }
+        AuditWarning::AccessibleNameMissing { .. } => {
+            "Provide a label directly or through an accessibility labelled-by relation."
+                .to_string()
+        }
+        AuditWarning::AccessibilityActionMissing { .. } => {
+            "Publish an accessibility action that performs the same operation as pointer input."
+                .to_string()
+        }
+        AuditWarning::AccessibilityActionIdMissing { .. } => {
+            "Give the accessibility action a stable non-empty id.".to_string()
+        }
+        AuditWarning::AccessibilityActionLabelMissing { .. } => {
+            "Give the accessibility action a user-facing label.".to_string()
+        }
+        AuditWarning::AccessibilityActionDuplicate { .. } => {
+            "Deduplicate accessibility action ids on this node.".to_string()
+        }
+        AuditWarning::AccessibilityStateMissing { .. } => {
+            "Publish the role-specific state required by assistive technology.".to_string()
+        }
+        AuditWarning::AccessibilityValueMissing { .. } => {
+            "Publish the current accessibility value for this value-bearing role.".to_string()
+        }
+        AuditWarning::AccessibilityValueRangeMissing { .. } => {
+            "Publish min, max, and optional step metadata for this value-bearing role.".to_string()
+        }
+        AuditWarning::AccessibilityValueRangeInvalid { .. } => {
+            "Use finite value range bounds with max >= min and a positive step.".to_string()
+        }
+        AuditWarning::AccessibilityRelationTargetMissing { .. } => {
+            "Point the relation at an existing visible accessibility node.".to_string()
+        }
+        AuditWarning::TextClipped { .. } => {
+            "Compute a larger intrinsic size, enable wrapping/scrolling, or mark clipping as intentional."
+                .to_string()
+        }
+        AuditWarning::ScrollRangeHidden { axis, .. } => format!(
+            "Enable {} scrolling, resize the content to the viewport, or use an explicit clip container.",
+            audit_axis_label(*axis)
+        ),
+        AuditWarning::ScrollOffsetOutOfRange { .. } => {
+            "Clamp scroll offsets through ScrollState::clamp_offset after content or viewport changes."
+                .to_string()
+        }
+        AuditWarning::TextContrastTooLow { .. } => {
+            "Adjust foreground, background, opacity, or theme tokens to meet contrast requirements."
+                .to_string()
+        }
+        AuditWarning::NodeOutsideRoot { .. } => {
+            "Constrain layout to the root, portal the node intentionally, or place it in a scroll container."
+                .to_string()
+        }
+        AuditWarning::PaintItemEmptyClip { .. } => {
+            "Avoid emitting paint for zero-sized clips or fix the node's layout/clip chain."
+                .to_string()
+        }
+    }
+}
+
+fn audit_axis_label(axis: AuditAxis) -> &'static str {
+    match axis {
+        AuditAxis::Horizontal => "horizontal",
+        AuditAxis::Vertical => "vertical",
+    }
 }
 
 fn widget_binding_label(binding: &WidgetActionBinding) -> String {
@@ -934,9 +1341,12 @@ mod tests {
     use super::*;
     use crate::diagnostics::{required_pipeline_stages, CacheDiagnostic, FramePipelineTiming};
     use crate::{
-        AccessibilityAnnouncement, AccessibilityCapabilities, AccessibilityLiveRegion,
-        AccessibilityTree, EffectiveClip, EffectiveGeometry, FrameTiming, OverlayEntry,
-        OverlayKind, UiPoint, UiRect, WidgetActionBinding,
+        root_style, AccessibilityAnnouncement, AccessibilityCapabilities, AccessibilityLiveRegion,
+        AccessibilityTree, ApproxTextMeasurer, AuditAxis, AuditWarning, BackendCapabilities,
+        BackendCapabilityRequirement, CapabilityFallback, ClipBehavior, EffectiveClip,
+        EffectiveGeometry, FrameTiming, InputCapabilities, InputCapabilityKind, LayoutStyle,
+        OverlayEntry, OverlayKind, ScrollAxes, UiDocument, UiNode, UiNodeStyle, UiPoint, UiRect,
+        UiSize, WidgetActionBinding,
     };
 
     #[test]
@@ -1047,6 +1457,33 @@ mod tests {
     }
 
     #[test]
+    fn summarizes_host_capability_diagnostics() {
+        let backend =
+            BackendCapabilities::new("diagnostic-host").input(InputCapabilities::STANDARD);
+        let diagnostic = backend.diagnose_requirement(
+            BackendCapabilityRequirement::Input(InputCapabilityKind::RawMouseMotion),
+            CapabilityFallback::EmitDiagnostic,
+        );
+
+        let mut report = DiagnosticReport::new();
+        report.host_capability(diagnostic);
+
+        assert_eq!(report.highest_severity(), Some(DiagnosticSeverity::Warning));
+        assert!(matches!(
+            &report.records[0],
+            DiagnosticRecord::HostCapability(capability)
+                if !capability.supported
+                    && capability.decision == CapabilityDecision::EmitDiagnostic
+                    && capability.summary.contains("raw mouse motion")
+        ));
+        assert!(report.summaries.iter().any(|summary| {
+            summary.category == DiagnosticCategory::HostCapability
+                && summary.label == "input:raw mouse motion"
+                && summary.summary.contains("does not support")
+        }));
+    }
+
+    #[test]
     fn summarizes_render_timing_and_dirty_flags() {
         let timing = FrameTiming::new()
             .section("layout", Duration::from_millis(2))
@@ -1130,6 +1567,58 @@ mod tests {
             summary.category == DiagnosticCategory::Warning
                 && summary.summary == "evicted display list"
         }));
+    }
+
+    #[test]
+    fn summarizes_just_work_audit_warnings() {
+        let mut document = UiDocument::new(root_style(200.0, 120.0));
+        let scroll = document.add_child(
+            document.root,
+            UiNode::container(
+                "vertical.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(100.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        document.add_child(
+            scroll,
+            UiNode::container(
+                "wide.content",
+                LayoutStyle::size(180.0, 120.0).with_flex_shrink(0.0),
+            ),
+        );
+        document
+            .compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let mut report = DiagnosticReport::new();
+        report.just_work_document(&document);
+
+        assert_eq!(report.highest_severity(), Some(DiagnosticSeverity::Error));
+        assert!(report.summaries.iter().any(|summary| {
+            summary.category == DiagnosticCategory::JustWork
+                && summary.label == "just-work:scroll"
+                && summary.summary.contains("hides horizontal content")
+        }));
+        assert!(report.records.iter().any(|record| matches!(
+            record,
+            DiagnosticRecord::JustWorkIssue(issue)
+                if issue.kind == JustWorkIssueKind::Scroll
+                    && issue.node == Some(scroll)
+                    && issue.name.as_deref() == Some("vertical.scroll")
+                    && issue.remediation.contains("Enable horizontal scrolling")
+                    && matches!(
+                        &issue.warning,
+                        AuditWarning::ScrollRangeHidden {
+                            axis: AuditAxis::Horizontal,
+                            ..
+                        }
+                    )
+        )));
     }
 
     #[test]

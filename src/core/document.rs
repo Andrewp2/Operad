@@ -3021,6 +3021,14 @@ impl UiDocument {
     }
 
     pub fn clamp_scroll_offsets(&mut self) -> bool {
+        let changed = self.clamp_scroll_offsets_in_place();
+        if changed {
+            self.invalidate_layout();
+        }
+        changed
+    }
+
+    fn clamp_scroll_offsets_in_place(&mut self) -> bool {
         let mut changed = false;
         for node in &mut self.nodes {
             let Some(scroll) = &mut node.scroll else {
@@ -3031,9 +3039,6 @@ impl UiDocument {
                 scroll.offset = offset;
                 changed = true;
             }
-        }
-        if changed {
-            self.invalidate_layout();
         }
         changed
     }
@@ -3102,6 +3107,9 @@ impl UiDocument {
         }
         let sizing = self.compute_layout_sizing_pass(viewport, text_measurer)?;
         self.apply_layout_position_pass(&sizing, viewport)?;
+        if self.clamp_scroll_offsets_in_place() {
+            self.apply_layout_position_pass(&sizing, viewport)?;
+        }
         self.layout_cache_key = Some(cache_key);
         Ok(())
     }
@@ -3937,10 +3945,11 @@ impl UiDocument {
         content_size: &mut UiSize,
     ) {
         for child in &self.nodes[id.0].children {
-            if self.nodes[child.0].clip_scope == ClipScope::Viewport {
+            let child_node = &self.nodes[child.0];
+            if child_node.clip_scope == ClipScope::Viewport {
                 continue;
             }
-            let child_rect = self.nodes[child.0].layout.rect;
+            let child_rect = child_node.layout.rect;
             if rect_is_finite(child_rect) {
                 content_size.width = content_size
                     .width
@@ -3948,6 +3957,9 @@ impl UiDocument {
                 content_size.height = content_size
                     .height
                     .max(child_rect.bottom() - content_origin.y);
+            }
+            if child_node.scroll.is_some() || child_node.style.clip == ClipBehavior::Clip {
+                continue;
             }
             self.include_descendant_content_bounds(*child, content_origin, content_size);
         }
@@ -5232,6 +5244,12 @@ pub struct AccessibilityTree {
     pub modal_scope: Option<UiNodeId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuditAxis {
+    Horizontal,
+    Vertical,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuditWarning {
     NonFiniteRect {
@@ -5321,6 +5339,20 @@ pub enum AuditWarning {
         rect: UiRect,
         clip_rect: UiRect,
     },
+    ScrollRangeHidden {
+        node: UiNodeId,
+        name: String,
+        axis: AuditAxis,
+        viewport: f32,
+        content: f32,
+    },
+    ScrollOffsetOutOfRange {
+        node: UiNodeId,
+        name: String,
+        axis: AuditAxis,
+        offset: f32,
+        max_offset: f32,
+    },
     TextContrastTooLow {
         node: UiNodeId,
         name: String,
@@ -5337,6 +5369,64 @@ pub enum AuditWarning {
     PaintItemEmptyClip {
         node: UiNodeId,
     },
+}
+
+impl AuditWarning {
+    pub fn node(&self) -> Option<UiNodeId> {
+        match self {
+            Self::NonFiniteRect { node, .. }
+            | Self::InvisibleInteractiveNode { node, .. }
+            | Self::EmptyInteractiveClip { node, .. }
+            | Self::InteractiveTooSmall { node, .. }
+            | Self::FocusableMissingFromAccessibilityTree { node, .. }
+            | Self::InteractiveAccessibilityMissing { node, .. }
+            | Self::AccessibleNameMissing { node, .. }
+            | Self::AccessibilityActionMissing { node, .. }
+            | Self::AccessibilityActionIdMissing { node, .. }
+            | Self::AccessibilityActionLabelMissing { node, .. }
+            | Self::AccessibilityActionDuplicate { node, .. }
+            | Self::AccessibilityStateMissing { node, .. }
+            | Self::AccessibilityValueMissing { node, .. }
+            | Self::AccessibilityValueRangeMissing { node, .. }
+            | Self::AccessibilityValueRangeInvalid { node, .. }
+            | Self::AccessibilityRelationTargetMissing { node, .. }
+            | Self::TextClipped { node, .. }
+            | Self::ScrollRangeHidden { node, .. }
+            | Self::ScrollOffsetOutOfRange { node, .. }
+            | Self::TextContrastTooLow { node, .. }
+            | Self::NodeOutsideRoot { node, .. }
+            | Self::PaintItemEmptyClip { node } => Some(*node),
+            Self::DuplicateNodeName { .. } => None,
+        }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::NonFiniteRect { name, .. }
+            | Self::InvisibleInteractiveNode { name, .. }
+            | Self::EmptyInteractiveClip { name, .. }
+            | Self::InteractiveTooSmall { name, .. }
+            | Self::FocusableMissingFromAccessibilityTree { name, .. }
+            | Self::InteractiveAccessibilityMissing { name, .. }
+            | Self::AccessibleNameMissing { name, .. }
+            | Self::AccessibilityActionMissing { name, .. }
+            | Self::AccessibilityActionIdMissing { name, .. }
+            | Self::AccessibilityActionLabelMissing { name, .. }
+            | Self::AccessibilityActionDuplicate { name, .. }
+            | Self::AccessibilityStateMissing { name, .. }
+            | Self::AccessibilityValueMissing { name, .. }
+            | Self::AccessibilityValueRangeMissing { name, .. }
+            | Self::AccessibilityValueRangeInvalid { name, .. }
+            | Self::AccessibilityRelationTargetMissing { name, .. }
+            | Self::TextClipped { name, .. }
+            | Self::ScrollRangeHidden { name, .. }
+            | Self::ScrollOffsetOutOfRange { name, .. }
+            | Self::TextContrastTooLow { name, .. }
+            | Self::NodeOutsideRoot { name, .. }
+            | Self::DuplicateNodeName { name } => Some(name),
+            Self::PaintItemEmptyClip { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -5536,6 +5626,9 @@ impl UiDocument {
                     node: id,
                     name: node.name.clone(),
                 });
+            }
+            if let Some(scroll) = node.scroll {
+                push_scroll_audit_warnings(&mut warnings, id, &node.name, scroll);
             }
             if let Some(accessibility) = node
                 .accessibility
@@ -5795,6 +5888,63 @@ fn push_text_contrast_warning(
             required_ratio,
         });
     }
+}
+
+fn push_scroll_audit_warnings(
+    warnings: &mut Vec<AuditWarning>,
+    node: UiNodeId,
+    name: &str,
+    scroll: ScrollState,
+) {
+    if scroll.content_size.width > scroll.viewport_size.width + f32::EPSILON
+        && !scroll.axes.horizontal
+    {
+        warnings.push(AuditWarning::ScrollRangeHidden {
+            node,
+            name: name.to_string(),
+            axis: AuditAxis::Horizontal,
+            viewport: scroll.viewport_size.width,
+            content: scroll.content_size.width,
+        });
+    }
+    if scroll.content_size.height > scroll.viewport_size.height + f32::EPSILON
+        && !scroll.axes.vertical
+    {
+        warnings.push(AuditWarning::ScrollRangeHidden {
+            node,
+            name: name.to_string(),
+            axis: AuditAxis::Vertical,
+            viewport: scroll.viewport_size.height,
+            content: scroll.content_size.height,
+        });
+    }
+
+    let max_offset = scroll.max_offset();
+    if scroll_offset_out_of_range(scroll.offset.x, max_offset.x) {
+        warnings.push(AuditWarning::ScrollOffsetOutOfRange {
+            node,
+            name: name.to_string(),
+            axis: AuditAxis::Horizontal,
+            offset: scroll.offset.x,
+            max_offset: max_offset.x,
+        });
+    }
+    if scroll_offset_out_of_range(scroll.offset.y, max_offset.y) {
+        warnings.push(AuditWarning::ScrollOffsetOutOfRange {
+            node,
+            name: name.to_string(),
+            axis: AuditAxis::Vertical,
+            offset: scroll.offset.y,
+            max_offset: max_offset.y,
+        });
+    }
+}
+
+fn scroll_offset_out_of_range(offset: f32, max_offset: f32) -> bool {
+    !offset.is_finite()
+        || !max_offset.is_finite()
+        || offset < -f32::EPSILON
+        || offset > max_offset + f32::EPSILON
 }
 
 fn nearest_accessible_parent(
@@ -8538,6 +8688,52 @@ mod tests {
     }
 
     #[test]
+    fn nested_scroll_content_does_not_expand_parent_scroll_range() {
+        let mut doc = UiDocument::new(root_style(240.0, 160.0));
+        let outer = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "outer.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 120.0, 60.0)).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        let inner = doc.add_child(
+            outer,
+            UiNode::container(
+                "inner.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(80.0, 40.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::HORIZONTAL),
+        );
+        doc.add_child(
+            inner,
+            UiNode::container(
+                "inner.content",
+                LayoutStyle::size(260.0, 40.0).with_flex_shrink(0.0),
+            ),
+        );
+
+        doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let outer_scroll = doc.scroll_state(outer).expect("outer scroll state");
+        let inner_scroll = doc.scroll_state(inner).expect("inner scroll state");
+        assert_eq!(outer_scroll.viewport_size, UiSize::new(120.0, 60.0));
+        assert_eq!(outer_scroll.content_size, UiSize::new(120.0, 60.0));
+        assert_eq!(inner_scroll.viewport_size, UiSize::new(80.0, 40.0));
+        assert_eq!(inner_scroll.content_size, UiSize::new(260.0, 40.0));
+    }
+
+    #[test]
     fn app_overlay_portal_host_is_created_once_and_receives_children() {
         let mut doc = UiDocument::new(root_style(240.0, 160.0));
         let first = doc.add_portal_child(
@@ -9132,6 +9328,150 @@ mod tests {
         assert!(viewport.contains_point(UiPoint::new(target_rect.x, target_rect.y)));
         assert!(viewport.contains_point(UiPoint::new(target_rect.right(), target_rect.bottom())));
         assert!(!doc.scroll_to_node(scroll_area, target));
+    }
+
+    #[test]
+    fn audit_layout_reports_hidden_scroll_range_on_disabled_axis() {
+        let mut doc = UiDocument::new(root_style(200.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "vertical.scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(100.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll_area,
+            UiNode::container(
+                "wide.content",
+                LayoutStyle::size(180.0, 120.0).with_flex_shrink(0.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let warnings = doc.audit_layout();
+        assert!(warnings.iter().any(|warning| matches!(
+            warning,
+            AuditWarning::ScrollRangeHidden {
+                node,
+                name,
+                axis: AuditAxis::Horizontal,
+                viewport,
+                content,
+            } if *node == scroll_area
+                && name == "vertical.scroll"
+                && (*viewport - 100.0).abs() < 0.01
+                && (*content - 180.0).abs() < 0.01
+        )));
+        assert!(!warnings.iter().any(|warning| matches!(
+            warning,
+            AuditWarning::ScrollRangeHidden {
+                axis: AuditAxis::Vertical,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn audit_layout_reports_scroll_offsets_outside_reachable_range() {
+        let mut doc = UiDocument::new(root_style(200.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(100.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll_area,
+            UiNode::container(
+                "tall.content",
+                LayoutStyle::size(100.0, 140.0).with_flex_shrink(0.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        doc.node_mut(scroll_area).scroll.as_mut().unwrap().offset = UiPoint::new(12.0, 120.0);
+
+        let warnings = doc.audit_layout();
+        assert!(warnings.iter().any(|warning| matches!(
+            warning,
+            AuditWarning::ScrollOffsetOutOfRange {
+                node,
+                name,
+                axis: AuditAxis::Horizontal,
+                offset,
+                max_offset,
+            } if *node == scroll_area
+                && name == "scroll"
+                && (*offset - 12.0).abs() < 0.01
+                && max_offset.abs() < 0.01
+        )));
+        assert!(warnings.iter().any(|warning| matches!(
+            warning,
+            AuditWarning::ScrollOffsetOutOfRange {
+                node,
+                name,
+                axis: AuditAxis::Vertical,
+                offset,
+                max_offset,
+            } if *node == scroll_area
+                && name == "scroll"
+                && (*offset - 120.0).abs() < 0.01
+                && (*max_offset - 80.0).abs() < 0.01
+        )));
+    }
+
+    #[test]
+    fn compute_layout_clamps_stale_scroll_offsets_to_current_range() {
+        let mut doc = UiDocument::new(root_style(200.0, 120.0));
+        let scroll_area = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(100.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.node_mut(scroll_area).scroll.as_mut().unwrap().offset = UiPoint::new(0.0, 40.0);
+        let content = doc.add_child(
+            scroll_area,
+            UiNode::container(
+                "content",
+                LayoutStyle::size(100.0, 40.0).with_flex_shrink(0.0),
+            ),
+        );
+
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert_eq!(
+            doc.scroll_state(scroll_area).unwrap().offset,
+            UiPoint::new(0.0, 0.0)
+        );
+        assert_eq!(
+            doc.node(content).layout.rect.y,
+            doc.node(scroll_area).layout.rect.y
+        );
+        assert!(!doc.audit_layout().iter().any(|warning| matches!(
+            warning,
+            AuditWarning::ScrollOffsetOutOfRange { node, .. } if *node == scroll_area
+        )));
     }
 
     #[test]

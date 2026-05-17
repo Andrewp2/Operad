@@ -19,13 +19,13 @@ A cross-platform GUI library for Rust.
 
 ## Overview
 
-The shortest path to a native window is `run_ui_document`:
+The shortest path to a native window is `run`:
 
 ```rust
 use operad::{root_style, widgets, LayoutStyle, NativeWindowResult, UiDocument, UiSize};
 
 fn main() -> NativeWindowResult {
-    operad::run_ui_document("app", view)
+    operad::run("app", view)
 }
 
 fn view(viewport: UiSize) -> UiDocument {
@@ -47,6 +47,17 @@ fn view(viewport: UiSize) -> UiDocument {
 The runner opens the window, creates the renderer, lays out the document, and
 routes input. Use `run_app` when widget actions should update application state;
 the `showcase` example is a compact app built that way.
+
+Web apps use the same retained document contract through the `web-runtime`
+feature:
+
+```rust
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn start() -> Result<(), wasm_bindgen::JsValue> {
+    operad::web::run("app", view).await
+}
+```
 
 For custom WGPU drawing, add a GPU canvas to the document and register a canvas
 renderer:
@@ -74,6 +85,8 @@ cargo add operad
 
 - `widgets`: widget helpers.
 - `native-window`: native winit/WGPU windows.
+- `web-runtime`: WASM/WebGPU runtime entry points.
+- `web-showcase`: web runtime plus showcase widgets.
 - `wgpu`: WGPU rendering.
 - `accesskit-winit`: AccessKit support for winit hosts.
 - `text-cosmic`: cosmic-text measurement and shaping.
@@ -88,6 +101,17 @@ Open a native window:
 ```bash
 cargo run --example showcase
 ```
+
+Starter templates are checked as ordinary examples:
+
+```bash
+cargo run --example minimal_native
+cargo run --example simple_form
+cargo run --example docked_workspace
+```
+
+For the web template, build `minimal_web` for `wasm32-unknown-unknown`, run
+`wasm-bindgen`, and serve `web/minimal`.
 
 ## Development Checks
 
@@ -119,5 +143,6 @@ scripts/test-full.sh
 ## Learn More
 
 - [API documentation](https://docs.rs/operad)
+- [Getting started](docs/getting_started.md)
 - [Examples](examples)
 - [Documentation](docs)

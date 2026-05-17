@@ -3065,6 +3065,9 @@ impl RendererAdapter for WgpuRenderer {
                 offscreen: true,
                 deterministic_snapshots: true,
                 partial_updates: true,
+                webgpu_surface: true,
+                native_child_windows: false,
+                platform_overlays: false,
             })
             .accessibility(AccessibilityCapabilities::NONE)
     }

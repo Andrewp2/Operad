@@ -11,9 +11,11 @@ use std::collections::HashMap;
 use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
 use crate::platform::{
-    BackendCapabilities, CursorGrabMode, CursorRequest, LayerOrder, LogicalRect, PixelSize,
-    PlatformRequest, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceCapabilities,
-    PlatformServiceRequest, PlatformServiceResponse, ResourceHandle, ResourceId, ResourceKind,
+    BackendCapabilities, BackendCapabilityRequirement, CursorGrabMode, CursorRequest,
+    InputCapabilityKind, LayerOrder, LogicalRect, PixelSize, PlatformRequest,
+    PlatformRequestIdAllocator, PlatformResponse, PlatformServiceCapabilities,
+    PlatformServiceCapabilityKind, PlatformServiceRequest, PlatformServiceResponse, ResourceHandle,
+    ResourceId, ResourceKind,
 };
 use crate::{
     AccessibilityMeta, AccessibilityRole, AccessibilitySummary, CanvasContent, ColorRgba,
@@ -486,6 +488,72 @@ impl CanvasHostCapturePlan {
             Vec::new()
         }
     }
+
+    pub fn capability_requirements(&self) -> Vec<BackendCapabilityRequirement> {
+        let mut requirements = Vec::new();
+
+        if self.pointer_capture || self.domain_hit_testing || self.pointer_lock {
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerMove),
+            );
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerButton),
+            );
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::CanvasLocalInput),
+            );
+        }
+
+        if self.wheel_capture {
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerWheel),
+            );
+        }
+
+        if self.keyboard_capture {
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardPress),
+            );
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardRelease),
+            );
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::Modifiers),
+            );
+        }
+
+        if self.pointer_lock {
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::RawMouseMotion),
+            );
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerLock),
+            );
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::CursorGrab,
+                ),
+            );
+            push_unique_requirement(
+                &mut requirements,
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::CursorVisibility,
+                ),
+            );
+        }
+
+        requirements
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -911,6 +979,15 @@ fn capture_diagnostic_reason(
             "Canvas host capture requirements changed.".to_owned()
         }
         CanvasHostCaptureChangeKind::Released => "Canvas host capture was released.".to_owned(),
+    }
+}
+
+fn push_unique_requirement(
+    requirements: &mut Vec<BackendCapabilityRequirement>,
+    requirement: BackendCapabilityRequirement,
+) {
+    if !requirements.contains(&requirement) {
+        requirements.push(requirement);
     }
 }
 
@@ -2206,6 +2283,26 @@ mod tests {
                 PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
             ]
         );
+        let requirements = plans[0].capability_requirements();
+        assert!(requirements.contains(&BackendCapabilityRequirement::Input(
+            InputCapabilityKind::KeyboardRelease
+        )));
+        assert!(requirements.contains(&BackendCapabilityRequirement::Input(
+            InputCapabilityKind::RawMouseMotion
+        )));
+        assert!(requirements.contains(&BackendCapabilityRequirement::Input(
+            InputCapabilityKind::PointerLock
+        )));
+        assert!(
+            requirements.contains(&BackendCapabilityRequirement::PlatformService(
+                PlatformServiceCapabilityKind::CursorGrab
+            ))
+        );
+        assert!(
+            requirements.contains(&BackendCapabilityRequirement::PlatformService(
+                PlatformServiceCapabilityKind::CursorVisibility
+            ))
+        );
     }
 
     #[test]
@@ -2238,6 +2335,21 @@ mod tests {
         assert!(plans[0].platform_requests().is_empty());
         assert!(plans[0].release_platform_requests().is_empty());
         assert!(request.canvas_platform_requests().is_empty());
+        let requirements = plans[0].capability_requirements();
+        assert!(requirements.contains(&BackendCapabilityRequirement::Input(
+            InputCapabilityKind::KeyboardRelease
+        )));
+        assert!(requirements.contains(&BackendCapabilityRequirement::Input(
+            InputCapabilityKind::PointerWheel
+        )));
+        assert!(!requirements.contains(&BackendCapabilityRequirement::Input(
+            InputCapabilityKind::RawMouseMotion
+        )));
+        assert!(
+            !requirements.contains(&BackendCapabilityRequirement::PlatformService(
+                PlatformServiceCapabilityKind::CursorGrab
+            ))
+        );
     }
 
     fn capture_plan(node: usize, key: &str, rect: UiRect) -> CanvasHostCapturePlan {
@@ -2938,6 +3050,7 @@ mod tests {
                     offscreen: true,
                     partial_updates: true,
                     high_dpi: true,
+                    ..RenderingCapabilities::NONE
                 }),
             resolved: Vec::new(),
         };

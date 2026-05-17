@@ -37,6 +37,10 @@ preferred v8 product API unless a specific type documents otherwise.
 - Canvas content and interaction policy records, including host-capture plans,
   raw pointer/key/wheel input shape, and renderer-neutral canvas render
   requests.
+- Host capability records and product-level `BackendCapabilityProfile` checks,
+  so apps can gate command hotkeys, text editing, canvas editing, flycam input,
+  dock workspaces, and accessibility support without hand-copying low-level
+  requirements.
 - Virtualization planner records for list, table, tree, and grid surfaces,
   including virtual ranges, measured extents, sticky regions, focus/selection
   preservation, stable tree focus preservation by item ID, scroll-anchor
@@ -70,6 +74,9 @@ without a local compatibility wrapper.
   and debug theme snapshots.
 - `CanvasHostCaptureDiagnosticReport`, capture lifecycle diagnostics, denied
   cursor-response reports, and host capability explanations.
+- `ErrorReport`, render/platform error classifiers, and
+  `runtime_error_overlay` for turning recoverable or fatal runtime failures into
+  actionable in-app debug surfaces.
 - `VirtualizationDiagnostics`, materialization budget reports, overscan/range
   summaries, and large-data performance risk messages.
 - `layout_animation_transitions`,

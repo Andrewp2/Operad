@@ -18,7 +18,8 @@ use crate::input::{
     RawInputEvent,
 };
 use crate::platform::{
-    BackendCapabilities, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
+    BackendCapabilities, BackendCapabilityDiagnostic, BackendCapabilityRequirement,
+    CapabilityFallback, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
     PlatformResponse, PlatformServiceRequest, PlatformServiceResponse, RepaintRequest,
     TextImeRequest, TextImeResponse, TextImeSession, TextInputId,
 };
@@ -688,6 +689,17 @@ pub struct HostDocumentFrameOutput {
 }
 
 impl HostDocumentFrameOutput {
+    pub fn platform_requests(&self) -> Vec<PlatformRequest> {
+        let mut requests = self
+            .host_output
+            .platform_requests
+            .iter()
+            .map(|request| request.request.clone())
+            .collect::<Vec<_>>();
+        requests.extend(self.canvas_host_capture_transition.platform_requests());
+        requests
+    }
+
     pub fn platform_service_requests(
         &self,
         allocator: &mut PlatformRequestIdAllocator,
@@ -698,6 +710,45 @@ impl HostDocumentFrameOutput {
                 .platform_service_requests(allocator),
         );
         requests
+    }
+
+    pub fn platform_request_capability_diagnostics(
+        &self,
+        backend: &BackendCapabilities,
+        fallback: CapabilityFallback,
+    ) -> Vec<BackendCapabilityDiagnostic> {
+        self.platform_requests()
+            .into_iter()
+            .map(|request| {
+                backend.diagnose_requirement(
+                    BackendCapabilityRequirement::PlatformRequest(request),
+                    fallback,
+                )
+            })
+            .collect()
+    }
+
+    pub fn canvas_host_capture_capability_diagnostics(
+        &self,
+        backend: &BackendCapabilities,
+        fallback: CapabilityFallback,
+    ) -> Vec<BackendCapabilityDiagnostic> {
+        self.render_request
+            .canvas_host_capture_plans()
+            .into_iter()
+            .flat_map(|plan| plan.capability_requirements())
+            .map(|requirement| backend.diagnose_requirement(requirement, fallback))
+            .collect()
+    }
+
+    pub fn host_capability_diagnostics(
+        &self,
+        backend: &BackendCapabilities,
+        fallback: CapabilityFallback,
+    ) -> Vec<BackendCapabilityDiagnostic> {
+        let mut diagnostics = self.canvas_host_capture_capability_diagnostics(backend, fallback);
+        diagnostics.extend(self.platform_request_capability_diagnostics(backend, fallback));
+        diagnostics
     }
 }
 
@@ -1208,14 +1259,15 @@ mod tests {
         RawTextInputEvent, RawWheelEvent, WheelPhase,
     };
     use crate::platform::{
-        BackendAdapterKind, CursorGrabMode, CursorRequest, LogicalRect, PlatformRequestId,
-        PlatformRequestIdAllocator, PlatformServiceCapabilities, RepaintResponse, TextRange,
+        BackendAdapterKind, CapabilityDecision, CursorGrabMode, CursorRequest, InputCapabilities,
+        InputCapabilityKind, LogicalRect, PlatformRequestId, PlatformRequestIdAllocator,
+        PlatformServiceCapabilities, RepaintResponse, TextRange,
     };
     use crate::{
         length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
-        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ColorRgba, InputBehavior,
-        LayoutStyle, ShellPanelState, ShellRegion, StrokeStyle, UiContent, UiDocument, UiNode,
-        UiNodeStyle, UiPoint, UiVisual,
+        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ColorRgba, DiagnosticCategory,
+        DiagnosticReport, InputBehavior, LayoutStyle, ShellPanelState, ShellRegion, StrokeStyle,
+        UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Size as TaffySize, Style};
 
@@ -2473,6 +2525,72 @@ mod tests {
             PlatformRequest::Cursor(CursorRequest::SetVisible(false))
         );
         assert_eq!(allocator.next_value(), 22);
+
+        let backend = BackendCapabilities::new("limited-host")
+            .input(InputCapabilities::STANDARD)
+            .services(PlatformServiceCapabilities {
+                repaint: true,
+                cursor_visible: true,
+                ..PlatformServiceCapabilities::NONE
+            });
+        let platform_requests = frame.platform_requests();
+        assert_eq!(
+            platform_requests,
+            vec![
+                PlatformRequest::Repaint(RepaintRequest::NextFrame),
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+            ]
+        );
+
+        let diagnostics = frame
+            .platform_request_capability_diagnostics(&backend, CapabilityFallback::EmitDiagnostic);
+
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.decision)
+                .collect::<Vec<_>>(),
+            vec![
+                CapabilityDecision::UseFeature,
+                CapabilityDecision::EmitDiagnostic,
+                CapabilityDecision::UseFeature,
+            ]
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            !diagnostic.supported && diagnostic.summary.contains("cursor grab Locked")
+        }));
+
+        let host_diagnostics =
+            frame.host_capability_diagnostics(&backend, CapabilityFallback::EmitDiagnostic);
+        assert!(host_diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.requirement,
+            BackendCapabilityRequirement::Input(InputCapabilityKind::RawMouseMotion)
+        ) && diagnostic.decision
+            == CapabilityDecision::EmitDiagnostic));
+        assert!(host_diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.requirement,
+            BackendCapabilityRequirement::Input(InputCapabilityKind::PointerLock)
+        ) && diagnostic.decision
+            == CapabilityDecision::EmitDiagnostic));
+        assert!(host_diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.requirement,
+            BackendCapabilityRequirement::PlatformRequest(PlatformRequest::Cursor(
+                CursorRequest::SetGrab(CursorGrabMode::Locked)
+            ))
+        ) && diagnostic.decision
+            == CapabilityDecision::EmitDiagnostic));
+
+        let mut report = DiagnosticReport::new();
+        report.host_document_frame_capabilities(
+            &frame,
+            &backend,
+            CapabilityFallback::EmitDiagnostic,
+        );
+        assert!(report.summaries.iter().any(|summary| {
+            summary.category == DiagnosticCategory::HostCapability
+                && summary.label == "input:raw mouse motion"
+        }));
     }
 
     #[test]

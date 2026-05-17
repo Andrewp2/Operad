@@ -73,6 +73,8 @@ pub mod renderer;
 #[path = "render/resource_cache.rs"]
 pub mod resource_cache;
 pub mod runtime;
+#[cfg(all(feature = "web-runtime", target_arch = "wasm32"))]
+pub use runtime::web;
 #[path = "render/scrolling.rs"]
 pub mod scrolling;
 pub mod shell;
@@ -164,10 +166,10 @@ pub use diagnostics::{
     AccessibilityResponseDiagnostic, CacheDiagnostic, CacheDiagnosticKind, DiagnosticCategory,
     DiagnosticMessage, DiagnosticRecord, DiagnosticReport, DiagnosticSeverity,
     DiagnosticSummaryRecord, DirtyFlagsDiagnostic, FramePipelineSection, FramePipelineStage,
-    FramePipelineTiming, GeometryHitDiagnostic, InputRoutingDiagnostic, OverlayEntryDiagnostic,
-    OverlayRoutingDiagnostic, OverlayStackDiagnostic, PerformanceCacheDiagnostic,
-    PerformanceSnapshot, PerformanceSnapshotDiagnostic, RenderTimingDiagnostic,
-    RenderTimingSectionDiagnostic, WidgetActionDiagnostic,
+    FramePipelineTiming, GeometryHitDiagnostic, InputRoutingDiagnostic, JustWorkIssueDiagnostic,
+    JustWorkIssueKind, OverlayEntryDiagnostic, OverlayRoutingDiagnostic, OverlayStackDiagnostic,
+    PerformanceCacheDiagnostic, PerformanceSnapshot, PerformanceSnapshotDiagnostic,
+    RenderTimingDiagnostic, RenderTimingSectionDiagnostic, WidgetActionDiagnostic,
 };
 pub use display::{
     DisplayListId, DisplayListInvalidation, DisplayListInvalidationReport,
@@ -201,9 +203,11 @@ pub use egui_host::{
     EguiHostAdapter, EguiInputAdapter, EguiPlatformOutputPlan, EguiTextureDeltaPlan,
 };
 pub use errors::{
-    classify_platform_error, classify_render_error, ErrorContext, ErrorDomain, ErrorKind,
-    ErrorReport, ErrorSeverity, FallbackAction, FallbackDecision, FallbackScope, PlatformErrorKind,
-    RendererErrorKind, ResourceErrorKind, RuntimeErrorKind, UiErrorKind,
+    classify_platform_error, classify_render_error, runtime_error_overlay, ErrorContext,
+    ErrorDomain, ErrorKind, ErrorReport, ErrorSeverity, FallbackAction, FallbackDecision,
+    FallbackScope, PlatformErrorKind, RendererErrorKind, ResourceErrorKind, RuntimeErrorKind,
+    RuntimeErrorOverlayContextRow, RuntimeErrorOverlayNodes, RuntimeErrorOverlayOptions,
+    UiErrorKind,
 };
 pub use fonts::{
     CachedFontFace, FontCachePolicy, FontEvictionCandidate, FontEvictionPlan, FontFaceDescriptor,
@@ -282,9 +286,15 @@ pub use paint::{
     TextHorizontalAlign, TextOverflow, TextVerticalAlign,
 };
 pub use platform::{
-    CursorGrabMode, CursorRequest, CursorResponse, CursorShape, LogicalPoint, LogicalRect,
-    LogicalSize, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,
-    PlatformServiceCapabilities, PlatformServiceRequest, PlatformServiceResponse, RepaintRequest,
+    BackendAdapterKind, BackendCapabilities, BackendCapabilityDiagnostic, BackendCapabilityProfile,
+    BackendCapabilityRequirement, CapabilityDecision, CapabilityFallback, ClipboardRequest,
+    ClipboardResponse, CursorGrabMode, CursorRequest, CursorResponse, CursorShape,
+    InputCapabilities, InputCapabilityKind, LayerCapabilities, LayerOrder, LogicalPoint,
+    LogicalRect, LogicalSize, OpenUrlRequest, OpenUrlResponse, PlatformRequest, PlatformRequestId,
+    PlatformRequestIdAllocator, PlatformResponse, PlatformServiceCapabilities,
+    PlatformServiceCapabilityKind, PlatformServiceKind, PlatformServiceRequest,
+    PlatformServiceResponse, RenderingCapabilities, RenderingCapabilityKind, RepaintRequest,
+    ResourceCapabilities, ResourceKind, UiLayer,
 };
 pub use renderer::{
     CanvasHitCollection, CanvasHitTarget, CanvasHostCaptureChange, CanvasHostCaptureChangeKind,
@@ -308,17 +318,19 @@ pub use resource_cache::{
 };
 #[cfg(feature = "native-window")]
 pub use runtime::native::{
-    run_app, run_app_with, run_app_with_canvas_renderers, run_app_with_canvas_renderers_and_hooks,
-    run_ui_document, run_ui_document_with, run_ui_document_with_canvas_renderers,
-    NativeCanvasInput, NativeKeyboardInput, NativeRawMouseMotion, NativeWgpuCanvasRenderContext,
-    NativeWgpuCanvasRenderHandler, NativeWgpuCanvasRenderRegistry, NativeWindowHooks,
-    NativeWindowMetrics, NativeWindowOptions, NativeWindowResult,
+    native_window_capabilities, run, run_app, run_app_with, run_app_with_canvas_renderers,
+    run_app_with_canvas_renderers_and_hooks, run_ui_document, run_ui_document_with,
+    run_ui_document_with_canvas_renderers, NativeCanvasInput, NativeKeyboardInput,
+    NativeRawMouseMotion, NativeWgpuCanvasRenderContext, NativeWgpuCanvasRenderHandler,
+    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowMetrics, NativeWindowOptions,
+    NativeWindowResult,
 };
 pub use runtime::{
     coalesce_repaint_requests, collect_repaint_requests, completed_platform_response,
-    RuntimeFrameClock, RuntimeFramePhase, RuntimeFramePlan, RuntimeInvalidation,
-    RuntimeInvalidationReason, RuntimeLoopGuard, RuntimeLoopState, RuntimePhaseTrace,
-    RuntimeRepaintScheduler, RuntimeSurfaceId, RuntimeWindowEvent, RuntimeWindowId,
+    PlatformServiceClient, RuntimeFrameClock, RuntimeFramePhase, RuntimeFramePlan,
+    RuntimeInvalidation, RuntimeInvalidationReason, RuntimeLoopGuard, RuntimeLoopState,
+    RuntimePhaseTrace, RuntimeRepaintScheduler, RuntimeSurfaceId, RuntimeWindowEvent,
+    RuntimeWindowId,
 };
 pub use scrolling::{
     apply_scroll_anchor, arbitrate_nested_scroll, content_viewport_rect, resolve_scroll_attachment,
@@ -352,17 +364,18 @@ pub use tasks::{
     TaskProgress, TaskRegistry, TaskResultDisposition, TaskState, TaskStatus,
 };
 pub use testing::{
-    diff_rgba8, run_ui_state_matrix, AccessibilityAssertions, AccessibilityRequestAssertions,
-    AuditAssertions, CommandReplayReport, CommandReplayStepResult, DirtyFlags,
-    DisplayListInvalidationAssertions, DisplayListReuseAssertions, DisplayListReuseSeries,
-    DisplayListReuseSeriesAssertions, EmptyResourceResolver, EventReplay, EventReplayReport,
-    EventReplayStep, EventReplayStepResult, FrameTiming, FrameTimingAssertions, FrameTimingSection,
-    FrameTimingSeries, FrameTimingSeriesAssertions, InteractionRecorder, LayoutAssertions,
-    PaintAssertions, PaintKindSelector, PaintRecorderRenderer, PerformanceAssertions,
-    PerformanceSamples, PixelDiffReport, PixelDiffTolerance, PlatformAssertions, RenderAssertions,
-    RenderOutputAssertions, ReplayInput, RgbaImageView, ScenarioFrameReport, ScenarioHarness,
-    SnapshotAssertions, TestFailure, TestResult, UiStateMatrixCase, UiStateMatrixDocument,
-    UiStateMatrixInteraction, UiStateMatrixReport, UiStateMatrixTarget, UiStateMatrixViewport,
+    diff_rgba8, is_blocking_just_work_warning, run_ui_state_matrix, AccessibilityAssertions,
+    AccessibilityRequestAssertions, AuditAssertions, CommandReplayReport, CommandReplayStepResult,
+    DirtyFlags, DisplayListInvalidationAssertions, DisplayListReuseAssertions,
+    DisplayListReuseSeries, DisplayListReuseSeriesAssertions, EmptyResourceResolver, EventReplay,
+    EventReplayReport, EventReplayStep, EventReplayStepResult, FrameTiming, FrameTimingAssertions,
+    FrameTimingSection, FrameTimingSeries, FrameTimingSeriesAssertions, InteractionRecorder,
+    JustWorkAssertions, LayoutAssertions, PaintAssertions, PaintKindSelector,
+    PaintRecorderRenderer, PerformanceAssertions, PerformanceSamples, PixelDiffReport,
+    PixelDiffTolerance, PlatformAssertions, RenderAssertions, RenderOutputAssertions, ReplayInput,
+    RgbaImageView, ScenarioFrameReport, ScenarioHarness, SnapshotAssertions, TestFailure,
+    TestResult, UiStateMatrixCase, UiStateMatrixDocument, UiStateMatrixInteraction,
+    UiStateMatrixReport, UiStateMatrixTarget, UiStateMatrixViewport,
 };
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,

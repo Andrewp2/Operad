@@ -954,29 +954,7 @@ fn audits_by_node(audits: &[AuditWarning]) -> HashMap<UiNodeId, Vec<AuditWarning
 }
 
 fn audit_node_id(audit: &AuditWarning) -> Option<UiNodeId> {
-    match audit {
-        AuditWarning::NonFiniteRect { node, .. }
-        | AuditWarning::InvisibleInteractiveNode { node, .. }
-        | AuditWarning::EmptyInteractiveClip { node, .. }
-        | AuditWarning::InteractiveTooSmall { node, .. }
-        | AuditWarning::FocusableMissingFromAccessibilityTree { node, .. }
-        | AuditWarning::InteractiveAccessibilityMissing { node, .. }
-        | AuditWarning::AccessibleNameMissing { node, .. }
-        | AuditWarning::AccessibilityActionMissing { node, .. }
-        | AuditWarning::AccessibilityActionIdMissing { node, .. }
-        | AuditWarning::AccessibilityActionLabelMissing { node, .. }
-        | AuditWarning::AccessibilityActionDuplicate { node, .. }
-        | AuditWarning::AccessibilityStateMissing { node, .. }
-        | AuditWarning::AccessibilityValueMissing { node, .. }
-        | AuditWarning::AccessibilityValueRangeMissing { node, .. }
-        | AuditWarning::AccessibilityValueRangeInvalid { node, .. }
-        | AuditWarning::AccessibilityRelationTargetMissing { node, .. }
-        | AuditWarning::TextClipped { node, .. }
-        | AuditWarning::TextContrastTooLow { node, .. }
-        | AuditWarning::NodeOutsideRoot { node, .. }
-        | AuditWarning::PaintItemEmptyClip { node } => Some(*node),
-        AuditWarning::DuplicateNodeName { .. } => None,
-    }
+    audit.node()
 }
 
 fn collect_hit_candidates(

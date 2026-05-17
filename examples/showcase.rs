@@ -1,6 +1,6 @@
 use web_time::{Duration, Instant};
 
-use operad::platform::{DragPayload, UiLayer};
+use operad::platform::{ClipboardResponse, DragPayload, PlatformResponse, UiLayer};
 use operad::widgets::{CalendarDate, TextInputLayoutMetrics, TextInputOptions, TextInputState};
 #[cfg(feature = "text-cosmic")]
 use operad::CosmicTextMeasurer;
@@ -12,11 +12,12 @@ use operad::{
     DebugInspectorSnapshot, DebugThemeSnapshot, DragDropSurfaceKind, DropPayloadFilter,
     DynamicLabelMeta, EditPhase, FocusRestoreTarget, FontFamily, FontWeight, FormState,
     FormValidationResult, ImageContent, InputBehavior, LayoutFlexWrap, LayoutStyle, LocaleId,
-    LocalizationPolicy, PaintEffect, PaintRect, PaintText, ScenePrimitive, ScrollAxes, Shortcut,
-    ShortcutFormatter, StrokeStyle, TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap,
-    Theme, TooltipContent, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget,
-    UiRect, UiSize, UiVisual, ValidationMessage, WidgetAction, WidgetActionBinding,
-    WidgetActionKind, WidgetDrag, WidgetDragPhase, WidgetTextEdit, ANIMATION_INPUT_POINTER_NORM_X,
+    LocalizationPolicy, PaintEffect, PaintRect, PaintText, PlatformServiceClient,
+    PlatformServiceResponse, ScenePrimitive, ScrollAxes, Shortcut, ShortcutFormatter, StrokeStyle,
+    TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, Theme, TooltipContent, UiDocument,
+    UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual,
+    ValidationMessage, WidgetAction, WidgetActionBinding, WidgetActionKind, WidgetDrag,
+    WidgetDragPhase, WidgetTextEdit, ANIMATION_INPUT_POINTER_NORM_X,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
 use operad::{
@@ -48,12 +49,6 @@ const ANIMATION_PANEL_INSET_X: f32 = 24.0;
 const ANIMATION_PANEL_Y: f32 = 62.0;
 const ANIMATION_PANEL_WIDTH: f32 = 136.0;
 const ANIMATION_PANEL_HEIGHT: f32 = 46.0;
-
-#[cfg(feature = "native-window")]
-type ShowcaseClipboard = arboard::Clipboard;
-
-#[cfg(not(feature = "native-window"))]
-struct ShowcaseClipboard;
 
 const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 30] = [
     "labels",
@@ -91,10 +86,16 @@ const SHOWCASE_WIDGET_WINDOW_IDS: [&str; 30] = [
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
 fn main() -> NativeWindowResult {
     let canvas_renderers = NativeWgpuCanvasRenderRegistry::new();
-    let hooks =
-        NativeWindowHooks::new().with_before_render(|state: &mut ShowcaseState, metrics| {
+    let hooks = NativeWindowHooks::new()
+        .with_before_render(|state: &mut ShowcaseState, metrics| {
             state.last_desktop_size = desktop_size_for_viewport(metrics.viewport);
             state.record_frame();
+        })
+        .with_platform_service_requests(|state: &mut ShowcaseState, _metrics| {
+            state.platform.drain_requests()
+        })
+        .with_platform_responses(|state: &mut ShowcaseState, responses| {
+            state.apply_platform_responses(responses);
         });
     operad::run_app_with_canvas_renderers_and_hooks(
         NativeWindowOptions::new("showcase")
@@ -112,724 +113,31 @@ fn main() -> NativeWindowResult {
 
 #[cfg(target_arch = "wasm32")]
 pub async fn run_web() -> Result<(), wasm_bindgen::JsValue> {
-    web_showcase::run().await
-}
+    let hooks = operad::web::WebRuntimeHooks::new()
+        .with_before_render(|state: &mut ShowcaseState, metrics| {
+            state.last_desktop_size = desktop_size_for_viewport(metrics.viewport);
+            state.record_frame();
+        })
+        .with_platform_service_requests(|state: &mut ShowcaseState, _metrics| {
+            state.platform.drain_requests()
+        })
+        .with_platform_responses(|state: &mut ShowcaseState, responses| {
+            state.apply_platform_responses(responses);
+        });
 
-#[cfg(target_arch = "wasm32")]
-mod web_showcase {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use operad::host::{
-        collect_document_widget_actions, process_host_frame_input_with_target_resolver,
-    };
-    use operad::platform::PixelSize;
-    use operad::{
-        EmptyResourceResolver, HostDocumentFrameState, HostFrameOutput, KeyCode, KeyModifiers,
-        PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
-        RawPointerEvent, RawTextInputEvent, RawWheelEvent, RenderTarget, RendererAdapter,
-        UiFocusState, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase,
-    };
-    use wasm_bindgen::closure::Closure;
-    use wasm_bindgen::{JsCast, JsValue};
-
-    use super::*;
-
-    const WEB_SHOWCASE_TITLE: &str = "Operad showcase";
-    const WEB_TICK_INTERVAL_MS: f64 = 1000.0 / SHOWCASE_TICK_RATE_HZ as f64;
-
-    pub async fn run() -> Result<(), JsValue> {
-        console_error_panic_hook::set_once();
-        install_document_chrome()?;
-        let window = browser_window()?;
-        let document = window
-            .document()
-            .ok_or_else(|| js_error("browser document is unavailable"))?;
-        let canvas = document
-            .get_element_by_id("operad-showcase-canvas")
-            .ok_or_else(|| js_error("showcase canvas element is missing"))?
-            .dyn_into::<web_sys::HtmlCanvasElement>()?;
-        canvas.set_tab_index(0);
-        let _ = canvas.focus();
-
-        let app = Rc::new(RefCell::new(WebShowcaseApp::new(canvas.clone()).await?));
-        register_pointer_events(&canvas, app.clone())?;
-        register_wheel_events(&canvas, app.clone())?;
-        register_keyboard_events(&window, app.clone())?;
-        start_animation_loop(app)?;
-        Ok(())
-    }
-
-    struct WebShowcaseApp {
-        state: ShowcaseState,
-        frame_state: HostDocumentFrameState,
-        renderer: WgpuSurfaceRenderer<'static>,
-        canvas: web_sys::HtmlCanvasElement,
-        text_measurer: ApproxTextMeasurer,
-        pending_input: Vec<RawInputEvent>,
-        cursor: Option<UiPoint>,
-        buttons: PointerButtons,
-        modifiers: KeyModifiers,
-        scroll_offsets: HashMap<String, UiPoint>,
-        animation_states: HashMap<String, AnimationMachine>,
-        dpi_scale: f32,
-        last_tick_ms: Option<f64>,
-        last_animation_ms: Option<f64>,
-    }
-
-    impl WebShowcaseApp {
-        async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Self, JsValue> {
-            let (viewport, pixel_size, dpi_scale) = canvas_metrics(&canvas)?;
-            canvas.set_width(pixel_size.width);
-            canvas.set_height(pixel_size.height);
-
-            let instance =
-                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-            let surface = instance
-                .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
-                .map_err(|error| js_error(format!("failed to create WebGPU surface: {error}")))?;
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: false,
-                })
-                .await
-                .map_err(|error| js_error(format!("failed to request WebGPU adapter: {error}")))?;
-            let adapter_features = adapter.features();
-            let required_features = if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
-                wgpu::Features::TIMESTAMP_QUERY
-            } else {
-                wgpu::Features::empty()
-            };
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("operad-web-showcase-device"),
-                    required_features,
-                    required_limits: wgpu::Limits::default(),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|error| js_error(format!("failed to request WebGPU device: {error}")))?;
-            let surface_config = surface
-                .get_default_config(&adapter, pixel_size.width, pixel_size.height)
-                .ok_or_else(|| {
-                    js_error("WebGPU surface is not supported by the selected adapter")
-                })?;
-            let renderer = WgpuSurfaceRenderer::new(surface, device, queue, surface_config)
-                .map_err(render_js_error)?;
-
-            let mut state = ShowcaseState::default();
-            state.last_desktop_size = desktop_size_for_viewport(viewport);
-            Ok(Self {
-                state,
-                frame_state: HostDocumentFrameState::new(),
-                renderer,
-                canvas,
-                text_measurer: ApproxTextMeasurer,
-                pending_input: Vec::new(),
-                cursor: None,
-                buttons: PointerButtons::NONE,
-                modifiers: KeyModifiers::NONE,
-                scroll_offsets: HashMap::new(),
-                animation_states: HashMap::new(),
-                dpi_scale,
-                last_tick_ms: None,
-                last_animation_ms: None,
-            })
-        }
-
-        fn render(&mut self, timestamp_ms: f64) -> Result<(), JsValue> {
-            let (viewport, pixel_size, dpi_scale) = canvas_metrics(&self.canvas)?;
-            if self.canvas.width() != pixel_size.width {
-                self.canvas.set_width(pixel_size.width);
-            }
-            if self.canvas.height() != pixel_size.height {
-                self.canvas.set_height(pixel_size.height);
-            }
-            self.dpi_scale = dpi_scale;
-            self.state.last_desktop_size = desktop_size_for_viewport(viewport);
-            self.state.record_frame();
-            self.dispatch_tick(timestamp_ms);
-            let animation_dt = self.animation_delta_seconds(timestamp_ms);
-
-            let mut document = self.build_document(viewport).map_err(layout_js_error)?;
-            document.tick_animations(animation_dt);
-            let raw_input = std::mem::take(&mut self.pending_input);
-            let mut host_request = self.frame_state.host_frame_request(viewport);
-            host_request.raw_input = raw_input;
-            let host_output =
-                process_host_frame_input_with_target_resolver(host_request, |event, state| {
-                    resolve_target(event, state, &document)
-                });
-            let frame_request = self.frame_state.document_frame_request(
-                viewport,
-                RenderTarget::window("showcase", viewport),
-                host_output,
-            );
-            let frame = operad::process_document_frame(
-                &mut document,
-                &mut self.text_measurer,
-                frame_request,
-            )
-            .map_err(layout_js_error)?;
-            self.capture_document_runtime_state(&document);
-            let actions = collect_document_widget_actions(&document, &frame);
-            self.frame_state.apply_document_frame_output(&frame);
-
-            let frame = if actions.is_empty() {
-                frame
-            } else {
-                for action in actions {
-                    self.state.update(action);
-                }
-                let mut document = self.build_document(viewport).map_err(layout_js_error)?;
-                let frame_request = self.frame_state.document_frame_request(
-                    viewport,
-                    RenderTarget::window("showcase", viewport),
-                    HostFrameOutput::new(self.frame_state.interaction.clone()),
-                );
-                let frame = operad::process_document_frame(
-                    &mut document,
-                    &mut self.text_measurer,
-                    frame_request,
-                )
-                .map_err(layout_js_error)?;
-                self.capture_document_runtime_state(&document);
-                self.frame_state.apply_document_frame_output(&frame);
-                frame
-            };
-
-            self.renderer
-                .render_frame(frame.render_request, &EmptyResourceResolver)
-                .map_err(render_js_error)?;
-            Ok(())
-        }
-
-        fn build_document(&mut self, viewport: UiSize) -> Result<UiDocument, taffy::TaffyError> {
-            let mut document = self.state.view(viewport);
-            document.set_dpi_scale(self.dpi_scale);
-            restore_scroll_offsets(&mut document, &self.scroll_offsets);
-            self.restore_animation_states(&mut document);
-            let mut focus = UiFocusState {
-                hovered: self.frame_state.interaction.hovered,
-                pressed: self.frame_state.interaction.pressed,
-                focused: self.frame_state.interaction.focused,
-            };
-            if let Some(cursor) = self.cursor {
-                focus.hovered = document.hit_test(cursor);
-                if self.buttons == PointerButtons::NONE {
-                    focus.pressed = None;
-                }
-            }
-            document.set_focus_state(focus);
-            document.compute_layout(viewport, &mut self.text_measurer)?;
-            if let Some(cursor) = self.cursor {
-                let mut focus = document.focus.clone();
-                focus.hovered = document.hit_test(cursor);
-                if self.buttons == PointerButtons::NONE {
-                    focus.pressed = None;
-                }
-                document.set_focus_state(focus);
-            }
-            if document.clamp_scroll_offsets() {
-                document.compute_layout(viewport, &mut self.text_measurer)?;
-                if let Some(cursor) = self.cursor {
-                    let mut focus = document.focus.clone();
-                    focus.hovered = document.hit_test(cursor);
-                    if self.buttons == PointerButtons::NONE {
-                        focus.pressed = None;
-                    }
-                    document.set_focus_state(focus);
-                }
-            }
-            Ok(document)
-        }
-
-        fn capture_document_runtime_state(&mut self, document: &UiDocument) {
-            self.capture_scroll_offsets(document);
-            self.capture_animation_states(document);
-        }
-
-        fn capture_scroll_offsets(&mut self, document: &UiDocument) {
-            self.scroll_offsets.clear();
-            for index in 0..document.node_count() {
-                let id = UiNodeId(index);
-                let Some(scroll) = document.scroll_state(id) else {
-                    continue;
-                };
-                if scroll_offset_is_zero(scroll.offset) {
-                    continue;
-                }
-                self.scroll_offsets
-                    .insert(node_path_key(document, id), scroll.offset);
-            }
-        }
-
-        fn restore_animation_states(&self, document: &mut UiDocument) -> bool {
-            if self.animation_states.is_empty() {
-                return false;
-            }
-            let mut restored = Vec::new();
-            for index in 0..document.node_count() {
-                let id = UiNodeId(index);
-                let Some(animation) = document.node(id).animation.as_ref() else {
-                    continue;
-                };
-                let Some(stored) = self.animation_states.get(&node_path_key(document, id)) else {
-                    continue;
-                };
-                if animation.has_same_definition(stored) {
-                    let mut restored_animation = animation.clone();
-                    restored_animation.retain_runtime_from(stored);
-                    restored.push((id, restored_animation));
-                }
-            }
-
-            let changed = !restored.is_empty();
-            for (id, animation) in restored {
-                document.node_mut(id).animation = Some(animation);
-            }
-            changed
-        }
-
-        fn capture_animation_states(&mut self, document: &UiDocument) {
-            self.animation_states.clear();
-            for index in 0..document.node_count() {
-                let id = UiNodeId(index);
-                let Some(animation) = document.node(id).animation.as_ref() else {
-                    continue;
-                };
-                self.animation_states
-                    .insert(node_path_key(document, id), animation.clone());
-            }
-        }
-
-        fn dispatch_tick(&mut self, timestamp_ms: f64) {
-            let mut last_tick = self.last_tick_ms.unwrap_or(timestamp_ms);
-            let mut ticks = 0;
-            while timestamp_ms - last_tick >= WEB_TICK_INTERVAL_MS && ticks < 4 {
-                self.state.update(WidgetAction::activate(
-                    UiNodeId(0),
-                    WidgetActionBinding::action("runtime.tick"),
-                ));
-                last_tick += WEB_TICK_INTERVAL_MS;
-                ticks += 1;
-            }
-            self.last_tick_ms = Some(last_tick);
-        }
-
-        fn animation_delta_seconds(&mut self, timestamp_ms: f64) -> f32 {
-            let dt = self
-                .last_animation_ms
-                .map(|last| ((timestamp_ms - last) / 1000.0).max(0.0))
-                .unwrap_or(0.0);
-            self.last_animation_ms = Some(timestamp_ms);
-            (dt as f32).clamp(0.0, 0.1)
-        }
-
-        fn push_pointer(&mut self, event: web_sys::PointerEvent, kind: PointerEventKind) {
-            self.modifiers = pointer_modifiers(&event);
-            self.buttons = match kind {
-                PointerEventKind::Down(button) => self.buttons.with(button),
-                PointerEventKind::Up(button) => self.buttons.without(button),
-                PointerEventKind::Move | PointerEventKind::Cancel => {
-                    web_pointer_buttons(event.buttons())
-                }
-            };
-            let point = pointer_position(&self.canvas, event.client_x(), event.client_y());
-            self.cursor = Some(point);
-            self.pending_input.push(RawInputEvent::Pointer(
-                RawPointerEvent::new(kind, point, event.time_stamp() as u64)
-                    .buttons(self.buttons)
-                    .modifiers(self.modifiers),
-            ));
-        }
-
-        fn push_wheel(&mut self, event: web_sys::WheelEvent) {
-            self.modifiers = wheel_modifiers(&event);
-            let point = pointer_position(&self.canvas, event.client_x(), event.client_y());
-            self.cursor = Some(point);
-            let (delta, unit) = wheel_delta(&event);
-            self.pending_input.push(RawInputEvent::Wheel(RawWheelEvent {
-                position: point,
-                delta,
-                unit,
-                phase: WheelPhase::Moved,
-                modifiers: self.modifiers,
-                timestamp_millis: event.time_stamp() as u64,
-            }));
-        }
-
-        fn push_key(&mut self, event: web_sys::KeyboardEvent, pressed: bool) {
-            self.modifiers = key_modifiers(&event);
-            let Some(key) = key_code(&event) else {
-                return;
-            };
-            let timestamp = event.time_stamp() as u64;
-            let raw = if pressed {
-                RawKeyboardEvent::press(key, self.modifiers, timestamp).repeat(event.repeat())
-            } else {
-                RawKeyboardEvent::release(key, self.modifiers, timestamp)
-            };
-            self.pending_input.push(RawInputEvent::Keyboard(raw));
-            if pressed && !self.modifiers.ctrl && !self.modifiers.meta {
-                if let Some(text) = text_input_for_key(&event) {
-                    self.pending_input
-                        .push(RawInputEvent::Text(RawTextInputEvent::new(text, timestamp)));
-                }
-            }
-        }
-    }
-
-    fn register_pointer_events(
-        canvas: &web_sys::HtmlCanvasElement,
-        app: Rc<RefCell<WebShowcaseApp>>,
-    ) -> Result<(), JsValue> {
-        for event_name in ["pointerdown", "pointermove", "pointerup", "pointercancel"] {
-            let target = canvas.clone();
-            let app = app.clone();
-            let closure = Closure::<dyn FnMut(web_sys::PointerEvent)>::wrap(Box::new(
-                move |event: web_sys::PointerEvent| {
-                    event.prevent_default();
-                    if event.type_() == "pointerdown" {
-                        let _ = target.focus();
-                    }
-                    let kind = match event.type_().as_str() {
-                        "pointerdown" => PointerEventKind::Down(pointer_button(event.button())),
-                        "pointerup" => PointerEventKind::Up(pointer_button(event.button())),
-                        "pointercancel" => PointerEventKind::Cancel,
-                        _ => PointerEventKind::Move,
-                    };
-                    app.borrow_mut().push_pointer(event, kind);
-                },
-            ));
-            canvas
-                .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())?;
-            closure.forget();
-        }
-        Ok(())
-    }
-
-    fn register_wheel_events(
-        canvas: &web_sys::HtmlCanvasElement,
-        app: Rc<RefCell<WebShowcaseApp>>,
-    ) -> Result<(), JsValue> {
-        let closure = Closure::<dyn FnMut(web_sys::WheelEvent)>::wrap(Box::new(
-            move |event: web_sys::WheelEvent| {
-                event.prevent_default();
-                app.borrow_mut().push_wheel(event);
-            },
-        ));
-        canvas.add_event_listener_with_callback("wheel", closure.as_ref().unchecked_ref())?;
-        closure.forget();
-        Ok(())
-    }
-
-    fn register_keyboard_events(
-        window: &web_sys::Window,
-        app: Rc<RefCell<WebShowcaseApp>>,
-    ) -> Result<(), JsValue> {
-        for (event_name, pressed) in [("keydown", true), ("keyup", false)] {
-            let app = app.clone();
-            let closure = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::wrap(Box::new(
-                move |event: web_sys::KeyboardEvent| {
-                    if key_code(&event).is_some() {
-                        event.prevent_default();
-                    }
-                    app.borrow_mut().push_key(event, pressed);
-                },
-            ));
-            window
-                .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())?;
-            closure.forget();
-        }
-        Ok(())
-    }
-
-    fn start_animation_loop(app: Rc<RefCell<WebShowcaseApp>>) -> Result<(), JsValue> {
-        let callback = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
-        let next_callback = callback.clone();
-        *next_callback.borrow_mut() = Some(Closure::<dyn FnMut(f64)>::wrap(Box::new(
-            move |timestamp_ms| {
-                if let Err(error) = app.borrow_mut().render(timestamp_ms) {
-                    web_sys::console::error_1(&error);
-                    set_status(&format!("Showcase render failed: {}", js_message(&error)));
-                }
-                if let Some(callback) = callback.borrow().as_ref() {
-                    let _ = request_animation_frame(callback);
-                }
-            },
-        )));
-        if let Some(callback) = next_callback.borrow().as_ref() {
-            request_animation_frame(callback)?;
-        }
-        Ok(())
-    }
-
-    fn install_document_chrome() -> Result<(), JsValue> {
-        let window = browser_window()?;
-        let document = window
-            .document()
-            .ok_or_else(|| js_error("browser document is unavailable"))?;
-        document.set_title(WEB_SHOWCASE_TITLE);
-        let body = document
-            .body()
-            .ok_or_else(|| js_error("browser document body is unavailable"))?;
-        body.style().set_property("margin", "0")?;
-        body.style().set_property("overflow", "hidden")?;
-        body.style().set_property("background", "#0d1117")?;
-
-        let canvas = document
-            .get_element_by_id("operad-showcase-canvas")
-            .ok_or_else(|| js_error("showcase canvas element is missing"))?
-            .dyn_into::<web_sys::HtmlCanvasElement>()?;
-        let style = canvas.style();
-        style.set_property("display", "block")?;
-        style.set_property("width", "100vw")?;
-        style.set_property("height", "100vh")?;
-        style.set_property("outline", "none")?;
-        Ok(())
-    }
-
-    fn canvas_metrics(
-        canvas: &web_sys::HtmlCanvasElement,
-    ) -> Result<(UiSize, PixelSize, f32), JsValue> {
-        let window = browser_window()?;
-        let rect = canvas.get_bounding_client_rect();
-        let width = rect
-            .width()
-            .max(window.inner_width()?.as_f64().unwrap_or(900.0))
-            .max(1.0) as f32;
-        let height = rect
-            .height()
-            .max(window.inner_height()?.as_f64().unwrap_or(760.0))
-            .max(1.0) as f32;
-        let dpi_scale = window.device_pixel_ratio().max(1.0) as f32;
-        let pixel_size = PixelSize::new(
-            (width * dpi_scale).ceil().max(1.0) as u32,
-            (height * dpi_scale).ceil().max(1.0) as u32,
-        );
-        Ok((UiSize::new(width, height), pixel_size, dpi_scale))
-    }
-
-    fn pointer_position(
-        canvas: &web_sys::HtmlCanvasElement,
-        client_x: i32,
-        client_y: i32,
-    ) -> UiPoint {
-        let rect = canvas.get_bounding_client_rect();
-        UiPoint::new(
-            client_x as f32 - rect.left() as f32,
-            client_y as f32 - rect.top() as f32,
-        )
-    }
-
-    fn pointer_button(button: i16) -> PointerButton {
-        match button {
-            0 => PointerButton::Primary,
-            1 => PointerButton::Auxiliary,
-            2 => PointerButton::Secondary,
-            3 => PointerButton::Back,
-            4 => PointerButton::Forward,
-            other => PointerButton::Other(other.max(0) as u16),
-        }
-    }
-
-    fn web_pointer_buttons(bits: u16) -> PointerButtons {
-        let mut buttons = PointerButtons::NONE;
-        if bits & 1 != 0 {
-            buttons = buttons.with(PointerButton::Primary);
-        }
-        if bits & 2 != 0 {
-            buttons = buttons.with(PointerButton::Secondary);
-        }
-        if bits & 4 != 0 {
-            buttons = buttons.with(PointerButton::Auxiliary);
-        }
-        if bits & 8 != 0 {
-            buttons = buttons.with(PointerButton::Back);
-        }
-        if bits & 16 != 0 {
-            buttons = buttons.with(PointerButton::Forward);
-        }
-        buttons
-    }
-
-    fn wheel_delta(event: &web_sys::WheelEvent) -> (UiPoint, WheelDeltaUnit) {
-        let delta = UiPoint::new(-event.delta_x() as f32, -event.delta_y() as f32);
-        match event.delta_mode() {
-            1 => (delta, WheelDeltaUnit::Line),
-            2 => (delta, WheelDeltaUnit::Page),
-            _ => (delta, WheelDeltaUnit::Pixel),
-        }
-    }
-
-    fn pointer_modifiers(event: &web_sys::MouseEvent) -> KeyModifiers {
-        KeyModifiers {
-            shift: event.shift_key(),
-            ctrl: event.ctrl_key(),
-            alt: event.alt_key(),
-            meta: event.meta_key(),
-        }
-    }
-
-    fn wheel_modifiers(event: &web_sys::WheelEvent) -> KeyModifiers {
-        KeyModifiers {
-            shift: event.shift_key(),
-            ctrl: event.ctrl_key(),
-            alt: event.alt_key(),
-            meta: event.meta_key(),
-        }
-    }
-
-    fn key_modifiers(event: &web_sys::KeyboardEvent) -> KeyModifiers {
-        KeyModifiers {
-            shift: event.shift_key(),
-            ctrl: event.ctrl_key(),
-            alt: event.alt_key(),
-            meta: event.meta_key(),
-        }
-    }
-
-    fn key_code(event: &web_sys::KeyboardEvent) -> Option<KeyCode> {
-        match event.key().as_str() {
-            "Backspace" => Some(KeyCode::Backspace),
-            "Delete" => Some(KeyCode::Delete),
-            "ArrowLeft" => Some(KeyCode::ArrowLeft),
-            "ArrowRight" => Some(KeyCode::ArrowRight),
-            "ArrowUp" => Some(KeyCode::ArrowUp),
-            "ArrowDown" => Some(KeyCode::ArrowDown),
-            "Home" => Some(KeyCode::Home),
-            "End" => Some(KeyCode::End),
-            "Enter" => Some(KeyCode::Enter),
-            "Escape" => Some(KeyCode::Escape),
-            "Tab" => Some(KeyCode::Tab),
-            "F10" => Some(KeyCode::F10),
-            "ContextMenu" => Some(KeyCode::ContextMenu),
-            value => {
-                let mut chars = value.chars();
-                let ch = chars.next()?;
-                chars.next().is_none().then_some(KeyCode::Character(ch))
-            }
-        }
-    }
-
-    fn text_input_for_key(event: &web_sys::KeyboardEvent) -> Option<String> {
-        let key = event.key();
-        let mut chars = key.chars();
-        let ch = chars.next()?;
-        (chars.next().is_none() && !ch.is_control()).then_some(key)
-    }
-
-    fn resolve_target(
-        event: &RawInputEvent,
-        state: &operad::HostInteractionState,
-        document: &UiDocument,
-    ) -> Option<UiNodeId> {
-        match event {
-            RawInputEvent::Pointer(pointer) => state
-                .drag_capture
-                .filter(|capture| {
-                    capture.pointer_id == pointer.pointer_id
-                        && matches!(
-                            pointer.kind,
-                            PointerEventKind::Move
-                                | PointerEventKind::Up(_)
-                                | PointerEventKind::Cancel
-                        )
-                })
-                .map(|capture| capture.target)
-                .or_else(|| document.hit_test(pointer.position)),
-            RawInputEvent::Wheel(wheel) => document.hit_test(wheel.position),
-            RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
-        }
-    }
-
-    fn restore_scroll_offsets(
-        document: &mut UiDocument,
-        offsets: &HashMap<String, UiPoint>,
-    ) -> bool {
-        if offsets.is_empty() {
-            return false;
-        }
-        let mut scroll_offsets = Vec::new();
-        for index in 0..document.node_count() {
-            let id = UiNodeId(index);
-            if document.scroll_state(id).is_none() {
-                continue;
-            }
-            let Some(offset) = offsets.get(&node_path_key(document, id)).copied() else {
-                continue;
-            };
-            scroll_offsets.push((id, offset));
-        }
-
-        let mut changed = false;
-        for (id, offset) in scroll_offsets {
-            let Some(scroll) = document.node_mut(id).scroll.as_mut() else {
-                continue;
-            };
-            let offset = UiPoint::new(offset.x.max(0.0), offset.y.max(0.0));
-            if scroll.offset != offset {
-                scroll.offset = offset;
-                changed = true;
-            }
-        }
-        changed
-    }
-
-    fn scroll_offset_is_zero(offset: UiPoint) -> bool {
-        offset.x.abs() <= f32::EPSILON && offset.y.abs() <= f32::EPSILON
-    }
-
-    fn node_path_key(document: &UiDocument, id: UiNodeId) -> String {
-        let mut path = Vec::new();
-        let mut current = Some(id);
-        while let Some(id) = current {
-            let node = document.node(id);
-            path.push(node.name.as_str());
-            current = node.parent;
-        }
-        path.reverse();
-        path.join("/")
-    }
-
-    fn request_animation_frame(callback: &Closure<dyn FnMut(f64)>) -> Result<i32, JsValue> {
-        browser_window()?.request_animation_frame(callback.as_ref().unchecked_ref())
-    }
-
-    fn browser_window() -> Result<web_sys::Window, JsValue> {
-        web_sys::window().ok_or_else(|| js_error("browser window is unavailable"))
-    }
-
-    fn set_status(message: &str) {
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            return;
-        };
-        if let Some(status) = document.get_element_by_id("operad-showcase-status") {
-            status.set_text_content(Some(message));
-        }
-    }
-
-    fn layout_js_error(error: taffy::TaffyError) -> JsValue {
-        js_error(format!("layout failed: {error}"))
-    }
-
-    fn render_js_error(error: operad::RenderError) -> JsValue {
-        js_error(format!("render failed: {error}"))
-    }
-
-    fn js_error(message: impl AsRef<str>) -> JsValue {
-        JsValue::from_str(message.as_ref())
-    }
-
-    fn js_message(value: &JsValue) -> String {
-        value
-            .as_string()
-            .unwrap_or_else(|| "unknown JavaScript error".to_string())
-    }
+    operad::web::run_app_with_hooks(
+        operad::web::WebRuntimeOptions::new("Operad showcase")
+            .with_canvas_id("operad-showcase-canvas")
+            .with_status_id("operad-showcase-status")
+            .with_target_name("showcase")
+            .with_tick_action("runtime.tick")
+            .with_tick_rate_hz(SHOWCASE_TICK_RATE_HZ),
+        ShowcaseState::default(),
+        ShowcaseState::update,
+        ShowcaseState::view,
+        hooks,
+    )
+    .await
 }
 
 struct ShowcaseState {
@@ -876,9 +184,9 @@ struct ShowcaseState {
     search_text: TextInputState,
     password_text: TextInputState,
     focused_text: Option<FocusedTextInput>,
+    platform: PlatformServiceClient,
     clipboard_text: String,
-    #[cfg_attr(not(feature = "native-window"), allow(dead_code))]
-    system_clipboard: Option<ShowcaseClipboard>,
+    pending_clipboard_paste: Option<FocusedTextInput>,
     last_button: &'static str,
     toggle_button: bool,
     table_selection: widgets::DataTableSelection,
@@ -1223,8 +531,9 @@ impl Default for ShowcaseState {
             search_text: TextInputState::new("widgets"),
             password_text: TextInputState::new("correct horse"),
             focused_text: None,
+            platform: PlatformServiceClient::new(),
             clipboard_text: String::new(),
-            system_clipboard: create_system_clipboard(),
+            pending_clipboard_paste: None,
             last_button: "None",
             toggle_button: false,
             table_selection: widgets::DataTableSelection::single_row(2)
@@ -1650,8 +959,7 @@ impl ShowcaseState {
             || color_outcome.mode_changed
         {
             if let Some(widgets::ColorPickerEffect::CopyHex(hex)) = color_outcome.effect {
-                self.copy_text_to_system_clipboard(&hex);
-                self.clipboard_text = hex.clone();
+                self.copy_text_to_clipboard(&hex);
                 self.color_copied_hex = Some(hex);
             }
             return;
@@ -1786,7 +1094,7 @@ impl ShowcaseState {
             "labels.hyperlink" => {
                 self.label_hyperlink_visited = true;
                 self.label_link_status = "Opened docs.rs/operad";
-                open_url("https://docs.rs/operad");
+                self.platform.open_url("https://docs.rs/operad");
                 return;
             }
             "button.default" => self.last_button = "Default",
@@ -2629,18 +1937,11 @@ impl ShowcaseState {
         match outcome.clipboard {
             Some(widgets::TextInputClipboardAction::Copy(text))
             | Some(widgets::TextInputClipboardAction::Cut(text)) => {
-                self.copy_text_to_system_clipboard(&text);
-                self.clipboard_text = text;
+                self.copy_text_to_clipboard(&text);
             }
             Some(widgets::TextInputClipboardAction::Paste) => {
-                let pasted = self
-                    .read_text_from_system_clipboard()
-                    .unwrap_or_else(|| self.clipboard_text.clone());
-                if !input.is_read_only() {
-                    if let Some(state) = self.text_state_mut(input) {
-                        state.paste_text(&pasted);
-                    }
-                }
+                self.pending_clipboard_paste = Some(input);
+                self.platform.read_clipboard_text();
             }
             None => {}
         }
@@ -2695,38 +1996,44 @@ impl ShowcaseState {
         }
     }
 
-    fn copy_text_to_system_clipboard(&mut self, text: &str) {
-        #[cfg(not(feature = "native-window"))]
-        {
-            self.clipboard_text = text.to_string();
-        }
-        #[cfg(feature = "native-window")]
-        {
-            if self.system_clipboard.is_none() {
-                self.system_clipboard = create_system_clipboard();
-            }
-            if let Some(clipboard) = self.system_clipboard.as_mut() {
-                if clipboard.set_text(text.to_string()).is_err() {
-                    self.system_clipboard = None;
+    fn copy_text_to_clipboard(&mut self, text: &str) {
+        self.clipboard_text = text.to_string();
+        self.platform.write_clipboard_text(text);
+    }
+
+    fn apply_platform_responses(&mut self, responses: &[PlatformServiceResponse]) {
+        self.platform.record_responses(responses.iter().cloned());
+        for response in responses {
+            match &response.response {
+                PlatformResponse::Clipboard(ClipboardResponse::Text(text)) => {
+                    let pasted = text
+                        .as_deref()
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or(&self.clipboard_text)
+                        .to_string();
+                    self.apply_pending_clipboard_paste(&pasted);
                 }
+                PlatformResponse::Clipboard(ClipboardResponse::Unsupported)
+                | PlatformResponse::Clipboard(ClipboardResponse::Error(_)) => {
+                    let pasted = self.clipboard_text.clone();
+                    self.apply_pending_clipboard_paste(&pasted);
+                }
+                _ => {}
             }
         }
     }
 
-    fn read_text_from_system_clipboard(&mut self) -> Option<String> {
-        #[cfg(not(feature = "native-window"))]
-        {
-            return Some(self.clipboard_text.clone());
+    fn apply_pending_clipboard_paste(&mut self, pasted: &str) {
+        let Some(input) = self.pending_clipboard_paste.take() else {
+            return;
+        };
+        if input.is_read_only() {
+            return;
         }
-        #[cfg(feature = "native-window")]
-        {
-            if self.system_clipboard.is_none() {
-                self.system_clipboard = create_system_clipboard();
-            }
-            self.system_clipboard
-                .as_mut()
-                .and_then(|clipboard| clipboard.get_text().ok())
+        if let Some(state) = self.text_state_mut(input) {
+            state.paste_text(pasted);
         }
+        self.sync_text_input_value(input);
     }
 
     fn apply_menu_item(&mut self, id: &str) {
@@ -8842,17 +8149,6 @@ fn smooth_loop(phase: f32, offset: f32) -> f32 {
     0.5 - ((phase + offset).cos() * 0.5)
 }
 
-fn create_system_clipboard() -> Option<ShowcaseClipboard> {
-    #[cfg(not(feature = "native-window"))]
-    {
-        None
-    }
-    #[cfg(feature = "native-window")]
-    {
-        arboard::Clipboard::new().ok()
-    }
-}
-
 fn profile_form_state() -> FormState {
     let mut form = FormState::new("profile")
         .with_field("name", "Operad")
@@ -8918,26 +8214,6 @@ fn controls_list_content_height() -> f32 {
 
 fn caret_visible(phase: f32) -> bool {
     phase.sin() >= 0.0
-}
-
-fn open_url(url: &str) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = web_sys::window().and_then(|window| window.open_with_url(url).ok().flatten());
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        #[cfg(target_os = "linux")]
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-        #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open").arg(url).spawn();
-        #[cfg(target_os = "windows")]
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn();
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        let _ = url;
-    }
 }
 
 fn text(size: f32, color: ColorRgba) -> TextStyle {

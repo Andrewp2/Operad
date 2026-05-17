@@ -76,6 +76,8 @@ mod showcase_app {
                 AuditWarning::NonFiniteRect { .. }
                     | AuditWarning::EmptyInteractiveClip { .. }
                     | AuditWarning::TextClipped { .. }
+                    | AuditWarning::ScrollRangeHidden { .. }
+                    | AuditWarning::ScrollOffsetOutOfRange { .. }
                     | AuditWarning::NodeOutsideRoot { .. }
                     | AuditWarning::PaintItemEmptyClip { .. }
             )

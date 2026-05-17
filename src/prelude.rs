@@ -11,7 +11,7 @@ pub use crate::{
     AccessibilityMeta, AccessibilityRole, AccessibilityValueRange, AnimatedValues,
     AnimationBlendBinding, AnimationCondition, AnimationInputValue, AnimationMachine,
     AnimationNumberComparison, AnimationState, AnimationTickOutcome, AnimationTickReport,
-    AnimationTransition, AnimationTrigger, CanvasContent, CanvasContextDescriptor,
+    AnimationTransition, AnimationTrigger, AuditAxis, CanvasContent, CanvasContextDescriptor,
     CanvasContextKind, CanvasHostCaptureDiagnostic, CanvasHostCaptureDiagnosticKind,
     CanvasHostCaptureDiagnosticReport, CanvasHostCaptureId, CanvasHostCapturePlan,
     CanvasHostCaptureState, CanvasHostCaptureTransition, CanvasInteractionPolicy, CanvasRenderMode,
@@ -38,14 +38,20 @@ pub use crate::{
 };
 
 pub use crate::platform::{
-    CursorGrabMode, CursorRequest, CursorResponse, CursorShape, DragBytes, DragDropRequest,
-    DragImage, DragOperation, DragPayload, LogicalPoint, LogicalRect, LogicalSize, PlatformRequest,
-    PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceCapabilities,
-    PlatformServiceRequest, PlatformServiceResponse, RepaintRequest,
+    BackendCapabilities, BackendCapabilityDiagnostic, BackendCapabilityProfile,
+    BackendCapabilityRequirement, CapabilityDecision, CapabilityFallback, ClipboardRequest,
+    ClipboardResponse, CursorGrabMode, CursorRequest, CursorResponse, CursorShape, DragBytes,
+    DragDropRequest, DragImage, DragOperation, DragPayload, InputCapabilities, InputCapabilityKind,
+    LayerCapabilities, LayerOrder, LogicalPoint, LogicalRect, LogicalSize, OpenUrlRequest,
+    OpenUrlResponse, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
+    PlatformResponse, PlatformServiceCapabilities, PlatformServiceCapabilityKind,
+    PlatformServiceKind, PlatformServiceRequest, PlatformServiceResponse, RenderingCapabilities,
+    RenderingCapabilityKind, RepaintRequest, ResourceCapabilities, ResourceKind, UiLayer,
 };
 pub use crate::scrolling::{ProgrammaticScrollBehavior, RevealOptions, RevealScrollPlan};
 pub use crate::{
     apply_layout_animation_transitions_to_paint_list, layout, layout_animation_transitions,
+    PlatformServiceClient,
 };
 
 #[cfg(feature = "widgets")]
@@ -108,10 +114,18 @@ pub use crate::widgets::{
     TOOLTIP_SHOW_TRIGGER,
 };
 
+#[cfg(all(feature = "web-runtime", target_arch = "wasm32"))]
+pub use crate::web::{
+    run as run_web, run_app as run_web_app, run_app_with as run_web_app_with,
+    run_app_with_hooks as run_web_app_with_hooks, run_ui_document as run_web_ui_document,
+    run_ui_document_with as run_web_ui_document_with, web_runtime_capabilities, WebRuntimeHooks,
+    WebRuntimeMetrics, WebRuntimeOptions,
+};
 #[cfg(feature = "native-window")]
 pub use crate::{
-    run_app, run_app_with, run_app_with_canvas_renderers, run_app_with_canvas_renderers_and_hooks,
-    run_ui_document, run_ui_document_with, run_ui_document_with_canvas_renderers,
-    NativeCanvasInput, NativeKeyboardInput, NativeRawMouseMotion, NativeWgpuCanvasRenderRegistry,
-    NativeWindowHooks, NativeWindowMetrics, NativeWindowOptions, NativeWindowResult,
+    native_window_capabilities, run, run_app, run_app_with, run_app_with_canvas_renderers,
+    run_app_with_canvas_renderers_and_hooks, run_ui_document, run_ui_document_with,
+    run_ui_document_with_canvas_renderers, NativeCanvasInput, NativeKeyboardInput,
+    NativeRawMouseMotion, NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowMetrics,
+    NativeWindowOptions, NativeWindowResult,
 };

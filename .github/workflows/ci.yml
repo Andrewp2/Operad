@@ -71,6 +71,14 @@ jobs:
           --features web-showcase
           --example showcase_web
 
+      - name: Check minimal web template
+        run: >
+          cargo check --locked
+          --target wasm32-unknown-unknown
+          --no-default-features
+          --features web-runtime
+          --example minimal_web
+
       - name: Assemble Pages artifact
         run: |
           rm -rf dist/showcase

@@ -11,13 +11,107 @@ pub use crate::{host, platform, windows};
 
 #[cfg(feature = "native-window")]
 pub mod native;
+#[cfg(all(feature = "web-runtime", target_arch = "wasm32"))]
+pub mod web;
 
 use crate::input::RawInputEvent;
 use crate::platform::{
-    PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,
-    PlatformServiceRequest, PlatformServiceResponse, RepaintRequest,
+    ClipboardRequest, OpenUrlRequest, PlatformRequest, PlatformRequestId,
+    PlatformRequestIdAllocator, PlatformResponse, PlatformServiceRequest, PlatformServiceResponse,
+    RepaintRequest,
 };
 use crate::{DirtyFlags, UiSize};
+
+const APP_PLATFORM_REQUEST_ID_START: u64 = 1 << 63;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlatformServiceClient {
+    request_ids: PlatformRequestIdAllocator,
+    pending_requests: Vec<PlatformServiceRequest>,
+    responses: Vec<PlatformServiceResponse>,
+}
+
+impl PlatformServiceClient {
+    pub const fn new() -> Self {
+        Self {
+            request_ids: PlatformRequestIdAllocator::new(APP_PLATFORM_REQUEST_ID_START),
+            pending_requests: Vec::new(),
+            responses: Vec::new(),
+        }
+    }
+
+    pub fn request(&mut self, request: PlatformRequest) -> PlatformRequestId {
+        let service_request = self.request_ids.allocate(request);
+        let id = service_request.id;
+        self.pending_requests.push(service_request);
+        id
+    }
+
+    pub fn read_clipboard_text(&mut self) -> PlatformRequestId {
+        self.request(PlatformRequest::Clipboard(ClipboardRequest::ReadText))
+    }
+
+    pub fn write_clipboard_text(&mut self, text: impl Into<String>) -> PlatformRequestId {
+        self.request(PlatformRequest::Clipboard(ClipboardRequest::WriteText(
+            text.into(),
+        )))
+    }
+
+    pub fn clear_clipboard(&mut self) -> PlatformRequestId {
+        self.request(PlatformRequest::Clipboard(ClipboardRequest::Clear))
+    }
+
+    pub fn open_url(&mut self, url: impl Into<String>) -> PlatformRequestId {
+        self.request(PlatformRequest::OpenUrl(OpenUrlRequest::new(url)))
+    }
+
+    pub fn open_url_in_new_window(&mut self, url: impl Into<String>) -> PlatformRequestId {
+        self.request(PlatformRequest::OpenUrl(
+            OpenUrlRequest::new(url).new_window(true),
+        ))
+    }
+
+    pub fn pending_requests(&self) -> &[PlatformServiceRequest] {
+        &self.pending_requests
+    }
+
+    pub fn drain_requests(&mut self) -> Vec<PlatformServiceRequest> {
+        std::mem::take(&mut self.pending_requests)
+    }
+
+    pub fn record_response(&mut self, response: PlatformServiceResponse) {
+        self.responses.push(response);
+    }
+
+    pub fn record_responses(
+        &mut self,
+        responses: impl IntoIterator<Item = PlatformServiceResponse>,
+    ) {
+        self.responses.extend(responses);
+    }
+
+    pub fn responses(&self) -> &[PlatformServiceResponse] {
+        &self.responses
+    }
+
+    pub fn drain_responses(&mut self) -> Vec<PlatformServiceResponse> {
+        std::mem::take(&mut self.responses)
+    }
+
+    pub fn take_response(&mut self, id: PlatformRequestId) -> Option<PlatformServiceResponse> {
+        let index = self
+            .responses
+            .iter()
+            .position(|response| response.id == id)?;
+        Some(self.responses.remove(index))
+    }
+}
+
+impl Default for PlatformServiceClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RuntimeWindowId(pub String);
@@ -1007,6 +1101,33 @@ mod tests {
             .trace
             .phases()
             .contains(&RuntimeFramePhase::ServicePlatformRequests));
+    }
+
+    #[test]
+    fn platform_service_client_queues_requests_and_matches_responses() {
+        let mut client = PlatformServiceClient::new();
+        let write = client.write_clipboard_text("copied");
+        let open = client.open_url("https://example.com");
+
+        assert!(write.0 >= APP_PLATFORM_REQUEST_ID_START);
+        assert_eq!(open.0, write.0 + 1);
+        let requests = client.drain_requests();
+        assert_eq!(requests.len(), 2);
+        assert!(client.pending_requests().is_empty());
+        assert!(matches!(
+            requests[0].request,
+            PlatformRequest::Clipboard(ClipboardRequest::WriteText(_))
+        ));
+
+        let response = completed_platform_response(
+            write,
+            PlatformResponse::Clipboard(crate::platform::ClipboardResponse::Completed),
+        );
+        client.record_response(response.clone());
+
+        assert_eq!(client.responses(), &[response.clone()]);
+        assert_eq!(client.take_response(write), Some(response));
+        assert!(client.take_response(open).is_none());
     }
 
     #[test]

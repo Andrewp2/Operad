@@ -415,6 +415,53 @@ pub enum PlatformServiceKind {
     Repaint,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlatformServiceCapabilityKind {
+    ClipboardRead,
+    ClipboardWrite,
+    FileOpenDialog,
+    FileSaveDialog,
+    FolderPickDialog,
+    OpenUrl,
+    Notification,
+    Screenshot,
+    AppQuit,
+    WindowClose,
+    TextIme,
+    DragDrop,
+    CursorShape,
+    CursorVisibility,
+    CursorPosition,
+    CursorGrab,
+    CursorConfine,
+    Repaint,
+}
+
+impl PlatformServiceCapabilityKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ClipboardRead => "clipboard read",
+            Self::ClipboardWrite => "clipboard write",
+            Self::FileOpenDialog => "file open dialog",
+            Self::FileSaveDialog => "file save dialog",
+            Self::FolderPickDialog => "folder pick dialog",
+            Self::OpenUrl => "open URL",
+            Self::Notification => "notification",
+            Self::Screenshot => "screenshot",
+            Self::AppQuit => "app quit",
+            Self::WindowClose => "window close",
+            Self::TextIme => "text IME",
+            Self::DragDrop => "drag and drop",
+            Self::CursorShape => "cursor shape",
+            Self::CursorVisibility => "cursor visibility",
+            Self::CursorPosition => "cursor position",
+            Self::CursorGrab => "cursor grab",
+            Self::CursorConfine => "cursor confine",
+            Self::Repaint => "repaint scheduling",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformErrorCode {
     Unsupported,
@@ -1210,6 +1257,135 @@ impl Default for BackendAdapterKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InputCapabilityKind {
+    PointerMove,
+    PointerButton,
+    PointerWheel,
+    WheelPhase,
+    HighResolutionWheel,
+    KeyboardPress,
+    KeyboardRelease,
+    TextInput,
+    TextIme,
+    Modifiers,
+    RawMouseMotion,
+    PointerLock,
+    Gamepad,
+    CanvasLocalInput,
+}
+
+impl InputCapabilityKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PointerMove => "pointer move",
+            Self::PointerButton => "pointer button",
+            Self::PointerWheel => "pointer wheel",
+            Self::WheelPhase => "wheel phase",
+            Self::HighResolutionWheel => "high resolution wheel",
+            Self::KeyboardPress => "keyboard press",
+            Self::KeyboardRelease => "keyboard release",
+            Self::TextInput => "text input",
+            Self::TextIme => "text IME input",
+            Self::Modifiers => "keyboard modifiers",
+            Self::RawMouseMotion => "raw mouse motion",
+            Self::PointerLock => "pointer lock",
+            Self::Gamepad => "gamepad input",
+            Self::CanvasLocalInput => "canvas-local input",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputCapabilities {
+    pub pointer_move: bool,
+    pub pointer_button: bool,
+    pub pointer_wheel: bool,
+    pub wheel_phase: bool,
+    pub high_resolution_wheel: bool,
+    pub keyboard_press: bool,
+    pub keyboard_release: bool,
+    pub text_input: bool,
+    pub text_ime: bool,
+    pub modifiers: bool,
+    pub raw_mouse_motion: bool,
+    pub pointer_lock: bool,
+    pub gamepad: bool,
+    pub canvas_local_input: bool,
+}
+
+impl InputCapabilities {
+    pub const NONE: Self = Self {
+        pointer_move: false,
+        pointer_button: false,
+        pointer_wheel: false,
+        wheel_phase: false,
+        high_resolution_wheel: false,
+        keyboard_press: false,
+        keyboard_release: false,
+        text_input: false,
+        text_ime: false,
+        modifiers: false,
+        raw_mouse_motion: false,
+        pointer_lock: false,
+        gamepad: false,
+        canvas_local_input: false,
+    };
+
+    pub const STANDARD: Self = Self {
+        pointer_move: true,
+        pointer_button: true,
+        pointer_wheel: true,
+        wheel_phase: false,
+        high_resolution_wheel: false,
+        keyboard_press: true,
+        keyboard_release: true,
+        text_input: true,
+        text_ime: false,
+        modifiers: true,
+        raw_mouse_motion: false,
+        pointer_lock: false,
+        gamepad: false,
+        canvas_local_input: true,
+    };
+
+    pub const DESKTOP: Self = Self {
+        pointer_move: true,
+        pointer_button: true,
+        pointer_wheel: true,
+        wheel_phase: true,
+        high_resolution_wheel: true,
+        keyboard_press: true,
+        keyboard_release: true,
+        text_input: true,
+        text_ime: true,
+        modifiers: true,
+        raw_mouse_motion: true,
+        pointer_lock: true,
+        gamepad: false,
+        canvas_local_input: true,
+    };
+
+    pub const fn supports(self, kind: InputCapabilityKind) -> bool {
+        match kind {
+            InputCapabilityKind::PointerMove => self.pointer_move,
+            InputCapabilityKind::PointerButton => self.pointer_button,
+            InputCapabilityKind::PointerWheel => self.pointer_wheel,
+            InputCapabilityKind::WheelPhase => self.wheel_phase,
+            InputCapabilityKind::HighResolutionWheel => self.high_resolution_wheel,
+            InputCapabilityKind::KeyboardPress => self.keyboard_press,
+            InputCapabilityKind::KeyboardRelease => self.keyboard_release,
+            InputCapabilityKind::TextInput => self.text_input,
+            InputCapabilityKind::TextIme => self.text_ime,
+            InputCapabilityKind::Modifiers => self.modifiers,
+            InputCapabilityKind::RawMouseMotion => self.raw_mouse_motion,
+            InputCapabilityKind::PointerLock => self.pointer_lock,
+            InputCapabilityKind::Gamepad => self.gamepad,
+            InputCapabilityKind::CanvasLocalInput => self.canvas_local_input,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResourceCapabilities {
     pub images: bool,
@@ -1304,7 +1480,9 @@ pub struct PlatformServiceCapabilities {
     pub text_ime: bool,
     pub drag_drop: bool,
     pub cursor_shape: bool,
+    pub cursor_visible: bool,
     pub cursor_position: bool,
+    pub cursor_grab: bool,
     pub cursor_confine: bool,
     pub repaint: bool,
 }
@@ -1324,7 +1502,9 @@ impl PlatformServiceCapabilities {
         text_ime: false,
         drag_drop: false,
         cursor_shape: false,
+        cursor_visible: false,
         cursor_position: false,
+        cursor_grab: false,
         cursor_confine: false,
         repaint: false,
     };
@@ -1343,10 +1523,35 @@ impl PlatformServiceCapabilities {
         text_ime: true,
         drag_drop: true,
         cursor_shape: true,
+        cursor_visible: true,
         cursor_position: true,
+        cursor_grab: true,
         cursor_confine: true,
         repaint: true,
     };
+
+    pub const fn supports_kind(self, kind: PlatformServiceCapabilityKind) -> bool {
+        match kind {
+            PlatformServiceCapabilityKind::ClipboardRead => self.clipboard_read,
+            PlatformServiceCapabilityKind::ClipboardWrite => self.clipboard_write,
+            PlatformServiceCapabilityKind::FileOpenDialog => self.file_open_dialog,
+            PlatformServiceCapabilityKind::FileSaveDialog => self.file_save_dialog,
+            PlatformServiceCapabilityKind::FolderPickDialog => self.folder_pick_dialog,
+            PlatformServiceCapabilityKind::OpenUrl => self.open_url,
+            PlatformServiceCapabilityKind::Notification => self.notifications,
+            PlatformServiceCapabilityKind::Screenshot => self.screenshots,
+            PlatformServiceCapabilityKind::AppQuit => self.app_quit,
+            PlatformServiceCapabilityKind::WindowClose => self.window_close,
+            PlatformServiceCapabilityKind::TextIme => self.text_ime,
+            PlatformServiceCapabilityKind::DragDrop => self.drag_drop,
+            PlatformServiceCapabilityKind::CursorShape => self.cursor_shape,
+            PlatformServiceCapabilityKind::CursorVisibility => self.cursor_visible,
+            PlatformServiceCapabilityKind::CursorPosition => self.cursor_position,
+            PlatformServiceCapabilityKind::CursorGrab => self.cursor_grab,
+            PlatformServiceCapabilityKind::CursorConfine => self.cursor_confine,
+            PlatformServiceCapabilityKind::Repaint => self.repaint,
+        }
+    }
 
     pub const fn supports(self, request: &PlatformRequest) -> bool {
         match request {
@@ -1371,13 +1576,38 @@ impl PlatformServiceCapabilities {
             PlatformRequest::TextIme(_) => self.text_ime,
             PlatformRequest::DragDrop(_) => self.drag_drop,
             PlatformRequest::Cursor(request) => match request {
-                CursorRequest::SetShape(_) | CursorRequest::SetVisible(_) => self.cursor_shape,
+                CursorRequest::SetShape(_) => self.cursor_shape,
+                CursorRequest::SetVisible(_) => self.cursor_visible,
                 CursorRequest::SetPosition(_) => self.cursor_position,
-                CursorRequest::SetGrab(_)
-                | CursorRequest::Confine(_)
-                | CursorRequest::ReleaseConfine => self.cursor_confine,
+                CursorRequest::SetGrab(_) => self.cursor_grab,
+                CursorRequest::Confine(_) | CursorRequest::ReleaseConfine => self.cursor_confine,
             },
             PlatformRequest::Repaint(_) => self.repaint,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RenderingCapabilityKind {
+    HighDpi,
+    Offscreen,
+    DeterministicSnapshots,
+    PartialUpdates,
+    WebGpuSurface,
+    NativeChildWindows,
+    PlatformOverlays,
+}
+
+impl RenderingCapabilityKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::HighDpi => "high-DPI rendering",
+            Self::Offscreen => "offscreen rendering",
+            Self::DeterministicSnapshots => "deterministic snapshots",
+            Self::PartialUpdates => "partial render updates",
+            Self::WebGpuSurface => "WebGPU surface rendering",
+            Self::NativeChildWindows => "native child windows",
+            Self::PlatformOverlays => "platform overlays",
         }
     }
 }
@@ -1388,6 +1618,9 @@ pub struct RenderingCapabilities {
     pub offscreen: bool,
     pub deterministic_snapshots: bool,
     pub partial_updates: bool,
+    pub webgpu_surface: bool,
+    pub native_child_windows: bool,
+    pub platform_overlays: bool,
 }
 
 impl RenderingCapabilities {
@@ -1396,6 +1629,9 @@ impl RenderingCapabilities {
         offscreen: false,
         deterministic_snapshots: false,
         partial_updates: false,
+        webgpu_surface: false,
+        native_child_windows: false,
+        platform_overlays: false,
     };
 
     pub const STANDARD: Self = Self {
@@ -1403,13 +1639,263 @@ impl RenderingCapabilities {
         offscreen: false,
         deterministic_snapshots: false,
         partial_updates: true,
+        webgpu_surface: false,
+        native_child_windows: false,
+        platform_overlays: false,
     };
+
+    pub const fn supports(self, kind: RenderingCapabilityKind) -> bool {
+        match kind {
+            RenderingCapabilityKind::HighDpi => self.high_dpi,
+            RenderingCapabilityKind::Offscreen => self.offscreen,
+            RenderingCapabilityKind::DeterministicSnapshots => self.deterministic_snapshots,
+            RenderingCapabilityKind::PartialUpdates => self.partial_updates,
+            RenderingCapabilityKind::WebGpuSurface => self.webgpu_surface,
+            RenderingCapabilityKind::NativeChildWindows => self.native_child_windows,
+            RenderingCapabilityKind::PlatformOverlays => self.platform_overlays,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityFallback {
+    UseFallback,
+    DisableFeature,
+    EmitDiagnostic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityDecision {
+    UseFeature,
+    UseFallback,
+    DisableFeature,
+    EmitDiagnostic,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendCapabilityRequirement {
+    Input(InputCapabilityKind),
+    Resource(ResourceKind),
+    Layer(UiLayer),
+    PlatformService(PlatformServiceCapabilityKind),
+    PlatformRequest(PlatformRequest),
+    Rendering(RenderingCapabilityKind),
+    Accessibility(AccessibilityRequestKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendCapabilityProfile {
+    BasicUi,
+    TextEditing,
+    CommandHotkeys,
+    CanvasPointerEditing,
+    Flycam3d,
+    DockWorkspace,
+    AccessibleApp,
+}
+
+impl BackendCapabilityProfile {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BasicUi => "basic UI",
+            Self::TextEditing => "text editing",
+            Self::CommandHotkeys => "command hotkeys",
+            Self::CanvasPointerEditing => "canvas pointer editing",
+            Self::Flycam3d => "3D flycam",
+            Self::DockWorkspace => "docked workspace",
+            Self::AccessibleApp => "accessible app",
+        }
+    }
+
+    pub fn requirements(self) -> Vec<BackendCapabilityRequirement> {
+        match self {
+            Self::BasicUi => vec![
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerMove),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerButton),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerWheel),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardPress),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::Modifiers),
+                BackendCapabilityRequirement::Layer(UiLayer::AppContent),
+                BackendCapabilityRequirement::Layer(UiLayer::AppOverlay),
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::Repaint,
+                ),
+            ],
+            Self::TextEditing => vec![
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardPress),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardRelease),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::TextInput),
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::ClipboardRead,
+                ),
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::ClipboardWrite,
+                ),
+            ],
+            Self::CommandHotkeys => vec![
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardPress),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardRelease),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::Modifiers),
+            ],
+            Self::CanvasPointerEditing => vec![
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerMove),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerButton),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerWheel),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardPress),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardRelease),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::CanvasLocalInput),
+                BackendCapabilityRequirement::Rendering(RenderingCapabilityKind::WebGpuSurface),
+            ],
+            Self::Flycam3d => vec![
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardPress),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardRelease),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::RawMouseMotion),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerLock),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::CanvasLocalInput),
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::CursorGrab,
+                ),
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::CursorVisibility,
+                ),
+                BackendCapabilityRequirement::Rendering(RenderingCapabilityKind::WebGpuSurface),
+            ],
+            Self::DockWorkspace => vec![
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerMove),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerButton),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::PointerWheel),
+                BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardPress),
+                BackendCapabilityRequirement::Layer(UiLayer::AppOverlay),
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::DragDrop,
+                ),
+            ],
+            Self::AccessibleApp => vec![
+                BackendCapabilityRequirement::Accessibility(AccessibilityRequestKind::PublishTree),
+                BackendCapabilityRequirement::Accessibility(AccessibilityRequestKind::MoveFocus),
+                BackendCapabilityRequirement::Accessibility(AccessibilityRequestKind::SetFocusTrap),
+                BackendCapabilityRequirement::Accessibility(AccessibilityRequestKind::Announce),
+                BackendCapabilityRequirement::Accessibility(
+                    AccessibilityRequestKind::ApplyPreferences,
+                ),
+            ],
+        }
+    }
+}
+
+impl BackendCapabilityRequirement {
+    pub fn supported_by(&self, backend: &BackendCapabilities) -> bool {
+        match self {
+            Self::Input(kind) => backend.supports_input(*kind),
+            Self::Resource(kind) => backend.supports_resource(*kind),
+            Self::Layer(layer) => backend.supports_layer(*layer),
+            Self::PlatformService(kind) => backend.supports_platform_service(*kind),
+            Self::PlatformRequest(request) => backend.supports_request(request),
+            Self::Rendering(kind) => backend.supports_rendering(*kind),
+            Self::Accessibility(kind) => backend.supports_accessibility(*kind),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::Input(kind) => format!("input:{}", kind.label()),
+            Self::Resource(kind) => format!("resource:{kind:?}"),
+            Self::Layer(layer) => format!("layer:{layer:?}"),
+            Self::PlatformService(kind) => format!("platform:{}", kind.label()),
+            Self::PlatformRequest(request) => platform_request_requirement_label(request),
+            Self::Rendering(kind) => format!("rendering:{}", kind.label()),
+            Self::Accessibility(kind) => format!("accessibility:{kind:?}"),
+        }
+    }
+
+    pub fn remediation(&self) -> String {
+        match self {
+            Self::Input(kind) => format!(
+                "Use a host that publishes {}, or provide a widget fallback that does not depend on that input stream.",
+                kind.label()
+            ),
+            Self::Resource(kind) => format!(
+                "Use a renderer/resource resolver that supports {kind:?} resources, or gate the feature behind a fallback asset."
+            ),
+            Self::Layer(layer) => format!(
+                "Use a backend that supports {layer:?} layering, or move the content to a supported Operad layer."
+            ),
+            Self::PlatformService(kind) => format!(
+                "Check {} before enabling the control, and choose a fallback, disabled state, or explicit diagnostic.",
+                kind.label()
+            ),
+            Self::PlatformRequest(request) => format!(
+                "Check support for {} before issuing the platform request, and surface an unsupported-request diagnostic if there is no fallback.",
+                platform_request_requirement_label(request)
+            ),
+            Self::Rendering(kind) => format!(
+                "Use a renderer that supports {}, or route this surface through a lower capability rendering path.",
+                kind.label()
+            ),
+            Self::Accessibility(kind) => format!(
+                "Use an accessibility adapter that supports {kind:?}, or expose an equivalent in-app fallback."
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendCapabilityDiagnostic {
+    pub backend: String,
+    pub requirement: BackendCapabilityRequirement,
+    pub supported: bool,
+    pub decision: CapabilityDecision,
+    pub summary: String,
+    pub remediation: String,
+}
+
+impl BackendCapabilityDiagnostic {
+    pub fn new(
+        backend: &BackendCapabilities,
+        requirement: BackendCapabilityRequirement,
+        fallback: CapabilityFallback,
+    ) -> Self {
+        let supported = requirement.supported_by(backend);
+        let decision = if supported {
+            CapabilityDecision::UseFeature
+        } else {
+            match fallback {
+                CapabilityFallback::UseFallback => CapabilityDecision::UseFallback,
+                CapabilityFallback::DisableFeature => CapabilityDecision::DisableFeature,
+                CapabilityFallback::EmitDiagnostic => CapabilityDecision::EmitDiagnostic,
+            }
+        };
+        let label = requirement.label();
+        let summary = if supported {
+            format!("backend {:?} supports {label}", backend.name)
+        } else {
+            format!(
+                "backend {:?} does not support {label}; decision: {decision:?}",
+                backend.name
+            )
+        };
+        let remediation = if supported {
+            "No fallback is required.".to_string()
+        } else {
+            requirement.remediation()
+        };
+
+        Self {
+            backend: backend.name.clone(),
+            requirement,
+            supported,
+            decision,
+            summary,
+            remediation,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendCapabilities {
     pub name: String,
     pub adapter: BackendAdapterKind,
+    pub input: InputCapabilities,
     pub resources: ResourceCapabilities,
     pub layers: LayerCapabilities,
     pub services: PlatformServiceCapabilities,
@@ -1422,6 +1908,7 @@ impl BackendCapabilities {
         Self {
             name: name.into(),
             adapter: BackendAdapterKind::Other,
+            input: InputCapabilities::NONE,
             resources: ResourceCapabilities::NONE,
             layers: LayerCapabilities::NONE,
             services: PlatformServiceCapabilities::NONE,
@@ -1432,6 +1919,11 @@ impl BackendCapabilities {
 
     pub const fn adapter(mut self, adapter: BackendAdapterKind) -> Self {
         self.adapter = adapter;
+        self
+    }
+
+    pub const fn input(mut self, input: InputCapabilities) -> Self {
+        self.input = input;
         self
     }
 
@@ -1460,6 +1952,10 @@ impl BackendCapabilities {
         self
     }
 
+    pub const fn supports_input(&self, kind: InputCapabilityKind) -> bool {
+        self.input.supports(kind)
+    }
+
     pub const fn supports_resource(&self, kind: ResourceKind) -> bool {
         self.resources.supports(kind)
     }
@@ -1472,14 +1968,98 @@ impl BackendCapabilities {
         self.services.supports(request)
     }
 
+    pub const fn supports_platform_service(&self, kind: PlatformServiceCapabilityKind) -> bool {
+        self.services.supports_kind(kind)
+    }
+
+    pub const fn supports_rendering(&self, kind: RenderingCapabilityKind) -> bool {
+        self.rendering.supports(kind)
+    }
+
     pub const fn supports_accessibility(&self, request: AccessibilityRequestKind) -> bool {
         self.accessibility.supports(request)
+    }
+
+    pub fn supports_profile(&self, profile: BackendCapabilityProfile) -> bool {
+        profile
+            .requirements()
+            .iter()
+            .all(|requirement| requirement.supported_by(self))
+    }
+
+    pub fn diagnose_requirement(
+        &self,
+        requirement: BackendCapabilityRequirement,
+        fallback: CapabilityFallback,
+    ) -> BackendCapabilityDiagnostic {
+        BackendCapabilityDiagnostic::new(self, requirement, fallback)
+    }
+
+    pub fn diagnose_requirements(
+        &self,
+        requirements: impl IntoIterator<Item = BackendCapabilityRequirement>,
+        fallback: CapabilityFallback,
+    ) -> Vec<BackendCapabilityDiagnostic> {
+        requirements
+            .into_iter()
+            .map(|requirement| self.diagnose_requirement(requirement, fallback))
+            .collect()
+    }
+
+    pub fn diagnose_profile(
+        &self,
+        profile: BackendCapabilityProfile,
+        fallback: CapabilityFallback,
+    ) -> Vec<BackendCapabilityDiagnostic> {
+        self.diagnose_requirements(profile.requirements(), fallback)
+    }
+
+    pub fn diagnose_profiles(
+        &self,
+        profiles: impl IntoIterator<Item = BackendCapabilityProfile>,
+        fallback: CapabilityFallback,
+    ) -> Vec<BackendCapabilityDiagnostic> {
+        profiles
+            .into_iter()
+            .flat_map(|profile| self.diagnose_profile(profile, fallback))
+            .collect()
     }
 }
 
 impl Default for BackendCapabilities {
     fn default() -> Self {
         Self::new("")
+    }
+}
+
+fn platform_request_requirement_label(request: &PlatformRequest) -> String {
+    match request {
+        PlatformRequest::Clipboard(request) => match request {
+            ClipboardRequest::ReadText => "platform:clipboard read text".to_string(),
+            ClipboardRequest::WriteText(_) => "platform:clipboard write text".to_string(),
+            ClipboardRequest::ReadFiles => "platform:clipboard read files".to_string(),
+            ClipboardRequest::WriteFiles(_) => "platform:clipboard write files".to_string(),
+            ClipboardRequest::Clear => "platform:clipboard clear".to_string(),
+        },
+        PlatformRequest::FileDialog(request) => format!("platform:file dialog {:?}", request.mode),
+        PlatformRequest::OpenUrl(_) => "platform:open URL".to_string(),
+        PlatformRequest::Notification(_) => "platform:notification".to_string(),
+        PlatformRequest::Screenshot(_) => "platform:screenshot".to_string(),
+        PlatformRequest::AppLifecycle(request) => match request {
+            AppLifecycleRequest::Quit => "platform:app quit".to_string(),
+            AppLifecycleRequest::CloseWindow { .. } => "platform:window close".to_string(),
+        },
+        PlatformRequest::TextIme(_) => "platform:text IME".to_string(),
+        PlatformRequest::DragDrop(_) => "platform:drag and drop".to_string(),
+        PlatformRequest::Cursor(request) => match request {
+            CursorRequest::SetShape(_) => "platform:cursor shape".to_string(),
+            CursorRequest::SetVisible(_) => "platform:cursor visibility".to_string(),
+            CursorRequest::SetPosition(_) => "platform:cursor position".to_string(),
+            CursorRequest::SetGrab(mode) => format!("platform:cursor grab {mode:?}"),
+            CursorRequest::Confine(_) => "platform:cursor confine".to_string(),
+            CursorRequest::ReleaseConfine => "platform:cursor release confine".to_string(),
+        },
+        PlatformRequest::Repaint(_) => "platform:repaint scheduling".to_string(),
     }
 }
 
@@ -1589,6 +2169,7 @@ mod tests {
     fn capability_descriptor_matches_specific_service_requests() {
         let backend = BackendCapabilities::new("unit-test")
             .adapter(BackendAdapterKind::Test)
+            .input(InputCapabilities::STANDARD)
             .resources(ResourceCapabilities {
                 images: true,
                 icons: true,
@@ -1615,6 +2196,8 @@ mod tests {
             PlatformRequest::AppLifecycle(AppLifecycleRequest::close_active_window());
 
         assert!(backend.supports_resource(ResourceKind::Image));
+        assert!(backend.supports_input(InputCapabilityKind::KeyboardRelease));
+        assert!(!backend.supports_input(InputCapabilityKind::RawMouseMotion));
         assert!(!backend.supports_resource(ResourceKind::Texture));
         assert!(backend.supports_layer(UiLayer::DebugOverlay));
         assert!(backend.supports_request(&read_clipboard));
@@ -1625,6 +2208,175 @@ mod tests {
         assert!(!backend.supports_request(&close_window));
         assert!(backend.supports_accessibility(AccessibilityRequestKind::PublishTree));
         assert!(!backend.accessibility.screenshots);
+    }
+
+    #[test]
+    fn input_capabilities_distinguish_basic_input_from_flycam_input() {
+        assert!(InputCapabilities::STANDARD.supports(InputCapabilityKind::KeyboardPress));
+        assert!(InputCapabilities::STANDARD.supports(InputCapabilityKind::KeyboardRelease));
+        assert!(InputCapabilities::STANDARD.supports(InputCapabilityKind::CanvasLocalInput));
+        assert!(!InputCapabilities::STANDARD.supports(InputCapabilityKind::RawMouseMotion));
+        assert!(!InputCapabilities::STANDARD.supports(InputCapabilityKind::PointerLock));
+
+        assert!(InputCapabilities::DESKTOP.supports(InputCapabilityKind::RawMouseMotion));
+        assert!(InputCapabilities::DESKTOP.supports(InputCapabilityKind::PointerLock));
+        assert!(InputCapabilities::DESKTOP.supports(InputCapabilityKind::WheelPhase));
+        assert!(!InputCapabilities::NONE.supports(InputCapabilityKind::KeyboardPress));
+    }
+
+    #[test]
+    fn platform_service_capabilities_distinguish_cursor_subfeatures() {
+        let capabilities = PlatformServiceCapabilities {
+            cursor_shape: true,
+            cursor_grab: true,
+            ..PlatformServiceCapabilities::NONE
+        };
+
+        assert!(capabilities.supports_kind(PlatformServiceCapabilityKind::CursorShape));
+        assert!(capabilities.supports_kind(PlatformServiceCapabilityKind::CursorGrab));
+        assert!(!capabilities.supports_kind(PlatformServiceCapabilityKind::CursorVisibility));
+        assert!(!capabilities.supports_kind(PlatformServiceCapabilityKind::CursorConfine));
+        assert!(
+            capabilities.supports(&PlatformRequest::Cursor(CursorRequest::SetShape(
+                CursorShape::Pointer
+            )))
+        );
+        assert!(
+            capabilities.supports(&PlatformRequest::Cursor(CursorRequest::SetGrab(
+                CursorGrabMode::Locked
+            )))
+        );
+        assert!(!capabilities.supports(&PlatformRequest::Cursor(CursorRequest::SetVisible(false))));
+        assert!(
+            !capabilities.supports(&PlatformRequest::Cursor(CursorRequest::Confine(
+                LogicalRect::new(0.0, 0.0, 20.0, 20.0)
+            )))
+        );
+    }
+
+    #[test]
+    fn backend_capability_diagnostics_pick_declared_outcome() {
+        let backend = BackendCapabilities::new("flycam-test")
+            .adapter(BackendAdapterKind::Test)
+            .input(InputCapabilities::STANDARD)
+            .services(PlatformServiceCapabilities {
+                cursor_visible: true,
+                ..PlatformServiceCapabilities::NONE
+            })
+            .rendering(RenderingCapabilities {
+                deterministic_snapshots: true,
+                ..RenderingCapabilities::NONE
+            });
+
+        let supported = backend.diagnose_requirement(
+            BackendCapabilityRequirement::Input(InputCapabilityKind::KeyboardRelease),
+            CapabilityFallback::DisableFeature,
+        );
+        assert!(supported.supported);
+        assert_eq!(supported.decision, CapabilityDecision::UseFeature);
+
+        let unsupported = backend.diagnose_requirement(
+            BackendCapabilityRequirement::Input(InputCapabilityKind::RawMouseMotion),
+            CapabilityFallback::EmitDiagnostic,
+        );
+        assert!(!unsupported.supported);
+        assert_eq!(unsupported.decision, CapabilityDecision::EmitDiagnostic);
+        assert!(unsupported.summary.contains("raw mouse motion"));
+        assert!(unsupported
+            .remediation
+            .contains("does not depend on that input stream"));
+
+        let disabled = backend.diagnose_requirement(
+            BackendCapabilityRequirement::PlatformRequest(PlatformRequest::Cursor(
+                CursorRequest::SetGrab(CursorGrabMode::Locked),
+            )),
+            CapabilityFallback::DisableFeature,
+        );
+        assert!(!disabled.supported);
+        assert_eq!(disabled.decision, CapabilityDecision::DisableFeature);
+        assert!(disabled.summary.contains("cursor grab Locked"));
+
+        let batch = backend.diagnose_requirements(
+            [
+                BackendCapabilityRequirement::Rendering(
+                    RenderingCapabilityKind::DeterministicSnapshots,
+                ),
+                BackendCapabilityRequirement::PlatformService(
+                    PlatformServiceCapabilityKind::CursorVisibility,
+                ),
+            ],
+            CapabilityFallback::UseFallback,
+        );
+        assert_eq!(
+            batch
+                .iter()
+                .map(|diagnostic| diagnostic.decision)
+                .collect::<Vec<_>>(),
+            vec![
+                CapabilityDecision::UseFeature,
+                CapabilityDecision::UseFeature
+            ]
+        );
+    }
+
+    #[test]
+    fn capability_profiles_explain_product_level_interaction_needs() {
+        let desktop = BackendCapabilities::new("desktop-test")
+            .adapter(BackendAdapterKind::Test)
+            .input(InputCapabilities::DESKTOP)
+            .services(PlatformServiceCapabilities::DESKTOP)
+            .layers(LayerCapabilities::STANDARD)
+            .rendering(RenderingCapabilities {
+                webgpu_surface: true,
+                ..RenderingCapabilities::STANDARD
+            })
+            .accessibility(AccessibilityCapabilities::SCREEN_READER);
+
+        assert!(desktop.supports_profile(BackendCapabilityProfile::CommandHotkeys));
+        assert!(desktop.supports_profile(BackendCapabilityProfile::CanvasPointerEditing));
+        assert!(desktop.supports_profile(BackendCapabilityProfile::Flycam3d));
+        assert!(desktop.supports_profile(BackendCapabilityProfile::AccessibleApp));
+
+        let browser_like = BackendCapabilities::new("browser-like")
+            .adapter(BackendAdapterKind::Wgpu)
+            .input(InputCapabilities {
+                high_resolution_wheel: true,
+                ..InputCapabilities::STANDARD
+            })
+            .services(PlatformServiceCapabilities {
+                cursor_visible: true,
+                repaint: true,
+                ..PlatformServiceCapabilities::NONE
+            })
+            .layers(LayerCapabilities::STANDARD)
+            .rendering(RenderingCapabilities {
+                webgpu_surface: true,
+                ..RenderingCapabilities::STANDARD
+            });
+
+        assert!(browser_like.supports_profile(BackendCapabilityProfile::CommandHotkeys));
+        assert!(!browser_like.supports_profile(BackendCapabilityProfile::Flycam3d));
+
+        let diagnostics = browser_like.diagnose_profile(
+            BackendCapabilityProfile::Flycam3d,
+            CapabilityFallback::EmitDiagnostic,
+        );
+        let missing_labels = diagnostics
+            .iter()
+            .filter(|diagnostic| !diagnostic.supported)
+            .map(|diagnostic| diagnostic.requirement.label())
+            .collect::<Vec<_>>();
+
+        assert!(missing_labels.contains(&"input:raw mouse motion".to_string()));
+        assert!(missing_labels.contains(&"input:pointer lock".to_string()));
+        assert!(missing_labels.contains(&"platform:cursor grab".to_string()));
+        assert!(diagnostics
+            .iter()
+            .filter(|diagnostic| !diagnostic.supported)
+            .all(
+                |diagnostic| diagnostic.decision == CapabilityDecision::EmitDiagnostic
+                    && diagnostic.remediation.contains("fallback")
+            ));
     }
 
     #[test]

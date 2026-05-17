@@ -15,6 +15,8 @@ include = [
     "Cargo.toml",
     "LICENSE",
     "README.md",
+    "docs/getting_started.md",
+    "docs/just_work_principles.md",
     "docs/v7_0_migration_guide.md",
     "docs/v7_0_performance.md",
     "docs/v8_0_api_stability.md",
@@ -44,14 +46,46 @@ native-window = ["wgpu", "text-cosmic", "dep:winit", "dep:arboard"]
 text-cosmic = ["dep:cosmic-text"]
 widgets = []
 audit = []
-web-showcase = [
+web-runtime = [
     "wgpu",
-    "widgets",
     "dep:console_error_panic_hook",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
     "dep:web-sys",
 ]
+web-showcase = ["web-runtime", "widgets"]
+
+[[example]]
+name = "minimal_native"
+required-features = ["native-window"]
+
+[[example]]
+name = "minimal_web"
+required-features = ["web-runtime"]
+
+[[example]]
+name = "simple_form"
+required-features = ["native-window", "widgets"]
+
+[[example]]
+name = "canvas_app"
+required-features = ["native-window", "widgets"]
+
+[[example]]
+name = "command_palette_hotkeys"
+required-features = ["native-window", "widgets"]
+
+[[example]]
+name = "docked_workspace"
+required-features = ["native-window", "widgets"]
+
+[[example]]
+name = "theme_customization"
+required-features = ["native-window", "widgets"]
+
+[[example]]
+name = "animation_state_machine"
+required-features = ["native-window", "widgets"]
 
 [[example]]
 name = "showcase"
@@ -86,6 +120,7 @@ taffy = "0.10.1"
 wasm-bindgen = { version = "0.2.121", optional = true }
 wasm-bindgen-futures = { version = "0.4.71", optional = true }
 web-sys = { version = "0.3.98", optional = true, features = [
+    "Clipboard",
     "console",
     "CssStyleDeclaration",
     "Document",
@@ -97,6 +132,8 @@ web-sys = { version = "0.3.98", optional = true, features = [
     "HtmlElement",
     "KeyboardEvent",
     "MouseEvent",
+    "Navigator",
+    "Node",
     "Performance",
     "PointerEvent",
     "WheelEvent",
