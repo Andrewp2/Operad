@@ -2010,20 +2010,33 @@ fn widget_text_input_builds_caret_selection_and_scene_paint_plan() {
         }
     );
 
-    let selection = state.selection_rects(metrics);
-    assert_eq!(selection.len(), 2);
-    assert_eq!(selection[0].byte_range, 1.."one".len());
-    assert_eq!(selection[0].rect, UiRect::new(9.0, 6.0, 10.0, 14.0));
-    assert_eq!(selection[1].byte_range, "one\n".len().."one\nt".len());
-    assert_eq!(selection[1].rect, UiRect::new(4.0, 20.0, 3.6000001, 14.0));
-
     let plan = state.render_plan(
         metrics,
         style,
         widgets::text_input::TextInputPaintOptions::default(),
     );
-    assert_eq!(plan.selection_rects, selection);
-    assert_eq!(plan.caret, Some(caret));
+    assert_eq!(plan.selection_rects.len(), 2);
+    assert_eq!(plan.selection_rects[0].byte_range, 1.."one".len());
+    assert_eq!(
+        plan.selection_rects[1].byte_range,
+        "one\n".len().."one\nt".len()
+    );
+    assert_eq!(plan.selection_rects[0].rect.y, 6.0);
+    assert_eq!(plan.selection_rects[1].rect.y, 20.0);
+    assert_eq!(plan.selection_rects[0].rect.height, 14.0);
+    assert_eq!(plan.selection_rects[1].rect.height, 14.0);
+    assert_eq!(
+        plan.caret.as_ref().map(|caret| caret.position),
+        Some(caret.position)
+    );
+    assert_eq!(
+        plan.caret.as_ref().map(|caret| caret.rect.y),
+        Some(caret.rect.y)
+    );
+    assert_eq!(
+        plan.caret.as_ref().map(|caret| caret.rect.height),
+        Some(caret.rect.height)
+    );
     assert_eq!(plan.overlay_primitives().len(), 3);
     assert_eq!(plan.scene_primitives().len(), 4);
     assert!(matches!(

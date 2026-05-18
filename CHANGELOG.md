@@ -1,5 +1,12 @@
 # Changelog
 
+## 8.0.1 - 2026-05-18
+
+- Fixed text input selection geometry on the web by using the same non-wrapping
+  shaped text layout for paint, caret placement, and selection highlights.
+- Aligned the direct `cosmic-text` dependency with `glyphon` so browser and
+  native text measurement use the same shaping engine.
+
 ## 8.0.0 - 2026-05-18
 
 - Added application-shell APIs for command registries, scoped hotkeys,

@@ -1,6 +1,6 @@
 [package]
 name = "operad"
-version = "8.0.0"
+version = "8.0.1"
 edition = "2021"
 license = "MIT"
 description = "A cross-platform GUI library for Rust."
@@ -118,7 +118,7 @@ accesskit_winit = { version = "0.29.2", optional = true, default-features = fals
 arboard = { version = "3.6.1", optional = true, features = ["wayland-data-control"] }
 binpack2d = "1.0.1"
 console_error_panic_hook = { version = "0.1.7", optional = true }
-cosmic-text = { version = "0.14.2", optional = true }
+cosmic-text = { version = "0.18.2", optional = true }
 egui = { version = "0.33.3", optional = true }
 epaint_default_fonts = { version = "0.33.3", optional = true }
 glyphon = { version = "0.11.0", optional = true }

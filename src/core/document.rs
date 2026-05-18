@@ -2555,6 +2555,7 @@ impl TextMeasurer for CosmicTextMeasurer {
             &text.text,
             &attrs,
             cosmic_shaping(&text.text),
+            None,
         );
 
         let mut measured = UiSize::ZERO;

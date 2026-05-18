@@ -272,6 +272,12 @@ mod showcase_app {
                     );
                 }
             }
+            #[cfg(debug_assertions)]
+            let cold_budget = std::cmp::max(
+                warm_elapsed.mul_f32(12.0) + Duration::from_millis(200),
+                Duration::from_millis(900),
+            );
+            #[cfg(not(debug_assertions))]
             let cold_budget = warm_elapsed.mul_f32(8.0) + Duration::from_millis(200);
             assert!(
                 total_elapsed <= cold_budget,

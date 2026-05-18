@@ -992,11 +992,20 @@ impl TextInputRenderPlan {
         text_style: TextStyle,
         paint: TextInputPaintOptions,
     ) -> Self {
+        let text_style = text_input_render_text_style(text_style);
+        let measured = TextInputMeasuredLayout::measure(&state.text, &text_style);
         let text = PaintText::new(state.text.clone(), metrics.text_rect, text_style)
             .multiline(state.multiline)
             .overflow(TextOverflow::Clip);
-        let caret = paint.show_caret.then(|| state.caret_rect(metrics));
-        let selection_rects = state.selection_rects(metrics);
+        let caret = paint.show_caret.then(|| {
+            text_input_caret_rect_with_layout(&state.text, state.caret, metrics, measured.as_ref())
+        });
+        let selection_rects = text_input_selection_rects_with_layout(
+            &state.text,
+            state.selected_range(),
+            metrics,
+            measured.as_ref(),
+        );
         let selection_paint = selection_rects
             .iter()
             .map(|selection| {
@@ -1510,11 +1519,11 @@ pub fn text_input(
     } else {
         state.text.clone()
     };
-    let style = if state.text.is_empty() {
+    let style = text_input_render_text_style(if state.text.is_empty() {
         placeholder_style_for_text_style(options.placeholder_style, options.text_style)
     } else {
         options.text_style
-    };
+    });
     let text_metrics = TextInputLayoutMetrics::from_style(
         text_input_scene_text_rect(state, &display_text, &style),
         &style,
@@ -1561,6 +1570,11 @@ fn password_display_state(state: &TextInputState) -> TextInputState {
         .as_ref()
         .map(|text| "*".repeat(text.chars().count()));
     masked
+}
+
+fn text_input_render_text_style(mut style: TextStyle) -> TextStyle {
+    style.wrap = TextWrap::None;
+    style
 }
 
 fn char_count_before_byte(text: &str, index: usize) -> usize {
@@ -2009,6 +2023,7 @@ fn text_input_measured_layout(text: &str, style: &TextStyle) -> Option<TextInput
             text,
             &attrs,
             text_input_cosmic_shaping(text),
+            None,
         );
 
         for run in buffer.layout_runs() {
@@ -2538,6 +2553,120 @@ mod tests {
         assert!(
             selection[0].rect.width < metrics.text_rect.width * 0.5,
             "selection should end at the selected glyphs, not the input edge"
+        );
+    }
+
+    #[test]
+    fn text_input_render_plan_uses_non_wrapping_text_geometry() {
+        let mut state = TextInputState::new("iiiwww");
+        state.set_selection(0, state.text().len());
+        let text_style = TextStyle {
+            wrap: TextWrap::Word,
+            ..Default::default()
+        };
+        let metrics =
+            TextInputLayoutMetrics::from_style(UiRect::new(0.0, 0.0, 360.0, 24.0), &text_style);
+
+        let plan = state.render_plan(
+            metrics,
+            text_style,
+            TextInputPaintOptions {
+                show_caret: false,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(plan.text.style.wrap, TextWrap::None);
+        assert_eq!(plan.selection_rects.len(), 1);
+        assert!(
+            plan.selection_rects[0].rect.width < metrics.text_rect.width * 0.5,
+            "selection should use the rendered glyph span, not trailing empty input space"
+        );
+    }
+
+    #[test]
+    fn text_input_widget_selection_uses_same_no_wrap_style_as_painted_text() {
+        let mut state = TextInputState::new("selected text");
+        state.set_selection(0, state.text().len());
+        let text_style = TextStyle {
+            wrap: TextWrap::Word,
+            ..Default::default()
+        };
+        let mut document = UiDocument::new(root_style(420.0, 100.0));
+        let root = document.root;
+
+        let input = text_input(
+            &mut document,
+            root,
+            "selected",
+            &state,
+            TextInputOptions {
+                focused: true,
+                caret_visible: false,
+                text_style,
+                ..Default::default()
+            },
+        );
+        let text_layer = document.node(input).children[0];
+        let UiContent::Scene(primitives) = &document.node(text_layer).content else {
+            panic!("text input should render its text and selection through a scene");
+        };
+
+        let text = primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                ScenePrimitive::Text(text) => Some(text),
+                _ => None,
+            })
+            .expect("painted text");
+        let selection = primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                ScenePrimitive::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(text.style.wrap, TextWrap::None);
+        assert_eq!(selection.len(), 1);
+        assert!(
+            selection[0].rect.width < text.rect.width,
+            "selection highlight should not fill invisible trailing text rect space"
+        );
+    }
+
+    #[test]
+    fn text_input_multiline_selection_uses_each_line_content_width() {
+        let text = "tiny\nmuch wider line";
+        let mut state = TextInputState::new(text).multiline(true);
+        state.set_selection(0, state.text().len());
+        let metrics = TextInputLayoutMetrics::from_style(
+            UiRect::new(0.0, 0.0, 420.0, 80.0),
+            &TextStyle::default(),
+        );
+
+        let plan = state.render_plan(
+            metrics,
+            TextStyle::default(),
+            TextInputPaintOptions {
+                show_caret: false,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(plan.selection_rects.len(), 2);
+        assert_eq!(plan.selection_rects[0].byte_range, 0.."tiny".len());
+        assert_eq!(
+            plan.selection_rects[1].byte_range,
+            "tiny\n".len()..text.len()
+        );
+        assert!(
+            plan.selection_rects[0].rect.width < plan.selection_rects[1].rect.width,
+            "each selected line should keep its own shaped width"
+        );
+        assert!(
+            plan.selection_rects[1].rect.width < metrics.text_rect.width * 0.5,
+            "selected lines should not extend to the input edge"
         );
     }
 
