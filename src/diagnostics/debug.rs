@@ -6,17 +6,18 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::core::document::{AuditWarning, ScrollbarAuditState};
+use crate::host::{HostInteractionState, HostNodeInteraction};
 use crate::platform::UiLayer;
 use crate::{
     AccessibilityNode, AnimatedValues, AnimationActiveTransitionSnapshot, AnimationBlendBinding,
     AnimationCondition, AnimationInputValue, AnimationNumberComparison, AnimationState,
-    AnimationTransition, AnimationTrigger, AuditWarning, ColorRgba, CommandId, CommandScope,
-    ComponentRole, ComponentState, ComponentStateSlot, DirtyFlags, FrameTiming, GestureEvent,
-    GesturePhase, HostInteractionState, HostNodeInteraction, IconStyle, InputBehavior,
-    IntrinsicSize, LayerEffect, LayoutSnapshot, MotionCurve, PaintKind, PaintList,
-    ScopedThemeRegistry, ScrollState, ScrollbarAuditState, StrokeStyle, TextMeasurer, TextStyle,
-    Theme, ThemeScope, ThemeScopeError, ThemeScopeId, ThemeScopeKind, UiContent, UiDocument,
-    UiNode, UiNodeId, UiPoint, UiRect, UiSize, UiVisual,
+    AnimationTransition, AnimationTrigger, ColorRgba, CommandId, CommandScope, ComponentRole,
+    ComponentState, ComponentStateSlot, DirtyFlags, FrameTiming, GestureEvent, GesturePhase,
+    IconStyle, InputBehavior, IntrinsicSize, LayerEffect, LayoutSnapshot, MotionCurve, PaintKind,
+    PaintList, ScopedThemeRegistry, ScrollState, StrokeStyle, TextMeasurer, TextStyle, Theme,
+    ThemeScope, ThemeScopeError, ThemeScopeId, ThemeScopeKind, UiContent, UiDocument, UiNode,
+    UiNodeId, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1590,7 +1591,7 @@ fn push_text_style(tokens: &mut Vec<DebugThemeToken>, path: &str, style: &TextSt
             style.font_size,
             style.line_height,
             style.family,
-            style.weight.0,
+            style.weight.value(),
             style.style,
             style.stretch,
             style.wrap,
@@ -1670,11 +1671,11 @@ fn stroke_value(stroke: StrokeStyle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::{RawWheelEvent, WheelDeltaUnit, WheelPhase};
     use crate::{
         length, ApproxTextMeasurer, ColorRgba, ComponentRole, ComponentState, ComponentStateSlot,
-        InputBehavior, LayoutStyle, RawWheelEvent, ScopedThemeRegistry, StrokeStyle, TextStyle,
-        Theme, ThemePatch, ThemeScope, ThemeScopeId, ThemeScopeKind, UiNode, UiNodeStyle, UiSize,
-        UiVisual, WheelDeltaUnit, WheelPhase,
+        InputBehavior, LayoutStyle, ScopedThemeRegistry, StrokeStyle, TextStyle, Theme, ThemePatch,
+        ThemeScope, ThemeScopeId, ThemeScopeKind, UiNode, UiNodeStyle, UiSize, UiVisual,
     };
     use taffy::prelude::{
         Dimension, LengthPercentageAuto, Position, Rect, Size as TaffySize, Style,
@@ -1737,7 +1738,7 @@ mod tests {
             active_shortcut_scopes: vec![CommandScope::Workspace],
             ..Default::default()
         };
-        host.shortcut_route = Some(crate::HostShortcutRoute {
+        host.shortcut_route = Some(crate::host::HostShortcutRoute {
             shortcut: crate::Shortcut::ctrl('p'),
             active_scopes: vec![CommandScope::Workspace],
             target: Some(button),

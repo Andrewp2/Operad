@@ -1,6 +1,6 @@
 //! Stability records for v5 theme and design-token APIs.
 
-use crate::{ApiStability, FeatureStability, StabilityNote};
+use crate::versioning::{ApiStability, FeatureStability, StabilityNote};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ThemeStabilityScope {

@@ -1,18 +1,37 @@
 use super::*;
 
+use crate::host::text_input_id_for_node;
+use crate::transactions::{
+    EditTransaction, TextEditChange, TextEditHistory, TextEditHistoryApply, TextEditTransaction,
+    TransactionId, TransactionTarget,
+};
+#[cfg(feature = "text-cosmic")]
+use cosmic_text::{
+    fontdb, Attrs, Buffer, Family as CosmicFamily, FontSystem, Metrics, Shaping,
+    Stretch as CosmicStretch, Style as CosmicFontStyle, Weight as CosmicWeight, Wrap as CosmicWrap,
+};
+#[cfg(feature = "text-cosmic")]
+use std::{cell::RefCell, sync::Arc};
+
 const TEXT_INPUT_CONTENT_INSET_X: f32 = 6.0;
 const TEXT_INPUT_CONTENT_INSET_Y: f32 = 6.0;
 const TEXT_INPUT_APPROX_CHAR_WIDTH_FACTOR: f32 = 0.50;
 
+#[cfg(feature = "text-cosmic")]
+thread_local! {
+    static TEXT_INPUT_FONT_SYSTEM: RefCell<FontSystem> =
+        RefCell::new(text_input_cosmic_font_system());
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextInputState {
-    pub text: String,
-    pub caret: usize,
-    pub selection_anchor: Option<usize>,
-    pub multiline: bool,
-    pub composing: Option<String>,
-    pub history: TextEditHistory,
-    pub history_sequence: u64,
+    pub(crate) text: String,
+    pub(crate) caret: usize,
+    pub(crate) selection_anchor: Option<usize>,
+    pub(crate) multiline: bool,
+    pub(crate) composing: Option<String>,
+    pub(crate) history: TextEditHistory,
+    pub(crate) history_sequence: u64,
 }
 
 impl TextInputState {
@@ -30,8 +49,74 @@ impl TextInputState {
     }
 
     pub fn multiline(mut self, multiline: bool) -> Self {
-        self.multiline = multiline;
+        self.set_multiline(multiline);
         self
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = filter_text_input(&text.into(), self.multiline);
+        self.caret = self.text.len();
+        self.selection_anchor = None;
+        self.composing = None;
+    }
+
+    pub const fn is_multiline(&self) -> bool {
+        self.multiline
+    }
+
+    pub fn set_multiline(&mut self, multiline: bool) {
+        self.multiline = multiline;
+        if !self.multiline {
+            self.text = filter_text_input(&self.text, false);
+        }
+        self.normalize_selection();
+        self.composing = self
+            .composing
+            .take()
+            .map(|text| filter_text_input(&text, self.multiline))
+            .filter(|text| !text.is_empty());
+    }
+
+    pub fn caret(&self) -> usize {
+        self.normalized_caret()
+    }
+
+    pub fn set_caret(&mut self, caret: usize) {
+        self.caret = clamp_to_char_boundary(&self.text, caret);
+        self.selection_anchor = None;
+    }
+
+    pub fn selection_anchor(&self) -> Option<usize> {
+        self.selection_anchor
+            .map(|anchor| clamp_to_char_boundary(&self.text, anchor))
+    }
+
+    pub fn set_selection(&mut self, anchor: usize, caret: usize) {
+        self.selection_anchor = Some(clamp_to_char_boundary(&self.text, anchor));
+        self.caret = clamp_to_char_boundary(&self.text, caret);
+    }
+
+    pub fn composing(&self) -> Option<&str> {
+        self.composing.as_deref()
+    }
+
+    pub fn set_composing(&mut self, composing: Option<String>) {
+        self.composing = composing
+            .map(|text| filter_text_input(&text, self.multiline))
+            .filter(|text| !text.is_empty());
+    }
+
+    pub fn history(&self) -> &TextEditHistory {
+        &self.history
+    }
+
+    pub fn clear_history(&mut self) {
+        self.history = TextEditHistory::new();
+        self.history_sequence = 0;
     }
 
     pub fn selected_range(&self) -> Option<Range<usize>> {
@@ -358,6 +443,53 @@ impl TextInputState {
 
     pub fn handle_event(&mut self, event: &UiInputEvent) -> TextInputOutcome {
         self.handle_event_for_target(event, TransactionTarget::none())
+    }
+
+    pub fn apply_widget_text_edit(
+        &mut self,
+        edit: &WidgetTextEdit,
+        options: &TextInputOptions,
+    ) -> TextInputOutcome {
+        let policy = options.interaction_policy();
+        if !policy.enabled {
+            return TextInputOutcome::new(EditPhase::Preview, false, None);
+        }
+
+        if let Some(point) = edit.local_position {
+            if !policy.can_move_caret() {
+                if !policy.selectable {
+                    self.clear_selection();
+                }
+                return TextInputOutcome::new(EditPhase::Preview, false, None);
+            }
+            let target_rect = edit
+                .target_rect
+                .unwrap_or_else(|| UiRect::new(0.0, 0.0, 180.0, 30.0));
+            let local_rect = UiRect::new(
+                0.0,
+                0.0,
+                target_rect.width.max(1.0),
+                target_rect.height.max(1.0),
+            );
+            let metrics = TextInputLayoutMetrics::from_style(
+                text_input_content_rect(local_rect, &options.text_style),
+                &options.text_style,
+            );
+            self.normalize_selection();
+            let anchor = self.selection_anchor.unwrap_or(self.caret);
+            let measured = TextInputMeasuredLayout::measure(&self.text, &options.text_style);
+            self.caret = text_input_byte_index_at_point_with_layout(
+                &self.text,
+                self.multiline,
+                metrics,
+                point,
+                measured.as_ref(),
+            );
+            self.selection_anchor = (edit.selecting && policy.can_select()).then_some(anchor);
+            return TextInputOutcome::new(edit.phase.edit_phase(), false, None);
+        }
+
+        self.handle_event_with_policy(&edit.event, policy)
     }
 
     pub fn handle_event_with_policy(
@@ -719,6 +851,110 @@ pub struct TextInputSelectionRect {
     pub byte_range: Range<usize>,
     pub line: usize,
     pub rect: UiRect,
+}
+
+#[derive(Debug, Clone)]
+struct TextInputMeasuredLayout {
+    lines: Vec<TextInputMeasuredLine>,
+}
+
+#[derive(Debug, Clone)]
+struct TextInputMeasuredLine {
+    byte_range: Range<usize>,
+    stops: Vec<TextInputMeasuredStop>,
+    width: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextInputMeasuredStop {
+    byte: usize,
+    x: f32,
+}
+
+impl TextInputMeasuredLayout {
+    fn measure(text: &str, style: &TextStyle) -> Option<Self> {
+        text_input_measured_layout(text, style)
+    }
+
+    fn max_width(&self) -> f32 {
+        self.lines.iter().map(|line| line.width).fold(0.0, f32::max)
+    }
+
+    fn x_for_byte(&self, line: usize, byte: usize) -> Option<f32> {
+        self.lines.get(line)?.x_for_byte(byte)
+    }
+
+    fn span_between(&self, line: usize, start: usize, end: usize) -> Option<(f32, f32)> {
+        let start_x = self.x_for_byte(line, start)?;
+        let end_x = self.x_for_byte(line, end)?;
+        Some((start_x.min(end_x), (end_x - start_x).abs()))
+    }
+
+    fn byte_for_x(&self, line: usize, x: f32) -> Option<usize> {
+        self.lines.get(line)?.byte_for_x(x)
+    }
+}
+
+#[cfg_attr(not(feature = "text-cosmic"), allow(dead_code))]
+impl TextInputMeasuredLine {
+    fn new(byte_range: Range<usize>) -> Self {
+        Self {
+            byte_range,
+            stops: Vec::new(),
+            width: 0.0,
+        }
+    }
+
+    fn push_stop(&mut self, byte: usize, x: f32) {
+        if byte < self.byte_range.start || byte > self.byte_range.end || !x.is_finite() {
+            return;
+        }
+        self.stops.push(TextInputMeasuredStop { byte, x });
+    }
+
+    fn normalize(&mut self) {
+        self.push_stop(self.byte_range.start, 0.0);
+        self.push_stop(self.byte_range.end, self.width.max(0.0));
+        self.stops.sort_by(|left, right| {
+            left.byte
+                .cmp(&right.byte)
+                .then_with(|| left.x.total_cmp(&right.x))
+        });
+        self.stops.dedup_by(|left, right| left.byte == right.byte);
+    }
+
+    fn x_for_byte(&self, byte: usize) -> Option<f32> {
+        let byte = byte.clamp(self.byte_range.start, self.byte_range.end);
+        if let Some(stop) = self.stops.iter().find(|stop| stop.byte == byte) {
+            return Some(stop.x);
+        }
+        let before = self.stops.iter().rev().find(|stop| stop.byte < byte)?;
+        let after = self.stops.iter().find(|stop| stop.byte > byte)?;
+        let span = after.byte.saturating_sub(before.byte).max(1) as f32;
+        let t = byte.saturating_sub(before.byte) as f32 / span;
+        Some(before.x + (after.x - before.x) * t)
+    }
+
+    fn byte_for_x(&self, x: f32) -> Option<usize> {
+        if self.stops.is_empty() || !x.is_finite() {
+            return Some(self.byte_range.start);
+        }
+        let mut stops = self.stops.clone();
+        stops.sort_by(|left, right| {
+            left.x
+                .total_cmp(&right.x)
+                .then_with(|| left.byte.cmp(&right.byte))
+        });
+        let mut previous = stops[0];
+        for stop in stops.into_iter().skip(1) {
+            let midpoint = previous.x + (stop.x - previous.x) * 0.5;
+            if x < midpoint {
+                return Some(previous.byte);
+            }
+            previous = stop;
+        }
+        Some(previous.byte)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1287,7 +1523,14 @@ pub fn text_input(
         show_caret,
         ..TextInputPaintOptions::default()
     };
-    let primitives = text_input_scene_primitives(state, display_text, style, text_metrics, paint);
+    let primitives = text_input_scene_primitives(
+        state,
+        display_text,
+        style,
+        text_metrics,
+        paint,
+        focused && interaction_policy.can_select(),
+    );
     document.add_child(
         root,
         UiNode::scene(
@@ -1351,14 +1594,20 @@ fn text_input_scene_text_rect(
         .max(state.caret_position().column);
     let char_width =
         sanitize_positive_dimension(style.font_size * TEXT_INPUT_APPROX_CHAR_WIDTH_FACTOR, 1.0);
-    let estimated_text_width = display_text
-        .lines()
-        .map(|line| {
-            line.chars()
-                .map(|character| text_input_char_advance_for_font_size(character, style.font_size))
-                .sum::<f32>()
-        })
-        .fold(0.0, f32::max);
+    let estimated_text_width = TextInputMeasuredLayout::measure(display_text, style)
+        .map(|layout| layout.max_width())
+        .unwrap_or_else(|| {
+            display_text
+                .lines()
+                .map(|line| {
+                    line.chars()
+                        .map(|character| {
+                            text_input_char_advance_for_font_size(character, style.font_size)
+                        })
+                        .sum::<f32>()
+                })
+                .fold(0.0, f32::max)
+        });
     let line_height = sanitize_positive_dimension(style.line_height, style.font_size.max(1.0));
     UiRect::new(
         TEXT_INPUT_CONTENT_INSET_X,
@@ -1399,12 +1648,23 @@ fn text_input_scene_primitives(
     style: TextStyle,
     metrics: TextInputLayoutMetrics,
     paint: TextInputPaintOptions,
+    show_selection: bool,
 ) -> Vec<ScenePrimitive> {
+    let measured = TextInputMeasuredLayout::measure(state.text(), &style);
     let text = PaintText::new(display_text, metrics.text_rect, style)
         .multiline(state.multiline)
         .overflow(TextOverflow::Clip);
-    let mut primitives = state
-        .selection_rects(metrics)
+    let selection_rects = if show_selection {
+        text_input_selection_rects_with_layout(
+            state.text(),
+            state.selected_range(),
+            metrics,
+            measured.as_ref(),
+        )
+    } else {
+        Vec::new()
+    };
+    let mut primitives = selection_rects
         .into_iter()
         .map(|selection| {
             ScenePrimitive::Rect(
@@ -1416,7 +1676,13 @@ fn text_input_scene_primitives(
     primitives.push(ScenePrimitive::Text(text));
     if paint.show_caret {
         primitives.push(ScenePrimitive::Rect(PaintRect::solid(
-            state.caret_rect(metrics).rect,
+            text_input_caret_rect_with_layout(
+                state.text(),
+                state.caret,
+                metrics,
+                measured.as_ref(),
+            )
+            .rect,
             paint.caret_fill,
         )));
     }
@@ -1563,7 +1829,17 @@ pub fn handle_text_input_event_with_metrics_and_options(
             if let Some(metrics) = layout_metrics {
                 let before_caret = state.caret;
                 let before_selection = state.selection_anchor;
-                state.move_caret_to_point(metrics, point, selecting);
+                state.normalize_selection();
+                let anchor = state.selection_anchor.unwrap_or(state.caret);
+                let measured = TextInputMeasuredLayout::measure(&state.text, &options.text_style);
+                state.caret = text_input_byte_index_at_point_with_layout(
+                    &state.text,
+                    state.multiline,
+                    metrics,
+                    point,
+                    measured.as_ref(),
+                );
+                state.selection_anchor = selecting.then_some(anchor);
                 state_changed =
                     before_caret != state.caret || before_selection != state.selection_anchor;
                 edit = Some(TextInputOutcome::new(EditPhase::Preview, false, None));
@@ -1573,7 +1849,13 @@ pub fn handle_text_input_event_with_metrics_and_options(
 
     let platform_context = platform_context.map(|context| {
         if let Some(metrics) = layout_metrics {
-            context.with_caret_rect(state.caret_rect(metrics))
+            let measured = TextInputMeasuredLayout::measure(&state.text, &options.text_style);
+            context.with_caret_rect(text_input_caret_rect_with_layout(
+                &state.text,
+                state.caret,
+                metrics,
+                measured.as_ref(),
+            ))
         } else {
             context
         }
@@ -1698,6 +1980,131 @@ fn text_input_pointer_edit(event: &UiInputEvent, pressed: bool) -> Option<(UiPoi
         UiInputEvent::PointerDown(point) => Some((*point, false)),
         UiInputEvent::PointerMove(point) if pressed => Some((*point, true)),
         _ => None,
+    }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn text_input_measured_layout(text: &str, style: &TextStyle) -> Option<TextInputMeasuredLayout> {
+    let line_ranges = text_line_ranges(text);
+    let mut measured = TextInputMeasuredLayout {
+        lines: line_ranges
+            .iter()
+            .map(|(_, range)| TextInputMeasuredLine::new(range.clone()))
+            .collect(),
+    };
+    let font_size = style.font_size.max(1.0);
+    let line_height = style.line_height.max(font_size);
+    TEXT_INPUT_FONT_SYSTEM.with(|font_system| {
+        let mut font_system = font_system.borrow_mut();
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(font_size, line_height));
+        buffer.set_wrap(&mut font_system, CosmicWrap::None);
+        buffer.set_size(&mut font_system, None, None);
+        let attrs = Attrs::new()
+            .family(text_input_cosmic_family(&style.family))
+            .weight(text_input_cosmic_weight(style.weight))
+            .style(text_input_cosmic_font_style(style.style))
+            .stretch(text_input_cosmic_stretch(style.stretch));
+        buffer.set_text(
+            &mut font_system,
+            text,
+            &attrs,
+            text_input_cosmic_shaping(text),
+        );
+
+        for run in buffer.layout_runs() {
+            let Some((_, line_range)) = line_ranges.get(run.line_i) else {
+                continue;
+            };
+            let Some(line) = measured.lines.get_mut(run.line_i) else {
+                continue;
+            };
+            line.width = line.width.max(run.line_w);
+            for glyph in run.glyphs {
+                let start = line_range.start + glyph.start;
+                let end = line_range.start + glyph.end;
+                if glyph.level.is_rtl() {
+                    line.push_stop(start, glyph.x + glyph.w);
+                    line.push_stop(end, glyph.x);
+                } else {
+                    line.push_stop(start, glyph.x);
+                    line.push_stop(end, glyph.x + glyph.w);
+                }
+            }
+        }
+
+        for line in &mut measured.lines {
+            line.normalize();
+        }
+        Some(measured)
+    })
+}
+
+#[cfg(not(feature = "text-cosmic"))]
+fn text_input_measured_layout(_text: &str, _style: &TextStyle) -> Option<TextInputMeasuredLayout> {
+    None
+}
+
+#[cfg(feature = "text-cosmic")]
+fn text_input_cosmic_font_system() -> FontSystem {
+    let mut font_system = FontSystem::new_with_fonts([
+        text_input_embedded_cosmic_font(epaint_default_fonts::UBUNTU_LIGHT),
+        text_input_embedded_cosmic_font(epaint_default_fonts::HACK_REGULAR),
+        text_input_embedded_cosmic_font(epaint_default_fonts::NOTO_EMOJI_REGULAR),
+    ]);
+    {
+        let db = font_system.db_mut();
+        db.set_sans_serif_family("Ubuntu");
+        db.set_serif_family("Ubuntu");
+        db.set_monospace_family("Hack");
+    }
+    font_system
+}
+
+#[cfg(feature = "text-cosmic")]
+fn text_input_embedded_cosmic_font(bytes: &'static [u8]) -> fontdb::Source {
+    let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
+    fontdb::Source::Binary(data)
+}
+
+#[cfg(feature = "text-cosmic")]
+fn text_input_cosmic_family(family: &FontFamily) -> CosmicFamily<'_> {
+    match family {
+        FontFamily::SansSerif => CosmicFamily::SansSerif,
+        FontFamily::Serif => CosmicFamily::Serif,
+        FontFamily::Monospace => CosmicFamily::Monospace,
+        FontFamily::Named(name) => CosmicFamily::Name(name),
+    }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn text_input_cosmic_weight(weight: FontWeight) -> CosmicWeight {
+    CosmicWeight(weight.value())
+}
+
+#[cfg(feature = "text-cosmic")]
+fn text_input_cosmic_font_style(style: FontStyle) -> CosmicFontStyle {
+    match style {
+        FontStyle::Normal => CosmicFontStyle::Normal,
+        FontStyle::Italic => CosmicFontStyle::Italic,
+        FontStyle::Oblique => CosmicFontStyle::Oblique,
+    }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn text_input_cosmic_stretch(stretch: FontStretch) -> CosmicStretch {
+    match stretch {
+        FontStretch::Condensed => CosmicStretch::Condensed,
+        FontStretch::Normal => CosmicStretch::Normal,
+        FontStretch::Expanded => CosmicStretch::Expanded,
+    }
+}
+
+#[cfg(feature = "text-cosmic")]
+fn text_input_cosmic_shaping(text: &str) -> Shaping {
+    if text.is_ascii() {
+        Shaping::Basic
+    } else {
+        Shaping::Advanced
     }
 }
 
@@ -1828,10 +2235,22 @@ fn text_input_caret_rect(
     caret: usize,
     metrics: TextInputLayoutMetrics,
 ) -> TextInputCaretRect {
+    text_input_caret_rect_with_layout(text, caret, metrics, None)
+}
+
+fn text_input_caret_rect_with_layout(
+    text: &str,
+    caret: usize,
+    metrics: TextInputLayoutMetrics,
+    measured: Option<&TextInputMeasuredLayout>,
+) -> TextInputCaretRect {
     let position = text_position_at(text, caret);
     let line_range = line_range_at(text, caret);
-    let line_prefix_width =
-        text_input_prefix_width(&text[line_range.start..caret.min(line_range.end)], metrics);
+    let line_prefix_width = measured
+        .and_then(|layout| layout.x_for_byte(position.line, caret.min(line_range.end)))
+        .unwrap_or_else(|| {
+            text_input_prefix_width(&text[line_range.start..caret.min(line_range.end)], metrics)
+        });
     let origin = UiPoint::new(
         metrics.text_rect.x - metrics.scroll_offset.x + line_prefix_width,
         metrics.text_rect.y - metrics.scroll_offset.y + position.line as f32 * metrics.line_height,
@@ -1848,6 +2267,16 @@ fn text_input_byte_index_at_point(
     metrics: TextInputLayoutMetrics,
     point: UiPoint,
 ) -> usize {
+    text_input_byte_index_at_point_with_layout(text, multiline, metrics, point, None)
+}
+
+fn text_input_byte_index_at_point_with_layout(
+    text: &str,
+    multiline: bool,
+    metrics: TextInputLayoutMetrics,
+    point: UiPoint,
+    measured: Option<&TextInputMeasuredLayout>,
+) -> usize {
     let line_ranges = text_line_ranges(text);
     if line_ranges.is_empty() {
         return 0;
@@ -1863,7 +2292,11 @@ fn text_input_byte_index_at_point(
     let line_end = line_ranges[line].1.end;
     let relative_x = point.x - metrics.text_rect.x + metrics.scroll_offset.x;
     if relative_x.is_finite() {
-        byte_index_for_line_x(text, line_start..line_end, relative_x.max(0.0), metrics)
+        measured
+            .and_then(|layout| layout.byte_for_x(line, relative_x.max(0.0)))
+            .unwrap_or_else(|| {
+                byte_index_for_line_x(text, line_start..line_end, relative_x.max(0.0), metrics)
+            })
     } else {
         line_start
     }
@@ -1873,6 +2306,15 @@ fn text_input_selection_rects(
     text: &str,
     selected_range: Option<Range<usize>>,
     metrics: TextInputLayoutMetrics,
+) -> Vec<TextInputSelectionRect> {
+    text_input_selection_rects_with_layout(text, selected_range, metrics, None)
+}
+
+fn text_input_selection_rects_with_layout(
+    text: &str,
+    selected_range: Option<Range<usize>>,
+    metrics: TextInputLayoutMetrics,
+    measured: Option<&TextInputMeasuredLayout>,
 ) -> Vec<TextInputSelectionRect> {
     let Some(selected_range) = selected_range else {
         return Vec::new();
@@ -1895,20 +2337,18 @@ fn text_input_selection_rects(
                 line,
                 column: text[line_range.start..start].chars().count(),
             };
-            let prefix_width = text_input_prefix_width(&text[line_range.start..start], metrics);
+            let measured_span = measured.and_then(|layout| layout.span_between(line, start, end));
+            let prefix_width = measured_span.map(|(x, _)| x).unwrap_or_else(|| {
+                text_input_prefix_width(&text[line_range.start..start], metrics)
+            });
             let origin = UiPoint::new(
                 metrics.text_rect.x - metrics.scroll_offset.x + prefix_width,
                 metrics.text_rect.y - metrics.scroll_offset.y
                     + position.line as f32 * metrics.line_height,
             );
-            let mut selected_width = text_input_prefix_width(&text[start..end], metrics);
-            let full_line_selected = selected_range.start <= line_range.start
-                && selected_range.end >= line_range.end
-                && start == line_range.start
-                && end == line_range.end;
-            if full_line_selected {
-                selected_width = selected_width.max(metrics.text_rect.right() - origin.x);
-            }
+            let selected_width = measured_span
+                .map(|(_, width)| width)
+                .unwrap_or_else(|| text_input_prefix_width(&text[start..end], metrics));
             let width = if selected_width <= f32::EPSILON {
                 metrics.caret_width
             } else {
@@ -2035,5 +2475,84 @@ mod tests {
         let accessibility = document.node(node).accessibility.as_ref().unwrap();
         assert!(accessibility.read_only);
         assert!(accessibility.focusable);
+    }
+
+    #[test]
+    fn text_input_paints_selection_only_when_focused() {
+        let mut state = TextInputState::new("Editable text");
+        state.set_selection(0, "Editable".len());
+
+        let mut document = UiDocument::new(root_style(320.0, 120.0));
+        let root = document.root;
+        let input = text_input(
+            &mut document,
+            root,
+            "unfocused",
+            &state,
+            TextInputOptions::default(),
+        );
+        let text_layer = document.node(input).children[0];
+        let UiContent::Scene(primitives) = &document.node(text_layer).content else {
+            panic!("text input should render its content through a scene");
+        };
+        assert!(
+            primitives
+                .iter()
+                .all(|primitive| !matches!(primitive, ScenePrimitive::Rect(_))),
+            "unfocused text inputs must not display a retained selection"
+        );
+
+        let mut document = UiDocument::new(root_style(320.0, 120.0));
+        let root = document.root;
+        let input = text_input(
+            &mut document,
+            root,
+            "focused",
+            &state,
+            TextInputOptions {
+                focused: true,
+                ..Default::default()
+            },
+        );
+        let text_layer = document.node(input).children[0];
+        let UiContent::Scene(primitives) = &document.node(text_layer).content else {
+            panic!("text input should render its content through a scene");
+        };
+        assert!(
+            primitives
+                .iter()
+                .any(|primitive| matches!(primitive, ScenePrimitive::Rect(_))),
+            "focused text inputs should paint their active selection/caret"
+        );
+    }
+
+    #[test]
+    fn text_input_selection_rects_follow_text_width_not_input_width() {
+        let mut state = TextInputState::new("Editable text");
+        state.set_selection(0, state.text().len());
+        let metrics = TextInputLayoutMetrics::new(UiRect::new(0.0, 0.0, 300.0, 24.0), 8.0, 20.0);
+
+        let selection = state.selection_rects(metrics);
+
+        assert_eq!(selection.len(), 1);
+        assert!(
+            selection[0].rect.width < metrics.text_rect.width * 0.5,
+            "selection should end at the selected glyphs, not the input edge"
+        );
+    }
+
+    #[cfg(feature = "text-cosmic")]
+    #[test]
+    fn text_input_measured_layout_uses_shaped_advances() {
+        let style = TextStyle::default();
+        let text = "iiiwww";
+        let measured = TextInputMeasuredLayout::measure(text, &style).expect("measured layout");
+        let narrow_width = measured.x_for_byte(0, "iii".len()).unwrap();
+        let full_width = measured.x_for_byte(0, text.len()).unwrap();
+
+        assert!(
+            full_width - narrow_width > narrow_width,
+            "shaped text metrics should account for glyph advance differences"
+        );
     }
 }

@@ -1,8 +1,11 @@
 //! Context menu widget implementations.
 
-use crate::{
+use crate::tooltips::{
     resolve_context_menu_request, ContextMenuRequest, ContextMenuResolution, HelpItemState,
-    KeyCode, KeyModifiers, RawPointerEvent, UiDocument, UiInputEvent, UiNodeId, UiPoint, UiRect,
+};
+use crate::{
+    input::RawPointerEvent, KeyCode, KeyModifiers, UiDocument, UiInputEvent, UiNodeId, UiPoint,
+    UiRect,
 };
 
 use super::menu::{

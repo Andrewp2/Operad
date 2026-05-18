@@ -8,11 +8,15 @@
 use crate::{KeyCode, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NavigationItemId(pub u64);
+pub struct NavigationItemId(pub(crate) u64);
 
 impl NavigationItemId {
     pub const fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
     }
 }
 

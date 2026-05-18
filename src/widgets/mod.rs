@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use crate::actions::{action_target_enabled, keyboard_activation_key};
 use crate::core::document::rect_is_finite;
 use crate::platform::{
     ClipboardRequest, LogicalRect, PlatformRequest, TextImeRequest, TextImeResponse,
@@ -12,8 +13,6 @@ use taffy::prelude::{
 
 use super::*;
 
-pub use crate::widget_ext::*;
-
 pub mod button;
 pub mod canvas;
 pub mod checkbox;
@@ -22,6 +21,7 @@ pub mod combo_box;
 pub mod container;
 pub mod drag_drop;
 pub mod drag_value;
+pub mod ext;
 pub mod form;
 pub mod grid;
 pub mod helpers;
@@ -44,36 +44,71 @@ pub mod toggle;
 pub mod tooltip;
 pub mod virtual_list;
 
-pub use button::*;
-pub use canvas::*;
-pub use checkbox::*;
-pub use collapsing::*;
-pub use combo_box::*;
-pub use container::*;
-pub use drag_drop::*;
-pub use drag_value::*;
-pub use form::*;
-pub use grid::*;
-pub use helpers::*;
-pub use image::*;
-pub use label::*;
-pub use modal::*;
-pub use panel::*;
-pub use radio::*;
-pub use scroll_area::*;
-pub use scrollbar::{
-    scrollbar, scrollbar_accessibility, scrollbar_thumb, ScrollAxis, ScrollbarControllerState,
-    ScrollbarDragState, ScrollbarOptions,
+pub use button::{
+    button, icon_button, image_button, reset_button, small_button, toggle_button, ButtonOptions,
 };
-pub use separator::*;
-pub use slider::*;
-pub use spinner::*;
-pub use table::*;
-pub use text_input::*;
-pub use theme_preference::*;
-pub use toggle::*;
-pub use tooltip::*;
-pub use virtual_list::*;
+pub use canvas::{canvas, CanvasOptions};
+pub use checkbox::{checkbox, CheckboxOptions};
+pub use collapsing::{collapsing_header, CollapsingHeaderNodes, CollapsingHeaderOptions};
+pub use combo_box::{combo_box, ComboBoxOptions};
+pub use container::{
+    columns, frame, group, indented_section, resize_container, scene, sides, ColumnsNodes,
+    ColumnsOptions, FrameOptions, IndentOptions, ResizeContainerNodes, ResizeContainerOptions,
+    SceneOptions, SidesNodes, SidesOptions,
+};
+pub use drag_drop::{
+    dnd_drag_source, dnd_drop_zone, DragImagePolicy, DragSourceNodes, DragSourceOptions,
+    DropZoneNodes, DropZoneOptions,
+};
+pub use drag_value::{drag_angle, drag_angle_tau, drag_value_input, DragValueOptions};
+pub use ext::dialog::{DialogDismissReason, DialogDismissal};
+pub use ext::numeric_input::{NumericPrecision, NumericRange, NumericUnitFormat};
+pub use ext::toggle_control::ToggleValue;
+pub use form::{
+    field_help_text, field_label, field_validation_message, form_action_buttons,
+    form_error_summary, form_field_order, form_has_errors, form_row, form_section, next_form_field,
+    previous_form_field, validation_text_style, FieldHelpOptions, FieldLabelOptions,
+    FormActionAvailability, FormActionButtonNodes, FormActionButtonsOptions, FormActionKind,
+    FormActionLabels, FormErrorSummaryNodes, FormErrorSummaryOptions, FormRowOptions,
+    FormSectionNodes, FormSectionOptions, ValidationMessageOptions,
+};
+pub use helpers::{
+    add_enabled, add_enabled_ui, add_visible, add_visible_ui, scroll_to_cursor, scroll_to_rect,
+    scroll_to_rect_with_options, set_subtree_enabled, set_subtree_visible,
+};
+pub use image::{image, ImageOptions};
+pub use label::{
+    code_label, code_text_style, colored_label, colored_text_style, heading_label,
+    heading_text_style, hyperlink, label, link, localized_label, monospace_label,
+    monospace_text_style, selectable_label, selectable_value, small_label, small_text_style,
+    strong_label, strong_text_style, weak_label, weak_text_style, wrapped_label, LinkOptions,
+    SelectableLabelOptions,
+};
+pub use modal::{modal_dialog, ModalDialogNodes, ModalDialogOptions};
+pub use panel::{
+    bottom_panel, central_panel, group_panel, left_panel, panel, right_panel, side_panel,
+    top_panel, PanelKind, PanelOptions, SidePanelSide,
+};
+pub use radio::{radio_button, radio_group, RadioButtonOptions, RadioGroupOptions, RadioOption};
+pub use scroll_area::{
+    scroll_area, scroll_container, ScrollContainerNodes, ScrollContainerOptions,
+};
+pub use separator::{separator, spacer, SeparatorOptions, SeparatorOrientation};
+pub use slider::{slider, SliderClamping, SliderOptions, SliderThumbShape, SliderValueSpec};
+pub use spinner::{spinner, SpinnerOptions};
+pub use table::{table_header, TableColumn};
+pub use text_input::{
+    code_editor, multiline_text_input, password_input, search_input, selectable_text,
+    singleline_text_input, text_area, text_input, TextInputInteractionPolicy, TextInputOptions,
+    TextInputState,
+};
+pub use theme_preference::{
+    theme_preference_buttons, theme_preference_switch, ThemePreference, ThemePreferenceButtonNodes,
+    ThemePreferenceButtonsOptions, ThemePreferenceLabels, ThemePreferenceSwitchOptions,
+};
+pub use toggle::{toggle_switch, ToggleSwitchOptions};
+pub use tooltip::{tooltip_box, TooltipBoxOptions, TooltipTriggerMode, TooltipTriggerOptions};
+pub use virtual_list::{virtual_list, VirtualListSpec};
 
 pub(crate) fn single_line_text_style(mut style: TextStyle) -> TextStyle {
     style.wrap = TextWrap::None;

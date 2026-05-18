@@ -13,19 +13,28 @@ use std::time::Duration;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
-use crate::host::{collect_document_widget_actions, process_host_frame_input_with_target_resolver};
+use crate::host::{
+    collect_document_widget_actions, process_document_frame,
+    process_host_frame_input_with_target_resolver, HostDocumentFrameOutput, HostDocumentFrameState,
+    HostFrameOutput, HostInteractionState,
+};
+use crate::input::{
+    RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent,
+    WheelDeltaUnit, WheelPhase,
+};
 use crate::platform::{
     BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode, CursorRequest,
     CursorResponse, CursorShape, OpenUrlResponse, PixelSize, PlatformErrorCode, PlatformRequest,
     PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
     PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, RepaintResponse,
 };
+use crate::renderer::{RenderError, RenderTarget, RendererAdapter};
+use crate::testing::EmptyResourceResolver;
+use crate::wgpu_renderer::WgpuSurfaceRenderer;
 use crate::{
-    AnimationMachine, CosmicTextMeasurer, EmptyResourceResolver, HostDocumentFrameState,
-    HostFrameOutput, HostInteractionState, KeyCode, KeyModifiers, PointerButton, PointerButtons,
-    PointerEventKind, RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent,
-    RawWheelEvent, RenderTarget, RendererAdapter, UiDocument, UiFocusState, UiNodeId, UiPoint,
-    UiSize, WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase, WidgetAction, WidgetActionBinding,
+    AnimationMachine, CosmicTextMeasurer, KeyCode, KeyModifiers, PointerButton, PointerButtons,
+    PointerEventKind, UiDocument, UiFocusState, UiNodeId, UiPoint, UiSize, WidgetAction,
+    WidgetActionBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -462,9 +471,8 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
             RenderTarget::window(self.options.target_name.clone(), viewport),
             host_output,
         );
-        let frame =
-            crate::process_document_frame(&mut document, &mut self.text_measurer, frame_request)
-                .map_err(layout_web_error)?;
+        let frame = process_document_frame(&mut document, &mut self.text_measurer, frame_request)
+            .map_err(layout_web_error)?;
         self.capture_document_runtime_state(&document);
         let actions = collect_document_widget_actions(&document, &frame);
         self.frame_state.apply_document_frame_output(&frame);
@@ -482,12 +490,9 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
                 RenderTarget::window(self.options.target_name.clone(), viewport),
                 HostFrameOutput::new(self.frame_state.interaction.clone()),
             );
-            let frame = crate::process_document_frame(
-                &mut document,
-                &mut self.text_measurer,
-                frame_request,
-            )
-            .map_err(layout_web_error)?;
+            let frame =
+                process_document_frame(&mut document, &mut self.text_measurer, frame_request)
+                    .map_err(layout_web_error)?;
             self.capture_document_runtime_state(&document);
             self.frame_state.apply_document_frame_output(&frame);
             self.apply_platform_service_requests(&frame);
@@ -509,11 +514,12 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
         document.set_dpi_scale(self.dpi_scale);
         restore_scroll_offsets(&mut document, &self.scroll_offsets);
         self.restore_animation_states(&mut document);
-        let mut focus = UiFocusState {
+        let previous_focus = UiFocusState {
             hovered: self.frame_state.interaction.hovered,
             pressed: self.frame_state.interaction.pressed,
             focused: self.frame_state.interaction.focused,
         };
+        let mut focus = previous_focus.clone();
         if let Some(cursor) = self.cursor {
             focus.hovered = document.hit_test(cursor);
             if self.buttons == PointerButtons::NONE {
@@ -541,6 +547,7 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
                 document.set_focus_state(focus);
             }
         }
+        document.refresh_interaction_animation_inputs(previous_focus, self.cursor);
         Ok(document)
     }
 
@@ -686,7 +693,7 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
         }
     }
 
-    fn apply_platform_service_requests(&mut self, frame: &crate::HostDocumentFrameOutput) {
+    fn apply_platform_service_requests(&mut self, frame: &HostDocumentFrameOutput) {
         let requests = frame.platform_service_requests(&mut self.platform_request_ids);
         if requests.is_empty() {
             return;
@@ -1314,7 +1321,7 @@ fn layout_web_error(error: taffy::TaffyError) -> JsValue {
     web_error(format!("layout failed: {error}"))
 }
 
-fn render_web_error(error: crate::RenderError) -> JsValue {
+fn render_web_error(error: RenderError) -> JsValue {
     web_error(format!("render failed: {error}"))
 }
 

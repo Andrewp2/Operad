@@ -1,13 +1,13 @@
 use operad::{root_style, ColorRgba, LayoutStyle, TextStyle, UiDocument, UiNode, UiSize, UiVisual};
 
-fn main() -> operad::NativeWindowResult {
-    operad::run("Minimal Operad", minimal_document)
+fn main() -> operad::native::NativeWindowResult {
+    operad::native::run("Minimal Operad", minimal_document)
 }
 
 fn minimal_document(viewport: UiSize) -> UiDocument {
     let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
     let panel = ui.add_child(
-        ui.root,
+        ui.root(),
         UiNode::container(
             "app.panel",
             LayoutStyle::column()

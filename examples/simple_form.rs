@@ -1,11 +1,12 @@
+use operad::native::{NativeWindowOptions, NativeWindowResult};
 use operad::widgets::{self, TextInputOptions, TextInputState};
 use operad::{
-    root_style, ColorRgba, LayoutStyle, NativeWindowOptions, TextStyle, UiDocument, UiNode,
-    UiNodeId, UiSize, UiVisual, WidgetAction, WidgetActionKind,
+    root_style, ColorRgba, LayoutStyle, TextStyle, UiDocument, UiNode, UiNodeId, UiSize, UiVisual,
+    WidgetAction, WidgetActionKind,
 };
 
-fn main() -> operad::NativeWindowResult {
-    operad::run_app_with(
+fn main() -> NativeWindowResult {
+    operad::native::run_app_with(
         NativeWindowOptions::new("Simple form").with_min_size(420.0, 300.0),
         FormApp::default(),
         FormApp::update,
@@ -38,7 +39,7 @@ impl FormApp {
             "form.name.edit" => apply_text_edit(&mut self.name, &action.kind),
             "form.email.edit" => apply_text_edit(&mut self.email, &action.kind),
             "form.submit" => {
-                self.submitted = format!("Submitted {} <{}>", self.name.text, self.email.text);
+                self.submitted = format!("Submitted {} <{}>", self.name.text(), self.email.text());
             }
             _ => {}
         }
@@ -118,9 +119,7 @@ fn form_field(
 
 fn apply_text_edit(state: &mut TextInputState, kind: &WidgetActionKind) {
     if let WidgetActionKind::TextEdit(edit) = kind {
-        if edit.local_position.is_none() {
-            state.handle_event(&edit.event);
-        }
+        state.apply_widget_text_edit(edit, &TextInputOptions::default());
     }
 }
 
@@ -132,7 +131,7 @@ fn app_panel(
     height: f32,
 ) -> UiNodeId {
     ui.add_child(
-        ui.root,
+        ui.root(),
         UiNode::container(
             name,
             LayoutStyle::column()

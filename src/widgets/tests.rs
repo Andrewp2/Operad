@@ -1,6 +1,15 @@
 use taffy::prelude::{AlignItems, Dimension, Size as TaffySize, Style};
 
+use crate::core::document::AuditWarning;
+use crate::host::text_input_id_for_node;
+use crate::scrolling::ScrollbarVisibility;
+use crate::testing::{
+    run_ui_state_matrix, UiStateMatrixCase, UiStateMatrixDocument, UiStateMatrixTarget,
+    UiStateMatrixViewport,
+};
+use crate::transactions::{EditTransactionPhase, TextEditHistoryDirection, TransactionTarget};
 use crate::widgets;
+use crate::widgets::ext as ext_widgets;
 use crate::*;
 
 fn button_style(width: f32, height: f32) -> UiNodeStyle {
@@ -153,7 +162,7 @@ fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
                 parent,
                 "toggle.off",
                 "Switch off",
-                widgets::ToggleValue::Off,
+                ext_widgets::ToggleValue::Off,
                 widgets::ToggleSwitchOptions::default().with_action("toggle.off"),
             );
             let on = widgets::toggle_switch(
@@ -161,7 +170,7 @@ fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
                 parent,
                 "toggle.on",
                 "Switch on",
-                widgets::ToggleValue::On,
+                ext_widgets::ToggleValue::On,
                 widgets::ToggleSwitchOptions::default().with_action("toggle.on"),
             );
             let mixed = widgets::toggle_switch(
@@ -169,7 +178,7 @@ fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
                 parent,
                 "toggle.mixed",
                 "Switch mixed",
-                widgets::ToggleValue::Mixed,
+                ext_widgets::ToggleValue::Mixed,
                 widgets::ToggleSwitchOptions::default().with_action("toggle.mixed"),
             );
             vec![
@@ -293,19 +302,21 @@ fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
         }),
         widget_state_matrix_case("color button states", |document, parent| {
             let color = ColorRgba::new(74, 133, 198, 255);
-            let rgb = widgets::color_edit_button_rgb(
+            let rgb = ext_widgets::color_edit_button(
                 document,
                 parent,
                 "color.rgb",
                 color,
-                widgets::ColorButtonOptions::default().with_action("color.rgb"),
+                ext_widgets::ColorButtonOptions::default()
+                    .with_format(ext_widgets::ColorValueFormat::Rgb)
+                    .with_action("color.rgb"),
             );
-            let swatch = widgets::color_swatch_button(
+            let swatch = ext_widgets::color_swatch_button(
                 document,
                 parent,
                 "color.swatch",
                 color,
-                widgets::ColorButtonOptions::default().with_action("color.swatch"),
+                ext_widgets::ColorButtonOptions::default().with_action("color.swatch"),
             );
             vec![
                 UiStateMatrixTarget::pointer_click("rgb", rgb.root),
@@ -313,12 +324,12 @@ fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
             ]
         }),
         widget_state_matrix_case("progress states", |document, parent| {
-            let progress = widgets::progress_indicator(
+            let progress = ext_widgets::progress_indicator(
                 document,
                 parent,
                 "progress.percent",
-                widgets::ProgressIndicatorValue::percent(62.0),
-                widgets::ProgressIndicatorOptions {
+                ext_widgets::ProgressIndicatorValue::percent(62.0),
+                ext_widgets::ProgressIndicatorOptions {
                     layout: LayoutStyle::new().with_width(180.0).with_height(8.0),
                     accessibility_label: Some("Progress".to_string()),
                     ..Default::default()
@@ -443,7 +454,7 @@ fn widget_core_controls_publish_minimums_from_composition() {
             parent,
             "toggle.long",
             "Long switch label",
-            widgets::ToggleValue::On,
+            ext_widgets::ToggleValue::On,
             widgets::ToggleSwitchOptions::default(),
         )
     });
@@ -535,27 +546,30 @@ fn widget_apis_accept_legacy_taffy_layout_inputs() {
         },
         ..Default::default()
     };
+    let legacy_layout = LayoutStyle::from_taffy_style(legacy.clone());
     let label = widgets::label(
         &mut doc,
         root,
         "label",
         "Legacy Label",
         TextStyle::default(),
-        legacy.clone(),
+        legacy_layout.clone(),
     );
     let scroll = widgets::scroll_area(
         &mut doc,
         root,
         "scroll",
         ScrollAxes::HORIZONTAL,
-        legacy.clone(),
+        legacy_layout.clone(),
     );
 
-    let button_options = widgets::ButtonOptions::new(legacy.clone()).with_layout(legacy.clone());
-    let checkbox_options = widgets::CheckboxOptions::default().with_layout(legacy.clone());
-    let slider_options = widgets::SliderOptions::default().with_layout(legacy.clone());
-    let text_input_options = widgets::TextInputOptions::default().with_layout(legacy.clone());
-    let combo_box_options = widgets::ComboBoxOptions::default().with_layout(legacy.clone());
+    let button_options =
+        widgets::ButtonOptions::new(legacy_layout.clone()).with_layout(legacy_layout.clone());
+    let checkbox_options = widgets::CheckboxOptions::default().with_layout(legacy_layout.clone());
+    let slider_options = widgets::SliderOptions::default().with_layout(legacy_layout.clone());
+    let text_input_options =
+        widgets::TextInputOptions::default().with_layout(legacy_layout.clone());
+    let combo_box_options = widgets::ComboBoxOptions::default().with_layout(legacy_layout);
 
     assert_eq!(doc.node(label).style.layout.size, legacy.size);
     assert_eq!(doc.node(scroll).style.layout.size, legacy.size);
@@ -702,6 +716,38 @@ fn widget_button_builds_focusable_document_nodes() {
         .iter()
         .any(|item| item.node == button));
 }
+
+#[cfg(feature = "widgets")]
+#[test]
+fn widget_fixed_size_text_button_keeps_label_visible() {
+    let mut doc = UiDocument::new(root_style(80.0, 60.0));
+    let root = doc.root;
+    let button = widgets::button(
+        &mut doc,
+        root,
+        "close",
+        "x",
+        widgets::ButtonOptions::new(LayoutStyle::size(26.0, 22.0)),
+    );
+    doc.compute_layout(UiSize::new(80.0, 60.0), &mut ApproxTextMeasurer)
+        .expect("layout");
+
+    let label = doc.node(button).children[0];
+    let text_item = doc
+        .paint_list()
+        .items
+        .into_iter()
+        .find(|item| item.node == label && matches!(item.kind, PaintKind::Text(_)))
+        .expect("button label text paint");
+
+    assert!(
+        text_item.rect.width >= 6.0 && text_item.clip_rect.width >= 6.0,
+        "fixed-size button label should not be consumed by default padding: rect={:?} clip={:?}",
+        text_item.rect,
+        text_item.clip_rect
+    );
+}
+
 #[cfg(feature = "widgets")]
 #[test]
 fn widget_button_default_visuals_follow_hover_press_and_focus() {
@@ -895,7 +941,7 @@ fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
     doc.handle_input(UiInputEvent::PointerDown(UiPoint::new(12.0, 12.0)));
     let pointer_result = doc.handle_input(UiInputEvent::PointerUp(UiPoint::new(12.0, 12.0)));
     let pointer_actions =
-        widgets::button_actions_from_input_result(&doc, button, &options, &pointer_result);
+        widgets::button::button_actions_from_input_result(&doc, button, &options, &pointer_result);
 
     assert_eq!(pointer_actions.len(), 1);
     assert_eq!(pointer_actions.as_slice()[0].target, button);
@@ -919,11 +965,11 @@ fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
     let label_result = doc.handle_input(UiInputEvent::PointerUp(label_point));
     assert_eq!(label_result.clicked, Some(label));
     let label_actions =
-        widgets::button_actions_from_input_result(&doc, button, &options, &label_result);
+        widgets::button::button_actions_from_input_result(&doc, button, &options, &label_result);
     assert_eq!(label_actions.len(), 1);
     assert_eq!(label_actions.as_slice()[0].target, button);
 
-    let gesture_actions = widgets::button_actions_from_gesture_event(
+    let gesture_actions = widgets::button::button_actions_from_gesture_event(
         &doc,
         button,
         &options,
@@ -944,7 +990,7 @@ fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
         WidgetActionKind::Activate(WidgetActivation::pointer(2))
     );
 
-    let key_actions = widgets::button_actions_from_key_event(
+    let key_actions = widgets::button::button_actions_from_key_event(
         &doc,
         button,
         &options,
@@ -976,7 +1022,7 @@ fn widget_button_action_helpers_suppress_disabled_and_preserve_command_binding()
         ..Default::default()
     };
 
-    assert!(widgets::button_actions_from_input_result(
+    assert!(widgets::button::button_actions_from_input_result(
         &doc,
         disabled,
         &disabled_options,
@@ -997,8 +1043,12 @@ fn widget_button_action_helpers_suppress_disabled_and_preserve_command_binding()
         clicked: Some(save),
         ..Default::default()
     };
-    let actions =
-        widgets::button_actions_from_input_result(&doc, save, &command_options, &save_result);
+    let actions = widgets::button::button_actions_from_input_result(
+        &doc,
+        save,
+        &command_options,
+        &save_result,
+    );
 
     assert_eq!(
         actions.as_slice()[0].binding.command_id(),
@@ -1015,7 +1065,7 @@ fn widget_checkbox_action_helpers_toggle_selection_from_pointer_and_keyboard() {
     let checkbox = widgets::checkbox(&mut doc, root, "sync", "Sync", false, options.clone());
     doc.focus.focused = Some(checkbox);
 
-    let pointer = widgets::checkbox_actions_from_input_result(
+    let pointer = widgets::checkbox::checkbox_actions_from_input_result(
         &doc,
         checkbox,
         false,
@@ -1034,7 +1084,7 @@ fn widget_checkbox_action_helpers_toggle_selection_from_pointer_and_keyboard() {
     );
 
     let label = doc.node(checkbox).children[1];
-    let label_pointer = widgets::checkbox_actions_from_input_result(
+    let label_pointer = widgets::checkbox::checkbox_actions_from_input_result(
         &doc,
         checkbox,
         false,
@@ -1047,7 +1097,7 @@ fn widget_checkbox_action_helpers_toggle_selection_from_pointer_and_keyboard() {
     assert_eq!(label_pointer.len(), 1);
     assert_eq!(label_pointer.as_slice()[0].target, checkbox);
 
-    let keyboard = widgets::checkbox_actions_from_key_event(
+    let keyboard = widgets::checkbox::checkbox_actions_from_key_event(
         &doc,
         checkbox,
         true,
@@ -1104,8 +1154,20 @@ fn widget_action_helpers_preserve_order_and_map_drag_value_edits() {
         timestamp_millis: 12,
     });
 
-    widgets::push_button_input_result_actions(&mut queue, &doc, apply, &apply_options, &click);
-    widgets::push_slider_gesture_event_actions(&mut queue, &doc, slider, &slider_options, &drag);
+    widgets::button::push_button_input_result_actions(
+        &mut queue,
+        &doc,
+        apply,
+        &apply_options,
+        &click,
+    );
+    widgets::slider::push_slider_gesture_event_actions(
+        &mut queue,
+        &doc,
+        slider,
+        &slider_options,
+        &drag,
+    );
 
     assert_eq!(queue.len(), 3);
     assert_eq!(queue.as_slice()[0].target, apply);
@@ -1222,7 +1284,7 @@ fn widget_core_controls_export_accessibility_metadata() {
 #[test]
 fn widget_text_input_edits_and_commits_state() {
     let mut state = widgets::TextInputState::new("gain");
-    state.move_caret(widgets::CaretMovement::End, false);
+    state.move_caret(widgets::text_input::CaretMovement::End, false);
     let outcome = state.handle_event(&UiInputEvent::TextInput("!".to_string()));
     assert!(outcome.changed);
     assert_eq!(state.history.undo_len(), 1);
@@ -1293,10 +1355,10 @@ fn widget_text_input_records_history_and_keyboard_undo_redo() {
 #[test]
 fn widget_text_input_supports_clipboard_edit_primitives() {
     let mut state = widgets::TextInputState::new("wet dry");
-    state.move_caret(widgets::CaretMovement::Start, false);
-    state.move_caret(widgets::CaretMovement::Right, true);
-    state.move_caret(widgets::CaretMovement::Right, true);
-    state.move_caret(widgets::CaretMovement::Right, true);
+    state.move_caret(widgets::text_input::CaretMovement::Start, false);
+    state.move_caret(widgets::text_input::CaretMovement::Right, true);
+    state.move_caret(widgets::text_input::CaretMovement::Right, true);
+    state.move_caret(widgets::text_input::CaretMovement::Right, true);
 
     assert_eq!(state.copy_selection().as_deref(), Some("wet"));
     assert_eq!(state.cut_selection().as_deref(), Some("wet"));
@@ -1322,7 +1384,9 @@ fn widget_text_input_reports_clipboard_key_commands_and_sanitizes_paste() {
     });
     assert_eq!(
         copy.clipboard,
-        Some(widgets::TextInputClipboardAction::Copy("café".to_string()))
+        Some(widgets::text_input::TextInputClipboardAction::Copy(
+            "café".to_string()
+        ))
     );
     assert!(!copy.changed);
 
@@ -1335,7 +1399,9 @@ fn widget_text_input_reports_clipboard_key_commands_and_sanitizes_paste() {
     });
     assert_eq!(
         cut.clipboard,
-        Some(widgets::TextInputClipboardAction::Cut("café".to_string()))
+        Some(widgets::text_input::TextInputClipboardAction::Cut(
+            "café".to_string()
+        ))
     );
     assert!(cut.changed);
     assert_eq!(state.text, "");
@@ -1349,7 +1415,7 @@ fn widget_text_input_reports_clipboard_key_commands_and_sanitizes_paste() {
     });
     assert_eq!(
         paste_request.clipboard,
-        Some(widgets::TextInputClipboardAction::Paste)
+        Some(widgets::text_input::TextInputClipboardAction::Paste)
     );
     assert!(!paste_request.changed);
 
@@ -1380,7 +1446,7 @@ fn widget_text_input_policy_supports_read_only_and_non_selectable_text() {
     );
     assert_eq!(
         copy.clipboard,
-        Some(widgets::TextInputClipboardAction::Copy(
+        Some(widgets::text_input::TextInputClipboardAction::Copy(
             "locked".to_string()
         ))
     );
@@ -1449,11 +1515,16 @@ fn widget_text_input_maps_clipboard_and_ime_platform_contracts() {
     let mut state = widgets::TextInputState::new("scale").multiline(true);
     state.caret = 2;
     state.selection_anchor = Some(0);
-    let metrics =
-        widgets::TextInputLayoutMetrics::new(UiRect::new(10.0, 20.0, 180.0, 40.0), 8.0, 18.0)
-            .caret_width(2.0);
-    let context =
-        widgets::TextInputPlatformContext::for_node(UiNodeId(7), state.caret_rect(metrics));
+    let metrics = widgets::text_input::TextInputLayoutMetrics::new(
+        UiRect::new(10.0, 20.0, 180.0, 40.0),
+        8.0,
+        18.0,
+    )
+    .caret_width(2.0);
+    let context = widgets::text_input::TextInputPlatformContext::for_node(
+        UiNodeId(7),
+        state.caret_rect(metrics),
+    );
 
     let session = state.ime_session(context.clone());
     assert_eq!(context.target, Some(UiNodeId(7)));
@@ -1534,11 +1605,15 @@ fn widget_text_input_routes_focus_edits_clipboard_and_ime_requests() {
     );
     doc.compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
         .expect("layout");
-    let metrics =
-        widgets::TextInputLayoutMetrics::new(UiRect::new(0.0, 0.0, 180.0, 30.0), 8.0, 18.0);
-    let context = widgets::TextInputPlatformContext::for_node(input, state.caret_rect(metrics));
+    let metrics = widgets::text_input::TextInputLayoutMetrics::new(
+        UiRect::new(0.0, 0.0, 180.0, 30.0),
+        8.0,
+        18.0,
+    );
+    let context =
+        widgets::text_input::TextInputPlatformContext::for_node(input, state.caret_rect(metrics));
 
-    let ignored = widgets::handle_text_input_event(
+    let ignored = widgets::text_input::handle_text_input_event(
         &mut doc,
         input,
         &mut state,
@@ -1549,7 +1624,7 @@ fn widget_text_input_routes_focus_edits_clipboard_and_ime_requests() {
     assert!(ignored.edit.is_none());
     assert!(ignored.platform_requests.is_empty());
 
-    let focus = widgets::handle_text_input_event(
+    let focus = widgets::text_input::handle_text_input_event(
         &mut doc,
         input,
         &mut state,
@@ -1566,7 +1641,7 @@ fn widget_text_input_routes_focus_edits_clipboard_and_ime_requests() {
         ] if session.input == context.input && *keyboard_input == context.input
     ));
 
-    let typed = widgets::handle_text_input_event(
+    let typed = widgets::text_input::handle_text_input_event(
         &mut doc,
         input,
         &mut state,
@@ -1582,7 +1657,7 @@ fn widget_text_input_routes_focus_edits_clipboard_and_ime_requests() {
     ));
 
     state.select_all();
-    let copy = widgets::handle_text_input_event(
+    let copy = widgets::text_input::handle_text_input_event(
         &mut doc,
         input,
         &mut state,
@@ -1602,7 +1677,7 @@ fn widget_text_input_routes_focus_edits_clipboard_and_ime_requests() {
         )]
     );
 
-    let commit = widgets::handle_text_input_event(
+    let commit = widgets::text_input::handle_text_input_event(
         &mut doc,
         input,
         &mut state,
@@ -1633,9 +1708,9 @@ fn widget_text_input_options_enforce_read_only_selection_and_clipboard() {
     let input = widgets::text_input(&mut doc, root, "serial", &state, options.clone());
     doc.compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
         .expect("layout");
-    let context = widgets::TextInputPlatformContext::for_node(
+    let context = widgets::text_input::TextInputPlatformContext::for_node(
         input,
-        state.caret_rect(widgets::TextInputLayoutMetrics::new(
+        state.caret_rect(widgets::text_input::TextInputLayoutMetrics::new(
             UiRect::new(0.0, 0.0, 180.0, 30.0),
             8.0,
             18.0,
@@ -1658,7 +1733,7 @@ fn widget_text_input_options_enforce_read_only_selection_and_clipboard() {
         .iter()
         .any(|action| action.id == "paste"));
 
-    let focus = widgets::handle_text_input_event_with_options(
+    let focus = widgets::text_input::handle_text_input_event_with_options(
         &mut doc,
         input,
         &mut state,
@@ -1669,7 +1744,7 @@ fn widget_text_input_options_enforce_read_only_selection_and_clipboard() {
     assert!(focus.focused);
     assert!(focus.platform_requests.is_empty());
 
-    let typed = widgets::handle_text_input_event_with_options(
+    let typed = widgets::text_input::handle_text_input_event_with_options(
         &mut doc,
         input,
         &mut state,
@@ -1680,7 +1755,7 @@ fn widget_text_input_options_enforce_read_only_selection_and_clipboard() {
     assert_eq!(state.text, "AB");
     assert!(!typed.did_edit());
     assert_eq!(
-        widgets::text_input_actions_from_outcome(
+        widgets::text_input::text_input_actions_from_outcome(
             &doc,
             input,
             &options,
@@ -1691,7 +1766,7 @@ fn widget_text_input_options_enforce_read_only_selection_and_clipboard() {
     );
 
     state.select_all();
-    let copy = widgets::handle_text_input_event_with_options(
+    let copy = widgets::text_input::handle_text_input_event_with_options(
         &mut doc,
         input,
         &mut state,
@@ -1760,7 +1835,7 @@ fn widget_selectable_text_wraps_read_only_copyable_input() {
         .iter()
         .any(|action| action.id == "paste"));
 
-    let focus = widgets::handle_selectable_text_event(
+    let focus = widgets::text_input::handle_selectable_text_event(
         &mut doc,
         selectable,
         &mut state,
@@ -1771,7 +1846,7 @@ fn widget_selectable_text_wraps_read_only_copyable_input() {
     assert!(focus.focused);
     assert!(focus.platform_requests.is_empty());
 
-    let typed = widgets::handle_selectable_text_event(
+    let typed = widgets::text_input::handle_selectable_text_event(
         &mut doc,
         selectable,
         &mut state,
@@ -1783,7 +1858,7 @@ fn widget_selectable_text_wraps_read_only_copyable_input() {
     assert!(!typed.did_edit());
 
     state.select_all();
-    let copy = widgets::handle_selectable_text_event(
+    let copy = widgets::text_input::handle_selectable_text_event(
         &mut doc,
         selectable,
         &mut state,
@@ -1898,7 +1973,7 @@ fn widget_text_input_reports_selection_and_caret_line_metadata() {
     let info = state.caret_info();
     assert_eq!(
         info.position,
-        widgets::TextInputPosition {
+        widgets::text_input::TextInputPosition {
             byte_index: "alpha\nbé".len(),
             line: 1,
             column: 2,
@@ -1918,15 +1993,17 @@ fn widget_text_input_builds_caret_selection_and_scene_paint_plan() {
         line_height: 14.0,
         ..Default::default()
     };
-    let metrics =
-        widgets::TextInputLayoutMetrics::from_style(UiRect::new(4.0, 6.0, 120.0, 40.0), &style)
-            .caret_width(2.0);
+    let metrics = widgets::text_input::TextInputLayoutMetrics::from_style(
+        UiRect::new(4.0, 6.0, 120.0, 40.0),
+        &style,
+    )
+    .caret_width(2.0);
 
     let caret = state.caret_rect(metrics);
     assert_eq!(caret.rect, UiRect::new(7.6000004, 6.0 + 14.0, 2.0, 14.0));
     assert_eq!(
         caret.position,
-        widgets::TextInputPosition {
+        widgets::text_input::TextInputPosition {
             byte_index: "one\nt".len(),
             line: 1,
             column: 1,
@@ -1940,7 +2017,11 @@ fn widget_text_input_builds_caret_selection_and_scene_paint_plan() {
     assert_eq!(selection[1].byte_range, "one\n".len().."one\nt".len());
     assert_eq!(selection[1].rect, UiRect::new(4.0, 20.0, 3.6000001, 14.0));
 
-    let plan = state.render_plan(metrics, style, widgets::TextInputPaintOptions::default());
+    let plan = state.render_plan(
+        metrics,
+        style,
+        widgets::text_input::TextInputPaintOptions::default(),
+    );
     assert_eq!(plan.selection_rects, selection);
     assert_eq!(plan.caret, Some(caret));
     assert_eq!(plan.overlay_primitives().len(), 3);
@@ -1979,8 +2060,9 @@ fn widget_text_input_default_render_uses_scene_caret_at_text_end() {
     assert!(matches!(
         primitives.last(),
         Some(ScenePrimitive::Rect(rect))
-            if rect.rect.x == 6.0 + TextStyle::default().font_size * 1.78
+            if rect.rect.x > 6.0
                 && rect.rect.width == 1.0
+                && rect.rect.height == TextStyle::default().line_height
     ));
 }
 #[cfg(feature = "widgets")]
@@ -2098,16 +2180,16 @@ fn widget_text_input_supports_multiline_line_caret_movement() {
     let mut state = widgets::TextInputState::new("one\nfour\nsix").multiline(true);
     state.caret = "one\nfo".len();
 
-    state.move_caret(widgets::CaretMovement::LineStart, false);
+    state.move_caret(widgets::text_input::CaretMovement::LineStart, false);
     assert_eq!(state.caret, "one\n".len());
 
-    state.move_caret(widgets::CaretMovement::LineEnd, false);
+    state.move_caret(widgets::text_input::CaretMovement::LineEnd, false);
     assert_eq!(state.caret, "one\nfour".len());
 
-    state.move_caret(widgets::CaretMovement::Up, false);
+    state.move_caret(widgets::text_input::CaretMovement::Up, false);
     assert_eq!(state.caret, "one".len());
 
-    state.move_caret(widgets::CaretMovement::Down, false);
+    state.move_caret(widgets::text_input::CaretMovement::Down, false);
     assert_eq!(state.caret, "one\nfou".len());
 
     let movement = state.handle_event(&UiInputEvent::Key {
@@ -2130,13 +2212,16 @@ fn widget_text_input_supports_multiline_line_caret_movement() {
 #[cfg(feature = "widgets")]
 #[test]
 fn widget_text_input_maps_pointer_points_to_caret_and_selection() {
-    let metrics =
-        widgets::TextInputLayoutMetrics::new(UiRect::new(10.0, 20.0, 120.0, 48.0), 8.0, 16.0);
+    let metrics = widgets::text_input::TextInputLayoutMetrics::new(
+        UiRect::new(10.0, 20.0, 120.0, 48.0),
+        8.0,
+        16.0,
+    );
     let mut state = widgets::TextInputState::new("alpha\nbeta").multiline(true);
 
     assert_eq!(
         state.position_at_point(metrics, UiPoint::new(10.0 + 2.6 * 8.0, 20.0 + 18.0)),
-        widgets::TextInputPosition {
+        widgets::text_input::TextInputPosition {
             byte_index: "alpha\nbet".len(),
             line: 1,
             column: 3,
@@ -2161,6 +2246,55 @@ fn widget_text_input_maps_pointer_points_to_caret_and_selection() {
 }
 #[cfg(feature = "widgets")]
 #[test]
+fn widget_text_input_retained_pointer_drag_keeps_selection_on_commit() {
+    let options = widgets::TextInputOptions::default();
+    let target = UiRect::new(0.0, 0.0, 180.0, 30.0);
+    let start = UiPoint::new(6.0 + 1.1 * 7.0, 8.0);
+    let end = UiPoint::new(6.0 + 4.3 * 7.0, 8.0);
+    let mut state = widgets::TextInputState::new("abcdef");
+
+    let begin = WidgetTextEdit::pointer(
+        UiInputEvent::PointerDown(start),
+        WidgetValueEditPhase::Begin,
+        start,
+        start,
+        target,
+        false,
+    );
+    let begin_outcome = state.apply_widget_text_edit(&begin, &options);
+    assert_eq!(begin_outcome.phase, EditPhase::BeginEdit);
+    assert_eq!(state.selection_anchor, None);
+
+    let update = WidgetTextEdit::pointer(
+        UiInputEvent::PointerMove(end),
+        WidgetValueEditPhase::Update,
+        end,
+        end,
+        target,
+        true,
+    );
+    let update_outcome = state.apply_widget_text_edit(&update, &options);
+    assert_eq!(update_outcome.phase, EditPhase::UpdateEdit);
+    let selected = state
+        .selected_text()
+        .map(str::to_owned)
+        .expect("drag should create a selection");
+
+    let commit = WidgetTextEdit::pointer(
+        UiInputEvent::PointerUp(end),
+        WidgetValueEditPhase::Commit,
+        end,
+        end,
+        target,
+        true,
+    );
+    let commit_outcome = state.apply_widget_text_edit(&commit, &options);
+
+    assert_eq!(commit_outcome.phase, EditPhase::CommitEdit);
+    assert_eq!(state.selected_text(), Some(selected.as_str()));
+}
+#[cfg(feature = "widgets")]
+#[test]
 fn widget_text_input_event_handler_places_caret_from_pointer_metrics() {
     let mut doc = UiDocument::new(root_style(320.0, 120.0));
     let root = doc.root;
@@ -2176,10 +2310,14 @@ fn widget_text_input_event_handler_places_caret_from_pointer_metrics() {
     doc.compute_layout(UiSize::new(320.0, 120.0), &mut ApproxTextMeasurer)
         .expect("layout");
 
-    let metrics =
-        widgets::TextInputLayoutMetrics::new(UiRect::new(0.0, 0.0, 180.0, 30.0), 8.0, 18.0);
-    let context = widgets::TextInputPlatformContext::for_node(input, state.caret_rect(metrics));
-    let focused = widgets::handle_text_input_event_with_metrics(
+    let metrics = widgets::text_input::TextInputLayoutMetrics::new(
+        UiRect::new(0.0, 0.0, 180.0, 30.0),
+        8.0,
+        18.0,
+    );
+    let context =
+        widgets::text_input::TextInputPlatformContext::for_node(input, state.caret_rect(metrics));
+    let focused = widgets::text_input::handle_text_input_event_with_metrics(
         &mut doc,
         input,
         &mut state,
@@ -2198,12 +2336,13 @@ fn widget_text_input_event_handler_places_caret_from_pointer_metrics() {
             platform::PlatformRequest::TextIme(platform::TextImeRequest::ShowKeyboard { input: keyboard_input }),
             platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(update)),
         ] if session.selection == platform::TextRange::caret(3)
-            && session.cursor_rect.origin.x == 24.0
+            && session.cursor_rect.origin.x > metrics.text_rect.x
             && *keyboard_input == context.input
             && update.selection == platform::TextRange::caret(3)
+            && update.cursor_rect.origin.x == session.cursor_rect.origin.x
     ));
 
-    let selected = widgets::handle_text_input_event_with_metrics(
+    let selected = widgets::text_input::handle_text_input_event_with_metrics(
         &mut doc,
         input,
         &mut state,
@@ -2240,14 +2379,14 @@ fn widget_text_input_event_handler_derives_pointer_metrics_from_rendered_text() 
     let text_rect = doc.node(doc.node(input).children[0]).layout.rect;
     let char_width = TextStyle::default().font_size * 0.50;
     let text_inset = 6.0;
-    let context = widgets::TextInputPlatformContext::for_node(
+    let context = widgets::text_input::TextInputPlatformContext::for_node(
         input,
-        widgets::TextInputCaretRect {
+        widgets::text_input::TextInputCaretRect {
             position: state.caret_position(),
             rect: UiRect::new(0.0, 0.0, 1.0, TextStyle::default().line_height),
         },
     );
-    let focused = widgets::handle_text_input_event(
+    let focused = widgets::text_input::handle_text_input_event(
         &mut doc,
         input,
         &mut state,
@@ -2264,7 +2403,8 @@ fn widget_text_input_event_handler_derives_pointer_metrics_from_rendered_text() 
         focused.platform_requests.last(),
         Some(platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(update)))
             if update.selection == platform::TextRange::caret(3)
-                && update.cursor_rect.origin.x == text_rect.x + text_inset + 3.0 * char_width
+                && update.cursor_rect.origin.x > text_rect.x + text_inset
+                && update.cursor_rect.origin.x < text_rect.x + text_inset + 4.0 * char_width
     ));
 }
 #[cfg(feature = "widgets")]
@@ -2377,7 +2517,7 @@ fn widget_table_virtual_list_and_scrollbar_helpers_expose_metadata() {
         viewport_size: UiSize::new(10.0, 100.0),
         content_size: UiSize::new(10.0, 300.0),
     };
-    let thumb = widgets::scrollbar_thumb(
+    let thumb = widgets::scrollbar::scrollbar_thumb(
         scroll,
         UiRect::new(0.0, 0.0, 10.0, 100.0),
         widgets::scrollbar::ScrollAxis::Vertical,
@@ -2385,7 +2525,7 @@ fn widget_table_virtual_list_and_scrollbar_helpers_expose_metadata() {
     assert!((thumb.y - 66.66667).abs() < 0.01, "{thumb:?}");
     assert!((thumb.height - 33.33333).abs() < 0.01, "{thumb:?}");
 
-    let accessibility = widgets::scrollbar_accessibility(
+    let accessibility = widgets::scrollbar::scrollbar_accessibility(
         "Events scrollbar",
         scroll,
         widgets::scrollbar::ScrollAxis::Vertical,
@@ -2394,7 +2534,7 @@ fn widget_table_virtual_list_and_scrollbar_helpers_expose_metadata() {
     assert_eq!(accessibility.value.as_deref(), Some("100%"));
     assert!(accessibility.focusable);
 
-    let disabled_accessibility = widgets::scrollbar_accessibility(
+    let disabled_accessibility = widgets::scrollbar::scrollbar_accessibility(
         "Empty scrollbar",
         ScrollState {
             axes: ScrollAxes::VERTICAL,
@@ -2417,7 +2557,7 @@ fn widget_scrollbar_drag_state_maps_pointer_delta_to_scroll_offsets() {
         content_size: UiSize::new(10.0, 400.0),
     };
     let track = UiRect::new(0.0, 0.0, 10.0, 100.0);
-    let drag = widgets::ScrollbarDragState::new(
+    let drag = widgets::scrollbar::ScrollbarDragState::new(
         vertical,
         track,
         widgets::scrollbar::ScrollAxis::Vertical,
@@ -2442,7 +2582,7 @@ fn widget_scrollbar_drag_state_maps_pointer_delta_to_scroll_offsets() {
         viewport_size: UiSize::new(50.0, 10.0),
         content_size: UiSize::new(200.0, 10.0),
     };
-    let drag = widgets::ScrollbarDragState::new(
+    let drag = widgets::scrollbar::ScrollbarDragState::new(
         horizontal,
         UiRect::new(0.0, 0.0, 100.0, 10.0),
         widgets::scrollbar::ScrollAxis::Horizontal,
@@ -2453,7 +2593,7 @@ fn widget_scrollbar_drag_state_maps_pointer_delta_to_scroll_offsets() {
     assert!((offset.x - 110.0).abs() < 0.01, "{offset:?}");
     assert_eq!(offset.y, 0.0);
 
-    assert!(widgets::ScrollbarDragState::new(
+    assert!(widgets::scrollbar::ScrollbarDragState::new(
         ScrollState {
             axes: ScrollAxes::VERTICAL,
             offset: UiPoint::new(0.0, 0.0),

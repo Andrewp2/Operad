@@ -1,22 +1,29 @@
 use std::error::Error;
 
+use operad::host::{
+    process_document_frame, HostDocumentFrameOutput, HostDocumentFrameRequest, HostFrameOutput,
+    HostInteractionState,
+};
 use operad::platform::PixelSize;
+use operad::renderer::RenderTarget;
+#[cfg(feature = "wgpu")]
+use operad::renderer::RendererAdapter;
 use operad::{
-    layout, process_document_frame, root_style, AccessibilityMeta, AccessibilityRole,
-    ApproxTextMeasurer, ColorRgba, HostDocumentFrameOutput, HostDocumentFrameRequest,
-    HostFrameOutput, HostInteractionState, InputBehavior, RenderTarget, StrokeStyle, TextStyle,
-    UiDocument, UiNode, UiSize, UiVisual,
+    layout, root_style, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer, ColorRgba,
+    InputBehavior, StrokeStyle, TextStyle, UiDocument, UiNode, UiSize, UiVisual,
 };
 
 #[cfg(all(feature = "accesskit-winit", feature = "native-window"))]
-use operad::{AccessKitTreeOptions, AccessKitWinitAdapter};
+use operad::accesskit_winit_adapter::{AccessKitTreeOptions, AccessKitWinitAdapter};
 
 #[cfg(feature = "wgpu")]
-use operad::{EmptyResourceResolver, RendererAdapter, WgpuRenderer};
+use operad::testing::EmptyResourceResolver;
+#[cfg(feature = "wgpu")]
+use operad::wgpu_renderer::WgpuRenderer;
 
 #[cfg(all(feature = "wgpu", feature = "native-window"))]
 use {
-    operad::WgpuSurfaceRenderer,
+    operad::wgpu_renderer::WgpuSurfaceRenderer,
     std::{sync::Arc, time::Duration},
     winit::{
         application::ApplicationHandler,
@@ -299,7 +306,7 @@ fn percentile_duration(samples: &[Duration], percentile: f64) -> Option<Duration
 fn build_document() -> UiDocument {
     let mut document = UiDocument::new(root_style(640.0, 360.0));
     let panel = document.add_child(
-        document.root,
+        document.root(),
         UiNode::container(
             "native.panel",
             layout::node_style(layout::with_margin_all(

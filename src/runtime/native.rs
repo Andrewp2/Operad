@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::host::process_host_frame_input_with_target_resolver;
 use crate::input::{
     PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
-    RawPointerEvent, RawTextInputEvent, RawWheelEvent,
+    RawPointerEvent, RawTextInputEvent, RawWheelEvent, WheelDeltaUnit, WheelPhase,
 };
 use crate::platform::{
     BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode, CursorRequest,
@@ -18,15 +18,24 @@ use crate::platform::{
     PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, RepaintResponse,
     TextImeRequest, TextImeResponse,
 };
+use crate::renderer::{
+    CanvasHostCaptureId, CanvasHostCapturePlan, CanvasRenderOutcome, CanvasRenderOutput,
+    CanvasRenderReport, CanvasRenderRequest, DirtyRegionSet, RenderError, RenderFrameRequest,
+    RenderTarget, RendererAdapter,
+};
+use crate::testing::EmptyResourceResolver;
+use crate::wgpu_renderer::{WgpuCanvasContext, WgpuSurfaceRenderer};
 use crate::{
-    classify_render_error, process_document_frame, AccessibilityRole, AnimationMachine,
-    CanvasContent, CanvasHostCaptureId, CanvasRenderOutput, CanvasRenderReport,
-    CanvasRenderRequest, CosmicTextMeasurer, DirtyRegionSet, EmptyResourceResolver, ErrorKind,
-    ErrorReport, FallbackDecision, HostDocumentFrameState, HostFrameOutput, HostNodeInteraction,
-    KeyCode, KeyModifiers, RenderError, RenderTarget, RendererAdapter, RuntimeErrorKind, UiContent,
-    UiDocument, UiFocusState, UiInputEvent, UiNodeId, UiPoint, UiRect, UiSize, WgpuCanvasContext,
-    WgpuSurfaceRenderer, WheelDeltaUnit, WheelPhase, WidgetAction, WidgetActionBinding,
-    WidgetActionQueue, WidgetValueEditPhase,
+    errors::{classify_render_error, ErrorKind, ErrorReport, FallbackDecision, RuntimeErrorKind},
+    host::{
+        process_document_frame, HostDocumentFrameOutput, HostDocumentFrameState, HostFrameOutput,
+        HostInteractionState, HostNodeInteraction,
+    },
+};
+use crate::{
+    AccessibilityRole, AnimationMachine, CanvasContent, CosmicTextMeasurer, KeyCode, KeyModifiers,
+    UiContent, UiDocument, UiFocusState, UiInputEvent, UiNodeId, UiPoint, UiRect, UiSize,
+    WidgetAction, WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
 };
 
 pub type NativeWindowResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -455,7 +464,7 @@ impl<State> NativeWgpuCanvasRenderRegistry<State> {
         &mut self,
         state: &mut State,
         renderer: &mut WgpuSurfaceRenderer<'static>,
-        request: &crate::RenderFrameRequest,
+        request: &RenderFrameRequest,
     ) -> CanvasRenderReport {
         let mut report = CanvasRenderReport::default();
         for canvas_request in request.canvas_requests() {
@@ -468,7 +477,7 @@ impl<State> NativeWgpuCanvasRenderRegistry<State> {
                 request.options.scale_factor
                     * normalized_native_scale(canvas_request.transform.scale),
             ) else {
-                report.outcomes.push(crate::CanvasRenderOutcome::Failed {
+                report.outcomes.push(CanvasRenderOutcome::Failed {
                     request: canvas_request,
                     error: RenderError::Backend(
                         "canvas surface must have a positive finite size".to_string(),
@@ -490,11 +499,11 @@ impl<State> NativeWgpuCanvasRenderRegistry<State> {
                 Err(error) => Err(error),
             };
             match outcome {
-                Ok(output) => report.outcomes.push(crate::CanvasRenderOutcome::Rendered {
+                Ok(output) => report.outcomes.push(CanvasRenderOutcome::Rendered {
                     request: canvas_request,
                     output,
                 }),
-                Err(error) => report.outcomes.push(crate::CanvasRenderOutcome::Failed {
+                Err(error) => report.outcomes.push(CanvasRenderOutcome::Failed {
                     request: canvas_request,
                     error,
                 }),
@@ -1015,7 +1024,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         remaining
     }
 
-    fn apply_platform_service_requests(&mut self, frame: &crate::HostDocumentFrameOutput) {
+    fn apply_platform_service_requests(&mut self, frame: &HostDocumentFrameOutput) {
         let requests = frame.platform_service_requests(&mut self.platform_request_ids);
         if requests.is_empty() {
             return;
@@ -1332,11 +1341,12 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         document.set_dpi_scale(self.scale_factor());
         restore_scroll_offsets(&mut document, &self.scroll_offsets);
         self.restore_animation_states(&mut document);
-        let mut focus = UiFocusState {
+        let previous_focus = UiFocusState {
             hovered: self.frame_state.interaction.hovered,
             pressed: self.frame_state.interaction.pressed,
             focused: self.frame_state.interaction.focused,
         };
+        let mut focus = previous_focus.clone();
         if let Some(cursor) = self.cursor {
             focus.hovered = document.hit_test(cursor);
             if self.buttons == PointerButtons::NONE {
@@ -1364,6 +1374,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
                 document.set_focus_state(focus);
             }
         }
+        document.refresh_interaction_animation_inputs(previous_focus, self.cursor);
         Ok(document)
     }
 
@@ -1705,7 +1716,7 @@ where
 
 fn collect_widget_actions(
     document: &UiDocument,
-    frame: &crate::HostDocumentFrameOutput,
+    frame: &HostDocumentFrameOutput,
 ) -> Vec<WidgetAction> {
     let mut queue = WidgetActionQueue::new();
     for event in &frame.host_output.ui_events {
@@ -1786,7 +1797,7 @@ fn collect_widget_actions(
 
 fn text_pointer_edit_target(
     document: &UiDocument,
-    frame: &crate::HostDocumentFrameOutput,
+    frame: &HostDocumentFrameOutput,
     event: &UiInputEvent,
 ) -> Option<(UiNodeId, WidgetValueEditPhase, UiPoint, bool)> {
     let (phase, position, selecting) = match event {
@@ -1803,7 +1814,7 @@ fn text_pointer_edit_target(
             if !text_edit_target(document, target) {
                 return None;
             }
-            return Some((target, WidgetValueEditPhase::Commit, *point, false));
+            return Some((target, WidgetValueEditPhase::Commit, *point, true));
         }
         _ => return None,
     };
@@ -1821,7 +1832,7 @@ fn text_pointer_edit_event(
             Some((WidgetValueEditPhase::Update, *point, true))
         }
         UiInputEvent::PointerUp(point) if pressed => {
-            Some((WidgetValueEditPhase::Commit, *point, false))
+            Some((WidgetValueEditPhase::Commit, *point, true))
         }
         _ => None,
     }
@@ -1849,7 +1860,7 @@ fn action_binding(document: &UiDocument, id: UiNodeId) -> Option<WidgetActionBin
 
 fn resolve_target(
     event: &RawInputEvent,
-    state: &crate::HostInteractionState,
+    state: &HostInteractionState,
     document: &UiDocument,
 ) -> Option<UiNodeId> {
     match event {
@@ -1871,7 +1882,7 @@ fn resolve_target(
 
 fn native_canvas_input_for_raw_event(
     document: &UiDocument,
-    state: &crate::HostInteractionState,
+    state: &HostInteractionState,
     event: &RawInputEvent,
 ) -> Option<NativeCanvasInput> {
     match event {
@@ -1918,8 +1929,8 @@ fn canvas_target(
 
 fn active_canvas_capture<'a>(
     document: &'a UiDocument,
-    state: &crate::HostInteractionState,
-    accepts: impl Fn(&crate::CanvasHostCapturePlan) -> bool,
+    state: &HostInteractionState,
+    accepts: impl Fn(&CanvasHostCapturePlan) -> bool,
 ) -> Option<(UiNodeId, &'a CanvasContent, UiRect)> {
     state
         .canvas_host_capture
@@ -1929,7 +1940,7 @@ fn active_canvas_capture<'a>(
         .and_then(|plan| canvas_target(document, plan.node))
 }
 
-fn captured_raw_mouse_canvas(state: &crate::HostInteractionState) -> Option<CanvasHostCaptureId> {
+fn captured_raw_mouse_canvas(state: &HostInteractionState) -> Option<CanvasHostCaptureId> {
     state
         .canvas_host_capture
         .active_plans()
@@ -2470,7 +2481,7 @@ mod tests {
             .compute_layout(UiSize::new(200.0, 160.0), &mut measurer)
             .unwrap();
 
-        let state = crate::HostInteractionState::default();
+        let state = HostInteractionState::default();
         let pointer = RawInputEvent::Pointer(RawPointerEvent::new(
             PointerEventKind::Move,
             UiPoint::new(20.0, 12.0),
@@ -2498,7 +2509,7 @@ mod tests {
         ));
         assert!(native_canvas_input_for_raw_event(&document, &state, &keyboard).is_none());
 
-        let mut state = crate::HostInteractionState {
+        let mut state = HostInteractionState {
             focused: Some(canvas_id),
             ..Default::default()
         };
@@ -2508,26 +2519,24 @@ mod tests {
         assert_eq!(keyboard_input.local_position, None);
 
         state.focused = None;
-        state
-            .canvas_host_capture
-            .sync([crate::CanvasHostCapturePlan {
-                node: canvas_id,
-                key: "viewport".to_string(),
-                rect: document.node(canvas_id).layout.rect,
-                pointer_capture: true,
-                keyboard_capture: true,
-                wheel_capture: true,
-                pointer_lock: false,
-                domain_hit_testing: true,
-            }]);
+        state.canvas_host_capture.sync([CanvasHostCapturePlan {
+            node: canvas_id,
+            key: "viewport".to_string(),
+            rect: document.node(canvas_id).layout.rect,
+            pointer_capture: true,
+            keyboard_capture: true,
+            wheel_capture: true,
+            pointer_lock: false,
+            domain_hit_testing: true,
+        }]);
         let keyboard_input =
             native_canvas_input_for_raw_event(&document, &state, &keyboard).unwrap();
         assert_eq!(keyboard_input.node, canvas_id);
 
-        let mut capture_state = crate::HostInteractionState::default();
+        let mut capture_state = HostInteractionState::default();
         capture_state
             .canvas_host_capture
-            .sync([crate::CanvasHostCapturePlan {
+            .sync([CanvasHostCapturePlan {
                 node: canvas_id,
                 key: "viewport".to_string(),
                 rect: document.node(canvas_id).layout.rect,
@@ -2539,7 +2548,7 @@ mod tests {
             }]);
         assert_eq!(
             captured_raw_mouse_canvas(&capture_state),
-            Some(crate::CanvasHostCaptureId::new(canvas_id, "viewport"))
+            Some(CanvasHostCaptureId::new(canvas_id, "viewport"))
         );
     }
 

@@ -4,8 +4,27 @@ use std::hint::black_box;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use operad::display::{
+    DisplayListInvalidation, DisplayListInvalidationRequest, DisplayListKey, DisplayListKind,
+    DisplayListReuseOutcome, RetainedDisplayListCache,
+};
+use operad::editor::{
+    CurveEditorGeometry, CurvePoint, EditorAxisRange, EditorTransform, LaneGeometry,
+    LaneTimelineGeometry, TimelineRangeItem, TimelineRangeItemGeometry,
+};
 #[cfg(feature = "wgpu")]
 use operad::platform::{ImageHandle, PixelSize, ResourceHandle};
+#[cfg(all(feature = "wgpu", not(debug_assertions)))]
+use operad::renderer::RenderOptions;
+#[cfg(feature = "wgpu")]
+use operad::renderer::{
+    RenderFrameRequest, RenderTarget, RenderTargetKind, RendererAdapter, ResourceDescriptor,
+    ResourceFormat, ResourceUpdate,
+};
+use operad::testing::*;
+#[cfg(feature = "wgpu")]
+use operad::wgpu_renderer::WgpuRenderer;
+use operad::widgets::ext::*;
 use operad::widgets::*;
 use operad::*;
 
@@ -21,7 +40,7 @@ fn paint_list_fingerprint(paint: &PaintList) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for item in &paint.items {
         for value in [
-            item.node.0 as u64,
+            item.node.index() as u64,
             item.rect.x.to_bits() as u64,
             item.rect.y.to_bits() as u64,
             item.rect.width.to_bits() as u64,
@@ -61,7 +80,7 @@ fn virtualized_table_layout_and_paint_smoke_stays_under_budget() {
     for frame in 0..12 {
         let started = Instant::now();
         let mut document = perf_screen();
-        let root = document.root;
+        let root = document.root();
         virtualized_data_table(
             &mut document,
             root,
@@ -155,7 +174,7 @@ fn command_palette_filter_build_and_paint_stays_under_budget() {
     for _ in 0..20 {
         let started = Instant::now();
         let mut document = perf_screen();
-        let root = document.root;
+        let root = document.root();
         command_palette(
             &mut document,
             root,
@@ -196,7 +215,7 @@ fn interaction_heavy_frame_build_and_paint_stays_under_budget() {
     for frame in 0..16 {
         let started = Instant::now();
         let mut document = perf_screen();
-        let root = document.root;
+        let root = document.root();
         let toolbar = document.add_child(
             root,
             UiNode::container(
@@ -445,7 +464,7 @@ fn editor_geometry_scene_build_and_paint_smoke_stays_under_budget() {
     for frame in 0..10 {
         let started = Instant::now();
         let mut document = perf_screen();
-        let root = document.root;
+        let root = document.root();
         let transform = EditorTransform::new(UiRect::new(0.0, 0.0, 900.0, 500.0))
             .with_scale(UiPoint::new(12.0, 1.0));
         let arrangement = LaneTimelineGeometry::new(
@@ -689,19 +708,19 @@ fn scenario_harness_multi_frame_render_smoke_stays_under_budget() {
 
 fn perf_screen() -> UiDocument {
     let mut document = UiDocument::new(root_style(PERF_VIEWPORT.width, PERF_VIEWPORT.height));
-    let root = document.root;
-    document.node_mut(root).visual = UiVisual::panel(
+    let root = document.root();
+    document.node_mut(root).set_visual(UiVisual::panel(
         ColorRgba::new(9, 12, 16, 255),
         Some(StrokeStyle::new(ColorRgba::new(34, 44, 56, 255), 1.0)),
         0.0,
-    );
+    ));
     document
 }
 
 #[cfg(feature = "wgpu")]
 fn scenario_perf_document(frame: usize) -> UiDocument {
     let mut document = perf_screen();
-    let root = document.root;
+    let root = document.root();
     let toolbar = document.add_child(
         root,
         UiNode::container(
@@ -924,7 +943,7 @@ fn wgpu_text_cache_perf_request(frame: usize) -> RenderFrameRequest {
     let dirty_row = frame % ROWS;
     let mut items = Vec::with_capacity(ROWS + 1);
     items.push(PaintItem {
-        node: UiNodeId(50_000),
+        node: UiNodeId::from_index(50_000),
         rect: UiRect::new(0.0, 0.0, 640.0, 360.0),
         clip_rect: UiRect::new(0.0, 0.0, 640.0, 360.0),
         z_index: 0,
@@ -945,7 +964,7 @@ fn wgpu_text_cache_perf_request(frame: usize) -> RenderFrameRequest {
             format!("Stable row {row:02} reusable toolkit surface")
         };
         items.push(PaintItem {
-            node: UiNodeId(50_001 + row),
+            node: UiNodeId::from_index(50_001 + row),
             rect: UiRect::new(12.0, 10.0 + row as f32 * 7.0, 420.0, 12.0),
             clip_rect: UiRect::new(0.0, 0.0, 640.0, 360.0),
             z_index: 0,
@@ -981,7 +1000,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
     let selected_row = frame.wrapping_mul(5) % ROWS;
     let mut items = Vec::with_capacity(1 + ROWS * 6);
     items.push(PaintItem {
-        node: UiNodeId(60_000),
+        node: UiNodeId::from_index(60_000),
         rect: clip,
         clip_rect: clip,
         z_index: 0,
@@ -1000,7 +1019,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
         let y = 24.0 + row as f32 * 10.0;
         let selected = row == selected_row;
         items.push(PaintItem {
-            node: UiNodeId(60_100 + row),
+            node: UiNodeId::from_index(60_100 + row),
             rect: UiRect::new(18.0, y, 900.0, 8.0),
             clip_rect: clip,
             z_index: 0,
@@ -1026,7 +1045,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
         let y = 25.0 + row as f32 * 10.0;
         let width = 36.0 + ((row * 17 + frame * 13) % 180) as f32;
         items.push(PaintItem {
-            node: UiNodeId(60_200 + row),
+            node: UiNodeId::from_index(60_200 + row),
             rect: UiRect::new(620.0, y, width, 4.0),
             clip_rect: clip,
             z_index: 0,
@@ -1047,7 +1066,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
         let phase = ((row * 7 + frame * 3) % 24) as f32;
         let x = 420.0 + (row % 3) as f32 * 2.0;
         items.push(PaintItem {
-            node: UiNodeId(60_300 + row),
+            node: UiNodeId::from_index(60_300 + row),
             rect: UiRect::new(x, y - 2.0, 4.0, 4.0),
             clip_rect: clip,
             z_index: 0,
@@ -1063,7 +1082,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             },
         });
         items.push(PaintItem {
-            node: UiNodeId(60_400 + row),
+            node: UiNodeId::from_index(60_400 + row),
             rect: UiRect::new(450.0, y - 6.0, 72.0, 12.0),
             clip_rect: clip,
             z_index: 0,
@@ -1078,7 +1097,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             },
         });
         items.push(PaintItem {
-            node: UiNodeId(60_500 + row),
+            node: UiNodeId::from_index(60_500 + row),
             rect: UiRect::new(486.0, y - 6.0, 72.0, 12.0),
             clip_rect: clip,
             z_index: 0,
@@ -1101,7 +1120,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             format!("Mixed row {row:02} cached surface")
         };
         items.push(PaintItem {
-            node: UiNodeId(60_600 + row),
+            node: UiNodeId::from_index(60_600 + row),
             rect: UiRect::new(32.0, 22.0 + row as f32 * 10.0, 320.0, 10.0),
             clip_rect: clip,
             z_index: 0,
@@ -1142,7 +1161,7 @@ fn wgpu_large_resource_perf_request(frame: usize) -> RenderFrameRequest {
     );
 
     items.push(PaintItem {
-        node: UiNodeId(70_000),
+        node: UiNodeId::from_index(70_000),
         rect: clip,
         clip_rect: clip,
         z_index: 0,
@@ -1176,7 +1195,7 @@ fn wgpu_large_resource_perf_request(frame: usize) -> RenderFrameRequest {
             let x = 18.0 + column as f32 * 76.0;
             let y = 18.0 + row as f32 * 34.0;
             items.push(PaintItem {
-                node: UiNodeId(70_100 + resource_index * TILE_COUNT + tile),
+                node: UiNodeId::from_index(70_100 + resource_index * TILE_COUNT + tile),
                 rect: UiRect::new(x, y, 64.0, 28.0),
                 clip_rect: clip,
                 z_index: 0,
@@ -1225,7 +1244,7 @@ fn retained_panel_paint(item_count: usize) -> PaintList {
     PaintList {
         items: (0..item_count)
             .map(|index| PaintItem {
-                node: UiNodeId(index),
+                node: UiNodeId::from_index(index),
                 rect: UiRect::new(index as f32, 0.0, 1.0, 1.0),
                 clip_rect: UiRect::new(0.0, 0.0, 960.0, 540.0),
                 z_index: 0,

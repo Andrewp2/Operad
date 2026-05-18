@@ -5,12 +5,14 @@ use taffy::prelude::{
     LengthPercentageAuto, Position, Rect as TaffyRect, Size as TaffySize, Style,
 };
 
-use crate::{
-    AccessibilityMeta, AccessibilityRole, AnimationInputValue, ColorRgba,
+use crate::debug::{
     DebugAccessibilityOverlayNode, DebugAnimationGraphEdgeKind, DebugAnimationInspectorNode,
-    DebugInspectorSnapshot, DebugLayoutInspectorNode, InputBehavior, LayoutStyle, StrokeStyle,
-    TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiSize, UiVisual,
-    WidgetActionMode,
+    DebugInspectorSnapshot, DebugLayoutInspectorNode,
+};
+use crate::{
+    AccessibilityMeta, AccessibilityRole, AnimationInputValue, ColorRgba, InputBehavior,
+    LayoutStyle, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle,
+    UiSize, UiVisual, WidgetActionMode,
 };
 
 use super::data::PropertyValueKind;

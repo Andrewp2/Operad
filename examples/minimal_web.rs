@@ -11,7 +11,7 @@ pub async fn start() -> Result<(), wasm_bindgen::JsValue> {
 fn minimal_document(viewport: UiSize) -> UiDocument {
     let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
     let panel = ui.add_child(
-        ui.root,
+        ui.root(),
         UiNode::container(
             "app.panel",
             LayoutStyle::column()

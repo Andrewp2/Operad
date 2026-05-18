@@ -1,7 +1,7 @@
 use operad::{
     layout, root_style, AccessibilityAction, AccessibilityMeta, AccessibilityRole,
-    ApproxTextMeasurer, ClipBehavior, ColorRgba, InputBehavior, ScrollAxes, StrokeStyle, TextStyle,
-    UiDocument, UiInputEvent, UiNode, UiNodeStyle, UiPoint, UiSize, UiVisual,
+    ApproxTextMeasurer, ColorRgba, InputBehavior, ScrollAxes, StrokeStyle, TextStyle, UiDocument,
+    UiInputEvent, UiNode, UiPoint, UiSize, UiVisual,
 };
 
 fn main() -> Result<(), String> {
@@ -32,21 +32,18 @@ fn main() -> Result<(), String> {
 fn build_game_overlay() -> UiDocument {
     let mut document = UiDocument::new(root_style(800.0, 600.0));
     let hotbar = document.add_child(
-        document.root,
+        document.root(),
         UiNode::container(
             "game.hotbar",
-            UiNodeStyle {
-                clip: ClipBehavior::Clip,
-                z_index: 10,
-                ..layout::node_style(layout::with_margin_bottom(
-                    layout::with_auto_horizontal_margin(layout::with_size(
-                        layout::centered_row(),
-                        layout::px(360.0),
-                        layout::px(64.0),
-                    )),
-                    18.0,
-                ))
-            },
+            layout::clipped_node_style(layout::with_margin_bottom(
+                layout::with_auto_horizontal_margin(layout::with_size(
+                    layout::centered_row(),
+                    layout::px(360.0),
+                    layout::px(64.0),
+                )),
+                18.0,
+            ))
+            .with_z_index(10),
         )
         .with_visual(UiVisual::panel(
             ColorRgba::new(20, 24, 31, 230),
@@ -83,17 +80,14 @@ fn build_game_overlay() -> UiDocument {
 fn build_tool_panel() -> UiDocument {
     let mut document = UiDocument::new(root_style(800.0, 600.0));
     let panel = document.add_child(
-        document.root,
+        document.root(),
         UiNode::container(
             "tool.sidebar.modules",
-            UiNodeStyle {
-                clip: ClipBehavior::Clip,
-                ..layout::node_style(layout::with_size(
-                    layout::column(),
-                    layout::px(260.0),
-                    layout::px(220.0),
-                ))
-            },
+            layout::clipped_node_style(layout::with_size(
+                layout::column(),
+                layout::px(260.0),
+                layout::px(220.0),
+            )),
         )
         .with_scroll(ScrollAxes::VERTICAL)
         .with_visual(UiVisual::panel(
@@ -134,17 +128,14 @@ fn build_tool_panel() -> UiDocument {
 fn build_timeline_editor() -> UiDocument {
     let mut document = UiDocument::new(root_style(800.0, 600.0));
     let shell = document.add_child(
-        document.root,
+        document.root(),
         UiNode::container(
             "timeline.shell",
-            UiNodeStyle {
-                clip: ClipBehavior::Clip,
-                ..layout::node_style(layout::with_size(
-                    layout::column(),
-                    layout::percent(1.0),
-                    layout::percent(1.0),
-                ))
-            },
+            layout::clipped_node_style(layout::with_size(
+                layout::column(),
+                layout::percent(1.0),
+                layout::percent(1.0),
+            )),
         ),
     );
 

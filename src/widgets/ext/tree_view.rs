@@ -9,14 +9,16 @@ use taffy::prelude::{
 };
 
 use crate::{
-    plan_virtualized_range,
+    drag_drop::{DragSourceDescriptor, DragSourceId, DropTargetDescriptor, DropTargetId},
     platform::{DragOperation, DragPayload},
+    virtualization::{
+        plan_virtualized_range, VirtualAxis, VirtualCollectionKind, VirtualFocusPreservation,
+        VirtualItemKey, VirtualOverscan, VirtualPlan, VirtualPlanRequest,
+    },
     AccessibilityAction, AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, CommandId,
-    DragDropSurfaceKind, DragSourceDescriptor, DragSourceId, DropPayloadFilter,
-    DropTargetDescriptor, DropTargetId, ImageContent, InputBehavior, LayoutStyle, ScrollAxes,
+    DragDropSurfaceKind, DropPayloadFilter, ImageContent, InputBehavior, LayoutStyle, ScrollAxes,
     ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle,
-    UiRect, UiVisual, VirtualAxis, VirtualCollectionKind, VirtualFocusPreservation, VirtualItemKey,
-    VirtualOverscan, VirtualPlan, VirtualPlanRequest,
+    UiRect, UiVisual,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,16 +328,34 @@ impl TreeVisibleItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TreeViewState {
-    pub expanded_ids: Vec<String>,
-    pub selected_index: Option<usize>,
+    expanded_ids: Vec<String>,
+    selected_index: Option<usize>,
 }
 
 impl TreeViewState {
     pub fn expanded(ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            expanded_ids: ids.into_iter().map(Into::into).collect(),
-            selected_index: None,
+        let mut state = Self::default();
+        for id in ids {
+            state.set_expanded(id, true);
         }
+        state
+    }
+
+    pub fn with_selected(mut self, selected_index: Option<usize>) -> Self {
+        self.select(selected_index);
+        self
+    }
+
+    pub fn expanded_ids(&self) -> &[String] {
+        &self.expanded_ids
+    }
+
+    pub const fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    pub fn clear_expanded(&mut self) {
+        self.expanded_ids.clear();
     }
 
     pub fn is_expanded(&self, id: &str) -> bool {
@@ -1155,11 +1175,11 @@ mod tests {
             .activate_visible_item_id(&roots, "src")
             .expect("src item");
         assert_eq!(item.id, "src");
-        assert_eq!(state.selected_index, Some(item.index));
+        assert_eq!(state.selected_index(), Some(item.index));
         assert!(state.is_expanded("src"));
 
         assert!(state.activate_visible_item_id(&roots, "target").is_none());
-        assert_eq!(state.selected_index, Some(item.index));
+        assert_eq!(state.selected_index(), Some(item.index));
     }
 
     #[test]

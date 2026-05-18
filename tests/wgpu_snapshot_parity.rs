@@ -1,25 +1,30 @@
 #![cfg(feature = "wgpu")]
 
+use operad::compositor::{
+    CompositorClip, CompositorFilter, CompositorFilterKind, CompositorMask, MaskMode,
+};
 use operad::layout;
 use operad::platform::{ImageHandle, LayerOrder, PixelSize, ResourceHandle, ResourceId};
-use operad::{
-    root_style, ApproxTextMeasurer, EmptyResourceResolver, EventReplay, RenderTarget,
-    ScenarioHarness, TextStyle, WgpuRenderer,
+use operad::renderer::{
+    RenderFrameRequest, RenderOptions, RenderTarget, RenderedImage, RendererAdapter,
+    ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
 };
+use operad::testing::{EmptyResourceResolver, EventReplay, ScenarioHarness};
+use operad::wgpu_renderer::WgpuRenderer;
+use operad::{root_style, ApproxTextMeasurer, TextStyle};
 use operad::{
-    AlignedStroke, ColorRgba, CompositorClip, CompositorFilter, CompositorFilterKind,
-    CompositorMask, CornerRadii, LinearGradient, MaskMode, PaintBrush, PaintCompositorLayer,
+    AlignedStroke, ColorRgba, CornerRadii, LinearGradient, PaintBrush, PaintCompositorLayer,
     PaintEffect, PaintItem, PaintKind, PaintList, PaintPath, PaintRect, PaintTransform,
-    PathFillRule, RenderFrameRequest, RenderOptions, RenderedImage, RendererAdapter,
-    ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate, StrokeLineCap,
-    StrokeLineJoin, StrokeStyle, TextContent, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint,
-    UiRect, UiSize, UiVisual,
+    PathFillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle, TextContent, UiDocument, UiNode,
+    UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 fn scene_document() -> UiDocument {
     let mut document = UiDocument::new(root_style(160.0, 120.0));
-    let root = document.root;
-    document.node_mut(root).visual = UiVisual::panel(ColorRgba::new(16, 20, 28, 255), None, 0.0);
+    let root = document.root();
+    document
+        .node_mut(root)
+        .set_visual(UiVisual::panel(ColorRgba::new(16, 20, 28, 255), None, 0.0));
 
     let panel_style = UiNodeStyle::from(layout::fixed(80.0, 40.0));
     document.add_child(
@@ -39,7 +44,7 @@ fn scene_document() -> UiDocument {
 
 fn render_snapshot_with_renderer(
     mut document: UiDocument,
-    renderer: &mut impl operad::RendererAdapter,
+    renderer: &mut impl RendererAdapter,
 ) -> RenderedImage {
     let mut harness = ScenarioHarness::new(UiSize::new(160.0, 120.0))
         .target(RenderTarget::snapshot(PixelSize::new(160, 120)));
@@ -106,7 +111,7 @@ fn wgpu_image_snapshot_uses_uploaded_texture_resource() {
     );
     let paint = PaintList {
         items: vec![PaintItem {
-            node: UiNodeId(0),
+            node: UiNodeId::root(),
             rect: UiRect::new(0.0, 0.0, 2.0, 1.0),
             clip_rect: UiRect::new(0.0, 0.0, 2.0, 1.0),
             z_index: 0,
@@ -152,7 +157,7 @@ fn wgpu_image_snapshot_uses_uploaded_texture_resource() {
 fn wgpu_rounded_rect_uses_sdf_edges() {
     let paint = PaintList {
         items: vec![PaintItem {
-            node: UiNodeId(0),
+            node: UiNodeId::root(),
             rect: UiRect::new(1.0, 1.0, 10.0, 10.0),
             clip_rect: UiRect::new(0.0, 0.0, 12.0, 12.0),
             z_index: 0,
@@ -194,7 +199,7 @@ fn wgpu_rounded_rect_uses_sdf_edges() {
 fn wgpu_text_snapshot_uses_glyphon_rendering() {
     let paint = PaintList {
         items: vec![PaintItem {
-            node: UiNodeId(0),
+            node: UiNodeId::root(),
             rect: UiRect::new(4.0, 4.0, 88.0, 28.0),
             clip_rect: UiRect::new(0.0, 0.0, 96.0, 36.0),
             z_index: 0,
@@ -258,7 +263,7 @@ fn wgpu_paint_order_allows_geometry_to_cover_prior_text() {
     let paint = PaintList {
         items: vec![
             PaintItem {
-                node: UiNodeId(0),
+                node: UiNodeId::root(),
                 rect: UiRect::new(4.0, 4.0, 88.0, 28.0),
                 clip_rect: UiRect::new(0.0, 0.0, 96.0, 36.0),
                 z_index: 0,
@@ -277,7 +282,7 @@ fn wgpu_paint_order_allows_geometry_to_cover_prior_text() {
                 )),
             },
             PaintItem {
-                node: UiNodeId(1),
+                node: UiNodeId::from_index(1),
                 rect: UiRect::new(0.0, 0.0, 96.0, 36.0),
                 clip_rect: UiRect::new(0.0, 0.0, 96.0, 36.0),
                 z_index: 0,
@@ -345,7 +350,7 @@ fn wgpu_rich_rect_gradient_and_effects_render_on_gpu() {
         UiSize::new(72.0, 48.0),
         PaintList {
             items: vec![PaintItem {
-                node: UiNodeId(0),
+                node: UiNodeId::root(),
                 rect: UiRect::new(8.0, 8.0, 48.0, 24.0),
                 clip_rect: UiRect::new(0.0, 0.0, 72.0, 48.0),
                 z_index: 0,
@@ -396,7 +401,7 @@ fn wgpu_rich_rect_shadow_has_soft_falloff() {
         UiSize::new(52.0, 36.0),
         PaintList {
             items: vec![PaintItem {
-                node: UiNodeId(0),
+                node: UiNodeId::root(),
                 rect: UiRect::new(10.0, 10.0, 20.0, 12.0),
                 clip_rect: UiRect::new(0.0, 0.0, 52.0, 36.0),
                 z_index: 0,
@@ -439,7 +444,7 @@ fn wgpu_path_stroke_flattens_quadratic_curve() {
         UiSize::new(56.0, 36.0),
         PaintList {
             items: vec![PaintItem {
-                node: UiNodeId(0),
+                node: UiNodeId::root(),
                 rect: path.bounds(),
                 clip_rect: UiRect::new(0.0, 0.0, 56.0, 36.0),
                 z_index: 0,
@@ -576,7 +581,7 @@ fn wgpu_path_fill_tessellates_curved_concave_shapes() {
 fn wgpu_composited_layer_rounded_clip_masks_child_content() {
     let layer_bounds = UiRect::new(4.0, 4.0, 24.0, 24.0);
     let child = PaintItem {
-        node: UiNodeId(1),
+        node: UiNodeId::from_index(1),
         rect: layer_bounds,
         clip_rect: UiRect::new(0.0, 0.0, 32.0, 32.0),
         z_index: 0,
@@ -611,7 +616,7 @@ fn wgpu_composited_layer_mask_and_filter_apply_on_gpu() {
     let layer_bounds = UiRect::new(4.0, 4.0, 24.0, 16.0);
     let child_color = ColorRgba::new(100, 120, 200, 255);
     let child = PaintItem {
-        node: UiNodeId(1),
+        node: UiNodeId::from_index(1),
         rect: layer_bounds,
         clip_rect: UiRect::new(0.0, 0.0, 32.0, 24.0),
         z_index: 0,
@@ -654,7 +659,7 @@ fn wgpu_composited_layer_mask_and_filter_apply_on_gpu() {
 fn wgpu_composited_layer_blur_runs_on_gpu_texture() {
     let layer_bounds = UiRect::new(0.0, 0.0, 32.0, 16.0);
     let child = PaintItem {
-        node: UiNodeId(1),
+        node: UiNodeId::from_index(1),
         rect: UiRect::new(8.0, 4.0, 4.0, 8.0),
         clip_rect: layer_bounds,
         z_index: 0,
@@ -690,7 +695,7 @@ fn wgpu_composited_layer_blur_runs_on_gpu_texture() {
 fn wgpu_composited_layer_renders_glyphon_text_child() {
     let layer_bounds = UiRect::new(0.0, 0.0, 96.0, 36.0);
     let child = PaintItem {
-        node: UiNodeId(1),
+        node: UiNodeId::from_index(1),
         rect: UiRect::new(5.25, 5.5, 86.0, 26.0),
         clip_rect: layer_bounds,
         z_index: 0,
@@ -740,7 +745,7 @@ fn composited_layer_request(
         UiSize::new(size.width as f32, size.height as f32),
         PaintList {
             items: vec![PaintItem {
-                node: UiNodeId(0),
+                node: UiNodeId::root(),
                 rect: layer.bounds,
                 clip_rect: UiRect::new(0.0, 0.0, size.width as f32, size.height as f32),
                 z_index: 0,
@@ -762,7 +767,7 @@ fn text_snapshot_at(position: UiPoint) -> RenderedImage {
     wgpu_snapshot_for_item(
         PixelSize::new(96, 36),
         PaintItem {
-            node: UiNodeId(0),
+            node: UiNodeId::root(),
             rect: UiRect::new(position.x, position.y, 88.0, 28.0),
             clip_rect: UiRect::new(0.0, 0.0, 96.0, 36.0),
             z_index: 0,
@@ -796,7 +801,7 @@ fn path_snapshot(path: PaintPath, size: PixelSize) -> RenderedImage {
     wgpu_snapshot_for_item(
         size,
         PaintItem {
-            node: UiNodeId(0),
+            node: UiNodeId::root(),
             rect: bounds,
             clip_rect: UiRect::new(0.0, 0.0, size.width as f32, size.height as f32),
             z_index: 0,

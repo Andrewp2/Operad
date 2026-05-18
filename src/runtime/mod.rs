@@ -136,20 +136,36 @@ impl Default for PlatformServiceClient {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RuntimeWindowId(pub String);
+pub struct RuntimeWindowId(pub(crate) String);
 
 impl RuntimeWindowId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RuntimeSurfaceId(pub String);
+pub struct RuntimeSurfaceId(pub(crate) String);
 
 impl RuntimeSurfaceId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
     }
 }
 
@@ -324,20 +340,28 @@ impl Default for RuntimeLoopGuard {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RuntimeTimerId(pub u64);
+pub struct RuntimeTimerId(pub(crate) u64);
 
 impl RuntimeTimerId {
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RuntimeIdleWorkId(pub u64);
+pub struct RuntimeIdleWorkId(pub(crate) u64);
 
 impl RuntimeIdleWorkId {
     pub const fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
     }
 }
 

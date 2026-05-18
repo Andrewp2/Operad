@@ -23,23 +23,29 @@ use wgpu::{
 };
 
 use crate::accessibility::AccessibilityCapabilities;
+use crate::compositor::{CompositorClip, CompositorFilterKind, CompositorMask, MaskMode};
 use crate::platform::{
     BackendAdapterKind, BackendCapabilities, LayerCapabilities, PixelSize,
     PlatformServiceCapabilities, RenderingCapabilities, ResourceCapabilities,
 };
+use crate::renderer::{
+    PixelRect, RenderError, RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind,
+    RenderedImage, RendererAdapter, ResourceFormat, ResourceResolver, ResourceUpdate,
+};
 use crate::{
-    ColorRgba, CompositorClip, CompositorFilterKind, CompositorMask, FontFamily, FontStretch,
-    FontStyle, FrameTiming, ImageAlignment, ImageFit, LinearGradient, MaskMode, PaintBrush,
-    PaintCompositorLayer, PaintEffectKind, PaintKind, PaintTransform, PixelRect, RenderError,
-    RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage,
-    RendererAdapter, ResourceFormat, ResourceResolver, ResourceUpdate, StrokeStyle,
-    TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, UiNodeId, UiPoint, UiRect, UiSize,
+    BuiltInIcon, ColorRgba, FontFamily, FontStretch, FontStyle, FrameTiming, ImageAlignment,
+    ImageFit, LinearGradient, PaintBrush, PaintCompositorLayer, PaintEffectKind, PaintKind,
+    PaintTransform, StrokeStyle, TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap,
+    UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 const OFFSCREEN_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 const DEFAULT_WGPU_CLEAR_COLOR: ColorRgba = ColorRgba::new(18, 18, 18, 255);
 const GLYPH_TEXT_CHUNK_SIZE: usize = 8;
 const GPU_TIMESTAMP_QUERY_BYTES: u64 = 16;
+const MISSING_IMAGE_CHECKER_SIZE: f32 = 8.0;
+const MISSING_IMAGE_DARK: ColorRgba = ColorRgba::new(16, 0, 28, 255);
+const MISSING_IMAGE_PURPLE: ColorRgba = ColorRgba::new(210, 0, 255, 255);
 
 const WGPU_UI_SHADER: &str = r#"
 struct Scene {
@@ -4362,25 +4368,83 @@ fn push_image_placeholder(
     tint: Option<ColorRgba>,
     opacity: f32,
 ) {
-    let base = tint.unwrap_or_else(|| snapshot_color_from_key(key, 235));
-    push_fill_rect(geometry, rect, clip, base, opacity);
-    let hash = snapshot_hash_str(key);
-    let stripe = ColorRgba::new(
-        base.r.saturating_sub(((hash >> 8) & 31) as u8),
-        base.g.saturating_sub(((hash >> 16) & 31) as u8),
-        base.b.saturating_sub(((hash >> 24) & 31) as u8),
-        base.a,
-    );
-    let mut x = rect.x;
-    while x < rect.right() {
-        push_fill_rect(
-            geometry,
-            UiRect::new(x, rect.y, 2.0, rect.height),
-            clip,
-            stripe,
-            0.8 * opacity,
-        );
-        x += 6.0;
+    if push_built_in_icon_fallback(geometry, rect, clip, key, tint, opacity) {
+        return;
+    }
+    push_missing_image_checkerboard(geometry, rect, clip, opacity);
+}
+
+fn push_built_in_icon_fallback(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    key: &str,
+    tint: Option<ColorRgba>,
+    opacity: f32,
+) -> bool {
+    let Some(icon) = BuiltInIcon::from_key(key) else {
+        return false;
+    };
+    let color = tint.unwrap_or(ColorRgba::WHITE);
+    for path in icon.fallback_paths(rect, color) {
+        if let Some(fill) = &path.fill {
+            push_triangle_mesh(
+                geometry,
+                &path.tessellated_fill(1.0),
+                PaintTransform::default(),
+                clip,
+                fill.fallback_color(),
+                opacity,
+            );
+        }
+        if let Some(stroke) = path.stroke {
+            push_triangle_mesh(
+                geometry,
+                &path.tessellated_stroke(1.0),
+                PaintTransform::default(),
+                clip,
+                stroke.style.color,
+                opacity,
+            );
+        }
+    }
+    true
+}
+
+fn push_missing_image_checkerboard(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    opacity: f32,
+) {
+    if rect.width <= 0.0 || rect.height <= 0.0 || opacity <= 0.0 {
+        return;
+    }
+    let mut y = rect.y;
+    let mut row = 0;
+    while y < rect.bottom() {
+        let height = MISSING_IMAGE_CHECKER_SIZE.min(rect.bottom() - y);
+        let mut x = rect.x;
+        let mut column = 0;
+        while x < rect.right() {
+            let width = MISSING_IMAGE_CHECKER_SIZE.min(rect.right() - x);
+            let color = if (row + column) % 2 == 0 {
+                MISSING_IMAGE_DARK
+            } else {
+                MISSING_IMAGE_PURPLE
+            };
+            push_fill_rect(
+                geometry,
+                UiRect::new(x, y, width, height),
+                clip,
+                color,
+                opacity,
+            );
+            x += MISSING_IMAGE_CHECKER_SIZE;
+            column += 1;
+        }
+        y += MISSING_IMAGE_CHECKER_SIZE;
+        row += 1;
     }
 }
 
@@ -4840,7 +4904,7 @@ fn glyph_family(family: &FontFamily) -> GlyphFamily<'_> {
 }
 
 fn glyph_weight(weight: crate::FontWeight) -> GlyphWeight {
-    GlyphWeight(weight.0)
+    GlyphWeight(weight.value())
 }
 
 fn glyph_font_style(style: FontStyle) -> GlyphFontStyle {
@@ -5172,30 +5236,13 @@ fn read_timestamp_query_value(bytes: &[u8]) -> Result<u64, RenderError> {
     Ok(u64::from_ne_bytes(bytes))
 }
 
-fn snapshot_color_from_key(key: &str, alpha: u8) -> ColorRgba {
-    let hash = snapshot_hash_str(key);
-    ColorRgba::new(
-        48 + (hash & 127) as u8,
-        58 + ((hash >> 8) & 127) as u8,
-        68 + ((hash >> 16) & 127) as u8,
-        alpha,
-    )
-}
-
-fn snapshot_hash_str(value: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::LayerOrder;
-    use crate::{EmptyResourceResolver, PaintItem, PaintList, RenderOptions, TextContent};
+    use crate::renderer::RenderOptions;
+    use crate::testing::EmptyResourceResolver;
+    use crate::{PaintItem, PaintList, TextContent};
 
     #[test]
     fn default_glyph_font_system_includes_embedded_web_fonts() {
@@ -5692,6 +5739,63 @@ fn fs_main() -> @location(0) vec4<f32> {
         let text = geometry.texts.first().expect("text geometry");
         assert_eq!(text.horizontal_align, TextHorizontalAlign::Center);
         assert_eq!(text.vertical_align, TextVerticalAlign::Center);
+    }
+
+    #[test]
+    fn missing_image_placeholder_uses_clear_checkerboard() {
+        let mut geometry = RenderGeometry::default();
+        let rect = UiRect::new(0.0, 0.0, 16.0, 16.0);
+        push_image_placeholder(&mut geometry, rect, rect, "assets.missing", None, 1.0);
+
+        assert_eq!(geometry.rects.len(), 4);
+        assert_eq!(geometry.vertices.len(), 0);
+        assert_eq!(
+            geometry.rects[0].color,
+            color_as_vertex(MISSING_IMAGE_DARK, 1.0)
+        );
+        assert_eq!(
+            geometry.rects[1].color,
+            color_as_vertex(MISSING_IMAGE_PURPLE, 1.0)
+        );
+        assert_eq!(
+            geometry.rects[2].color,
+            color_as_vertex(MISSING_IMAGE_PURPLE, 1.0)
+        );
+        assert_eq!(
+            geometry.rects[3].color,
+            color_as_vertex(MISSING_IMAGE_DARK, 1.0)
+        );
+    }
+
+    #[test]
+    fn built_in_icon_image_fallback_uses_vector_paths() {
+        let mut geometry = RenderGeometry::default();
+        let rect = UiRect::new(0.0, 0.0, 24.0, 24.0);
+        let tint = ColorRgba::new(118, 183, 255, 255);
+        push_image_placeholder(
+            &mut geometry,
+            rect,
+            rect,
+            BuiltInIcon::Play.key(),
+            Some(tint),
+            1.0,
+        );
+
+        assert!(
+            geometry.rects.is_empty(),
+            "built-in icon fell back to checkerboard"
+        );
+        assert!(
+            !geometry.vertices.is_empty(),
+            "built-in icon should render vector fallback vertices"
+        );
+        assert!(
+            geometry
+                .vertices
+                .iter()
+                .any(|vertex| vertex.color == color_as_vertex(tint, 1.0)),
+            "built-in icon fallback did not carry the image tint"
+        );
     }
 
     fn chunked_text_request(frame: usize) -> RenderFrameRequest {

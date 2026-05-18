@@ -788,6 +788,8 @@ fn validation_severity_label(severity: ValidationSeverity) -> &'static str {
 mod tests {
     use super::*;
 
+    use crate::forms::FormValidationResult;
+
     #[test]
     fn form_widgets_build_required_labels_validation_and_summary() {
         let mut document = UiDocument::new(root_style(420.0, 260.0));

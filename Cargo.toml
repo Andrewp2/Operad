@@ -1,6 +1,6 @@
 [package]
 name = "operad"
-version = "7.0.0"
+version = "8.0.0"
 edition = "2021"
 license = "MIT"
 description = "A cross-platform GUI library for Rust."
@@ -17,6 +17,7 @@ include = [
     "README.md",
     "docs/getting_started.md",
     "docs/just_work_principles.md",
+    "docs/release_process.md",
     "docs/v7_0_migration_guide.md",
     "docs/v7_0_performance.md",
     "docs/v8_0_api_stability.md",
@@ -96,6 +97,10 @@ required-features = ["native-window", "widgets"]
 [[example]]
 name = "showcase_web"
 required-features = ["web-showcase"]
+
+[[test]]
+name = "api_surface"
+required-features = ["widgets"]
 
 [[test]]
 name = "showcase_layout"

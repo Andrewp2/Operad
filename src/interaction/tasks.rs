@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::{RuntimeInvalidation, RuntimeInvalidationReason};
+use crate::runtime::{RuntimeInvalidation, RuntimeInvalidationReason};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId(String);
@@ -42,9 +42,19 @@ impl fmt::Display for TaskId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TaskGeneration(pub u64);
+pub struct TaskGeneration(pub(crate) u64);
 
 impl TaskGeneration {
+    pub const ZERO: Self = Self(0);
+
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
     pub const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
     }
@@ -242,7 +252,7 @@ impl TaskRegistry {
             .generations
             .get(&id)
             .copied()
-            .unwrap_or(TaskGeneration(0))
+            .unwrap_or(TaskGeneration::ZERO)
             .next();
         self.generations.insert(id.clone(), generation);
 

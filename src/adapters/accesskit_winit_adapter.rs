@@ -18,11 +18,13 @@ use accesskit::{
 };
 use winit::{event::WindowEvent, event_loop::ActiveEventLoop, window::Window};
 
-use crate::{
+use crate::accessibility::{
     AccessibilityAdapter, AccessibilityAdapterRequest, AccessibilityAdapterResponse,
-    AccessibilityCapabilities, AccessibilityChecked, AccessibilityLiveRegion, AccessibilityNode,
-    AccessibilityRole, AccessibilitySortDirection, AccessibilityTree, FocusRestoreTarget, UiNodeId,
-    UiRect,
+    AccessibilityCapabilities,
+};
+use crate::{
+    AccessibilityChecked, AccessibilityLiveRegion, AccessibilityNode, AccessibilityRole,
+    AccessibilitySortDirection, AccessibilityTree, FocusRestoreTarget, UiNodeId, UiRect,
 };
 
 pub const ACCESSKIT_ROOT_NODE_ID: AccessKitNodeId = AccessKitNodeId(0);

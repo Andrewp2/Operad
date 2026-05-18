@@ -7,17 +7,22 @@
 
 use std::time::Duration;
 
+use super::performance::PerformanceSnapshot;
+use crate::accessibility::{
+    AccessibilityAdapterApplyReport, AccessibilityAdapterRequest, AccessibilityAdapterResponse,
+    AccessibilityAdapterState, AccessibilityAnnouncement, AccessibilityPreferences,
+    AccessibilityRequestKind,
+};
+use crate::core::document::{AuditAxis, AuditWarning};
+use crate::effective_geometry::{EffectiveGeometryRecord, EffectiveHitRejection};
 use crate::host::HostDocumentFrameOutput;
+use crate::overlays::OverlayHitTestDecision;
 use crate::platform::{
     BackendCapabilities, BackendCapabilityDiagnostic, CapabilityDecision, CapabilityFallback,
 };
 use crate::{
-    AccessibilityAdapterApplyReport, AccessibilityAdapterRequest, AccessibilityAdapterResponse,
-    AccessibilityAdapterState, AccessibilityAnnouncement, AccessibilityPreferences,
-    AccessibilityRequestKind, AuditAxis, AuditWarning, DirtyFlags, EffectiveGeometryRecord,
-    EffectiveHitRejection, FocusRestoreTarget, FocusTrap, FrameTiming, OverlayEntry,
-    OverlayHitTestDecision, OverlayId, OverlayStack, PerformanceSnapshot, UiDocument,
-    UiInputResult, UiNodeId, WidgetAction, WidgetActionBinding, WidgetActionKind,
+    DirtyFlags, FocusRestoreTarget, FocusTrap, FrameTiming, OverlayEntry, OverlayId, OverlayStack,
+    UiDocument, UiInputResult, UiNodeId, WidgetAction, WidgetActionBinding, WidgetActionKind,
     WidgetActionTrigger, WidgetDragPhase, WidgetValueEditPhase,
 };
 
@@ -778,7 +783,7 @@ pub fn node_label(node: UiNodeId) -> String {
 }
 
 pub fn overlay_label(overlay: OverlayId) -> String {
-    format!("overlay:{}", overlay.0)
+    format!("overlay:{}", overlay.value())
 }
 
 pub fn widget_action_label(action: &WidgetAction) -> String {
@@ -1357,14 +1362,20 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::accessibility::{
+        AccessibilityAdapterRequestPlan, AccessibilityAnnouncement, AccessibilityCapabilities,
+    };
+    use crate::core::document::{AuditAxis, AuditWarning};
     use crate::diagnostics::{required_pipeline_stages, CacheDiagnostic, FramePipelineTiming};
+    use crate::effective_geometry::{EffectiveClip, EffectiveGeometry};
+    use crate::platform::{
+        BackendCapabilities, BackendCapabilityRequirement, CapabilityFallback, InputCapabilities,
+        InputCapabilityKind,
+    };
     use crate::{
-        root_style, AccessibilityAnnouncement, AccessibilityCapabilities, AccessibilityLiveRegion,
-        AccessibilityTree, ApproxTextMeasurer, AuditAxis, AuditWarning, BackendCapabilities,
-        BackendCapabilityRequirement, CapabilityFallback, ClipBehavior, EffectiveClip,
-        EffectiveGeometry, FrameTiming, InputCapabilities, InputCapabilityKind, LayoutStyle,
-        OverlayEntry, OverlayKind, ScrollAxes, UiDocument, UiNode, UiNodeStyle, UiPoint, UiRect,
-        UiSize, WidgetActionBinding,
+        root_style, AccessibilityLiveRegion, AccessibilityTree, ApproxTextMeasurer, ClipBehavior,
+        FrameTiming, LayoutStyle, OverlayEntry, OverlayKind, ScrollAxes, UiDocument, UiNode,
+        UiNodeStyle, UiPoint, UiRect, UiSize, WidgetActionBinding,
     };
 
     #[test]
@@ -1377,13 +1388,13 @@ mod tests {
         };
         let mut stack = OverlayStack::new();
         stack.push(OverlayEntry::new(
-            OverlayId(10),
+            OverlayId::new(10),
             OverlayKind::Menu,
             UiRect::new(0.0, 0.0, 100.0, 100.0),
         ));
         stack.push(
             OverlayEntry::new(
-                OverlayId(11),
+                OverlayId::new(11),
                 OverlayKind::Dialog,
                 UiRect::new(20.0, 20.0, 80.0, 80.0),
             )
@@ -1647,7 +1658,7 @@ mod tests {
             ),
             AccessibilityAdapterRequest::RestoreFocus(FocusRestoreTarget::Previous),
         ];
-        let plan = crate::AccessibilityAdapterRequestPlan::from_requests(
+        let plan = AccessibilityAdapterRequestPlan::from_requests(
             &requests,
             AccessibilityCapabilities::NONE,
         );

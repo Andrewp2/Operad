@@ -1,12 +1,14 @@
-use operad::widgets::{self, CommandPaletteItem, CommandPaletteState};
+use operad::native::{NativeWindowOptions, NativeWindowResult};
+use operad::tooltips::ShortcutFormatter;
+use operad::widgets;
+use operad::widgets::ext::{self as ext_widgets, CommandPaletteItem, CommandPaletteState};
 use operad::{
-    root_style, ColorRgba, CommandMeta, CommandRegistry, CommandScope, LayoutStyle,
-    NativeWindowOptions, Shortcut, ShortcutFormatter, TextStyle, UiDocument, UiNode, UiSize,
-    UiVisual, WidgetAction, WidgetActionKind,
+    root_style, ColorRgba, CommandMeta, CommandRegistry, CommandScope, LayoutStyle, Shortcut,
+    TextStyle, UiDocument, UiNode, UiSize, UiVisual, WidgetAction, WidgetActionKind,
 };
 
-fn main() -> operad::NativeWindowResult {
-    operad::run_app_with(
+fn main() -> NativeWindowResult {
+    operad::native::run_app_with(
         NativeWindowOptions::new("Command palette").with_min_size(620.0, 420.0),
         CommandApp::default(),
         CommandApp::update,
@@ -51,7 +53,7 @@ impl CommandApp {
     fn view(&self, viewport: UiSize) -> UiDocument {
         let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
         let panel = ui.add_child(
-            ui.root,
+            ui.root(),
             UiNode::container(
                 "commands.panel",
                 LayoutStyle::column()
@@ -69,10 +71,11 @@ impl CommandApp {
             heading(),
             LayoutStyle::new().with_width_percent(1.0).with_height(32.0),
         );
-        let mut options = widgets::CommandPaletteOptions::default().with_action_prefix("commands");
+        let mut options =
+            ext_widgets::CommandPaletteOptions::default().with_action_prefix("commands");
         options.width = 520.0;
         options.max_visible_rows = 5;
-        widgets::command_palette(
+        ext_widgets::command_palette(
             &mut ui,
             panel,
             "commands.palette",
@@ -129,7 +132,7 @@ fn command_items() -> Vec<CommandPaletteItem> {
             "app.toggle_sidebar",
         )
         .expect("bind shortcut");
-    widgets::command_palette_items_from_registry(
+    ext_widgets::command_palette::command_palette_items_from_registry(
         &registry,
         &[CommandScope::Global],
         &ShortcutFormatter::default(),

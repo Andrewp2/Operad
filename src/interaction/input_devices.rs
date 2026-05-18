@@ -265,7 +265,17 @@ pub fn route_stylus_metadata(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GamepadDeviceId(pub u64);
+pub struct GamepadDeviceId(pub(crate) u64);
+
+impl GamepadDeviceId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GamepadButton {
@@ -560,7 +570,7 @@ mod tests {
             twist_degrees: Some(30.0),
             barrel_button: true,
             eraser_button: true,
-            ..StylusMetadata::new(PointerId(42), StylusContactPhase::Hover)
+            ..StylusMetadata::new(PointerId::new(42), StylusContactPhase::Hover)
         };
 
         let full = route_stylus_metadata(
@@ -612,7 +622,7 @@ mod tests {
             repeat_initial_delay_millis: 300,
             repeat_interval_millis: 100,
         };
-        let device = GamepadDeviceId(3);
+        let device = GamepadDeviceId::new(3);
 
         let deadzone = map_gamepad_navigation(
             device,
@@ -694,13 +704,13 @@ mod tests {
             PointerCaptureInteraction::CancelAndRelease
         );
 
-        let report = route_cancel_for_capture(PointerId(11), Some(CAPTURED), Some(TARGET));
-        assert_eq!(report.pointer_id, PointerId(11));
+        let report = route_cancel_for_capture(PointerId::new(11), Some(CAPTURED), Some(TARGET));
+        assert_eq!(report.pointer_id, PointerId::new(11));
         assert_eq!(report.target, Some(CAPTURED));
         assert_eq!(report.capture, PointerCaptureInteraction::CancelAndRelease);
         assert!(report.delivered_cancel);
 
-        let uncaptured = route_cancel_for_capture(PointerId(12), None, None);
+        let uncaptured = route_cancel_for_capture(PointerId::new(12), None, None);
         assert_eq!(uncaptured.capture, PointerCaptureInteraction::None);
         assert!(!uncaptured.delivered_cancel);
     }

@@ -17,6 +17,10 @@ use crate::input::{
     GestureEvent, GesturePhase, PointerCapture, PointerEventKind, PointerGestureTracker,
     RawInputEvent,
 };
+use crate::layout_animation::{
+    apply_layout_animation_transitions_to_paint_list, layout_animation_transitions,
+    LayoutAnimationOptions, LayoutAnimationTransition,
+};
 use crate::platform::{
     BackendCapabilities, BackendCapabilityDiagnostic, BackendCapabilityRequirement,
     CapabilityFallback, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
@@ -29,11 +33,9 @@ use crate::renderer::{
 };
 use crate::shell::{ShellLayoutPlan, ShellWorkspaceState};
 use crate::{
-    apply_layout_animation_transitions_to_paint_list, layout_animation_transitions,
-    AccessibilityRole, AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers,
-    LayoutAnimationOptions, LayoutAnimationTransition, LayoutSnapshot, TextMeasurer, UiDocument,
-    UiInputEvent, UiInputResult, UiNodeId, UiPoint, UiRect, UiSize, WidgetAction,
-    WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
+    AccessibilityRole, AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers, LayoutSnapshot,
+    TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNodeId, UiPoint, UiRect, UiSize,
+    WidgetAction, WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1200,7 +1202,7 @@ fn text_pointer_edit_target(
             if !text_edit_target(document, target) {
                 return None;
             }
-            return Some((target, WidgetValueEditPhase::Commit, *point, false));
+            return Some((target, WidgetValueEditPhase::Commit, *point, true));
         }
         _ => return None,
     };
@@ -1218,7 +1220,7 @@ fn text_pointer_edit_event(
             Some((WidgetValueEditPhase::Update, *point, true))
         }
         UiInputEvent::PointerUp(point) if pressed => {
-            Some((WidgetValueEditPhase::Commit, *point, false))
+            Some((WidgetValueEditPhase::Commit, *point, true))
         }
         _ => None,
     }
@@ -1261,6 +1263,7 @@ mod tests {
         AccessibilityRequestKind, FocusRestoreTarget, FocusTrap,
     };
     use crate::commands::{Command, CommandMeta};
+    use crate::diagnostics::{DiagnosticCategory, DiagnosticReport};
     use crate::input::{
         DragGesture, PointerButton, PointerEventKind, PointerId, RawKeyboardEvent, RawPointerEvent,
         RawTextInputEvent, RawWheelEvent, WheelPhase,
@@ -1270,11 +1273,11 @@ mod tests {
         InputCapabilityKind, LogicalRect, PlatformRequestId, PlatformRequestIdAllocator,
         PlatformServiceCapabilities, RepaintResponse, TextRange,
     };
+    use crate::shell::{ShellPanelState, ShellRegion};
     use crate::{
         length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
-        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ColorRgba, DiagnosticCategory,
-        DiagnosticReport, InputBehavior, LayoutStyle, ShellPanelState, ShellRegion, StrokeStyle,
-        UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
+        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ColorRgba, InputBehavior,
+        LayoutStyle, StrokeStyle, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Size as TaffySize, Style};
 
@@ -1753,7 +1756,7 @@ mod tests {
         state.activate_text_ime(session);
         assert_eq!(state.text_target, Some(UiNodeId(7)));
         assert!(state.node_state(UiNodeId(7)).text_editing);
-        assert_eq!(input.0, "node:7");
+        assert_eq!(input.as_str(), "node:7");
     }
 
     #[test]
@@ -2426,7 +2429,11 @@ mod tests {
         let mut document = UiDocument::new(fixed_style(320.0, 200.0));
         let canvas = document.add_child(
             document.root,
-            UiNode::canvas("viewport", "app.viewport", fixed_style(160.0, 96.0).layout),
+            UiNode::canvas(
+                "viewport",
+                "app.viewport",
+                crate::LayoutStyle::from_taffy_style(fixed_style(160.0, 96.0).layout),
+            ),
         );
         document.set_node_content(
             canvas,
@@ -2857,5 +2864,17 @@ mod tests {
             output.platform_requests[0].request,
             PlatformRequest::Repaint(RepaintRequest::NextFrame)
         ));
+    }
+
+    #[test]
+    fn text_pointer_edit_event_preserves_drag_selection_on_pointer_up() {
+        let point = UiPoint::new(42.0, 8.0);
+        let (phase, position, selecting) =
+            text_pointer_edit_event(&UiInputEvent::PointerUp(point), true)
+                .expect("pressed text input should commit pointer edits");
+
+        assert_eq!(phase, WidgetValueEditPhase::Commit);
+        assert_eq!(position, point);
+        assert!(selecting);
     }
 }

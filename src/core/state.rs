@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::{
-    AnimationState, DirtyFlags, RuntimeInvalidation, RuntimeInvalidationReason, RuntimeWindowId,
-    ScrollState,
+    runtime::{RuntimeInvalidation, RuntimeInvalidationReason, RuntimeWindowId},
+    AnimationState, DirtyFlags, ScrollState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -778,7 +778,7 @@ fn validate_slot_kind_for_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RuntimeWindowId, ScrollAxes, UiPoint};
+    use crate::{runtime::RuntimeWindowId, ScrollAxes, UiPoint};
 
     fn widget(id: &str) -> WidgetKey {
         WidgetKey::document("doc-a", id)

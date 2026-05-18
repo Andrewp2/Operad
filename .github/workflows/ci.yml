@@ -96,6 +96,8 @@ jobs:
           mkdir -p dist/pkg dist/showcase/pkg
           cp web/showcase/index.html dist/index.html
           cp web/showcase/index.html dist/showcase/index.html
+          cp web/showcase/favicon.png dist/favicon.png
+          cp web/showcase/favicon.png dist/showcase/favicon.png
           touch dist/.nojekyll
           wasm-bindgen \
             --target web \
@@ -107,8 +109,10 @@ jobs:
       - name: Verify Pages artifact routes
         run: |
           test -f dist/index.html
+          test -f dist/favicon.png
           test -f dist/pkg/showcase_web.js
           test -f dist/showcase/index.html
+          test -f dist/showcase/favicon.png
           test -f dist/showcase/pkg/showcase_web.js
 
       - name: Browser smoke test web showcase

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::core::document::AuditAxis;
 use taffy::prelude::{Dimension, LengthPercentageAuto, Rect, Size as TaffySize, Style};
 
 use super::*;
@@ -433,6 +434,7 @@ impl ScrollAxis {
 mod tests {
     use super::*;
 
+    use crate::core::document::AuditWarning;
     use crate::ApproxTextMeasurer;
 
     fn edit(phase: WidgetValueEditPhase, y: f32, target_height: f32) -> WidgetPointerEdit {

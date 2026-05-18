@@ -6,7 +6,8 @@
 
 use std::time::Duration;
 
-use crate::{DisplayListReuseOutcome, DisplayListReuseReport, FrameTiming};
+use crate::display::{DisplayListReuseOutcome, DisplayListReuseReport};
+use crate::FrameTiming;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FramePipelineStage {
@@ -327,9 +328,8 @@ impl PerformanceSnapshot {
 mod tests {
     use std::time::Duration;
 
-    use crate::{
-        DirtyFlags, DisplayListId, DisplayListKey, DisplayListKind, DisplayListScope, UiNodeId,
-    };
+    use crate::display::{DisplayListId, DisplayListKey, DisplayListKind, DisplayListScope};
+    use crate::{DirtyFlags, UiNodeId};
 
     use super::*;
 

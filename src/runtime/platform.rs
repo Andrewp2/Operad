@@ -352,11 +352,15 @@ pub const fn clamp_local_z(local_z: i16) -> i16 {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PlatformRequestId(pub u64);
+pub struct PlatformRequestId(pub(crate) u64);
 
 impl PlatformRequestId {
     pub const fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
     }
 }
 
@@ -784,11 +788,19 @@ pub enum AppLifecycleResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TextInputId(pub String);
+pub struct TextInputId(pub(crate) String);
 
 impl TextInputId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
     }
 }
 
@@ -905,11 +917,19 @@ impl TextImeResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DragId(pub String);
+pub struct DragId(pub(crate) String);
 
 impl DragId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
     }
 }
 
@@ -1238,7 +1258,7 @@ impl PlatformServiceResponse {
     }
 
     pub const fn is_for(&self, request: &PlatformServiceRequest) -> bool {
-        self.id.0 == request.id.0
+        self.id.value() == request.id.value()
     }
 }
 

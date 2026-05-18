@@ -99,10 +99,30 @@ impl Default for AffineTransform {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StackingContextId(pub u64);
+pub struct StackingContextId(pub(crate) u64);
+
+impl StackingContextId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CompositorLayerId(pub u64);
+pub struct CompositorLayerId(pub(crate) u64);
+
+impl CompositorLayerId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlendMode {
@@ -242,7 +262,7 @@ impl StackingContext {
     }
 
     pub fn root() -> Self {
-        Self::new(StackingContextId(0))
+        Self::new(StackingContextId::new(0))
     }
 
     pub const fn parent(mut self, parent: StackingContextId) -> Self {
@@ -319,7 +339,7 @@ impl CompositorLayer {
     pub fn new(id: CompositorLayerId, bounds: UiRect) -> Self {
         Self {
             id,
-            context: StackingContextId(0),
+            context: StackingContextId::new(0),
             z_index: 0,
             order: 0,
             bounds,
@@ -1110,27 +1130,39 @@ mod tests {
     #[test]
     fn layer_sorting_respects_context_z_order_and_platform_layers() {
         let root = StackingContext::root();
-        let modal = StackingContext::new(StackingContextId(10))
-            .parent(StackingContextId(0))
+        let modal = StackingContext::new(StackingContextId::new(10))
+            .parent(StackingContextId::new(0))
             .z_index(20)
             .order(1);
-        let debug = StackingContext::new(StackingContextId(20))
-            .parent(StackingContextId(0))
+        let debug = StackingContext::new(StackingContextId::new(20))
+            .parent(StackingContextId::new(0))
             .layer_order(LayerOrder::new(UiLayer::DebugOverlay, LAYER_LOCAL_Z_MIN))
             .order(2);
         let layers = vec![
-            CompositorLayer::new(CompositorLayerId(1), UiRect::new(0.0, 0.0, 100.0, 100.0))
-                .z_index(-10)
-                .order(0),
-            CompositorLayer::new(CompositorLayerId(2), UiRect::new(0.0, 0.0, 100.0, 100.0))
-                .z_index(0)
-                .order(1),
-            CompositorLayer::new(CompositorLayerId(3), UiRect::new(0.0, 0.0, 100.0, 100.0))
-                .context(StackingContextId(10))
-                .order(0),
-            CompositorLayer::new(CompositorLayerId(4), UiRect::new(0.0, 0.0, 100.0, 100.0))
-                .context(StackingContextId(20))
-                .order(0),
+            CompositorLayer::new(
+                CompositorLayerId::new(1),
+                UiRect::new(0.0, 0.0, 100.0, 100.0),
+            )
+            .z_index(-10)
+            .order(0),
+            CompositorLayer::new(
+                CompositorLayerId::new(2),
+                UiRect::new(0.0, 0.0, 100.0, 100.0),
+            )
+            .z_index(0)
+            .order(1),
+            CompositorLayer::new(
+                CompositorLayerId::new(3),
+                UiRect::new(0.0, 0.0, 100.0, 100.0),
+            )
+            .context(StackingContextId::new(10))
+            .order(0),
+            CompositorLayer::new(
+                CompositorLayerId::new(4),
+                UiRect::new(0.0, 0.0, 100.0, 100.0),
+            )
+            .context(StackingContextId::new(20))
+            .order(0),
         ];
 
         let sorted = sort_layers_for_paint(&layers, &[root, modal, debug]);
@@ -1138,19 +1170,20 @@ mod tests {
         assert_eq!(
             sorted,
             vec![
-                CompositorLayerId(1),
-                CompositorLayerId(2),
-                CompositorLayerId(3),
-                CompositorLayerId(4)
+                CompositorLayerId::new(1),
+                CompositorLayerId::new(2),
+                CompositorLayerId::new(3),
+                CompositorLayerId::new(4)
             ]
         );
     }
 
     #[test]
     fn transformed_hit_testing_and_bounds_use_inverse_transform_and_clips() {
-        let layer = CompositorLayer::new(CompositorLayerId(7), UiRect::new(0.0, 0.0, 20.0, 10.0))
-            .transform(AffineTransform::new(2.0, 0.0, 0.0, 3.0, 10.0, 5.0))
-            .clip(CompositorClip::rect(UiRect::new(0.0, 0.0, 10.0, 10.0)));
+        let layer =
+            CompositorLayer::new(CompositorLayerId::new(7), UiRect::new(0.0, 0.0, 20.0, 10.0))
+                .transform(AffineTransform::new(2.0, 0.0, 0.0, 3.0, 10.0, 5.0))
+                .clip(CompositorClip::rect(UiRect::new(0.0, 0.0, 10.0, 10.0)));
 
         assert!(layer.hit_test(UiPoint::new(25.0, 20.0)));
         assert!(!layer.hit_test(UiPoint::new(35.5, 20.0)));
@@ -1168,22 +1201,22 @@ mod tests {
     fn topmost_layer_hit_testing_walks_sorted_layers_back_to_front() {
         let scene = CompositorScene::new()
             .layer(CompositorLayer::new(
-                CompositorLayerId(1),
+                CompositorLayerId::new(1),
                 UiRect::new(0.0, 0.0, 40.0, 40.0),
             ))
             .layer(
-                CompositorLayer::new(CompositorLayerId(2), UiRect::new(0.0, 0.0, 40.0, 40.0))
+                CompositorLayer::new(CompositorLayerId::new(2), UiRect::new(0.0, 0.0, 40.0, 40.0))
                     .z_index(5)
                     .transform(AffineTransform::translation(20.0, 0.0)),
             );
 
         assert_eq!(
             scene.topmost_layer_at(UiPoint::new(25.0, 10.0)),
-            Some(CompositorLayerId(2))
+            Some(CompositorLayerId::new(2))
         );
         assert_eq!(
             scene.topmost_layer_at(UiPoint::new(5.0, 10.0)),
-            Some(CompositorLayerId(1))
+            Some(CompositorLayerId::new(1))
         );
     }
 

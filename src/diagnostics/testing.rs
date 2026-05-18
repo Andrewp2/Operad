@@ -14,6 +14,7 @@ use crate::accessibility::{
     AccessibilityPreferences, AccessibilityRequestKind, FocusRestoreTarget,
 };
 use crate::commands::{CommandId, CommandRegistry};
+use crate::core::document::AuditWarning;
 use crate::display::{
     DisplayListInvalidationReport, DisplayListKey, DisplayListReuseOutcome, DisplayListReuseReport,
 };
@@ -21,6 +22,7 @@ use crate::host::{
     process_document_frame, HostCommandDispatch, HostDocumentFrameOutput, HostDocumentFrameState,
     HostFrameOutput, HostInteractionState, HostNodeInteraction, HostShortcutRoute,
 };
+use crate::input::RawInputEvent;
 use crate::platform::{
     AppLifecycleResponse, BackendAdapterKind, BackendCapabilities, ClipboardResponse,
     CursorResponse, DragDropResponse, FileDialogResponse, LayerCapabilities, NotificationResponse,
@@ -38,9 +40,9 @@ use crate::renderer::{
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
     AccessibilityStateKind, AccessibilityTree, AccessibilityValueRangeIssue, ApproxTextMeasurer,
-    AuditWarning, ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem, PaintKind,
-    PaintList, RawInputEvent, TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNode,
-    UiNodeId, UiPoint, UiRect, UiSize,
+    ColorRgba, FocusDirection, KeyCode, KeyModifiers, PaintItem, PaintKind, PaintList,
+    TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNode, UiNodeId, UiPoint, UiRect,
+    UiSize,
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestFailure {
@@ -3151,7 +3153,7 @@ impl<'a> PlatformAssertions<'a> {
                 TestFailure::new(format!(
                     "missing {:?} response for platform request id {}",
                     request.kind(),
-                    request.id.0
+                    request.id.value()
                 ))
             })
     }
@@ -3167,7 +3169,7 @@ impl<'a> PlatformAssertions<'a> {
         } else {
             Err(TestFailure::new(format!(
                 "platform response id {} kind {:?} expected unsupported response, got {:?}",
-                response.id.0,
+                response.id.value(),
                 response.kind(),
                 response.response
             )))
@@ -3183,7 +3185,7 @@ impl<'a> PlatformAssertions<'a> {
             {
                 return Err(TestFailure::new(format!(
                     "platform response id {} kind {:?} has no matching request",
-                    response.id.0,
+                    response.id.value(),
                     response.kind()
                 )));
             }
@@ -3200,7 +3202,7 @@ impl<'a> PlatformAssertions<'a> {
             {
                 return Err(TestFailure::new(format!(
                     "platform request id {} kind {:?} has no matching response",
-                    request.id.0,
+                    request.id.value(),
                     request.kind()
                 )));
             }
@@ -3216,7 +3218,7 @@ impl<'a> PlatformAssertions<'a> {
         {
             Err(TestFailure::new(format!(
                 "platform response id {} kind {:?} was unsupported{}",
-                response.id.0,
+                response.id.value(),
                 response.kind(),
                 platform_response_diagnostic_suffix(response)
             )))
@@ -3231,7 +3233,7 @@ impl<'a> PlatformAssertions<'a> {
         }) {
             Err(TestFailure::new(format!(
                 "platform response id {} kind {:?} returned {:?}: {}{}",
-                response.id.0,
+                response.id.value(),
                 response.kind(),
                 error.code,
                 error.message,
@@ -4129,22 +4131,27 @@ mod tests {
     use crate::commands::{
         Command, CommandId, CommandMeta, CommandRegistry, CommandScope, Shortcut,
     };
+    use crate::host::{
+        process_document_frame, HostDocumentFrameRequest, HostFrameOutput, HostInteractionState,
+    };
+    use crate::input::{RawKeyboardEvent, RawWheelEvent, WheelDeltaUnit};
     use crate::platform::{
         ClipboardRequest, ClipboardResponse, CursorGrabMode, CursorRequest, PixelSize,
         PlatformErrorCode, PlatformRequest, PlatformRequestId, PlatformRequestIdAllocator,
         PlatformResponse, PlatformServiceError, PlatformServiceKind, RepaintRequest,
         RepaintResponse,
     };
+    use crate::renderer::{
+        CanvasHostCaptureDiagnosticKind, CanvasRenderContext, CanvasRenderOutput,
+        CanvasRenderRegistry, DirtyRegionSet, ImageRenderContext, ImageRenderOutput,
+        ImageRenderRegistry, PaintBatch, PaintBatchKey, PaintBatchKind, RenderFrameOutput,
+        RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, ResourceFormat,
+    };
     use crate::{
-        length, process_document_frame, root_style, AccessibilityAction, AccessibilityLiveRegion,
-        AccessibilityMeta, AccessibilityRole, AccessibilitySummary, AccessibilityValueRange,
-        ApproxTextMeasurer, CanvasContent, CanvasHostCaptureDiagnosticKind,
-        CanvasInteractionPolicy, CanvasRenderContext, CanvasRenderOutput, CanvasRenderRegistry,
-        ClipBehavior, ColorRgba, DirtyRegionSet, HostDocumentFrameRequest, HostFrameOutput,
-        HostInteractionState, ImageContent, ImageRenderContext, ImageRenderOutput,
-        ImageRenderRegistry, InputBehavior, LayoutStyle, PaintBatch, PaintBatchKey, PaintTransform,
-        RawKeyboardEvent, RawWheelEvent, RenderFrameOutput, RenderFrameRequest, RenderTarget,
-        RenderTargetKind, RenderedImage, ResourceFormat, ScrollAxes, ShaderEffect, StrokeStyle,
+        length, root_style, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta,
+        AccessibilityRole, AccessibilitySummary, AccessibilityValueRange, ApproxTextMeasurer,
+        CanvasContent, CanvasInteractionPolicy, ClipBehavior, ColorRgba, ImageContent,
+        InputBehavior, LayoutStyle, PaintTransform, ScrollAxes, ShaderEffect, StrokeStyle,
         TextStyle, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
     };
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
@@ -4539,7 +4546,11 @@ mod tests {
         let mut document = UiDocument::new(fixed_style(320.0, 200.0));
         let canvas = document.add_child(
             document.root,
-            UiNode::canvas("viewport", "app.viewport", fixed_style(160.0, 96.0).layout),
+            UiNode::canvas(
+                "viewport",
+                "app.viewport",
+                LayoutStyle::from_taffy_style(fixed_style(160.0, 96.0).layout),
+            ),
         );
         document.set_node_content(
             canvas,
@@ -4686,7 +4697,7 @@ mod tests {
                 "menu.open.label",
                 "Open",
                 TextStyle::default(),
-                fixed_style(52.0, 18.0).layout,
+                LayoutStyle::from_taffy_style(fixed_style(52.0, 18.0).layout),
             ),
         );
 
@@ -4763,7 +4774,7 @@ mod tests {
             UiNode::image(
                 "panel.icon",
                 ImageContent::new("icons.play"),
-                fixed_style(24.0, 24.0).layout,
+                LayoutStyle::from_taffy_style(fixed_style(24.0, 24.0).layout),
             ),
         );
         document.add_child(
@@ -4835,7 +4846,7 @@ mod tests {
                 "relation_label",
                 "Relation label",
                 TextStyle::default(),
-                fixed_style(80.0, 20.0).layout,
+                LayoutStyle::from_taffy_style(fixed_style(80.0, 20.0).layout),
             ),
         );
         document.add_child(
@@ -5055,7 +5066,7 @@ mod tests {
                     color: ColorRgba::new(34, 40, 48, 255),
                     ..Default::default()
                 },
-                fixed_style(120.0, 20.0).layout,
+                LayoutStyle::from_taffy_style(fixed_style(120.0, 20.0).layout),
             ),
         );
         document.add_child(
@@ -5069,7 +5080,7 @@ mod tests {
                     color: ColorRgba::new(232, 238, 246, 255),
                     ..Default::default()
                 },
-                fixed_style(120.0, 20.0).layout,
+                LayoutStyle::from_taffy_style(fixed_style(120.0, 20.0).layout),
             ),
         );
         document
@@ -5148,7 +5159,7 @@ mod tests {
         let mut canvas = UiNode::canvas(
             "editor.viewport",
             "editor.viewport",
-            fixed_style(120.0, 80.0).layout,
+            LayoutStyle::from_taffy_style(fixed_style(120.0, 80.0).layout),
         );
         canvas.content = UiContent::Canvas(
             CanvasContent::new("editor.viewport")
@@ -5162,7 +5173,7 @@ mod tests {
             UiNode::image(
                 "editor.thumbnail",
                 ImageContent::new("images.thumbnail"),
-                fixed_style(48.0, 48.0).layout,
+                LayoutStyle::from_taffy_style(fixed_style(48.0, 48.0).layout),
             ),
         );
         document
@@ -5298,7 +5309,7 @@ mod tests {
         output.painted_items = 3;
         output.batches = vec![PaintBatch {
             key: PaintBatchKey {
-                kind: crate::PaintBatchKind::Rect,
+                kind: PaintBatchKind::Rect,
                 z_index: 0,
                 clip_rect: UiRect::new(0.0, 0.0, 2.0, 1.0),
                 layer_order: crate::platform::LayerOrder::DEFAULT,
@@ -5721,7 +5732,11 @@ mod tests {
         let mut document = UiDocument::new(root_style(viewport.width, viewport.height));
         let canvas = document.add_child(
             document.root,
-            UiNode::canvas("viewport", "app.viewport", fixed_style(120.0, 80.0).layout),
+            UiNode::canvas(
+                "viewport",
+                "app.viewport",
+                LayoutStyle::from_taffy_style(fixed_style(120.0, 80.0).layout),
+            ),
         );
         document.set_node_content(
             canvas,
@@ -6225,7 +6240,7 @@ mod tests {
             report.steps[0].converted,
             Some(UiInputEvent::Wheel(
                 crate::UiWheelEvent::pixels(UiPoint::new(1.0, 1.0), UiPoint::new(0.0, 20.0))
-                    .unit(crate::WheelDeltaUnit::Line)
+                    .unit(WheelDeltaUnit::Line)
             ))
         );
         assert!(report.steps[1].converted.is_none());

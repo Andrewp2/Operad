@@ -15,7 +15,19 @@ use crate::{
 use super::surfaces::{toast_enter_exit_animation, DEFAULT_ACCENT, DEFAULT_SURFACE_STROKE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ToastId(pub u64);
+pub struct ToastId(pub(crate) u64);
+
+impl ToastId {
+    pub const ZERO: Self = Self(0);
+
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastSeverity {
@@ -167,7 +179,7 @@ impl ToastStack {
         body: Option<String>,
         timeout_seconds: Option<f32>,
     ) -> ToastId {
-        let id = ToastId(self.next_id);
+        let id = ToastId::new(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         self.toasts
             .push(Toast::new(id, severity, title, body, timeout_seconds));
@@ -175,11 +187,11 @@ impl ToastStack {
     }
 
     pub fn push_toast(&mut self, mut toast: Toast) -> ToastId {
-        if toast.id.0 == 0 {
-            toast.id = ToastId(self.next_id);
+        if toast.id.value() == 0 {
+            toast.id = ToastId::new(self.next_id);
             self.next_id = self.next_id.saturating_add(1);
         } else {
-            self.next_id = self.next_id.max(toast.id.0.saturating_add(1));
+            self.next_id = self.next_id.max(toast.id.value().saturating_add(1));
         }
         let id = toast.id;
         self.toasts.push(toast);
@@ -356,7 +368,7 @@ fn add_toast_node(
         ToastSeverity::Error => options.error_visual,
     };
     let mut root_node = UiNode::container(
-        format!("{stack_name}.toast.{}", toast.id.0),
+        format!("{stack_name}.toast.{}", toast.id.value()),
         UiNodeStyle {
             layout: LayoutStyle::from_taffy_style(Style {
                 display: Display::Flex,
@@ -390,7 +402,7 @@ fn add_toast_node(
     let header = document.add_child(
         root,
         UiNode::container(
-            format!("{stack_name}.toast.{}.header", toast.id.0),
+            format!("{stack_name}.toast.{}.header", toast.id.value()),
             UiNodeStyle {
                 layout: LayoutStyle::from_taffy_style(Style {
                     display: Display::Flex,
@@ -411,7 +423,7 @@ fn add_toast_node(
         document.add_child(
             header,
             UiNode::image(
-                format!("{stack_name}.toast.{}.icon", toast.id.0),
+                format!("{stack_name}.toast.{}.icon", toast.id.value()),
                 icon.clone(),
                 LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
@@ -435,7 +447,7 @@ fn add_toast_node(
     document.add_child(
         header,
         UiNode::text(
-            format!("{stack_name}.toast.{}.title", toast.id.0),
+            format!("{stack_name}.toast.{}.title", toast.id.value()),
             toast.title.clone(),
             options.title_style.clone(),
             LayoutStyle::from_taffy_style(Style {
@@ -456,7 +468,7 @@ fn add_toast_node(
         let close = document.add_child(
             header,
             UiNode::container(
-                format!("{stack_name}.toast.{}.close", toast.id.0),
+                format!("{stack_name}.toast.{}.close", toast.id.value()),
                 UiNodeStyle {
                     layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
@@ -480,10 +492,10 @@ fn add_toast_node(
                 options
                     .close_action_prefix
                     .as_deref()
-                    .map(|prefix| format!("{prefix}.{}", toast.id.0))
+                    .map(|prefix| format!("{prefix}.{}", toast.id.value()))
                     .map(WidgetActionBinding::action)
                     .unwrap_or_else(|| {
-                        WidgetActionBinding::action(format!("toast.close.{}", toast.id.0))
+                        WidgetActionBinding::action(format!("toast.close.{}", toast.id.value()))
                     }),
             )
             .with_visual(options.close_button_visual)
@@ -501,7 +513,7 @@ fn add_toast_node(
         document.add_child(
             close,
             UiNode::text(
-                format!("{stack_name}.toast.{}.close.label", toast.id.0),
+                format!("{stack_name}.toast.{}.close.label", toast.id.value()),
                 "x",
                 options.close_button_text_style.clone(),
                 LayoutStyle::from_taffy_style(Style {
@@ -518,7 +530,7 @@ fn add_toast_node(
         document.add_child(
             root,
             UiNode::text(
-                format!("{stack_name}.toast.{}.body", toast.id.0),
+                format!("{stack_name}.toast.{}.body", toast.id.value()),
                 body.clone(),
                 options.body_style.clone(),
                 LayoutStyle::from_taffy_style(Style {
@@ -535,7 +547,7 @@ fn add_toast_node(
         let actions = document.add_child(
             root,
             UiNode::container(
-                format!("{stack_name}.toast.{}.actions", toast.id.0),
+                format!("{stack_name}.toast.{}.actions", toast.id.value()),
                 UiNodeStyle {
                     layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
@@ -557,7 +569,11 @@ fn add_toast_node(
         );
         for action in &toast.actions {
             let mut button_node = UiNode::container(
-                format!("{stack_name}.toast.{}.action.{}", toast.id.0, action.id),
+                format!(
+                    "{stack_name}.toast.{}.action.{}",
+                    toast.id.value(),
+                    action.id
+                ),
                 UiNodeStyle {
                     layout: LayoutStyle::from_taffy_style(Style {
                         display: Display::Flex,
@@ -590,7 +606,8 @@ fn add_toast_node(
             if let Some(prefix) = &options.action_prefix {
                 button_node = button_node.with_action(WidgetActionBinding::action(format!(
                     "{prefix}.{}.{}",
-                    toast.id.0, action.id
+                    toast.id.value(),
+                    action.id
                 )));
             }
             let button = document.add_child(actions, button_node);
@@ -599,7 +616,8 @@ fn add_toast_node(
                 UiNode::text(
                     format!(
                         "{stack_name}.toast.{}.action.{}.label",
-                        toast.id.0, action.id
+                        toast.id.value(),
+                        action.id
                     ),
                     action.label.clone(),
                     options.body_style.clone(),

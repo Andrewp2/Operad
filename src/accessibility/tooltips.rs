@@ -802,6 +802,7 @@ mod tests {
     use super::*;
     use crate::commands::{Command, CommandMeta};
     use crate::input::{PointerButton, PointerEventKind, RawPointerEvent};
+    use crate::overlays::OverlayFocusRestoreRecord;
     use crate::{KeyModifiers, OverlayDismissReason, OverlayStack, UiPoint, UiRect, UiSize};
 
     fn registry() -> CommandRegistry {
@@ -1143,7 +1144,7 @@ mod tests {
         assert_eq!(outcome.dismissed, vec![OverlayId::new(30)]);
         assert_eq!(
             outcome.focus_restore,
-            vec![crate::OverlayFocusRestoreRecord {
+            vec![OverlayFocusRestoreRecord {
                 overlay: OverlayId::new(30),
                 target: OverlayFocusRestoreTarget::Node(UiNodeId(8)),
                 reason: OverlayDismissReason::Escape,

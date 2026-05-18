@@ -783,7 +783,7 @@ pub fn classify_platform_service_response(
 
     Some(
         report
-            .context("platform_request_id", response.id.0.to_string())
+            .context("platform_request_id", response.id.value().to_string())
             .context("operation", "processing platform service response")
             .context("host_subsystem", "platform service")
             .context(

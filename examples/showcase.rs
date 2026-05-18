@@ -1,7 +1,20 @@
 use web_time::{Duration, Instant};
 
-use operad::platform::{ClipboardResponse, DragPayload, PlatformResponse, UiLayer};
-use operad::widgets::{CalendarDate, TextInputLayoutMetrics, TextInputOptions, TextInputState};
+use operad::debug::{DebugInspectorSnapshot, DebugThemeSnapshot};
+use operad::forms::FormValidationResult;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
+use operad::native::{
+    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowOptions, NativeWindowResult,
+};
+use operad::platform::{
+    ClipboardResponse, DragBytes, DragOperation, DragPayload, PlatformResponse,
+    PlatformServiceResponse, UiLayer,
+};
+use operad::runtime::PlatformServiceClient;
+use operad::tooltips::{ShortcutFormatter, TooltipContent, TooltipPlacement};
+use operad::widgets::ext::{self as ext_widgets, CalendarDate};
+use operad::widgets::{scroll_area as scroll_area_widgets, scrollbar as scrollbar_widgets};
+use operad::widgets::{TextInputOptions, TextInputState};
 #[cfg(feature = "text-cosmic")]
 use operad::CosmicTextMeasurer;
 use operad::{
@@ -9,22 +22,15 @@ use operad::{
     AnimationBlendBinding, AnimationCondition, AnimationMachine, AnimationState,
     AnimationTransition, ApproxTextMeasurer, BuiltInIcon, CanvasContent, CanvasRenderProgram,
     ClipBehavior, ColorRgba, CommandId, CommandMeta, CommandRegistry, CommandScope, CornerRadii,
-    DebugInspectorSnapshot, DebugThemeSnapshot, DragDropSurfaceKind, DropPayloadFilter,
-    DynamicLabelMeta, EditPhase, FocusRestoreTarget, FontFamily, FontWeight, FormState,
-    FormValidationResult, ImageContent, InputBehavior, LayoutFlexWrap, LayoutStyle, LocaleId,
-    LocalizationPolicy, PaintEffect, PaintRect, PaintText, PlatformServiceClient,
-    PlatformServiceResponse, ScenePrimitive, ScrollAxes, Shortcut, ShortcutFormatter, StrokeStyle,
-    TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, Theme, TooltipContent, UiDocument,
-    UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual,
-    ValidationMessage, WidgetAction, WidgetActionBinding, WidgetActionKind, WidgetDrag,
-    WidgetDragPhase, WidgetTextEdit, ANIMATION_INPUT_POINTER_NORM_X,
+    DragDropSurfaceKind, DropPayloadFilter, DynamicLabelMeta, EditPhase, FocusRestoreTarget,
+    FontFamily, FontWeight, FormState, ImageContent, InputBehavior, Layout, LayoutDimension,
+    LayoutFlexWrap, LayoutGap, LayoutGridTrack, LayoutSize, LayoutStyle, LocaleId,
+    LocalizationPolicy, PaintEffect, PaintRect, PaintText, ScenePrimitive, ScrollAxes,
+    ShaderEffect, Shortcut, StrokeStyle, TextHorizontalAlign, TextStyle, TextVerticalAlign,
+    TextWrap, Theme, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect,
+    UiSize, UiVisual, ValidationMessage, WidgetAction, WidgetActionBinding, WidgetActionKind,
+    WidgetDrag, WidgetDragPhase, WidgetTextEdit, ANIMATION_INPUT_POINTER_NORM_X,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
-use operad::{
-    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowOptions, NativeWindowResult,
-};
-use taffy::prelude::{CompactLength, Dimension};
-
 const RIGHT_PANEL_WIDTH: f32 = 300.0;
 const SHOWCASE_WINDOW_Z_BASE: i16 = 64;
 const SHOWCASE_WINDOW_Z_STRIDE: i16 = 32;
@@ -97,7 +103,7 @@ fn main() -> NativeWindowResult {
         .with_platform_responses(|state: &mut ShowcaseState, responses| {
             state.apply_platform_responses(responses);
         });
-    operad::run_app_with_canvas_renderers_and_hooks(
+    operad::native::run_app_with_canvas_renderers_and_hooks(
         NativeWindowOptions::new("showcase")
             .with_size(900.0, 760.0)
             .with_min_size(720.0, 560.0)
@@ -151,30 +157,30 @@ struct ShowcaseState {
     slider_step_value: f32,
     slider_step_text: TextInputState,
     slider_trailing_color: bool,
-    slider_trailing_picker: widgets::ColorPickerState,
+    slider_trailing_picker: ext_widgets::ColorPickerState,
     slider_trailing_picker_open: bool,
     slider_thumb_shape: SliderThumbChoice,
     slider_use_steps: bool,
     slider_logarithmic: bool,
     slider_clamping: widgets::SliderClamping,
     slider_smart_aim: bool,
-    label_locale: widgets::SelectMenuState,
+    label_locale: ext_widgets::SelectMenuState,
     label_link_visited: bool,
     label_hyperlink_visited: bool,
     label_link_status: &'static str,
-    color: widgets::ColorPickerState,
-    date: widgets::DatePickerModel,
+    color: ext_widgets::ColorPickerState,
+    date: ext_widgets::DatePickerModel,
     radio_choice: &'static str,
     switch_enabled: bool,
-    mixed_switch: widgets::ToggleValue,
+    mixed_switch: ext_widgets::ToggleValue,
     theme_preference: widgets::ThemePreference,
     numeric_value: f32,
     numeric_angle: f32,
     numeric_tau: f32,
     combo_open: bool,
     combo_label: String,
-    dropdown: widgets::SelectMenuState,
-    select_menu: widgets::SelectMenuState,
+    dropdown: ext_widgets::SelectMenuState,
+    select_menu: ext_widgets::SelectMenuState,
     text: TextInputState,
     selectable_text: TextInputState,
     singleline_text: TextInputState,
@@ -189,9 +195,9 @@ struct ShowcaseState {
     pending_clipboard_paste: Option<FocusedTextInput>,
     last_button: &'static str,
     toggle_button: bool,
-    table_selection: widgets::DataTableSelection,
-    tree: widgets::TreeViewState,
-    outliner: widgets::TreeViewState,
+    table_selection: ext_widgets::DataTableSelection,
+    tree: ext_widgets::TreeViewState,
+    outliner: ext_widgets::TreeViewState,
     tree_virtual_scroll: f32,
     toast_visible: bool,
     toast_action_status: &'static str,
@@ -204,8 +210,8 @@ struct ShowcaseState {
     animation_state_expanded: bool,
     animation_interaction_expanded: bool,
     caret_phase: f32,
-    command_palette: widgets::CommandPaletteState,
-    command_history: widgets::CommandPaletteHistory,
+    command_palette: ext_widgets::CommandPaletteState,
+    command_history: ext_widgets::CommandPaletteHistory,
     last_command: String,
     list_scroll: f32,
     virtual_scroll: f32,
@@ -221,32 +227,36 @@ struct ShowcaseState {
     layout_inspector_scroll: f32,
     layout_document_scroll: f32,
     layout_assets_scroll: f32,
-    scrollbars: widgets::ScrollbarControllerState,
+    scrollbars: scrollbar_widgets::ScrollbarControllerState,
     layout_tab: usize,
     styling: StylingState,
-    styling_stroke_picker: widgets::ColorPickerState,
+    styling_stroke_picker: ext_widgets::ColorPickerState,
     styling_stroke_picker_open: bool,
-    styling_fill_picker: widgets::ColorPickerState,
+    styling_fill_picker: ext_widgets::ColorPickerState,
     styling_fill_picker_open: bool,
-    styling_shadow_picker: widgets::ColorPickerState,
+    styling_shadow_picker: ext_widgets::ColorPickerState,
     styling_shadow_picker_open: bool,
     cube: CanvasCubeState,
-    menu_bar: widgets::MenuBarState,
-    menu_button: widgets::MenuButtonState,
-    image_text_menu_button: widgets::MenuButtonState,
-    image_menu_button: widgets::MenuButtonState,
-    context_menu: widgets::ContextMenuState,
+    menu_bar: ext_widgets::MenuBarState,
+    menu_button: ext_widgets::MenuButtonState,
+    image_text_menu_button: ext_widgets::MenuButtonState,
+    image_menu_button: ext_widgets::MenuButtonState,
+    context_menu: ext_widgets::ContextMenuState,
     menu_autosave: bool,
     menu_grid: bool,
     form: FormState,
+    form_name_text: TextInputState,
+    form_email_text: TextInputState,
+    form_role_text: TextInputState,
+    form_newsletter: bool,
     form_status: String,
     overlay_expanded: bool,
     overlay_popup_open: bool,
     overlay_modal_open: bool,
     color_button_status: &'static str,
     drag_drop_status: &'static str,
-    layout_split: widgets::SplitPaneState,
-    layout_dock: widgets::DockWorkspaceState,
+    layout_split: ext_widgets::SplitPaneState,
+    layout_dock: ext_widgets::DockWorkspaceState,
     diagnostics_animation_paused: bool,
     diagnostics_animation_scrub: f32,
     diagnostics_animation_active: bool,
@@ -261,7 +271,7 @@ struct ShowcaseState {
     fps: f32,
     last_desktop_size: UiSize,
     windows: ShowcaseWindows,
-    desktop: widgets::FloatingDesktopState,
+    desktop: ext_widgets::FloatingDesktopState,
 }
 
 #[derive(Debug, Clone)]
@@ -392,6 +402,9 @@ enum FocusedTextInput {
     CodeEditor,
     Search,
     Password,
+    FormName,
+    FormEmail,
+    FormRole,
     SliderValue,
     SliderRangeLeft,
     SliderRangeRight,
@@ -462,10 +475,14 @@ impl Default for ShowcaseState {
     fn default() -> Self {
         let text = TextInputState::new("Editable text");
         let mut selectable_text = TextInputState::new("Selectable read-only text");
-        selectable_text.selection_anchor = Some(0);
-        selectable_text.caret = "Selectable".len();
+        selectable_text.set_selection(0, "Selectable".len());
+        let form = profile_form_state();
+        let form_name_text = TextInputState::new(profile_form_value(&form, "name"));
+        let form_email_text = TextInputState::new(profile_form_value(&form, "email"));
+        let form_role_text = TextInputState::new(profile_form_value(&form, "role"));
+        let initial_select_options = select_options();
         let windows = ShowcaseWindows::default();
-        let mut desktop = widgets::FloatingDesktopState::with_visible_order(
+        let mut desktop = ext_widgets::FloatingDesktopState::with_visible_order(
             SHOWCASE_WIDGET_WINDOW_IDS
                 .into_iter()
                 .filter(|id| windows.is_visible(id))
@@ -490,37 +507,35 @@ impl Default for ShowcaseState {
             slider_step_value: 10.0,
             slider_step_text: TextInputState::new("10"),
             slider_trailing_color: true,
-            slider_trailing_picker: widgets::ColorPickerState::new(color(120, 170, 230)),
+            slider_trailing_picker: ext_widgets::ColorPickerState::new(color(120, 170, 230)),
             slider_trailing_picker_open: false,
             slider_thumb_shape: SliderThumbChoice::Circle,
             slider_use_steps: false,
             slider_logarithmic: true,
             slider_clamping: widgets::SliderClamping::Always,
             slider_smart_aim: true,
-            label_locale: widgets::SelectMenuState::with_selected(1),
+            label_locale: ext_widgets::SelectMenuState::with_selected(1),
             label_link_visited: false,
             label_hyperlink_visited: false,
             label_link_status: "No link action yet",
-            color: widgets::ColorPickerState::new(color(118, 183, 255)),
-            date: widgets::DatePickerModel::builder()
+            color: ext_widgets::ColorPickerState::new(color(118, 183, 255)),
+            date: ext_widgets::DatePickerModel::builder()
                 .selected(CalendarDate::new(2026, 5, 12))
                 .today(CalendarDate::new(2026, 5, 12))
                 .build(),
             radio_choice: "compact",
             switch_enabled: true,
-            mixed_switch: widgets::ToggleValue::Mixed,
+            mixed_switch: ext_widgets::ToggleValue::Mixed,
             theme_preference: widgets::ThemePreference::Dark,
             numeric_value: 42.0,
             numeric_angle: 0.75,
             numeric_tau: 0.75,
             combo_open: false,
             combo_label: "Compact".to_string(),
-            dropdown: widgets::SelectMenuState::with_selected(1),
-            select_menu: widgets::SelectMenuState {
-                open: true,
-                selected: Some(0),
-                active: Some(2),
-            },
+            dropdown: ext_widgets::SelectMenuState::with_selected(1),
+            select_menu: ext_widgets::SelectMenuState::with_selected(0)
+                .with_open(&initial_select_options)
+                .with_active(&initial_select_options, 2),
             text,
             selectable_text,
             singleline_text: TextInputState::new("Single line"),
@@ -536,10 +551,10 @@ impl Default for ShowcaseState {
             pending_clipboard_paste: None,
             last_button: "None",
             toggle_button: false,
-            table_selection: widgets::DataTableSelection::single_row(2)
-                .with_active_cell(widgets::DataTableCellIndex::new(2, 1)),
-            tree: widgets::TreeViewState::expanded(["root"]),
-            outliner: widgets::TreeViewState::expanded(["root", "assets"]),
+            table_selection: ext_widgets::DataTableSelection::single_row(2)
+                .with_active_cell(ext_widgets::DataTableCellIndex::new(2, 1)),
+            tree: ext_widgets::TreeViewState::expanded(["root"]),
+            outliner: ext_widgets::TreeViewState::expanded(["root", "assets"]),
             tree_virtual_scroll: 96.0,
             toast_visible: false,
             toast_action_status: "No toast action",
@@ -552,12 +567,10 @@ impl Default for ShowcaseState {
             animation_state_expanded: true,
             animation_interaction_expanded: true,
             caret_phase: 0.0,
-            command_palette: widgets::CommandPaletteState {
-                query: String::new(),
-                active_match: Some(0),
-                max_results: 24,
-            },
-            command_history: widgets::CommandPaletteHistory::with_capacity(4),
+            command_palette: ext_widgets::CommandPaletteState::new()
+                .with_max_results(24)
+                .with_first_active_match(&command_palette_items()),
+            command_history: ext_widgets::CommandPaletteHistory::with_capacity(4),
             last_command: "None".to_string(),
             list_scroll: 0.0,
             virtual_scroll: 0.0,
@@ -573,53 +586,54 @@ impl Default for ShowcaseState {
             layout_inspector_scroll: 0.0,
             layout_document_scroll: 0.0,
             layout_assets_scroll: 0.0,
-            scrollbars: widgets::ScrollbarControllerState::new(),
+            scrollbars: scrollbar_widgets::ScrollbarControllerState::new(),
             layout_tab: 0,
             styling: StylingState::default(),
-            styling_stroke_picker: widgets::ColorPickerState::new(
+            styling_stroke_picker: ext_widgets::ColorPickerState::new(
                 StylingState::default().stroke_color(),
             ),
             styling_stroke_picker_open: false,
-            styling_fill_picker: widgets::ColorPickerState::new(
+            styling_fill_picker: ext_widgets::ColorPickerState::new(
                 StylingState::default().fill_color(),
             ),
             styling_fill_picker_open: false,
-            styling_shadow_picker: widgets::ColorPickerState::new(
+            styling_shadow_picker: ext_widgets::ColorPickerState::new(
                 StylingState::default().shadow_color(),
             ),
             styling_shadow_picker_open: false,
             cube: CanvasCubeState::default(),
-            menu_bar: widgets::MenuBarState {
+            menu_bar: ext_widgets::MenuBarState {
                 open_menu: Some(0),
                 active_item: Some(0),
             },
-            menu_button: widgets::MenuButtonState::new(),
-            image_text_menu_button: widgets::MenuButtonState::new(),
-            image_menu_button: widgets::MenuButtonState::new(),
-            context_menu: widgets::ContextMenuState::closed(),
+            menu_button: ext_widgets::MenuButtonState::new(),
+            image_text_menu_button: ext_widgets::MenuButtonState::new(),
+            image_menu_button: ext_widgets::MenuButtonState::new(),
+            context_menu: ext_widgets::ContextMenuState::closed(),
             menu_autosave: true,
             menu_grid: true,
-            form: profile_form_state(),
+            form,
+            form_name_text,
+            form_email_text,
+            form_role_text,
+            form_newsletter: true,
             form_status: "Unsaved profile changes".to_string(),
             overlay_expanded: true,
             overlay_popup_open: false,
             overlay_modal_open: false,
             color_button_status: "None",
             drag_drop_status: "Idle",
-            layout_split: widgets::SplitPaneState::new(0.44).with_min_sizes(80.0, 80.0),
-            layout_dock: widgets::DockWorkspaceState::new(),
+            layout_split: ext_widgets::SplitPaneState::new(0.44).with_min_sizes(80.0, 80.0),
+            layout_dock: ext_widgets::DockWorkspaceState::new(),
             diagnostics_animation_paused: false,
             diagnostics_animation_scrub: 0.35,
             diagnostics_animation_active: true,
             diagnostics_animation_hover: 0.35,
             diagnostics_animation_pulse_count: 0,
             diagnostics_snapshot: diagnostics_sample_snapshot_for(0.35, true),
-            containers_scroll: operad::ScrollState {
-                axes: ScrollAxes::BOTH,
-                offset: UiPoint::new(24.0, 18.0),
-                viewport_size: UiSize::new(260.0, 82.0),
-                content_size: UiSize::new(440.0, 180.0),
-            },
+            containers_scroll: operad::ScrollState::new(ScrollAxes::BOTH)
+                .with_sizes(UiSize::new(260.0, 82.0), UiSize::new(440.0, 180.0))
+                .with_offset(UiPoint::new(24.0, 18.0)),
             controls_scroll: operad::ScrollState::new(ScrollAxes::VERTICAL),
             color_copied_hex: None,
             fps_last_sample: Instant::now(),
@@ -806,16 +820,16 @@ impl ShowcaseWindows {
     }
 }
 
-fn showcase_window_z_policy() -> widgets::FloatingDesktopZPolicy {
-    widgets::FloatingDesktopZPolicy::new(
+fn showcase_window_z_policy() -> ext_widgets::FloatingDesktopZPolicy {
+    ext_widgets::FloatingDesktopZPolicy::new(
         SHOWCASE_WINDOW_Z_BASE,
         SHOWCASE_WINDOW_Z_STRIDE,
         SHOWCASE_WINDOW_Z_MAX,
     )
 }
 
-fn window_defaults(id: &str) -> widgets::FloatingWindowDefaults {
-    widgets::FloatingWindowDefaults::new(
+fn window_defaults(id: &str) -> ext_widgets::FloatingWindowDefaults {
+    ext_widgets::FloatingWindowDefaults::new(
         default_window_position(id),
         default_window_size(id),
         default_window_state_min_size(id),
@@ -829,22 +843,23 @@ fn desktop_size_for_viewport(viewport: UiSize) -> UiSize {
     )
 }
 
-fn showcase_desktop_options(desktop_size: UiSize) -> widgets::FloatingDesktopOptions {
-    let mut options = widgets::FloatingDesktopOptions::new(desktop_size).with_layout(
+fn showcase_desktop_options(desktop_size: UiSize) -> ext_widgets::FloatingDesktopOptions {
+    let mut options = ext_widgets::FloatingDesktopOptions::new(desktop_size).with_layout(
         LayoutStyle::new()
             .with_width_percent(1.0)
             .with_height_percent(1.0),
     );
+    options = options.with_bounds_rect(UiRect::new(
+        0.0,
+        SHOWCASE_ORGANIZE_BUTTON_RESERVED_HEIGHT,
+        desktop_size.width,
+        (desktop_size.height - SHOWCASE_ORGANIZE_BUTTON_RESERVED_HEIGHT).max(0.0),
+    ));
     options.base_z_index = SHOWCASE_WINDOW_Z_BASE;
     options.window_z_stride = SHOWCASE_WINDOW_Z_STRIDE;
     options.margin = 18.0;
     options.gap = 14.0;
     options
-}
-
-fn dimension_length(dimension: Dimension) -> Option<f32> {
-    let raw = dimension.into_raw();
-    (raw.tag() == CompactLength::LENGTH_TAG).then_some(raw.value())
 }
 
 impl ShowcaseState {
@@ -897,7 +912,7 @@ impl ShowcaseState {
                         collapsed_size.height.max(measurement.collapsed_size.height),
                     );
                 }
-                widgets::FloatingWindowOrganizeSpec::new(id, defaults)
+                ext_widgets::FloatingWindowOrganizeSpec::new(id, defaults)
                     .with_collapsed_size(collapsed_size)
             });
         let _outcome = self
@@ -926,17 +941,22 @@ impl ShowcaseState {
                 document
                     .nodes()
                     .iter()
-                    .find(|node| node.name == name)
-                    .map(|node| ShowcaseWindowMeasurement {
-                        id: id.to_string(),
-                        size: UiSize::new(node.layout.rect.width, node.layout.rect.height),
-                        min_size: UiSize::new(
-                            dimension_length(node.style.layout.min_size.width)
-                                .unwrap_or(node.layout.rect.width),
-                            dimension_length(node.style.layout.min_size.height)
-                                .unwrap_or(node.layout.rect.height),
-                        ),
-                        collapsed_size,
+                    .find(|node| node.name() == name)
+                    .map(|node| {
+                        let min_size = node.style().layout_style().min_size();
+                        ShowcaseWindowMeasurement {
+                            id: id.to_string(),
+                            size: UiSize::new(node.layout().rect.width, node.layout().rect.height),
+                            min_size: UiSize::new(
+                                min_size
+                                    .and_then(|size| size.width.points_value())
+                                    .unwrap_or(node.layout().rect.width),
+                                min_size
+                                    .and_then(|size| size.height.points_value())
+                                    .unwrap_or(node.layout().rect.height),
+                            ),
+                            collapsed_size,
+                        }
                     })
             })
             .collect()
@@ -952,13 +972,13 @@ impl ShowcaseState {
         let color_outcome = self.color.apply_action(
             action_id,
             kind.clone(),
-            widgets::ColorPickerActionOptions::new("color").copy_hex("color.copy_hex"),
+            ext_widgets::ColorPickerActionOptions::new("color").copy_hex("color.copy_hex"),
         );
         if color_outcome.update.is_some()
             || color_outcome.effect.is_some()
             || color_outcome.mode_changed
         {
-            if let Some(widgets::ColorPickerEffect::CopyHex(hex)) = color_outcome.effect {
+            if let Some(ext_widgets::ColorPickerEffect::CopyHex(hex)) = color_outcome.effect {
                 self.copy_text_to_clipboard(&hex);
                 self.color_copied_hex = Some(hex);
             }
@@ -967,7 +987,7 @@ impl ShowcaseState {
         let color_buttons_outcome = self.color.apply_action(
             action_id,
             kind.clone(),
-            widgets::ColorPickerActionOptions::new("color_buttons.hsva_2d"),
+            ext_widgets::ColorPickerActionOptions::new("color_buttons.hsva_2d"),
         );
         if color_buttons_outcome.update.is_some() || color_buttons_outcome.mode_changed {
             self.color_button_status = "HSVA field";
@@ -976,7 +996,7 @@ impl ShowcaseState {
         let slider_color_outcome = self.slider_trailing_picker.apply_action(
             action_id,
             kind.clone(),
-            widgets::ColorPickerActionOptions::new("slider.trailing_picker"),
+            ext_widgets::ColorPickerActionOptions::new("slider.trailing_picker"),
         );
         if slider_color_outcome.update.is_some() || slider_color_outcome.mode_changed {
             return;
@@ -984,28 +1004,28 @@ impl ShowcaseState {
         let styling_stroke_outcome = self.styling_stroke_picker.apply_action(
             action_id,
             kind.clone(),
-            widgets::ColorPickerActionOptions::new("styling.stroke_picker"),
+            ext_widgets::ColorPickerActionOptions::new("styling.stroke_picker"),
         );
         if styling_stroke_outcome.update.is_some() || styling_stroke_outcome.mode_changed {
-            self.styling.stroke = self.styling_stroke_picker.value;
+            self.styling.stroke = self.styling_stroke_picker.value();
             return;
         }
         let styling_fill_outcome = self.styling_fill_picker.apply_action(
             action_id,
             kind.clone(),
-            widgets::ColorPickerActionOptions::new("styling.fill_picker"),
+            ext_widgets::ColorPickerActionOptions::new("styling.fill_picker"),
         );
         if styling_fill_outcome.update.is_some() || styling_fill_outcome.mode_changed {
-            self.styling.fill = self.styling_fill_picker.value;
+            self.styling.fill = self.styling_fill_picker.value();
             return;
         }
         let styling_shadow_outcome = self.styling_shadow_picker.apply_action(
             action_id,
             kind.clone(),
-            widgets::ColorPickerActionOptions::new("styling.shadow_picker"),
+            ext_widgets::ColorPickerActionOptions::new("styling.shadow_picker"),
         );
         if styling_shadow_outcome.update.is_some() || styling_shadow_outcome.mode_changed {
-            self.styling.shadow = self.styling_shadow_picker.value;
+            self.styling.shadow = self.styling_shadow_picker.value();
             return;
         }
 
@@ -1207,11 +1227,11 @@ impl ShowcaseState {
             "date.previous" => self.date.show_previous_month(),
             "date.next" => self.date.show_next_month(),
             "date.week.sunday" => {
-                self.date.first_weekday = widgets::Weekday::Sunday;
+                self.date.first_weekday = ext_widgets::Weekday::Sunday;
                 return;
             }
             "date.week.monday" => {
-                self.date.first_weekday = widgets::Weekday::Monday;
+                self.date.first_weekday = ext_widgets::Weekday::Monday;
                 return;
             }
             "date.range.toggle" => {
@@ -1268,12 +1288,29 @@ impl ShowcaseState {
             }
             "forms.profile.cancel" => {
                 self.form.cancel();
+                self.sync_profile_form_text_fields();
                 self.form_status = "Cancelled".to_string();
                 return;
             }
             "forms.profile.reset" => {
                 self.form = profile_form_state();
+                self.form_newsletter = true;
+                self.sync_profile_form_text_fields();
                 self.form_status = "Reset".to_string();
+                return;
+            }
+            "forms.profile.newsletter.toggle" => {
+                self.form_newsletter = !self.form_newsletter;
+                let _ = self.form.update_field(
+                    "newsletter",
+                    if self.form_newsletter {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                );
+                self.validate_profile_form();
+                self.form_status = "Editing profile".to_string();
                 return;
             }
             "overlays.collapsing.toggle" => {
@@ -1300,12 +1337,24 @@ impl ShowcaseState {
                 self.drag_drop_status = "Text drag started";
                 return;
             }
+            "drag_drop.file_source" => {
+                self.drag_drop_status = "File drag started";
+                return;
+            }
+            "drag_drop.bytes_source" => {
+                self.drag_drop_status = "Image byte drag started";
+                return;
+            }
             "drag_drop.accept_text" => {
                 self.drag_drop_status = "Text payload accepted";
                 return;
             }
             "drag_drop.files_only" => {
                 self.drag_drop_status = "File payload rejected";
+                return;
+            }
+            "drag_drop.image_bytes" => {
+                self.drag_drop_status = "Image bytes hovered";
                 return;
             }
             "slider.trailing" => {
@@ -1331,7 +1380,7 @@ impl ShowcaseState {
             "slider.steps" => {
                 self.slider_use_steps = !self.slider_use_steps;
                 if self.slider_use_steps {
-                    self.set_slider_value(widgets::round_slider_to_step(
+                    self.set_slider_value(widgets::slider::round_slider_to_step(
                         self.slider,
                         self.slider_step(),
                     ));
@@ -1421,10 +1470,10 @@ impl ShowcaseState {
                 return;
             }
             "layout_widgets.float_inspector" => {
-                let panel = widgets::DockPanelDescriptor::new(
+                let panel = ext_widgets::DockPanelDescriptor::new(
                     "inspector",
                     "Inspector",
-                    widgets::DockSide::Left,
+                    ext_widgets::DockSide::Left,
                     120.0,
                 );
                 self.layout_dock
@@ -1432,13 +1481,14 @@ impl ShowcaseState {
                 return;
             }
             "layout_widgets.dock_inspector" => {
-                let panel = widgets::DockPanelDescriptor::new(
+                let panel = ext_widgets::DockPanelDescriptor::new(
                     "inspector",
                     "Inspector",
-                    widgets::DockSide::Left,
+                    ext_widgets::DockSide::Left,
                     120.0,
                 );
-                self.layout_dock.dock_panel(&panel, widgets::DockSide::Left);
+                self.layout_dock
+                    .dock_panel(&panel, ext_widgets::DockSide::Left);
                 return;
             }
             "layout_widgets.drawer.inspector" => {
@@ -1452,24 +1502,24 @@ impl ShowcaseState {
             "layout_widgets.reorder.assets.before.inspector" => {
                 let mut panels = base_layout_dock_panels();
                 self.layout_dock.apply_order_to_panels(&mut panels);
-                let payload = widgets::dock_panel_drag_payload("assets");
+                let payload = ext_widgets::dock_workspace::dock_panel_drag_payload("assets");
                 self.layout_dock.apply_reorder_to_panels(
                     &mut panels,
                     &payload,
                     "inspector",
-                    widgets::DockPanelReorderPlacement::Before,
+                    ext_widgets::DockPanelReorderPlacement::Before,
                 );
                 return;
             }
             "layout_widgets.reorder.assets.after.inspector" => {
                 let mut panels = base_layout_dock_panels();
                 self.layout_dock.apply_order_to_panels(&mut panels);
-                let payload = widgets::dock_panel_drag_payload("assets");
+                let payload = ext_widgets::dock_workspace::dock_panel_drag_payload("assets");
                 self.layout_dock.apply_reorder_to_panels(
                     &mut panels,
                     &payload,
                     "inspector",
-                    widgets::DockPanelReorderPlacement::After,
+                    ext_widgets::DockPanelReorderPlacement::After,
                 );
                 return;
             }
@@ -1508,26 +1558,25 @@ impl ShowcaseState {
         }
         if let WidgetActionKind::Scroll(scroll) = &kind {
             match action_id {
-                "lists_tables.scroll_area.scroll" => self.list_scroll = scroll.offset.y,
-                "lists_tables.virtual_list.scroll" => self.virtual_scroll = scroll.offset.y,
-                "lists_tables.data_table.scroll" => self.table_scroll = scroll.offset.y,
+                "lists_tables.scroll_area.scroll" => self.list_scroll = scroll.offset().y,
+                "lists_tables.virtual_list.scroll" => self.virtual_scroll = scroll.offset().y,
+                "lists_tables.data_table.scroll" => self.table_scroll = scroll.offset().y,
                 "lists_tables.virtualized_table.scroll" => {
-                    self.virtual_table_scroll = scroll.offset.y
+                    self.virtual_table_scroll = scroll.offset().y
                 }
-                "layout.preview.scroll" => self.layout_preview_scroll = scroll.offset.y,
-                "layout.left.scroll" => self.layout_left_scroll = scroll.offset.y,
-                "layout.right.scroll" => self.layout_right_scroll = scroll.offset.y,
-                "layout.inspector.scroll" => self.layout_inspector_scroll = scroll.offset.y,
-                "layout.document.scroll" => self.layout_document_scroll = scroll.offset.y,
-                "layout.assets.scroll" => self.layout_assets_scroll = scroll.offset.y,
-                "trees.virtual.scroll" => self.tree_virtual_scroll = scroll.offset.y,
+                "layout.preview.scroll" => self.layout_preview_scroll = scroll.offset().y,
+                "layout.left.scroll" => self.layout_left_scroll = scroll.offset().y,
+                "layout.right.scroll" => self.layout_right_scroll = scroll.offset().y,
+                "layout.inspector.scroll" => self.layout_inspector_scroll = scroll.offset().y,
+                "layout.document.scroll" => self.layout_document_scroll = scroll.offset().y,
+                "layout.assets.scroll" => self.layout_assets_scroll = scroll.offset().y,
+                "trees.virtual.scroll" => self.tree_virtual_scroll = scroll.offset().y,
                 "containers.scroll_area_with_bars.scroll" => {
-                    self.containers_scroll.offset =
-                        self.containers_scroll.clamp_offset(scroll.offset);
+                    self.containers_scroll.set_offset(scroll.offset());
                 }
                 "controls.widget_list.scroll" => {
                     self.controls_scroll = *scroll;
-                    self.controls_scroll.offset = self.controls_scroll.clamp_offset(scroll.offset);
+                    self.controls_scroll.set_offset(scroll.offset());
                 }
                 _ => {}
             }
@@ -1598,8 +1647,8 @@ impl ShowcaseState {
             .strip_prefix("lists_tables.data_table.row.")
             .and_then(|row| row.parse::<usize>().ok())
         {
-            self.table_selection = widgets::DataTableSelection::single_row(row)
-                .with_active_cell(widgets::DataTableCellIndex::new(row, 0));
+            self.table_selection = ext_widgets::DataTableSelection::single_row(row)
+                .with_active_cell(ext_widgets::DataTableCellIndex::new(row, 0));
             return;
         }
         if let Some(cell) = action_id
@@ -1607,7 +1656,7 @@ impl ShowcaseState {
             .and_then(parse_table_cell)
         {
             self.table_selection =
-                widgets::DataTableSelection::single_row(cell.row).with_active_cell(cell);
+                ext_widgets::DataTableSelection::single_row(cell.row).with_active_cell(cell);
             return;
         }
         match action_id {
@@ -1631,8 +1680,8 @@ impl ShowcaseState {
             .strip_prefix("lists_tables.virtualized_table.row.")
             .and_then(|row| row.parse::<usize>().ok())
         {
-            self.table_selection = widgets::DataTableSelection::single_row(row)
-                .with_active_cell(widgets::DataTableCellIndex::new(row, 0));
+            self.table_selection = ext_widgets::DataTableSelection::single_row(row)
+                .with_active_cell(ext_widgets::DataTableCellIndex::new(row, 0));
             return;
         }
         if let Some(cell) = action_id
@@ -1640,7 +1689,7 @@ impl ShowcaseState {
             .and_then(parse_table_cell)
         {
             self.table_selection =
-                widgets::DataTableSelection::single_row(cell.row).with_active_cell(cell);
+                ext_widgets::DataTableSelection::single_row(cell.row).with_active_cell(cell);
             return;
         }
         if let Some(id) = action_id.strip_prefix("trees.tree.row.") {
@@ -1685,12 +1734,12 @@ impl ShowcaseState {
                 );
             }
             "slider.range_left" => {
-                let value = widgets::SliderValueSpec::new(0.0, self.slider_right.max(1.0))
+                let value = widgets::slider::SliderValueSpec::new(0.0, self.slider_right.max(1.0))
                     .value_from_control_point(edit.target_rect, edit.position);
                 self.set_slider_left(value.min(self.slider_right - 1.0));
             }
             "slider.range_right" => {
-                let value = widgets::SliderValueSpec::new(self.slider_left + 1.0, 10000.0)
+                let value = widgets::slider::SliderValueSpec::new(self.slider_left + 1.0, 10000.0)
                     .value_from_control_point(edit.target_rect, edit.position);
                 self.set_slider_right(value.max(self.slider_left + 1.0));
             }
@@ -1698,7 +1747,12 @@ impl ShowcaseState {
                 let scroll = scroll_state(self.list_scroll, 92.0, 6.0 * 26.0);
                 self.list_scroll = self
                     .scrollbars
-                    .apply_drag_for_target_rect("list", scroll, widgets::ScrollAxis::Vertical, edit)
+                    .apply_drag_for_target_rect(
+                        "list",
+                        scroll,
+                        scrollbar_widgets::ScrollAxis::Vertical,
+                        edit,
+                    )
                     .y;
             }
             "lists_tables.virtual_list.scrollbar" => {
@@ -1708,7 +1762,7 @@ impl ShowcaseState {
                     .apply_drag_for_target_rect(
                         "virtual",
                         scroll,
-                        widgets::ScrollAxis::Vertical,
+                        scrollbar_widgets::ScrollAxis::Vertical,
                         edit,
                     )
                     .y;
@@ -1720,7 +1774,7 @@ impl ShowcaseState {
                     .apply_drag_for_target_rect(
                         "table",
                         scroll,
-                        widgets::ScrollAxis::Vertical,
+                        scrollbar_widgets::ScrollAxis::Vertical,
                         edit,
                     )
                     .y;
@@ -1733,7 +1787,7 @@ impl ShowcaseState {
                     .apply_drag_for_target_rect(
                         "virtual_table",
                         scroll,
-                        widgets::ScrollAxis::Vertical,
+                        scrollbar_widgets::ScrollAxis::Vertical,
                         edit,
                     )
                     .y;
@@ -1761,30 +1815,33 @@ impl ShowcaseState {
                 }
             },
             "containers.scroll_area_with_bars.vertical-scrollbar" => {
-                self.containers_scroll.offset = self.scrollbars.apply_drag_for_target_rect(
+                let offset = self.scrollbars.apply_drag_for_target_rect(
                     "containers.vertical",
                     self.containers_scroll,
-                    widgets::ScrollAxis::Vertical,
+                    scrollbar_widgets::ScrollAxis::Vertical,
                     edit,
                 );
+                self.containers_scroll.set_offset(offset);
             }
             "containers.scroll_area_with_bars.horizontal-scrollbar" => {
-                self.containers_scroll.offset = self.scrollbars.apply_drag_for_target_rect(
+                let offset = self.scrollbars.apply_drag_for_target_rect(
                     "containers.horizontal",
                     self.containers_scroll,
-                    widgets::ScrollAxis::Horizontal,
+                    scrollbar_widgets::ScrollAxis::Horizontal,
                     edit,
                 );
+                self.containers_scroll.set_offset(offset);
             }
             "controls.widget_list.scrollbar" => {
                 let mut scroll =
                     controls_scroll_state_for_view(self.controls_scroll, edit.target_rect.height);
-                scroll.offset = self.scrollbars.apply_drag_for_target_rect(
+                let offset = self.scrollbars.apply_drag_for_target_rect(
                     "controls.widget_list",
                     scroll,
-                    widgets::ScrollAxis::Vertical,
+                    scrollbar_widgets::ScrollAxis::Vertical,
                     edit,
                 );
+                scroll.set_offset(offset);
                 self.controls_scroll = scroll;
             }
             "styling.inner" => {
@@ -1887,42 +1944,79 @@ impl ShowcaseState {
         }
     }
 
+    fn text_edit_options(&self, input: FocusedTextInput) -> TextInputOptions {
+        let mut options = TextInputOptions::default();
+        options.focused = self.focused_text == Some(input);
+        options.caret_visible = caret_visible(self.caret_phase);
+        match input {
+            FocusedTextInput::Editable => {
+                options.layout = LayoutStyle::new().with_width(300.0).with_height(36.0);
+                options.text_style = text(13.0, color(230, 236, 246));
+                options.placeholder_style = text(13.0, color(144, 156, 174));
+                options.placeholder = "Type here".to_string();
+            }
+            FocusedTextInput::Selectable => {
+                options.layout = LayoutStyle::new().with_width(360.0).with_height(36.0);
+                options.text_style = text(13.0, color(196, 210, 230));
+                options.read_only = true;
+                options.selectable = true;
+            }
+            FocusedTextInput::Singleline => {
+                options.layout = LayoutStyle::new().with_width(300.0).with_height(34.0);
+                options.text_style = text(13.0, color(230, 236, 246));
+                options.placeholder = "Single line".to_string();
+            }
+            FocusedTextInput::Multiline => {
+                options.layout = LayoutStyle::new().with_width(360.0).with_height(72.0);
+                options.text_style = text(13.0, color(230, 236, 246));
+            }
+            FocusedTextInput::TextArea => {
+                options.layout = LayoutStyle::new().with_width(360.0).with_height(66.0);
+                options.text_style = text(13.0, color(230, 236, 246));
+            }
+            FocusedTextInput::CodeEditor => {
+                options.layout = LayoutStyle::new().with_width(360.0).with_height(88.0);
+                options.text_style = widgets::code_text_style();
+            }
+            FocusedTextInput::Search => {
+                options.layout = LayoutStyle::new().with_width(300.0).with_height(34.0);
+                options.text_style = text(13.0, color(230, 236, 246));
+                options.placeholder = "Search".to_string();
+            }
+            FocusedTextInput::Password => {
+                options.layout = LayoutStyle::new().with_width(300.0).with_height(34.0);
+                options.text_style = text(13.0, color(230, 236, 246));
+                options.placeholder = "Password".to_string();
+            }
+            FocusedTextInput::FormName
+            | FocusedTextInput::FormEmail
+            | FocusedTextInput::FormRole => {
+                options.layout = LayoutStyle::new().with_width_percent(1.0).with_height(30.0);
+                options.text_style = text(12.0, color(230, 236, 246));
+                options.placeholder_style = text(12.0, color(144, 156, 174));
+                options.placeholder = "Required".to_string();
+            }
+            FocusedTextInput::SliderValue | FocusedTextInput::SliderStep => {
+                options.layout = LayoutStyle::new().with_width(86.0).with_height(28.0);
+                options.text_style = text(12.0, color(230, 236, 246));
+                options.placeholder_style = text(12.0, color(144, 156, 174));
+            }
+            FocusedTextInput::SliderRangeLeft | FocusedTextInput::SliderRangeRight => {
+                options.layout = LayoutStyle::new().with_width(96.0).with_height(28.0);
+                options.text_style = text(12.0, color(230, 236, 246));
+                options.placeholder_style = text(12.0, color(144, 156, 174));
+            }
+        }
+        options
+    }
+
     fn apply_text_edit(&mut self, input: FocusedTextInput, edit: WidgetTextEdit) {
         self.focused_text = Some(input);
-        if let Some(state) = self.text_state_mut(input) {
-            state.multiline = input.is_multiline();
-        }
-        if let Some(point) = edit.local_position {
-            let style = text(13.0, color(230, 236, 246));
-            let target_rect = edit
-                .target_rect
-                .unwrap_or_else(|| UiRect::new(0.0, 0.0, 320.0, 36.0));
-            let metrics = TextInputLayoutMetrics::from_style(
-                UiRect::new(
-                    6.0,
-                    6.0,
-                    (target_rect.width - 12.0).max(1.0),
-                    (target_rect.height - 12.0).max(1.0),
-                ),
-                &style,
-            );
-            if let Some(state) = self.text_state_mut(input) {
-                state.move_caret_to_point(metrics, point, edit.selecting);
-            }
-            return;
-        }
-
-        let outcome = if input.is_read_only() {
-            self.text_state_mut(input).map(|state| {
-                state.handle_event_with_policy(
-                    &edit.event,
-                    widgets::TextInputInteractionPolicy::read_only(),
-                )
-            })
-        } else {
-            self.text_state_mut(input)
-                .map(|state| state.handle_event(&edit.event))
-        };
+        let options = self.text_edit_options(input);
+        let outcome = self.text_state_mut(input).map(|state| {
+            state.set_multiline(input.is_multiline());
+            state.apply_widget_text_edit(&edit, &options)
+        });
         if let Some(outcome) = outcome {
             self.apply_text_clipboard_outcome(input, outcome);
             self.sync_text_input_value(input);
@@ -1932,14 +2026,14 @@ impl ShowcaseState {
     fn apply_text_clipboard_outcome(
         &mut self,
         input: FocusedTextInput,
-        outcome: widgets::TextInputOutcome,
+        outcome: widgets::text_input::TextInputOutcome,
     ) {
         match outcome.clipboard {
-            Some(widgets::TextInputClipboardAction::Copy(text))
-            | Some(widgets::TextInputClipboardAction::Cut(text)) => {
+            Some(widgets::text_input::TextInputClipboardAction::Copy(text))
+            | Some(widgets::text_input::TextInputClipboardAction::Cut(text)) => {
                 self.copy_text_to_clipboard(&text);
             }
-            Some(widgets::TextInputClipboardAction::Paste) => {
+            Some(widgets::text_input::TextInputClipboardAction::Paste) => {
                 self.pending_clipboard_paste = Some(input);
                 self.platform.read_clipboard_text();
             }
@@ -1957,6 +2051,9 @@ impl ShowcaseState {
             FocusedTextInput::CodeEditor => Some(&mut self.code_editor_text),
             FocusedTextInput::Search => Some(&mut self.search_text),
             FocusedTextInput::Password => Some(&mut self.password_text),
+            FocusedTextInput::FormName => Some(&mut self.form_name_text),
+            FocusedTextInput::FormEmail => Some(&mut self.form_email_text),
+            FocusedTextInput::FormRole => Some(&mut self.form_role_text),
             FocusedTextInput::SliderValue => Some(&mut self.slider_value_text),
             FocusedTextInput::SliderRangeLeft => Some(&mut self.slider_left_text),
             FocusedTextInput::SliderRangeRight => Some(&mut self.slider_right_text),
@@ -1967,33 +2064,91 @@ impl ShowcaseState {
     fn sync_text_input_value(&mut self, input: FocusedTextInput) {
         match input {
             FocusedTextInput::SliderValue => {
-                if let Ok(value) = self.slider_value_text.text.parse::<f32>() {
+                if let Ok(value) = self.slider_value_text.text().parse::<f32>() {
                     self.apply_slider_value_from_text(value);
                 }
             }
             FocusedTextInput::SliderRangeLeft => {
-                if let Ok(value) = self.slider_left_text.text.parse::<f32>() {
+                if let Ok(value) = self.slider_left_text.text().parse::<f32>() {
                     self.apply_slider_left_from_text(value);
                 }
             }
             FocusedTextInput::SliderRangeRight => {
-                if let Ok(value) = self.slider_right_text.text.parse::<f32>() {
+                if let Ok(value) = self.slider_right_text.text().parse::<f32>() {
                     self.apply_slider_right_from_text(value);
                 }
             }
             FocusedTextInput::SliderStep => {
-                if let Ok(value) = self.slider_step_text.text.parse::<f32>() {
+                if let Ok(value) = self.slider_step_text.text().parse::<f32>() {
                     self.slider_step_value = value.abs().max(0.0001);
                     if self.slider_use_steps {
-                        self.set_slider_value(widgets::round_slider_to_step(
+                        self.set_slider_value(widgets::slider::round_slider_to_step(
                             self.slider,
                             self.slider_step(),
                         ));
                     }
                 }
             }
+            FocusedTextInput::FormName => {
+                self.update_profile_form_field("name", self.form_name_text.text().to_string());
+            }
+            FocusedTextInput::FormEmail => {
+                self.update_profile_form_field("email", self.form_email_text.text().to_string());
+            }
+            FocusedTextInput::FormRole => {
+                self.update_profile_form_field("role", self.form_role_text.text().to_string());
+            }
             _ => {}
         }
+    }
+
+    fn update_profile_form_field(&mut self, id: &'static str, value: String) {
+        let _ = self.form.update_field(id, value);
+        self.validate_profile_form();
+        self.form_status = "Editing profile".to_string();
+    }
+
+    fn sync_profile_form_text_fields(&mut self) {
+        self.form_name_text = TextInputState::new(profile_form_value(&self.form, "name"));
+        self.form_email_text = TextInputState::new(profile_form_value(&self.form, "email"));
+        self.form_role_text = TextInputState::new(profile_form_value(&self.form, "role"));
+    }
+
+    fn validate_profile_form(&mut self) {
+        let request = self.form.begin_form_validation();
+        let values = request.values.clone();
+        let mut result = FormValidationResult::new(request.generation);
+        let field_value = |id: &str| {
+            values
+                .iter()
+                .find_map(|(field_id, value)| (field_id.as_str() == id).then_some(value.as_str()))
+                .unwrap_or_default()
+        };
+        let name = field_value("name").trim();
+        let email = field_value("email").trim();
+        let role = field_value("role").trim();
+
+        if name.is_empty() {
+            result = result
+                .with_field_messages("name", vec![ValidationMessage::error("Name is required")]);
+        }
+        if !profile_email_valid(email) {
+            result = result.with_field_messages(
+                "email",
+                vec![ValidationMessage::error("Use a complete email address")],
+            );
+        }
+        if role.is_empty() {
+            result = result.with_field_messages(
+                "role",
+                vec![ValidationMessage::warning("Role can be added later")],
+            );
+        }
+        if self.form.dirty {
+            result =
+                result.with_form_message(ValidationMessage::warning("Unsaved profile changes"));
+        }
+        let _ = self.form.apply_form_validation(result);
     }
 
     fn copy_text_to_clipboard(&mut self, text: &str) {
@@ -2059,8 +2214,8 @@ impl ShowcaseState {
         state.activate_visible_item_id(&roots, id);
     }
 
-    fn slider_value_spec(&self) -> widgets::SliderValueSpec {
-        let mut spec = widgets::SliderValueSpec::new(self.slider_left, self.slider_right)
+    fn slider_value_spec(&self) -> widgets::slider::SliderValueSpec {
+        let mut spec = widgets::slider::SliderValueSpec::new(self.slider_left, self.slider_right)
             .logarithmic(self.slider_logarithmic)
             .clamping(self.slider_clamping)
             .smart_aim(self.slider_smart_aim);
@@ -2073,9 +2228,8 @@ impl ShowcaseState {
     fn set_slider_value(&mut self, value: f32) {
         let value = self.slider_value_spec().adjust_value(value);
         self.slider = value;
-        self.slider_value_text.text = widgets::format_slider_value(value);
-        self.slider_value_text.caret = self.slider_value_text.text.len();
-        self.slider_value_text.selection_anchor = None;
+        self.slider_value_text
+            .set_text(widgets::slider::format_slider_value(value));
     }
 
     fn apply_slider_value_from_text(&mut self, value: f32) {
@@ -2088,8 +2242,8 @@ impl ShowcaseState {
 
     fn set_slider_left(&mut self, value: f32) {
         self.slider_left = value.min(self.slider_right - 1.0).max(0.0);
-        self.slider_left_text.text = widgets::format_slider_value(self.slider_left);
-        self.slider_left_text.caret = self.slider_left_text.text.len();
+        self.slider_left_text
+            .set_text(widgets::slider::format_slider_value(self.slider_left));
         if self.slider_clamping == widgets::SliderClamping::Always {
             self.clamp_slider_to_range();
         }
@@ -2106,8 +2260,8 @@ impl ShowcaseState {
 
     fn set_slider_right(&mut self, value: f32) {
         self.slider_right = value.max(self.slider_left + 1.0).min(10000.0);
-        self.slider_right_text.text = widgets::format_slider_value(self.slider_right);
-        self.slider_right_text.caret = self.slider_right_text.text.len();
+        self.slider_right_text
+            .set_text(widgets::slider::format_slider_value(self.slider_right));
         if self.slider_clamping == widgets::SliderClamping::Always {
             self.clamp_slider_to_range();
         }
@@ -2139,9 +2293,10 @@ impl ShowcaseState {
             root_style(viewport.width, viewport.height),
             SHOWCASE_DOCUMENT_NODE_CAPACITY,
         );
-        ui.node_mut(ui.root).visual = UiVisual::panel(color(16, 20, 26), None, 0.0);
+        ui.node_mut(ui.root())
+            .set_visual(UiVisual::panel(color(16, 20, 26), None, 0.0));
 
-        let root = ui.root;
+        let root = ui.root();
         let shell = ui.add_child(
             root,
             UiNode::container(
@@ -2190,11 +2345,10 @@ impl ShowcaseState {
 }
 
 fn organize_windows_button(ui: &mut UiDocument, desktop: UiNodeId) {
-    let mut options = widgets::ButtonOptions::new(LayoutStyle::absolute_rect(UiRect::new(
-        12.0, 12.0, 104.0, 28.0,
-    )))
-    .with_action("window.organize_open")
-    .with_accessibility_label("Organize open windows");
+    let mut options =
+        widgets::ButtonOptions::new(operad::layout::absolute(12.0, 12.0, 104.0, 28.0))
+            .with_action("window.organize_open")
+            .with_accessibility_label("Organize open windows");
     options.visual = UiVisual::panel(
         ColorRgba::new(20, 26, 34, 230),
         Some(StrokeStyle::new(color(76, 88, 106), 1.0)),
@@ -2223,7 +2377,9 @@ fn organize_windows_button(ui: &mut UiDocument, desktop: UiNodeId) {
         "Organize",
         options,
     );
-    ui.node_mut(button).style.z_index = SHOWCASE_WINDOW_Z_MAX.saturating_add(20);
+    ui.node_mut(button)
+        .style_mut()
+        .set_z_index(SHOWCASE_WINDOW_Z_MAX.saturating_add(20));
 }
 
 fn fps_counter(
@@ -2232,29 +2388,24 @@ fn fps_counter(
     state: &ShowcaseState,
     viewport_height: f32,
 ) {
+    let mut counter_style = UiNodeStyle::from(operad::layout::absolute(
+        12.0,
+        (viewport_height - 34.0).max(12.0),
+        92.0,
+        24.0,
+    ));
+    counter_style.set_z_index(SHOWCASE_WINDOW_Z_MAX.saturating_add(16));
     let counter = ui.add_child(
         desktop,
-        UiNode::container(
-            "showcase.fps",
-            UiNodeStyle {
-                layout: LayoutStyle::absolute_rect(UiRect::new(
-                    12.0,
-                    (viewport_height - 34.0).max(12.0),
-                    92.0,
-                    24.0,
-                ))
-                .as_taffy_style()
-                .clone(),
-                z_index: SHOWCASE_WINDOW_Z_MAX.saturating_add(16),
-                ..Default::default()
-            },
-        )
-        .with_visual(UiVisual::panel(
-            ColorRgba::new(11, 15, 21, 210),
-            Some(StrokeStyle::new(color(56, 68, 84), 1.0)),
-            4.0,
-        ))
-        .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label("FPS counter")),
+        UiNode::container("showcase.fps", counter_style)
+            .with_visual(UiVisual::panel(
+                ColorRgba::new(11, 15, 21, 210),
+                Some(StrokeStyle::new(color(56, 68, 84), 1.0)),
+                4.0,
+            ))
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Label).label("FPS counter"),
+            ),
     );
     let fps = if state.fps > 0.0 {
         format!("{:.0} FPS", state.fps)
@@ -2282,7 +2433,7 @@ fn showcase_windows(
 ) {
     let windows = showcase_window_descriptors(state, desktop_size);
     let options = showcase_desktop_options(desktop_size);
-    widgets::floating_desktop(
+    ext_widgets::floating_desktop(
         ui,
         desktop,
         "showcase.windows",
@@ -2334,51 +2485,44 @@ fn showcase_overlays(
 ) {
     if state.toast_visible {
         let overlay_width = 320.0;
+        let mut overlay_style = UiNodeStyle::from(operad::layout::absolute(
+            (desktop_size.width - overlay_width - 18.0).max(18.0),
+            18.0,
+            overlay_width,
+            180.0,
+        ));
+        overlay_style.set_clip(ClipBehavior::None);
+        overlay_style.set_z_index(6000);
         let overlay = ui.add_child(
             desktop,
-            UiNode::container(
-                "showcase.toast_overlay",
-                UiNodeStyle {
-                    layout: LayoutStyle::absolute_rect(UiRect::new(
-                        (desktop_size.width - overlay_width - 18.0).max(18.0),
-                        18.0,
-                        overlay_width,
-                        180.0,
-                    ))
-                    .as_taffy_style()
-                    .clone(),
-                    clip: ClipBehavior::None,
-                    z_index: 6000,
-                    ..Default::default()
-                },
-            ),
+            UiNode::container("showcase.toast_overlay", overlay_style),
         );
-        let mut stack = widgets::ToastStack::new(3);
+        let mut stack = ext_widgets::ToastStack::new(3);
         stack.push_toast(
-            widgets::Toast::new(
-                widgets::ToastId(1),
-                widgets::ToastSeverity::Success,
+            ext_widgets::Toast::new(
+                ext_widgets::ToastId::new(1),
+                ext_widgets::ToastSeverity::Success,
                 "Saved",
                 Some("All changes are written".to_string()),
                 None,
             )
-            .with_action(widgets::ToastAction::new("undo", "Undo")),
+            .with_action(ext_widgets::ToastAction::new("undo", "Undo")),
         );
         stack.push(
-            widgets::ToastSeverity::Warning,
+            ext_widgets::ToastSeverity::Warning,
             "Autosave paused",
             Some("Changes are kept locally".to_string()),
             None,
         );
-        let mut options = widgets::ToastStackOptions::default();
+        let mut options = ext_widgets::ToastStackOptions::default();
         options.z_index = 6100;
-        widgets::toast_stack(ui, overlay, "showcase.toast_overlay.stack", &stack, options);
+        ext_widgets::toast_stack(ui, overlay, "showcase.toast_overlay.stack", &stack, options);
     }
 
     if state.popup_open {
         let popup_width = 280.0;
         let popup_height = 110.0;
-        let popup = widgets::popup_panel(
+        let popup = ext_widgets::popup_panel(
             ui,
             desktop,
             "showcase.popup_overlay",
@@ -2388,7 +2532,7 @@ fn showcase_overlays(
                 popup_width,
                 popup_height,
             ),
-            widgets::PopupOptions {
+            ext_widgets::PopupOptions {
                 z_index: 6100,
                 accessibility: Some(
                     AccessibilityMeta::new(AccessibilityRole::Dialog).label("Popup panel"),
@@ -2436,7 +2580,7 @@ fn showcase_overlays(
 fn showcase_window_descriptors(
     state: &ShowcaseState,
     desktop_size: UiSize,
-) -> Vec<widgets::FloatingWindowDescriptor> {
+) -> Vec<ext_widgets::FloatingWindowDescriptor> {
     let wide = (desktop_size.width - 36.0).clamp(320.0, 720.0);
     let medium = (desktop_size.width - 36.0).clamp(300.0, 604.0);
     let buttons_width = medium.min(620.0);
@@ -2593,28 +2737,28 @@ fn showcase_window_descriptors(
         state.windows.forms,
         "forms",
         "Forms",
-        UiSize::new(460.0, 520.0),
+        UiSize::new(520.0, 620.0),
     );
     push_window(
         &mut windows,
         state.windows.overlays,
         "overlays",
         "Overlays",
-        UiSize::new(560.0, 500.0),
+        UiSize::new(560.0, 560.0),
     );
     push_window(
         &mut windows,
         state.windows.drag_drop,
         "drag_drop",
         "Drag and drop",
-        UiSize::new(390.0, 340.0),
+        UiSize::new(500.0, 460.0),
     );
     push_window(
         &mut windows,
         state.windows.media,
         "media",
         "Media",
-        UiSize::new(360.0, 280.0),
+        UiSize::new(520.0, 430.0),
     );
     push_window(
         &mut windows,
@@ -2672,14 +2816,14 @@ fn showcase_window_descriptors(
 }
 
 fn push_window(
-    windows: &mut Vec<widgets::FloatingWindowDescriptor>,
+    windows: &mut Vec<ext_widgets::FloatingWindowDescriptor>,
     visible: bool,
     id: &'static str,
     title: &'static str,
     preferred_size: UiSize,
 ) {
     if visible {
-        let mut window = widgets::FloatingWindowDescriptor::new(id, title, preferred_size)
+        let mut window = ext_widgets::FloatingWindowDescriptor::new(id, title, preferred_size)
             .with_min_size(default_window_state_min_size(id))
             .with_auto_size_to_content(false)
             .with_activate_action(format!("window.activate.{id}"))
@@ -2708,7 +2852,7 @@ fn default_window_size(id: &str) -> UiSize {
         "selection" => UiSize::new(360.0, 360.0),
         "menus" => UiSize::new(640.0, 640.0),
         "command_palette" => UiSize::new(520.0, 320.0),
-        "date_picker" => UiSize::new(430.0, 390.0),
+        "date_picker" => UiSize::new(284.0, 390.0),
         "color_picker" => UiSize::new(340.0, 390.0),
         "color_buttons" => UiSize::new(430.0, 360.0),
         "progress" => UiSize::new(500.0, 168.0),
@@ -2719,10 +2863,10 @@ fn default_window_size(id: &str) -> UiSize {
         "trees" => UiSize::new(430.0, 450.0),
         "layout_widgets" => UiSize::new(560.0, 400.0),
         "containers" => UiSize::new(560.0, 640.0),
-        "forms" => UiSize::new(460.0, 520.0),
-        "overlays" => UiSize::new(560.0, 500.0),
-        "drag_drop" => UiSize::new(390.0, 340.0),
-        "media" => UiSize::new(360.0, 280.0),
+        "forms" => UiSize::new(520.0, 620.0),
+        "overlays" => UiSize::new(560.0, 560.0),
+        "drag_drop" => UiSize::new(500.0, 460.0),
+        "media" => UiSize::new(520.0, 430.0),
         "timeline" => UiSize::new(600.0, 120.0),
         "toasts" => UiSize::new(320.0, 270.0),
         "popup_panel" => UiSize::new(360.0, 200.0),
@@ -2772,7 +2916,10 @@ fn showcase_window_title(id: &str) -> &'static str {
     }
 }
 
-fn showcase_collapsed_window_size(id: &str, options: &widgets::FloatingDesktopOptions) -> UiSize {
+fn showcase_collapsed_window_size(
+    id: &str,
+    options: &ext_widgets::FloatingDesktopOptions,
+) -> UiSize {
     let min_size = default_window_state_min_size(id);
     let padding = options.content_padding.max(0.0);
     let button = options.close_button_size.max(1.0);
@@ -2877,6 +3024,9 @@ fn focused_text_for_action(action_id: &str) -> Option<FocusedTextInput> {
         "text.code_editor.edit" => FocusedTextInput::CodeEditor,
         "text.search.edit" => FocusedTextInput::Search,
         "text.password.edit" => FocusedTextInput::Password,
+        "forms.profile.name.input.edit" => FocusedTextInput::FormName,
+        "forms.profile.email.input.edit" => FocusedTextInput::FormEmail,
+        "forms.profile.role.input.edit" => FocusedTextInput::FormRole,
         "slider.value_text.edit" => FocusedTextInput::SliderValue,
         "slider.left_text.edit" => FocusedTextInput::SliderRangeLeft,
         "slider.right_text.edit" => FocusedTextInput::SliderRangeRight,
@@ -2902,44 +3052,37 @@ fn control_panel(
     let list_viewport_height = controls_list_viewport_height(viewport_height);
     let controls_scroll =
         controls_scroll_state_for_view(state.controls_scroll, list_viewport_height);
-    let list_row = ui.add_child(
+    let list_nodes = scroll_area_widgets::scroll_container_shell(
+        ui,
         parent,
-        UiNode::container(
-            "controls.widget_list.row",
-            LayoutStyle::row()
-                .with_width_percent(1.0)
-                .with_height(list_viewport_height)
-                .with_flex_grow(1.0)
-                .with_flex_shrink(1.0)
-                .gap(2.0),
-        ),
-    );
-    let list = widgets::scroll_area(
-        ui,
-        list_row,
         "controls.widget_list",
-        ScrollAxes::VERTICAL,
-        LayoutStyle::column()
-            .with_width(0.0)
-            .with_height_percent(1.0)
-            .with_flex_grow(1.0)
-            .gap(CONTROLS_WIDGET_ROW_GAP),
-    );
-    ui.node_mut(list).action = Some("controls.widget_list.scroll".into());
-    if let Some(scroll) = ui.node_mut(list).scroll.as_mut() {
-        *scroll = controls_scroll;
-    }
-    widgets::scrollbar(
-        ui,
-        list_row,
-        "controls.widget_list.scrollbar",
         controls_scroll,
-        widgets::ScrollAxis::Vertical,
-        widgets::ScrollbarOptions::default()
-            .with_layout(LayoutStyle::new().with_width(8.0).with_height_percent(1.0))
-            .with_track_size(UiSize::new(8.0, controls_scroll.viewport_size.height))
-            .with_action("controls.widget_list.scrollbar"),
+        widgets::ScrollContainerOptions::default()
+            .with_layout(
+                LayoutStyle::column()
+                    .with_width_percent(1.0)
+                    .with_height(list_viewport_height)
+                    .with_flex_grow(1.0)
+                    .with_flex_shrink(1.0),
+            )
+            .with_viewport_layout(
+                LayoutStyle::column()
+                    .with_width(0.0)
+                    .with_height_percent(1.0)
+                    .with_flex_grow(1.0)
+                    .with_flex_shrink(1.0)
+                    .gap(CONTROLS_WIDGET_ROW_GAP),
+            )
+            .with_axes(ScrollAxes::VERTICAL)
+            .with_scrollbar_thickness(8.0)
+            .with_gap(2.0)
+            .with_action_prefix("controls.widget_list")
+            .with_vertical_scrollbar(
+                scrollbar_widgets::ScrollbarOptions::default()
+                    .with_action("controls.widget_list.scrollbar"),
+            ),
     );
+    let list = list_nodes.viewport;
 
     window_toggle(ui, list, "labels", "Labels", state.windows.labels);
     window_toggle(ui, list, "buttons", "Buttons", state.windows.buttons);
@@ -3169,13 +3312,14 @@ fn window_toggle(
 #[allow(clippy::field_reassign_with_default)]
 fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "labels", "Labels");
-    ui.node_mut(body).style.layout = LayoutStyle::column()
-        .with_width_percent(1.0)
-        .with_height_percent(1.0)
-        .with_flex_grow(1.0)
-        .gap(10.0)
-        .as_taffy_style()
-        .clone();
+    ui.set_node_style(
+        body,
+        LayoutStyle::column()
+            .with_width_percent(1.0)
+            .with_height_percent(1.0)
+            .with_flex_grow(1.0)
+            .gap(10.0),
+    );
     widgets::label(
         ui,
         body,
@@ -3213,7 +3357,7 @@ fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         text(13.0, color(170, 202, 255)),
         LayoutStyle::new().with_width(locale_label_width),
     );
-    let mut locale_options = widgets::DropdownSelectOptions::default();
+    let mut locale_options = ext_widgets::DropdownSelectOptions::default();
     locale_options.trigger_layout = LayoutStyle::row()
         .with_width(locale_dropdown_width)
         .with_height(30.0)
@@ -3222,19 +3366,20 @@ fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         .padding(6.0);
     locale_options.text_style = text(13.0, color(226, 232, 242));
     locale_options.accessibility_label = Some("Locale".to_string());
-    locale_options.menu = widgets::SelectMenuOptions::default().with_action_prefix("labels.locale");
+    locale_options.menu =
+        ext_widgets::SelectMenuOptions::default().with_action_prefix("labels.locale");
     locale_options.menu.width = locale_dropdown_width;
     locale_options.menu.row_height = 30.0;
     locale_options.menu.max_visible_rows = locale_items.len();
     locale_options.menu.text_style = text(13.0, color(226, 232, 242));
     locale_options.menu.portal = UiPortalTarget::Parent;
-    let locale_nodes = widgets::dropdown_select(
+    let locale_nodes = ext_widgets::dropdown_select(
         ui,
         locale_row,
         "labels.locale",
         &locale_items,
         &state.label_locale,
-        Some(widgets::AnchoredPopup::new(
+        Some(ext_widgets::AnchoredPopup::new(
             UiRect::new(
                 locale_label_width + locale_gap,
                 0.0,
@@ -3242,11 +3387,12 @@ fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
                 30.0,
             ),
             UiRect::new(0.0, 0.0, 460.0, 260.0),
-            widgets::PopupPlacement::default().with_viewport_margin(0.0),
+            ext_widgets::PopupPlacement::default().with_viewport_margin(0.0),
         )),
         locale_options,
     );
-    ui.node_mut(locale_nodes.trigger).action = Some("labels.locale.toggle".into());
+    ui.node_mut(locale_nodes.trigger)
+        .set_action("labels.locale.toggle");
     widgets::label(
         ui,
         body,
@@ -3643,7 +3789,7 @@ fn toggles(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         } else {
             "Switch off"
         },
-        widgets::ToggleValue::from(state.switch_enabled),
+        ext_widgets::ToggleValue::from(state.switch_enabled),
         widgets::ToggleSwitchOptions::default().with_action("toggles.switch"),
     );
     widgets::toggle_switch(
@@ -3651,9 +3797,9 @@ fn toggles(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         body,
         "toggles.mixed",
         match state.mixed_switch {
-            widgets::ToggleValue::Mixed => "Mixed switch",
-            widgets::ToggleValue::On => "Mixed switch on",
-            widgets::ToggleValue::Off => "Mixed switch off",
+            ext_widgets::ToggleValue::Mixed => "Mixed switch",
+            ext_widgets::ToggleValue::On => "Mixed switch on",
+            ext_widgets::ToggleValue::Off => "Mixed switch off",
         },
         state.mixed_switch,
         widgets::ToggleSwitchOptions::default().with_action("toggles.mixed"),
@@ -3720,7 +3866,7 @@ fn slider(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         "slider.precision",
         format!(
             "Displayed value: {}    Full precision: {:.6}",
-            widgets::format_slider_value(state.slider),
+            widgets::slider::format_slider_value(state.slider),
             state.slider
         ),
         text(11.0, color(154, 166, 184)),
@@ -3818,21 +3964,22 @@ fn slider(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
             .with_height(30.0)
             .with_flex_shrink(0.0),
     );
-    widgets::color_edit_button_rgb(
+    ext_widgets::color_edit_button(
         ui,
         trailing_row,
         "slider.trailing_color_button",
-        state.slider_trailing_picker.value,
+        state.slider_trailing_picker.value(),
         color_square_button_options("slider.trailing_color_button")
+            .with_format(ext_widgets::ColorValueFormat::Rgb)
             .accessibility_label("Pick trailing slider color"),
     );
     if state.slider_trailing_picker_open {
-        widgets::color_picker(
+        ext_widgets::color_picker(
             ui,
             body,
             "slider.trailing_picker",
             &state.slider_trailing_picker,
-            widgets::ColorPickerOptions::default()
+            ext_widgets::ColorPickerOptions::default()
                 .with_label("Trailing slider color")
                 .with_action_prefix("slider.trailing_picker"),
         );
@@ -3947,9 +4094,9 @@ fn numeric_inputs(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) 
         "numeric.drag_value",
         state.numeric_value as f64,
         widgets::DragValueOptions::default()
-            .with_range(widgets::NumericRange::new(0.0, 100.0))
-            .with_precision(widgets::NumericPrecision::decimals(1))
-            .with_unit(widgets::NumericUnitFormat::default().suffix(" px"))
+            .with_range(ext_widgets::NumericRange::new(0.0, 100.0))
+            .with_precision(ext_widgets::NumericPrecision::decimals(1))
+            .with_unit(ext_widgets::NumericUnitFormat::default().suffix(" px"))
             .with_action("numeric.drag_value"),
     );
     widgets::drag_angle(
@@ -4013,28 +4160,26 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
         state.combo_open,
         options,
     );
-    ui.node_mut(combo).action = Some("combo.toggle".into());
+    ui.node_mut(combo).set_action("combo.toggle");
     let select_options = select_options();
     if state.combo_open {
-        widgets::select_menu_popup(
+        let combo_state = select_options
+            .iter()
+            .position(|option| option.label == state.combo_label)
+            .map(ext_widgets::SelectMenuState::with_selected)
+            .unwrap_or_default()
+            .with_open(&select_options);
+        ext_widgets::select_menu_popup(
             ui,
             combo_anchor,
             "selection.combo_menu",
-            widgets::AnchoredPopup::new(
+            ext_widgets::AnchoredPopup::new(
                 UiRect::new(0.0, 0.0, select_width, 30.0),
                 UiRect::new(0.0, 0.0, 320.0, 308.0),
-                widgets::PopupPlacement::default().with_viewport_margin(0.0),
+                ext_widgets::PopupPlacement::default().with_viewport_margin(0.0),
             ),
             &select_options,
-            &widgets::SelectMenuState {
-                open: true,
-                selected: select_options
-                    .iter()
-                    .position(|option| option.label == state.combo_label),
-                active: select_options
-                    .iter()
-                    .position(|option| option.label == state.combo_label),
-            },
+            &combo_state,
             select_menu_options(select_width).with_action_prefix("selection.combo"),
         );
     }
@@ -4047,13 +4192,13 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
         text(12.0, color(166, 176, 190)),
         LayoutStyle::new().with_width_percent(1.0),
     );
-    widgets::select_menu(
+    ext_widgets::select_menu(
         ui,
         body,
         "selection.select_menu",
         &select_options,
         &state.select_menu,
-        widgets::SelectMenuOptions::default().with_action_prefix("selection.menu"),
+        ext_widgets::SelectMenuOptions::default().with_action_prefix("selection.menu"),
     );
     widgets::label(
         ui,
@@ -4063,7 +4208,7 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
         text(12.0, color(166, 176, 190)),
         LayoutStyle::new().with_width_percent(1.0),
     );
-    let mut dropdown_options = widgets::DropdownSelectOptions::default();
+    let mut dropdown_options = ext_widgets::DropdownSelectOptions::default();
     dropdown_options.menu =
         select_menu_options(select_width).with_action_prefix("selection.dropdown");
     let dropdown_anchor = ui.add_child(
@@ -4075,25 +4220,26 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
                 .with_height(30.0),
         ),
     );
-    let dropdown_nodes = widgets::dropdown_select(
+    let dropdown_nodes = ext_widgets::dropdown_select(
         ui,
         dropdown_anchor,
         "selection.dropdown",
         &select_options,
         &state.dropdown,
-        Some(widgets::AnchoredPopup::new(
+        Some(ext_widgets::AnchoredPopup::new(
             UiRect::new(0.0, 0.0, select_width, 30.0),
             UiRect::new(0.0, 0.0, 320.0, 308.0),
-            widgets::PopupPlacement::default().with_viewport_margin(0.0),
+            ext_widgets::PopupPlacement::default().with_viewport_margin(0.0),
         )),
         dropdown_options,
     );
-    ui.node_mut(dropdown_nodes.trigger).action = Some("selection.dropdown.toggle".into());
+    ui.node_mut(dropdown_nodes.trigger)
+        .set_action("selection.dropdown.toggle");
 }
 
 #[allow(clippy::field_reassign_with_default)]
-fn select_menu_options(width: f32) -> widgets::SelectMenuOptions {
-    let mut options = widgets::SelectMenuOptions::default();
+fn select_menu_options(width: f32) -> ext_widgets::SelectMenuOptions {
+    let mut options = ext_widgets::SelectMenuOptions::default();
     options.width = width;
     options.portal = UiPortalTarget::Parent;
     options
@@ -4191,14 +4337,14 @@ fn date_picker(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         controls,
         "date.week.sunday",
         "Sun first",
-        state.date.first_weekday == widgets::Weekday::Sunday,
+        state.date.first_weekday == ext_widgets::Weekday::Sunday,
     );
     choice_button(
         ui,
         controls,
         "date.week.monday",
         "Mon first",
-        state.date.first_weekday == widgets::Weekday::Monday,
+        state.date.first_weekday == ext_widgets::Weekday::Monday,
     );
     let mut range_button =
         widgets::ButtonOptions::new(LayoutStyle::new().with_width(92.0).with_height(28.0))
@@ -4217,12 +4363,12 @@ fn date_picker(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         "Limit range",
         range_button,
     );
-    widgets::date_picker(
+    ext_widgets::date_picker(
         ui,
         body,
         "date.picker",
         &state.date,
-        widgets::DatePickerOptions::default().with_action_prefix("date"),
+        ext_widgets::DatePickerOptions::default().with_action_prefix("date"),
     );
     widgets::label(
         ui,
@@ -4242,12 +4388,12 @@ fn date_picker(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
 
 fn color_picker(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "color", "Color picker");
-    widgets::color_picker(
+    ext_widgets::color_picker(
         ui,
         body,
         "color.picker",
         &state.color,
-        widgets::ColorPickerOptions::default()
+        ext_widgets::ColorPickerOptions::default()
             .with_action_prefix("color")
             .with_copy_hex_action("color.copy_hex")
             .with_copy_hex_label("Copy"),
@@ -4266,7 +4412,7 @@ fn color_picker(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
 
 fn color_buttons(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "color_buttons", "Color buttons");
-    let current_color = state.color.value;
+    let current_color = state.color.value();
 
     widgets::label(
         ui,
@@ -4277,18 +4423,20 @@ fn color_buttons(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         LayoutStyle::new().with_width_percent(1.0),
     );
     let edit_row = row(ui, body, "color_buttons.edit_row", 8.0);
-    widgets::color_edit_button_rgb(
+    ext_widgets::color_edit_button(
         ui,
         edit_row,
         "color_buttons.compact",
         current_color,
-        color_square_button_options("color_buttons.compact").accessibility_label("Edit RGB color"),
+        color_square_button_options("color_buttons.compact")
+            .with_format(ext_widgets::ColorValueFormat::Rgb)
+            .accessibility_label("Edit RGB color"),
     );
     widgets::label(
         ui,
         edit_row,
         "color_buttons.hex_value",
-        widgets::format_hex_color(current_color, false),
+        ext_widgets::color_picker::format_hex_color(current_color, false),
         text(12.0, color(220, 228, 238)),
         LayoutStyle::new().with_width(92.0),
     );
@@ -4310,12 +4458,13 @@ fn color_buttons(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         text(12.0, color(186, 198, 216)),
         LayoutStyle::new().with_width(48.0),
     );
-    widgets::color_edit_button_rgb(
+    ext_widgets::color_edit_button(
         ui,
         rgb_row,
         "color_buttons.rgb",
         current_color,
-        color_value_button_options("color_buttons.rgb", 180.0),
+        color_value_button_options("color_buttons.rgb", 180.0)
+            .with_format(ext_widgets::ColorValueFormat::Rgb),
     );
     let rgba_row = row(ui, body, "color_buttons.rgba_row", 8.0);
     widgets::label(
@@ -4326,12 +4475,13 @@ fn color_buttons(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         text(12.0, color(186, 198, 216)),
         LayoutStyle::new().with_width(48.0),
     );
-    widgets::color_edit_button_rgba(
+    ext_widgets::color_edit_button(
         ui,
         rgba_row,
         "color_buttons.rgba",
         current_color,
-        color_value_button_options("color_buttons.rgba", 230.0),
+        color_value_button_options("color_buttons.rgba", 230.0)
+            .with_format(ext_widgets::ColorValueFormat::Rgba),
     );
     let hsva_row = row(ui, body, "color_buttons.hsva_row", 8.0);
     widgets::label(
@@ -4342,12 +4492,13 @@ fn color_buttons(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         text(12.0, color(186, 198, 216)),
         LayoutStyle::new().with_width(48.0),
     );
-    widgets::color_edit_button_hsva(
+    ext_widgets::color_edit_button(
         ui,
         hsva_row,
         "color_buttons.hsva",
         current_color,
-        color_value_button_options("color_buttons.hsva", 260.0),
+        color_value_button_options("color_buttons.hsva", 260.0)
+            .with_format(ext_widgets::ColorValueFormat::Hsva),
     );
 
     widgets::label(
@@ -4358,12 +4509,12 @@ fn color_buttons(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         text(12.0, color(166, 176, 190)),
         LayoutStyle::new().with_width_percent(1.0),
     );
-    widgets::color_picker_hsva_2d(
+    ext_widgets::color_picker::color_picker_hsva_2d(
         ui,
         body,
         "color_buttons.hsva_2d",
         state.color.hsv(),
-        widgets::ColorHsva2dOptions::default()
+        ext_widgets::ColorHsva2dOptions::default()
             .with_layout(LayoutStyle::new().with_width(204.0).with_height(112.0))
             .with_action_prefix("color_buttons.hsva_2d"),
     );
@@ -4386,35 +4537,35 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         .and_then(|index| menus.get(index))
         .map(|menu| menu.items.clone())
         .unwrap_or_default();
-    widgets::menu_bar(
+    ext_widgets::menu_bar(
         ui,
         body,
         "menus.menu_bar",
         &menus,
         &state.menu_bar,
         None,
-        widgets::MenuBarOptions::default().with_action_prefix("menus.bar"),
+        ext_widgets::MenuBarOptions::default().with_action_prefix("menus.bar"),
     );
 
     if !active_items.is_empty() {
-        widgets::menu_list(
+        ext_widgets::menu_list(
             ui,
             body,
             "menus.menu_list",
             &active_items,
             state.menu_bar.active_item,
-            widgets::MenuListOptions::default().with_action_prefix("menus.item"),
+            ext_widgets::MenuListOptions::default().with_action_prefix("menus.item"),
         );
         if let Some(active_item) = state.menu_bar.active_item {
             if let Some(children) = active_items
                 .get(active_item)
                 .and_then(|item| item.children())
             {
-                widgets::menu_list_popup(
+                ext_widgets::menu_list_popup(
                     ui,
                     body,
                     "menus.submenu",
-                    widgets::AnchoredPopup::new(
+                    ext_widgets::AnchoredPopup::new(
                         UiRect::new(
                             0.0,
                             40.0 + menu_item_top_offset(&active_items, active_item),
@@ -4422,15 +4573,15 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
                             menu_item_height(active_items.get(active_item)),
                         ),
                         UiRect::new(0.0, 0.0, 680.0, 468.0),
-                        widgets::PopupPlacement::new(
-                            widgets::PopupSide::Right,
-                            widgets::PopupAlign::Start,
+                        ext_widgets::PopupPlacement::new(
+                            ext_widgets::PopupSide::Right,
+                            ext_widgets::PopupAlign::Start,
                         )
                         .with_offset(4.0),
                     ),
                     children,
                     Some(0),
-                    widgets::MenuListOptions::default().with_action_prefix("menus.item"),
+                    ext_widgets::MenuListOptions::default().with_action_prefix("menus.item"),
                 );
             }
         }
@@ -4438,7 +4589,7 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     divider(ui, body, "menus.divider.buttons");
     let button_row = row(ui, body, "menus.buttons", 8.0);
     let button_items = menu_items(state.menu_autosave);
-    widgets::menu_button(
+    ext_widgets::menu_button(
         ui,
         button_row,
         "menus.menu_button",
@@ -4446,9 +4597,9 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         &button_items,
         &state.menu_button,
         None,
-        widgets::MenuButtonOptions::default().with_action("menus.menu_button"),
+        ext_widgets::MenuButtonOptions::default().with_action("menus.menu_button"),
     );
-    widgets::image_text_menu_button(
+    ext_widgets::image_text_menu_button(
         ui,
         button_row,
         "menus.image_text_menu_button",
@@ -4457,9 +4608,9 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         &button_items,
         &state.image_text_menu_button,
         None,
-        widgets::MenuButtonOptions::default().with_action("menus.image_text_menu_button"),
+        ext_widgets::MenuButtonOptions::default().with_action("menus.image_text_menu_button"),
     );
-    widgets::image_menu_button(
+    ext_widgets::image_menu_button(
         ui,
         button_row,
         "menus.image_menu_button",
@@ -4467,7 +4618,7 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         &button_items,
         &state.image_menu_button,
         None,
-        widgets::MenuButtonOptions::default().with_action("menus.image_menu_button"),
+        ext_widgets::MenuButtonOptions::default().with_action("menus.image_menu_button"),
     );
     if state.menu_button.open || state.image_text_menu_button.open || state.image_menu_button.open {
         let active = state
@@ -4492,13 +4643,13 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
                     .first()
                     .copied()
             });
-        widgets::menu_list(
+        ext_widgets::menu_list(
             ui,
             body,
             "menus.button_menu",
             &button_items,
             active,
-            widgets::MenuListOptions::default().with_action_prefix("menus.item"),
+            ext_widgets::MenuListOptions::default().with_action_prefix("menus.item"),
         );
     }
 
@@ -4520,17 +4671,17 @@ fn menu_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         button_visual(58, 78, 96),
     );
     let mut context_options =
-        widgets::MenuListOptions::default().with_action_prefix("menus.context");
+        ext_widgets::MenuListOptions::default().with_action_prefix("menus.context");
     context_options.width = 180.0;
     context_options.max_visible_rows = 4;
-    let _ = widgets::context_menu(
+    let _ = ext_widgets::context_menu(
         ui,
         parent,
         "menus.context_menu",
         &button_items,
         &state.context_menu,
         UiRect::new(0.0, 0.0, 180.0, 120.0),
-        widgets::PopupPlacement::default(),
+        ext_widgets::PopupPlacement::default(),
         context_options,
     );
 }
@@ -4539,13 +4690,13 @@ fn command_palette(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
     let body = section(ui, parent, "command_palette", "Command palette");
     let items = command_palette_items_with_history(&state.command_history);
     let mut options =
-        widgets::CommandPaletteOptions::default().with_action_prefix("command_palette");
+        ext_widgets::CommandPaletteOptions::default().with_action_prefix("command_palette");
     options.width = 480.0;
     options.row_height = 44.0;
     options.max_visible_rows = 5;
     options.text_style = text(13.0, color(238, 244, 252));
     options.muted_text_style = text(11.0, color(166, 178, 196));
-    widgets::command_palette(
+    ext_widgets::command_palette(
         ui,
         body,
         "command_palette.panel",
@@ -4568,36 +4719,36 @@ fn command_palette(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
 fn progress_indicator(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "progress", "Progress indicator");
     let animated = smooth_loop(state.progress_phase * 0.85, 0.0) * 100.0;
-    let mut progress = widgets::ProgressIndicatorOptions::default();
+    let mut progress = ext_widgets::ProgressIndicatorOptions::default();
     progress.layout = LayoutStyle::new().with_width_percent(1.0).with_height(10.0);
     progress.accessibility_label = Some("Progress".to_string());
-    widgets::progress_indicator(
+    ext_widgets::progress_indicator(
         ui,
         body,
         "progress.primary",
-        widgets::ProgressIndicatorValue::percent(animated),
+        ext_widgets::ProgressIndicatorValue::percent(animated),
         progress,
     );
     let compact_value = smooth_loop(state.progress_phase * 1.15, 0.7) * 100.0;
-    let mut compact = widgets::ProgressIndicatorOptions::default();
+    let mut compact = ext_widgets::ProgressIndicatorOptions::default();
     compact.layout = LayoutStyle::new().with_width_percent(1.0).with_height(6.0);
     compact.fill_visual = UiVisual::panel(color(111, 203, 159), None, 3.0);
-    widgets::progress_indicator(
+    ext_widgets::progress_indicator(
         ui,
         body,
         "progress.compact",
-        widgets::ProgressIndicatorValue::percent(compact_value),
+        ext_widgets::ProgressIndicatorValue::percent(compact_value),
         compact,
     );
     let warning_value = smooth_loop(state.progress_phase * 0.65, 1.4) * 100.0;
-    let mut warning = widgets::ProgressIndicatorOptions::default();
+    let mut warning = ext_widgets::ProgressIndicatorOptions::default();
     warning.layout = LayoutStyle::new().with_width_percent(1.0).with_height(14.0);
     warning.fill_visual = UiVisual::panel(color(232, 186, 88), None, 4.0);
-    widgets::progress_indicator(
+    ext_widgets::progress_indicator(
         ui,
         body,
         "progress.warning",
-        widgets::ProgressIndicatorValue::percent(warning_value),
+        ext_widgets::ProgressIndicatorValue::percent(warning_value),
         warning,
     );
     let spinner_row = row(ui, body, "progress.spinner.row", 8.0);
@@ -4837,13 +4988,16 @@ fn animation_section(
 }
 
 fn animation_stage(ui: &mut UiDocument, parent: UiNodeId, name: impl Into<String>) -> UiNodeId {
-    let mut layout = LayoutStyle::row()
+    let layout = LayoutStyle::row()
         .with_width_percent(1.0)
         .with_height(ANIMATION_STAGE_HEIGHT)
         .with_align_items(taffy::prelude::AlignItems::Center)
         .with_flex_shrink(0.0);
-    layout.as_taffy_style_mut().min_size.width = operad::length(ANIMATION_STAGE_MIN_WIDTH);
-    layout.as_taffy_style_mut().min_size.height = operad::length(ANIMATION_STAGE_HEIGHT);
+    let layout = operad::layout::with_min_size(
+        layout,
+        operad::length(ANIMATION_STAGE_MIN_WIDTH),
+        operad::length(ANIMATION_STAGE_HEIGHT),
+    );
     ui.add_child(
         parent,
         UiNode::container(name, layout).with_visual(UiVisual::panel(
@@ -4855,14 +5009,12 @@ fn animation_stage(ui: &mut UiDocument, parent: UiNodeId, name: impl Into<String
 }
 
 fn animation_scene_layout() -> LayoutStyle {
-    let mut layout = LayoutStyle::new()
+    let layout = LayoutStyle::new()
         .with_width_percent(1.0)
         .with_height_percent(1.0)
         .with_flex_grow(1.0)
         .with_flex_shrink(1.0);
-    layout.as_taffy_style_mut().min_size.width = operad::length(0.0);
-    layout.as_taffy_style_mut().min_size.height = operad::length(0.0);
-    layout
+    operad::layout::with_min_size(layout, operad::length(0.0), operad::length(0.0))
 }
 
 fn animation_blend_machine(
@@ -5056,9 +5208,10 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
             .with_flex_grow(1.0)
             .with_height(92.0),
     );
-    ui.node_mut(nested_scroll).action = Some("lists_tables.scroll_area.scroll".into());
-    if let Some(scroll) = ui.node_mut(nested_scroll).scroll.as_mut() {
-        scroll.offset.y = state.list_scroll;
+    ui.node_mut(nested_scroll)
+        .set_action("lists_tables.scroll_area.scroll");
+    if let Some(scroll) = ui.node_mut(nested_scroll).scroll_mut() {
+        scroll.set_offset(UiPoint::new(0.0, state.list_scroll));
     }
     for index in 0..6 {
         widgets::label(
@@ -5073,13 +5226,13 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
                 .with_flex_shrink(0.0),
         );
     }
-    widgets::scrollbar(
+    scrollbar_widgets::scrollbar(
         ui,
         scroll_shell,
         "lists_tables.scroll_area.scrollbar",
         scroll_state(state.list_scroll, 92.0, 6.0 * 26.0),
-        widgets::ScrollAxis::Vertical,
-        widgets::ScrollbarOptions::default()
+        scrollbar_widgets::ScrollAxis::Vertical,
+        scrollbar_widgets::ScrollbarOptions::default()
             .with_layout(LayoutStyle::size(8.0, 92.0))
             .with_track_size(UiSize::new(8.0, 92.0))
             .with_action("lists_tables.scroll_area.scrollbar"),
@@ -5113,14 +5266,15 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
             );
         },
     );
-    ui.node_mut(virtual_list).action = Some("lists_tables.virtual_list.scroll".into());
-    widgets::scrollbar(
+    ui.node_mut(virtual_list)
+        .set_action("lists_tables.virtual_list.scroll");
+    scrollbar_widgets::scrollbar(
         ui,
         virtual_shell,
         "lists_tables.virtual_list.scrollbar",
         scroll_state(state.virtual_scroll, 112.0, 24.0 * 28.0),
-        widgets::ScrollAxis::Vertical,
-        widgets::ScrollbarOptions::default()
+        scrollbar_widgets::ScrollAxis::Vertical,
+        scrollbar_widgets::ScrollbarOptions::default()
             .with_layout(LayoutStyle::size(8.0, 112.0))
             .with_track_size(UiSize::new(8.0, 112.0))
             .with_action("lists_tables.virtual_list.scrollbar"),
@@ -5137,20 +5291,21 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
             .with_flex_grow(1.0)
             .with_height(128.0),
     );
-    ui.node_mut(table_scroll).action = Some("lists_tables.data_table.scroll".into());
-    if let Some(scroll) = ui.node_mut(table_scroll).scroll.as_mut() {
-        scroll.offset.y = state.table_scroll;
+    ui.node_mut(table_scroll)
+        .set_action("lists_tables.data_table.scroll");
+    if let Some(scroll) = ui.node_mut(table_scroll).scroll_mut() {
+        scroll.set_offset(UiPoint::new(0.0, state.table_scroll));
     }
     for row_index in 0..16 {
         data_table_row(ui, table_scroll, row_index, state);
     }
-    widgets::scrollbar(
+    scrollbar_widgets::scrollbar(
         ui,
         table_shell,
         "lists_tables.data_table.scrollbar",
         scroll_state(state.table_scroll, 128.0, 16.0 * 28.0),
-        widgets::ScrollAxis::Vertical,
-        widgets::ScrollbarOptions::default()
+        scrollbar_widgets::ScrollAxis::Vertical,
+        scrollbar_widgets::ScrollbarOptions::default()
             .with_layout(LayoutStyle::size(8.0, 128.0))
             .with_track_size(UiSize::new(8.0, 128.0))
             .with_action("lists_tables.data_table.scrollbar"),
@@ -5192,7 +5347,7 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
 
     let columns = virtual_table_columns(state);
     let visible_rows = virtual_table_visible_rows(state);
-    let mut table_options = widgets::DataTableOptions::default()
+    let mut table_options = ext_widgets::DataTableOptions::default()
         .with_row_action_prefix("lists_tables.virtualized_table")
         .with_cell_action_prefix("lists_tables.virtualized_table")
         .with_scroll_action("lists_tables.virtualized_table.scroll");
@@ -5202,12 +5357,12 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
         .with_flex_shrink(1.0);
     table_options.selection = state.table_selection.clone();
     let virtual_shell = row(ui, body, "lists_tables.virtualized_table.shell", 8.0);
-    widgets::virtualized_data_table(
+    ext_widgets::virtualized_data_table(
         ui,
         virtual_shell,
         "lists_tables.virtualized_table",
         &columns,
-        widgets::VirtualDataTableSpec {
+        ext_widgets::VirtualDataTableSpec {
             row_count: visible_rows.len(),
             row_height: 28.0,
             viewport_width: 420.0,
@@ -5232,7 +5387,7 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
             );
         },
     );
-    widgets::scrollbar(
+    scrollbar_widgets::scrollbar(
         ui,
         virtual_shell,
         "lists_tables.virtualized_table.scrollbar",
@@ -5241,8 +5396,8 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
             128.0,
             visible_rows.len() as f32 * 28.0,
         ),
-        widgets::ScrollAxis::Vertical,
-        widgets::ScrollbarOptions::default()
+        scrollbar_widgets::ScrollAxis::Vertical,
+        scrollbar_widgets::ScrollbarOptions::default()
             .with_layout(LayoutStyle::size(8.0, 158.0))
             .with_track_size(UiSize::new(8.0, 158.0))
             .with_action("lists_tables.virtualized_table.scrollbar"),
@@ -5313,42 +5468,42 @@ fn property_inspector(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSta
         text(12.0, color(196, 210, 230)),
         LayoutStyle::new().with_width_percent(1.0),
     );
-    let mut options = widgets::PropertyInspectorOptions::default();
+    let mut options = ext_widgets::PropertyInspectorOptions::default();
     options.selected_index = Some(0);
     options.label_width = 120.0;
     options.row_height = 30.0;
-    widgets::property_inspector_grid(
+    ext_widgets::property_inspector_grid(
         ui,
         body,
         "property_inspector.grid",
         &[
-            widgets::PropertyGridRow::new("target", "Widget", "Button preview").read_only(),
-            widgets::PropertyGridRow::new(
+            ext_widgets::PropertyGridRow::new("target", "Widget", "Button preview").read_only(),
+            ext_widgets::PropertyGridRow::new(
                 "inner",
                 "Inner margin",
                 format!("{:.0}px", state.styling.inner_margin),
             )
-            .with_kind(widgets::PropertyValueKind::Number),
-            widgets::PropertyGridRow::new(
+            .with_kind(ext_widgets::PropertyValueKind::Number),
+            ext_widgets::PropertyGridRow::new(
                 "outer",
                 "Outer margin",
                 format!("{:.0}px", state.styling.outer_margin),
             )
-            .with_kind(widgets::PropertyValueKind::Number),
-            widgets::PropertyGridRow::new(
+            .with_kind(ext_widgets::PropertyValueKind::Number),
+            ext_widgets::PropertyGridRow::new(
                 "radius",
                 "Corner radius",
                 format!("{:.0}px", state.styling.corner_radius),
             )
-            .with_kind(widgets::PropertyValueKind::Number),
-            widgets::PropertyGridRow::new(
+            .with_kind(ext_widgets::PropertyValueKind::Number),
+            ext_widgets::PropertyGridRow::new(
                 "stroke",
                 "Stroke",
                 format!("{:.1}px", state.styling.stroke_width),
             )
-            .with_kind(widgets::PropertyValueKind::Number)
+            .with_kind(ext_widgets::PropertyValueKind::Number)
             .changed(),
-            widgets::PropertyGridRow::new("state", "Source", "Styling widget").read_only(),
+            ext_widgets::PropertyGridRow::new("state", "Source", "Styling widget").read_only(),
         ],
         options,
     );
@@ -5366,12 +5521,12 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
         LayoutStyle::new().with_width_percent(1.0),
     );
     let debug_snapshot = &state.diagnostics_snapshot;
-    widgets::debug_inspector_panel(
+    ext_widgets::debug_inspector_panel(
         ui,
         body,
         "diagnostics.inspector",
         debug_snapshot,
-        widgets::DebugInspectorPanelOptions {
+        ext_widgets::DebugInspectorPanelOptions {
             selected_node: Some("diagnostics.sample.preview".to_owned()),
             label_width: 104.0,
             max_layout_rows: 5,
@@ -5380,12 +5535,12 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
             ..Default::default()
         },
     );
-    widgets::animation_state_graph_panel(
+    ext_widgets::animation_state_graph_panel(
         ui,
         body,
         "diagnostics.animation.graph",
         debug_snapshot.animation("diagnostics.sample.preview"),
-        widgets::AnimationStateGraphPanelOptions {
+        ext_widgets::AnimationStateGraphPanelOptions {
             state_width: 72.0,
             state_height: 28.0,
             edge_row_height: 22.0,
@@ -5394,12 +5549,12 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
             ..Default::default()
         },
     );
-    widgets::animation_inspector_controls_panel(
+    ext_widgets::animation_inspector_controls_panel(
         ui,
         body,
         "diagnostics.animation.controls",
         debug_snapshot.animation("diagnostics.sample.preview"),
-        widgets::AnimationInspectorControlsOptions {
+        ext_widgets::AnimationInspectorControlsOptions {
             max_inputs: 3,
             paused: state.diagnostics_animation_paused,
             scrub_progress: Some(state.diagnostics_animation_scrub),
@@ -5429,34 +5584,41 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
         text(14.0, color(222, 230, 240)),
         LayoutStyle::new().with_width_percent(1.0),
     );
+    let mut overlay_preview_style = UiNodeStyle::from(
+        LayoutStyle::new()
+            .with_width(320.0)
+            .with_height(140.0)
+            .with_flex_shrink(0.0),
+    );
+    overlay_preview_style.set_clip(ClipBehavior::Clip);
     let overlay_preview = ui.add_child(
         body,
-        UiNode::container(
-            "diagnostics.a11y.preview",
-            LayoutStyle::new().with_width(320.0).with_height(140.0),
-        )
-        .with_visual(UiVisual::panel(
-            color(12, 17, 24),
-            Some(StrokeStyle::new(color(47, 62, 82), 1.0)),
-            4.0,
-        )),
+        UiNode::container("diagnostics.a11y.preview", overlay_preview_style).with_visual(
+            UiVisual::panel(
+                color(12, 17, 24),
+                Some(StrokeStyle::new(color(47, 62, 82), 1.0)),
+                4.0,
+            ),
+        ),
     );
-    widgets::accessibility_debug_overlay(
+    let mut overlay_options = ext_widgets::AccessibilityDebugOverlayOptions {
+        action_prefix: Some("diagnostics.a11y.visual".to_owned()),
+        ..Default::default()
+    };
+    overlay_options.show_labels = false;
+    ext_widgets::accessibility_debug_overlay(
         ui,
         overlay_preview,
         "diagnostics.a11y.visual",
         &debug_snapshot,
-        widgets::AccessibilityDebugOverlayOptions {
-            action_prefix: Some("diagnostics.a11y.visual".to_owned()),
-            ..Default::default()
-        },
+        overlay_options,
     );
-    widgets::accessibility_overlay_panel(
+    ext_widgets::accessibility_overlay_panel(
         ui,
         body,
         "diagnostics.a11y",
         &debug_snapshot,
-        widgets::AccessibilityOverlayPanelOptions {
+        ext_widgets::AccessibilityOverlayPanelOptions {
             label_width: 118.0,
             max_rows: 1,
             action_prefix: Some("diagnostics.a11y".to_owned()),
@@ -5464,15 +5626,23 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
         },
     );
 
-    let diagnostic_columns = row(ui, body, "diagnostics.columns", 10.0);
+    let diagnostic_columns = ui.add_child(
+        body,
+        UiNode::container(
+            "diagnostics.columns",
+            LayoutStyle::column()
+                .with_width_percent(1.0)
+                .with_flex_shrink(0.0)
+                .gap(10.0),
+        ),
+    );
     let command_column = ui.add_child(
         diagnostic_columns,
         UiNode::container(
             "diagnostics.commands.column",
             LayoutStyle::column()
-                .with_width(0.0)
-                .with_flex_grow(1.0)
-                .with_flex_shrink(1.0)
+                .with_width_percent(1.0)
+                .with_flex_shrink(0.0)
                 .gap(8.0),
         ),
     );
@@ -5481,9 +5651,8 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
         UiNode::container(
             "diagnostics.theme.column",
             LayoutStyle::column()
-                .with_width(0.0)
-                .with_flex_grow(1.0)
-                .with_flex_shrink(1.0)
+                .with_width_percent(1.0)
+                .with_flex_shrink(0.0)
                 .gap(8.0),
         ),
     );
@@ -5497,14 +5666,14 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
         LayoutStyle::new().with_width_percent(1.0),
     );
     let registry = diagnostics_command_registry();
-    widgets::command_diagnostics_panel(
+    ext_widgets::command_diagnostics_panel(
         ui,
         command_column,
         "diagnostics.commands",
         &registry,
         &[CommandScope::Global, CommandScope::Panel],
         &ShortcutFormatter::default(),
-        widgets::CommandDiagnosticsPanelOptions {
+        ext_widgets::CommandDiagnosticsPanelOptions {
             label_width: 92.0,
             max_command_rows: 3,
             max_conflict_rows: 1,
@@ -5522,12 +5691,12 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
         LayoutStyle::new().with_width_percent(1.0),
     );
     let theme_snapshot = DebugThemeSnapshot::from_theme(&Theme::dark());
-    widgets::theme_editor_panel(
+    ext_widgets::theme_editor_panel(
         ui,
         theme_column,
         "diagnostics.theme",
         &theme_snapshot,
-        widgets::ThemeEditorPanelOptions {
+        ext_widgets::ThemeEditorPanelOptions {
             label_width: 92.0,
             max_token_rows: 1,
             max_component_rows: 1,
@@ -5547,7 +5716,7 @@ fn diagnostics_sample_snapshot(state: &ShowcaseState) -> DebugInspectorSnapshot 
 fn diagnostics_sample_snapshot_for(hover: f32, active: bool) -> DebugInspectorSnapshot {
     let mut sample = UiDocument::new(root_style(320.0, 180.0));
     let card = sample.add_child(
-        sample.root,
+        sample.root(),
         UiNode::container(
             "diagnostics.sample.card",
             LayoutStyle::column()
@@ -5681,59 +5850,60 @@ fn diagnostics_command_registry() -> CommandRegistry {
 
 fn tree_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "trees", "Tree view");
-    widgets::tree_view(
+    ext_widgets::tree_view(
         ui,
         body,
         "trees.tree_view",
         &tree_items(),
         &state.tree,
-        widgets::TreeViewOptions::default().with_row_action_prefix("trees.tree"),
+        ext_widgets::TreeViewOptions::default().with_row_action_prefix("trees.tree"),
     );
-    widgets::outliner(
+    ext_widgets::outliner(
         ui,
         body,
         "trees.outliner",
         &tree_items(),
         &state.outliner,
-        widgets::TreeViewOptions::default().with_row_action_prefix("trees.outliner"),
+        ext_widgets::TreeViewOptions::default().with_row_action_prefix("trees.outliner"),
     );
-    let virtual_state = widgets::TreeViewState::expanded(["root"]);
-    let virtual_nodes = widgets::virtualized_tree_view(
+    let virtual_state = ext_widgets::TreeViewState::expanded(["root"]);
+    let virtual_nodes = ext_widgets::virtualized_tree_view(
         ui,
         body,
         "trees.virtual",
         &virtual_tree_items(),
         &virtual_state,
-        widgets::VirtualTreeViewSpec::new(24.0, 112.0)
+        ext_widgets::VirtualTreeViewSpec::new(24.0, 112.0)
             .scroll_offset(state.tree_virtual_scroll)
             .overscan_rows(1),
-        widgets::TreeViewOptions::default().with_row_action_prefix("trees.virtual"),
+        ext_widgets::TreeViewOptions::default().with_row_action_prefix("trees.virtual"),
     );
-    ui.node_mut(virtual_nodes.body).action = Some("trees.virtual.scroll".into());
+    ui.node_mut(virtual_nodes.body)
+        .set_action("trees.virtual.scroll");
     tree_table_widgets(ui, body, state);
 }
 
 fn tree_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
-    let tree_state = widgets::TreeViewState::expanded(["root", "branch-a"]);
+    let tree_state = ext_widgets::TreeViewState::expanded(["root", "branch-a"]);
     let rows = tree_state.visible_items(&tree_table_items());
     let columns = [
-        widgets::DataTableColumn::new("name", "Name", 220.0),
-        widgets::DataTableColumn::new("kind", "Kind", 84.0),
-        widgets::DataTableColumn::new("status", "Status", 92.0),
+        ext_widgets::DataTableColumn::new("name", "Name", 220.0),
+        ext_widgets::DataTableColumn::new("kind", "Kind", 84.0),
+        ext_widgets::DataTableColumn::new("status", "Status", 92.0),
     ];
-    let mut options = widgets::DataTableOptions::default()
+    let mut options = ext_widgets::DataTableOptions::default()
         .with_row_action_prefix("trees.table")
         .with_cell_action_prefix("trees.table");
     options.layout = LayoutStyle::column()
         .with_width_percent(1.0)
         .with_height(132.0)
         .with_flex_shrink(0.0);
-    widgets::virtualized_data_table(
+    ext_widgets::virtualized_data_table(
         ui,
         parent,
         "trees.table",
         &columns,
-        widgets::VirtualDataTableSpec {
+        ext_widgets::VirtualDataTableSpec {
             row_count: rows.len(),
             row_height: 24.0,
             viewport_width: 396.0,
@@ -5759,7 +5929,7 @@ fn tree_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSta
     );
 }
 
-fn tree_table_cell_value(item: &widgets::TreeVisibleItem, column: usize) -> String {
+fn tree_table_cell_value(item: &ext_widgets::TreeVisibleItem, column: usize) -> String {
     match column {
         0 => format!("{}{}", "  ".repeat(item.depth), item.label),
         1 => {
@@ -5809,30 +5979,30 @@ fn tab_split_dock_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
     state.layout_dock.apply_order_to_panels(&mut panels);
     state.layout_dock.apply_visibility_to_panels(&mut panels);
 
-    let mut drawer_options = widgets::DockDrawerRailOptions::default();
+    let mut drawer_options = ext_widgets::DockDrawerRailOptions::default();
     drawer_options.layout = LayoutStyle::row()
         .with_width_percent(1.0)
         .with_height(34.0)
         .with_padding(4.0)
         .with_gap(4.0);
-    widgets::dock_drawer_rail(
+    ext_widgets::dock_drawer_rail(
         ui,
         shell,
         "layout_widgets.dock.drawers",
         &[
-            widgets::DockDrawerDescriptor::new(
+            ext_widgets::DockDrawerDescriptor::new(
                 "inspector",
                 "Inspector",
                 "inspector",
-                widgets::DockSide::Left,
+                ext_widgets::DockSide::Left,
             )
             .open(!state.layout_dock.is_hidden("inspector"))
             .with_action("layout_widgets.drawer.inspector"),
-            widgets::DockDrawerDescriptor::new(
+            ext_widgets::DockDrawerDescriptor::new(
                 "assets",
                 "Assets",
                 "assets",
-                widgets::DockSide::Right,
+                ext_widgets::DockSide::Right,
             )
             .open(!state.layout_dock.is_hidden("assets"))
             .with_action("layout_widgets.drawer.assets"),
@@ -5840,7 +6010,7 @@ fn tab_split_dock_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
         drawer_options,
     );
 
-    let mut options = widgets::DockWorkspaceOptions::default();
+    let mut options = ext_widgets::DockWorkspaceOptions::default();
     options.layout = LayoutStyle::column()
         .with_width_percent(1.0)
         .with_height(0.0)
@@ -5857,7 +6027,7 @@ fn tab_split_dock_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
         0.0,
     );
 
-    widgets::dock_workspace(
+    ext_widgets::dock_workspace(
         ui,
         shell,
         "layout_widgets.dock",
@@ -5887,7 +6057,12 @@ fn tab_split_dock_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
             shell,
             UiNode::container(
                 "layout_widgets.floating.inspector",
-                LayoutStyle::absolute_rect(floating.rect),
+                operad::layout::absolute(
+                    floating.rect.x,
+                    floating.rect.y,
+                    floating.rect.width,
+                    floating.rect.height,
+                ),
             )
             .with_visual(UiVisual::panel(
                 color(18, 22, 29),
@@ -5905,15 +6080,25 @@ fn tab_split_dock_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
     }
 }
 
-fn base_layout_dock_panels() -> Vec<widgets::DockPanelDescriptor> {
+fn base_layout_dock_panels() -> Vec<ext_widgets::DockPanelDescriptor> {
     vec![
-        widgets::DockPanelDescriptor::new("inspector", "Inspector", widgets::DockSide::Left, 120.0)
-            .with_min_size(104.0)
-            .resizable(true),
-        widgets::DockPanelDescriptor::center("document", "Document"),
-        widgets::DockPanelDescriptor::new("assets", "Assets", widgets::DockSide::Right, 104.0)
-            .with_min_size(94.0)
-            .resizable(true),
+        ext_widgets::DockPanelDescriptor::new(
+            "inspector",
+            "Inspector",
+            ext_widgets::DockSide::Left,
+            120.0,
+        )
+        .with_min_size(104.0)
+        .resizable(true),
+        ext_widgets::DockPanelDescriptor::center("document", "Document"),
+        ext_widgets::DockPanelDescriptor::new(
+            "assets",
+            "Assets",
+            ext_widgets::DockSide::Right,
+            104.0,
+        )
+        .with_min_size(94.0)
+        .resizable(true),
     ]
 }
 
@@ -5990,14 +6175,14 @@ fn dock_document_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
         after_button,
     );
 
-    let zones = widgets::dock_workspace_drop_zones(
+    let zones = ext_widgets::dock_workspace::dock_workspace_drop_zones(
         "layout_widgets.dock",
         UiRect::new(0.0, 0.0, 520.0, 340.0),
-        widgets::DockWorkspaceDragOptions::default()
+        ext_widgets::DockWorkspaceDragOptions::default()
             .allowed_sides([
-                widgets::DockSide::Left,
-                widgets::DockSide::Right,
-                widgets::DockSide::Center,
+                ext_widgets::DockSide::Left,
+                ext_widgets::DockSide::Right,
+                ext_widgets::DockSide::Center,
             ])
             .edge_thickness(44.0),
     );
@@ -6009,18 +6194,18 @@ fn dock_document_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
     let mut panels = base_layout_dock_panels();
     state.layout_dock.apply_order_to_panels(&mut panels);
     let reorder_targets: Vec<_> = [
-        widgets::DockSide::Left,
-        widgets::DockSide::Right,
-        widgets::DockSide::Center,
+        ext_widgets::DockSide::Left,
+        ext_widgets::DockSide::Right,
+        ext_widgets::DockSide::Center,
     ]
     .into_iter()
     .flat_map(|side| {
-        widgets::dock_panel_reorder_drop_targets(
+        ext_widgets::dock_workspace::dock_panel_reorder_drop_targets(
             "layout_widgets.dock",
             &panels,
             side,
             UiRect::new(0.0, 0.0, 180.0, 120.0),
-            widgets::DockWorkspaceReorderOptions::default().target_thickness(20.0),
+            ext_widgets::DockWorkspaceReorderOptions::default().target_thickness(20.0),
         )
     })
     .collect();
@@ -6030,11 +6215,11 @@ fn dock_document_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
     }
 
     let tabs = [
-        widgets::TabItem::new("preview", "Preview"),
-        widgets::TabItem::new("log", "Output").dirty(),
-        widgets::TabItem::new("settings", "Settings").closable(),
+        ext_widgets::TabItem::new("preview", "Preview"),
+        ext_widgets::TabItem::new("log", "Output").dirty(),
+        ext_widgets::TabItem::new("settings", "Settings").closable(),
     ];
-    let mut tab_options = widgets::TabGroupOptions::default();
+    let mut tab_options = ext_widgets::TabGroupOptions::default();
     tab_options.layout = LayoutStyle::column()
         .with_width_percent(1.0)
         .with_height(0.0)
@@ -6043,12 +6228,12 @@ fn dock_document_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
     tab_options.min_tab_width = 92.0;
     tab_options.text_style = text(12.0, color(226, 234, 246));
     tab_options.muted_text_style = text(12.0, color(150, 162, 178));
-    widgets::tab_group(
+    ext_widgets::tab_group(
         ui,
         content,
         "layout_widgets.document.tabs",
         &tabs,
-        widgets::TabGroupState::selected(0),
+        ext_widgets::TabGroupState::selected(0),
         tab_options,
         |ui, panel, _index| {
             widgets::label(
@@ -6066,12 +6251,12 @@ fn dock_document_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
 fn dock_drop_target_chip(
     ui: &mut UiDocument,
     parent: UiNodeId,
-    zone: &widgets::DockWorkspaceDropZone,
+    zone: &ext_widgets::DockWorkspaceDropZone,
 ) -> UiNodeId {
     let chip = ui.add_child(
         parent,
         UiNode::container(
-            format!("{}.chip", zone.target.id.0),
+            format!("{}.chip", zone.target.id.as_str()),
             LayoutStyle::row()
                 .with_width(78.0)
                 .with_height(26.0)
@@ -6089,7 +6274,7 @@ fn dock_drop_target_chip(
     widgets::label(
         ui,
         chip,
-        format!("{}.label", zone.target.id.0),
+        format!("{}.label", zone.target.id.as_str()),
         dock_drop_target_short_label(zone.placement),
         text(11.0, color(206, 216, 230)),
         LayoutStyle::new().with_width_percent(1.0),
@@ -6100,12 +6285,12 @@ fn dock_drop_target_chip(
 fn dock_reorder_target_chip(
     ui: &mut UiDocument,
     parent: UiNodeId,
-    target: &widgets::DockPanelReorderTarget,
+    target: &ext_widgets::DockPanelReorderTarget,
 ) -> UiNodeId {
     let chip = ui.add_child(
         parent,
         UiNode::container(
-            format!("{}.chip", target.target.id.0),
+            format!("{}.chip", target.target.id.as_str()),
             LayoutStyle::row()
                 .with_width(104.0)
                 .with_height(26.0)
@@ -6123,7 +6308,7 @@ fn dock_reorder_target_chip(
     widgets::label(
         ui,
         chip,
-        format!("{}.label", target.target.id.0),
+        format!("{}.label", target.target.id.as_str()),
         dock_reorder_target_short_label(target),
         text(11.0, color(206, 216, 230)),
         LayoutStyle::new().with_width_percent(1.0),
@@ -6131,21 +6316,21 @@ fn dock_reorder_target_chip(
     chip
 }
 
-fn dock_drop_target_short_label(placement: widgets::DockDropPlacement) -> &'static str {
+fn dock_drop_target_short_label(placement: ext_widgets::DockDropPlacement) -> &'static str {
     match placement {
-        widgets::DockDropPlacement::Dock(widgets::DockSide::Left) => "Left",
-        widgets::DockDropPlacement::Dock(widgets::DockSide::Right) => "Right",
-        widgets::DockDropPlacement::Dock(widgets::DockSide::Center) => "Center",
-        widgets::DockDropPlacement::Dock(widgets::DockSide::Top) => "Top",
-        widgets::DockDropPlacement::Dock(widgets::DockSide::Bottom) => "Bottom",
-        widgets::DockDropPlacement::Floating => "Float",
+        ext_widgets::DockDropPlacement::Dock(ext_widgets::DockSide::Left) => "Left",
+        ext_widgets::DockDropPlacement::Dock(ext_widgets::DockSide::Right) => "Right",
+        ext_widgets::DockDropPlacement::Dock(ext_widgets::DockSide::Center) => "Center",
+        ext_widgets::DockDropPlacement::Dock(ext_widgets::DockSide::Top) => "Top",
+        ext_widgets::DockDropPlacement::Dock(ext_widgets::DockSide::Bottom) => "Bottom",
+        ext_widgets::DockDropPlacement::Floating => "Float",
     }
 }
 
-fn dock_reorder_target_short_label(target: &widgets::DockPanelReorderTarget) -> String {
+fn dock_reorder_target_short_label(target: &ext_widgets::DockPanelReorderTarget) -> String {
     let placement = match target.placement {
-        widgets::DockPanelReorderPlacement::Before => "Before",
-        widgets::DockPanelReorderPlacement::After => "After",
+        ext_widgets::DockPanelReorderPlacement::Before => "Before",
+        ext_widgets::DockPanelReorderPlacement::After => "After",
     };
     format!("{placement} {}", target.panel_id)
 }
@@ -6234,11 +6419,11 @@ fn container_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
             .with_flex_shrink(0.0),
     );
 
-    let grid = widgets::grid(
+    let grid = widgets::grid::grid(
         ui,
         body,
         "containers.grid",
-        widgets::GridOptions::default().with_layout(
+        widgets::grid::GridOptions::default().with_layout(
             LayoutStyle::column()
                 .with_width_percent(1.0)
                 .with_height(78.0)
@@ -6246,19 +6431,19 @@ fn container_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
         ),
     );
     for row_index in 0..2 {
-        let row = widgets::grid_row(
+        let row = widgets::grid::grid_row(
             ui,
             grid,
             format!("containers.grid.row.{row_index}"),
-            widgets::GridRowOptions::default(),
+            widgets::grid::GridRowOptions::default(),
         );
         for column_index in 0..3 {
-            widgets::grid_text_cell(
+            widgets::grid::grid_text_cell(
                 ui,
                 row,
                 format!("containers.grid.row.{row_index}.cell.{column_index}"),
                 format!("R{} C{}", row_index + 1, column_index + 1),
-                widgets::GridCellOptions {
+                widgets::grid::GridCellOptions {
                     text_style: text(12.0, color(214, 224, 238)),
                     ..Default::default()
                 },
@@ -6356,11 +6541,11 @@ fn container_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
             );
         },
     );
-    widgets::resize_handle(
+    widgets::container::resize_handle(
         ui,
         body,
         "containers.resize_handle",
-        widgets::ResizeHandleOptions::default()
+        widgets::container::ResizeHandleOptions::default()
             .with_layout(LayoutStyle::size(20.0, 20.0))
             .accessibility_label("Inline resize handle"),
     );
@@ -6469,28 +6654,30 @@ fn container_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
         LayoutStyle::new().with_width_percent(1.0),
     );
 
-    let scroll = widgets::scroll_area_with_bars(
+    widgets::scroll_container(
         ui,
         body,
         "containers.scroll_area_with_bars",
         state.containers_scroll,
-        widgets::ScrollAreaWithBarsOptions::default()
+        widgets::ScrollContainerOptions::default()
             .with_axes(ScrollAxes::BOTH)
             .with_layout(LayoutStyle::column().with_width(300.0).with_height(116.0)),
+        |ui, viewport| {
+            for index in 0..5 {
+                widgets::label(
+                    ui,
+                    viewport,
+                    format!("containers.scroll_area_with_bars.row.{index}"),
+                    format!("Scrollable row {}", index + 1),
+                    text(12.0, color(200, 212, 228)),
+                    LayoutStyle::new()
+                        .with_width(420.0)
+                        .with_height(28.0)
+                        .with_flex_shrink(0.0),
+                );
+            }
+        },
     );
-    for index in 0..5 {
-        widgets::label(
-            ui,
-            scroll.viewport,
-            format!("containers.scroll_area_with_bars.row.{index}"),
-            format!("Scrollable row {}", index + 1),
-            text(12.0, color(200, 212, 228)),
-            LayoutStyle::new()
-                .with_width(420.0)
-                .with_height(28.0)
-                .with_flex_shrink(0.0),
-        );
-    }
 
     let area_host = ui.add_child(
         body,
@@ -6507,11 +6694,11 @@ fn container_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
             4.0,
         )),
     );
-    widgets::area(
+    widgets::container::area(
         ui,
         area_host,
         "containers.area",
-        widgets::AreaOptions::new(UiRect::new(14.0, 14.0, 180.0, 44.0))
+        widgets::container::AreaOptions::new(UiRect::new(14.0, 14.0, 180.0, 44.0))
             .with_visual(UiVisual::panel(color(39, 72, 109), None, 4.0))
             .accessibility_label("Absolute positioned area"),
         |ui, area| {
@@ -6528,7 +6715,7 @@ fn container_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
 }
 
 fn form_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
-    let body = section(ui, parent, "forms", "Forms");
+    let body = section_with_min_viewport(ui, parent, "forms", "Forms", UiSize::new(390.0, 0.0));
     let section = widgets::form_section(
         ui,
         body,
@@ -6541,12 +6728,34 @@ fn form_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
                 .with_gap(10.0),
         ),
     );
-    let name = widgets::form_row(
+    let status_row = wrapping_row(ui, section.root, "forms.profile.status_flags", 6.0);
+    form_status_chip(
         ui,
-        section.root,
-        "forms.profile.name",
-        widgets::FormRowOptions::default(),
+        status_row,
+        "forms.profile.status.dirty",
+        "dirty",
+        state.form.dirty,
     );
+    form_status_chip(
+        ui,
+        status_row,
+        "forms.profile.status.pending",
+        "pending",
+        state.form.pending,
+    );
+    form_status_chip(
+        ui,
+        status_row,
+        "forms.profile.status.submitted",
+        "submitted",
+        state.form.submitted,
+    );
+
+    let mut name_options = widgets::FormRowOptions::default().required();
+    if state.form_name_text.text().trim().is_empty() {
+        name_options = name_options.invalid("Name is required");
+    }
+    let name = widgets::form_row(ui, section.root, "forms.profile.name", name_options);
     widgets::field_label(
         ui,
         name,
@@ -6554,23 +6763,37 @@ fn form_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         "Name",
         widgets::FieldLabelOptions::default().required(),
     );
-    widgets::field_help_text(
+    form_text_field(
         ui,
         name,
-        "forms.profile.name.help",
-        "Shown in window titles and project lists.",
-        widgets::FieldHelpOptions::default(),
+        "forms.profile.name.input",
+        &state.form_name_text,
+        FocusedTextInput::FormName,
+        state,
     );
-    form_text_field(ui, name, "forms.profile.name.input", "Ada Lovelace");
+    if state.form_name_text.text().trim().is_empty() {
+        widgets::field_validation_message(
+            ui,
+            name,
+            "forms.profile.name.validation",
+            ValidationMessage::error("Name is required"),
+            widgets::ValidationMessageOptions::default(),
+        );
+    } else {
+        widgets::field_help_text(
+            ui,
+            name,
+            "forms.profile.name.help",
+            "Shown in window titles and project lists.",
+            widgets::FieldHelpOptions::default(),
+        );
+    }
 
-    let email = widgets::form_row(
-        ui,
-        section.root,
-        "forms.profile.email",
-        widgets::FormRowOptions::default()
-            .required()
-            .invalid("Use a complete email address"),
-    );
+    let mut email_options = widgets::FormRowOptions::default().required();
+    if !profile_email_valid(state.form_email_text.text()) {
+        email_options = email_options.invalid("Use a complete email address");
+    }
+    let email = widgets::form_row(ui, section.root, "forms.profile.email", email_options);
     widgets::field_label(
         ui,
         email,
@@ -6578,14 +6801,31 @@ fn form_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         "Email",
         widgets::FieldLabelOptions::default().required(),
     );
-    widgets::field_validation_message(
+    form_text_field(
         ui,
         email,
-        "forms.profile.email.validation",
-        ValidationMessage::error("Use a complete email address"),
-        widgets::ValidationMessageOptions::default(),
+        "forms.profile.email.input",
+        &state.form_email_text,
+        FocusedTextInput::FormEmail,
+        state,
     );
-    form_text_field(ui, email, "forms.profile.email.input", "ada@");
+    if profile_email_valid(state.form_email_text.text()) {
+        widgets::field_help_text(
+            ui,
+            email,
+            "forms.profile.email.help",
+            "Used for workspace invites and notifications.",
+            widgets::FieldHelpOptions::default(),
+        );
+    } else {
+        widgets::field_validation_message(
+            ui,
+            email,
+            "forms.profile.email.validation",
+            ValidationMessage::error("Use a complete email address"),
+            widgets::ValidationMessageOptions::default(),
+        );
+    }
 
     let role = widgets::form_row(
         ui,
@@ -6600,14 +6840,53 @@ fn form_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         "Role",
         widgets::FieldLabelOptions::default(),
     );
-    widgets::field_help_text(
+    form_text_field(
+        ui,
+        role,
+        "forms.profile.role.input",
+        &state.form_role_text,
+        FocusedTextInput::FormRole,
+        state,
+    );
+    widgets::field_validation_message(
         ui,
         role,
         "forms.profile.role.help",
-        "Form rows compose labels, controls, help, and validation text.",
+        if state.form_role_text.text().trim().is_empty() {
+            ValidationMessage::warning("Role can be added later")
+        } else {
+            ValidationMessage::info(
+                "Form rows compose labels, controls, help, and validation text.",
+            )
+        },
+        widgets::ValidationMessageOptions::default(),
+    );
+
+    let newsletter = widgets::form_row(
+        ui,
+        section.root,
+        "forms.profile.newsletter",
+        widgets::FormRowOptions::default().with_accessibility_label("Newsletter preference"),
+    );
+    let mut newsletter_options =
+        widgets::CheckboxOptions::default().with_action("forms.profile.newsletter.toggle");
+    newsletter_options.layout = LayoutStyle::new().with_width_percent(1.0).with_height(30.0);
+    newsletter_options.text_style = text(12.0, color(220, 228, 238));
+    widgets::checkbox(
+        ui,
+        newsletter,
+        "forms.profile.newsletter.input",
+        "Send release notes",
+        state.form_newsletter,
+        newsletter_options,
+    );
+    widgets::field_help_text(
+        ui,
+        newsletter,
+        "forms.profile.newsletter.help",
+        "Checkboxes participate in the same form state as text fields.",
         widgets::FieldHelpOptions::default(),
     );
-    form_text_field(ui, role, "forms.profile.role.input", "Maintainer");
 
     widgets::form_error_summary(
         ui,
@@ -6616,12 +6895,21 @@ fn form_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         &state.form,
         widgets::FormErrorSummaryOptions::default(),
     );
+    let action_layout = Layout::row()
+        .size(LayoutSize::new(
+            LayoutDimension::percent(1.0),
+            LayoutDimension::Auto,
+        ))
+        .gap(LayoutGap::points(8.0, 8.0))
+        .flex_wrap(LayoutFlexWrap::Wrap)
+        .to_layout_style();
     widgets::form_action_buttons(
         ui,
         section.root,
         "forms.profile.actions",
         &state.form,
         widgets::FormActionButtonsOptions::default()
+            .with_layout(action_layout)
             .include_reset(true)
             .with_action_prefix("forms.profile"),
     );
@@ -6636,7 +6924,8 @@ fn form_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
 }
 
 fn overlay_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
-    let body = section(ui, parent, "overlays", "Overlays");
+    let body =
+        section_with_min_viewport(ui, parent, "overlays", "Overlays", UiSize::new(420.0, 0.0));
     let header = widgets::collapsing_header(
         ui,
         body,
@@ -6651,13 +6940,13 @@ fn overlay_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
             ui,
             panel,
             "overlays.collapsing.body",
-            "Expanded content lives under the header.",
+            "Expanded content lives under the header and remains part of normal layout.",
             text(12.0, color(196, 210, 230)),
             LayoutStyle::new().with_width_percent(1.0),
         );
     }
 
-    let controls = row(ui, body, "overlays.controls", 8.0);
+    let controls = wrapping_row(ui, body, "overlays.controls", 8.0);
     button(
         ui,
         controls,
@@ -6681,7 +6970,8 @@ fn overlay_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
 
     let tooltip = TooltipContent::new("Tooltip")
         .body("Tooltip boxes are overlay surfaces with title, body, and shortcut text.")
-        .shortcut_label("Ctrl+K");
+        .shortcut_label("Ctrl+K")
+        .disabled_reason("Disabled reasons can be announced without changing the trigger.");
     let mut tooltip_options = widgets::TooltipBoxOptions::default()
         .with_layout(
             LayoutStyle::column()
@@ -6694,13 +6984,69 @@ fn overlay_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
     tooltip_options.z_index = 0;
     widgets::tooltip_box(ui, body, "overlays.tooltip", tooltip, tooltip_options);
 
+    let tooltip_anchor = row(ui, body, "overlays.tooltip_anchor", 8.0);
+    widgets::label(
+        ui,
+        tooltip_anchor,
+        "overlays.tooltip_anchor.label",
+        "Tooltip placement clamps to its viewport.",
+        text(12.0, color(166, 176, 190)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let clamped_rect = widgets::tooltip::tooltip_rect(
+        UiRect::new(328.0, 12.0, 54.0, 24.0),
+        UiSize::new(176.0, 58.0),
+        UiRect::new(0.0, 0.0, 420.0, 190.0),
+        TooltipPlacement::Right,
+        8.0,
+        None,
+    );
+    let clamped_preview = ui.add_child(
+        body,
+        UiNode::container(
+            "overlays.tooltip_rect.preview",
+            LayoutStyle::new()
+                .with_width_percent(1.0)
+                .with_height(78.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_visual(UiVisual::panel(
+            color(12, 16, 22),
+            Some(StrokeStyle::new(color(52, 64, 80), 1.0)),
+            4.0,
+        )),
+    );
+    ui.add_child(
+        clamped_preview,
+        UiNode::scene(
+            "overlays.tooltip_rect.scene",
+            vec![
+                ScenePrimitive::Rect(
+                    PaintRect::solid(UiRect::new(328.0, 12.0, 54.0, 24.0), color(48, 112, 184))
+                        .corner_radii(CornerRadii::uniform(3.0)),
+                ),
+                ScenePrimitive::Rect(
+                    PaintRect::solid(clamped_rect, color(24, 29, 38))
+                        .stroke(AlignedStroke::inside(StrokeStyle::new(
+                            color(92, 106, 128),
+                            1.0,
+                        )))
+                        .corner_radii(CornerRadii::uniform(4.0)),
+                ),
+            ],
+            LayoutStyle::new()
+                .with_width_percent(1.0)
+                .with_height_percent(1.0),
+        ),
+    );
+
     if state.overlay_popup_open {
-        let popup = widgets::popup_panel(
+        let popup = ext_widgets::popup_panel(
             ui,
             parent,
             "overlays.popup_panel",
-            UiRect::new(0.0, 20.0, 160.0, 96.0),
-            widgets::PopupOptions {
+            UiRect::new(18.0, 150.0, 220.0, 112.0),
+            ext_widgets::PopupOptions {
                 z_index: 20,
                 portal: UiPortalTarget::Parent,
                 accessibility: Some(
@@ -6748,83 +7094,186 @@ fn overlay_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
     if state.overlay_modal_open {
         let modal = widgets::modal_dialog(
             ui,
-            body,
+            parent,
             "overlays.modal",
             "Modal dialog",
             widgets::ModalDialogOptions::default()
                 .with_size(320.0, 180.0)
                 .with_close_action("overlays.modal.close")
-                .with_dismissal(widgets::DialogDismissal::STANDARD)
-                .with_focus_restore(FocusRestoreTarget::Previous)
-                .modeless(),
+                .with_dismissal(ext_widgets::DialogDismissal::MODAL)
+                .with_focus_restore(FocusRestoreTarget::Previous),
         );
         widgets::label(
             ui,
             modal.body,
             "overlays.modal.body.text",
-            "Dialog body",
+            "Modal dialogs are portaled to the application overlay, include a scrim, and trap focus.",
             text(12.0, color(220, 228, 238)),
             LayoutStyle::new().with_width_percent(1.0),
+        );
+        button(
+            ui,
+            modal.body,
+            "overlays.modal.body.close",
+            "Close modal",
+            "overlays.modal.close",
+            button_visual(48, 112, 184),
         );
     }
 }
 
 fn drag_drop_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
-    let body = section(ui, parent, "drag_drop", "Drag and drop");
-    widgets::dnd_drag_source(
+    let body = section_with_min_viewport(
+        ui,
+        parent,
+        "drag_drop",
+        "Drag and drop",
+        UiSize::new(420.0, 0.0),
+    );
+    widgets::label(
         ui,
         body,
+        "drag_drop.sources.label",
+        "Drag sources",
+        text(12.0, color(166, 176, 190)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let sources = wrapping_row(ui, body, "drag_drop.sources", 8.0);
+    widgets::dnd_drag_source(
+        ui,
+        sources,
         "drag_drop.text_source",
-        "Drag text payload",
+        "Text payload",
         DragPayload::text("Operad payload"),
         widgets::DragSourceOptions::default()
+            .with_layout(drag_source_layout())
             .with_kind(DragDropSurfaceKind::ListRow)
+            .with_allowed_operations([DragOperation::Copy, DragOperation::Move])
             .with_action("drag_drop.text_source")
             .with_accessibility_hint("Start a text drag operation"),
     );
+    widgets::dnd_drag_source(
+        ui,
+        sources,
+        "drag_drop.file_source",
+        "File payload",
+        DragPayload::files(["/tmp/showcase.scene"]),
+        widgets::DragSourceOptions::default()
+            .with_layout(drag_source_layout())
+            .with_kind(DragDropSurfaceKind::Asset)
+            .with_drag_image_policy(widgets::DragImagePolicy::image_key(
+                BuiltInIcon::Folder.key(),
+                UiSize::new(120.0, 36.0),
+                UiPoint::new(10.0, 10.0),
+            ))
+            .with_allowed_operations([DragOperation::Copy])
+            .with_action("drag_drop.file_source"),
+    );
+    widgets::dnd_drag_source(
+        ui,
+        sources,
+        "drag_drop.bytes_source",
+        "Image bytes",
+        DragPayload::bytes(DragBytes::new("image/png", vec![137, 80, 78, 71]).name("sprite.png")),
+        widgets::DragSourceOptions::default()
+            .with_layout(drag_source_layout())
+            .with_kind(DragDropSurfaceKind::Asset)
+            .with_action("drag_drop.bytes_source")
+            .without_drag_image(),
+    );
 
+    widgets::label(
+        ui,
+        body,
+        "drag_drop.zones.label",
+        "Drop zones",
+        text(12.0, color(166, 176, 190)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let zones = wrapping_row(ui, body, "drag_drop.zones", 8.0);
     let accepted_options = widgets::DropZoneOptions::default()
+        .with_layout(drop_zone_layout())
         .with_kind(DragDropSurfaceKind::EditorSurface)
         .with_accepted_payload(DropPayloadFilter::empty().text())
+        .with_accepted_operations([DragOperation::Copy, DragOperation::Move])
         .with_action("drag_drop.accept_text")
         .with_accessibility_hint("Accepts text payloads");
     let accepted = widgets::dnd_drop_zone(
         ui,
-        body,
+        zones,
         "drag_drop.accept_text",
-        "Drop text here",
+        "Text accepted",
         accepted_options.clone(),
     );
-    widgets::dnd_apply_drop_zone_preview(
+    widgets::drag_drop::dnd_apply_drop_zone_preview(
         ui,
         accepted.root,
         &accepted_options,
-        widgets::DropZonePreviewState::Accepted,
+        widgets::drag_drop::DropZonePreviewState::Accepted,
     );
 
     let rejected_options = widgets::DropZoneOptions::default()
-        .with_layout(
-            LayoutStyle::column()
-                .with_width(240.0)
-                .with_height(82.0)
-                .with_padding(12.0),
-        )
+        .with_layout(drop_zone_layout())
         .with_kind(DragDropSurfaceKind::Asset)
         .with_accepted_payload(DropPayloadFilter::empty().files())
         .with_action("drag_drop.files_only");
     let rejected = widgets::dnd_drop_zone(
         ui,
-        body,
+        zones,
         "drag_drop.files_only",
         "Files only",
         rejected_options.clone(),
     );
-    widgets::dnd_apply_drop_zone_preview(
+    widgets::drag_drop::dnd_apply_drop_zone_preview(
         ui,
         rejected.root,
         &rejected_options,
-        widgets::DropZonePreviewState::Rejected,
+        widgets::drag_drop::DropZonePreviewState::Rejected,
     );
+    let image_options = widgets::DropZoneOptions::default()
+        .with_layout(drop_zone_layout())
+        .with_kind(DragDropSurfaceKind::Asset)
+        .with_accepted_payload(DropPayloadFilter::empty().mime_type("image/*"))
+        .with_accepted_operations([DragOperation::Copy])
+        .with_action("drag_drop.image_bytes");
+    let image_zone = widgets::dnd_drop_zone(
+        ui,
+        zones,
+        "drag_drop.image_bytes",
+        "Image bytes",
+        image_options.clone(),
+    );
+    widgets::drag_drop::dnd_apply_drop_zone_preview(
+        ui,
+        image_zone.root,
+        &image_options,
+        widgets::drag_drop::DropZonePreviewState::Hovered,
+    );
+
+    let disabled_options = widgets::DropZoneOptions::default()
+        .with_layout(drop_zone_layout())
+        .with_kind(DragDropSurfaceKind::EditorSurface)
+        .with_accepted_payload(DropPayloadFilter::any())
+        .with_action("drag_drop.disabled")
+        .disabled();
+    let disabled_zone = widgets::dnd_drop_zone(
+        ui,
+        zones,
+        "drag_drop.disabled",
+        "Disabled",
+        disabled_options.clone(),
+    );
+    widgets::drag_drop::dnd_apply_drop_zone_preview(
+        ui,
+        disabled_zone.root,
+        &disabled_options,
+        widgets::drag_drop::DropZonePreviewState::Disabled,
+    );
+
+    let operation_row = wrapping_row(ui, body, "drag_drop.operations", 6.0);
+    dnd_operation_chip(ui, operation_row, "drag_drop.operation.copy", "copy");
+    dnd_operation_chip(ui, operation_row, "drag_drop.operation.move", "move");
+    dnd_operation_chip(ui, operation_row, "drag_drop.operation.link", "link");
     widgets::label(
         ui,
         body,
@@ -6836,65 +7285,86 @@ fn drag_drop_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
 }
 
 fn media_widgets(ui: &mut UiDocument, parent: UiNodeId) {
-    let body = section(ui, parent, "media", "Media");
-    let icons = row(ui, body, "media.icons", 10.0);
+    let body = section_with_min_viewport(ui, parent, "media", "Media", UiSize::new(430.0, 0.0));
+    widgets::label(
+        ui,
+        body,
+        "media.icons.label",
+        "Built-in icons",
+        text(12.0, color(166, 176, 190)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let icons = wrapping_row(ui, body, "media.icons", 8.0);
+    for icon in BuiltInIcon::COMMON {
+        media_icon_tile(ui, icons, icon);
+    }
+
+    widgets::label(
+        ui,
+        body,
+        "media.variants.label",
+        "Image variants",
+        text(12.0, color(166, 176, 190)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let variants = wrapping_row(ui, body, "media.variants", 10.0);
     widgets::image(
         ui,
-        icons,
-        "media.image.play",
+        variants,
+        "media.image.untinted",
         icon_image(BuiltInIcon::Play),
         widgets::ImageOptions::default()
-            .with_layout(LayoutStyle::size(42.0, 42.0))
-            .with_accessibility_label("Play icon"),
+            .with_layout(media_preview_image_layout())
+            .with_accessibility_label("Untinted play icon"),
     );
     widgets::image(
         ui,
-        icons,
+        variants,
         "media.image.warning",
         ImageContent::new(BuiltInIcon::Warning.key()).tinted(color(232, 186, 88)),
         widgets::ImageOptions::default()
-            .with_layout(LayoutStyle::size(42.0, 42.0))
-            .with_accessibility_label("Warning icon"),
+            .with_layout(media_preview_image_layout())
+            .with_accessibility_label("Tinted warning icon"),
     );
     widgets::image(
         ui,
-        icons,
-        "media.image.info",
-        ImageContent::new(BuiltInIcon::Info.key()).tinted(color(118, 183, 255)),
+        variants,
+        "media.image.shader",
+        ImageContent::new(BuiltInIcon::Grid.key()).tinted(color(118, 183, 255)),
         widgets::ImageOptions::default()
-            .with_layout(LayoutStyle::size(42.0, 42.0))
-            .with_accessibility_label("Info icon"),
+            .with_layout(media_preview_image_layout())
+            .with_shader(ShaderEffect::new("media.preview.tint").uniform("amount", 0.5))
+            .with_accessibility_label("Shader-decorated grid icon"),
     );
     widgets::label(
         ui,
         body,
         "media.image.note",
-        "Image widgets reference stable resource keys; the host resolves them to textures or vector assets.",
+        "Image widgets reference stable resource keys; the host resolves them to textures, vector assets, tinting, or shader-backed resources.",
         text(12.0, color(166, 176, 190)),
         LayoutStyle::new().with_width_percent(1.0),
     );
 }
 
 fn timeline_ruler(ui: &mut UiDocument, parent: UiNodeId) {
-    let mut layout = LayoutStyle::column()
+    let layout = LayoutStyle::column()
         .with_width_percent(1.0)
         .with_height(40.0)
         .with_flex_shrink(0.0);
-    layout.as_taffy_style_mut().min_size.width = operad::length(0.0);
-    layout.as_taffy_style_mut().min_size.height = operad::length(0.0);
+    let layout = operad::layout::with_min_size(layout, operad::length(0.0), operad::length(0.0));
     let body = widgets::scroll_area(ui, parent, "timeline", ScrollAxes::BOTH, layout);
-    widgets::timeline_ruler(
+    ext_widgets::timeline_ruler(
         ui,
         body,
         "timeline.ruler",
-        widgets::RulerSpec {
-            range: widgets::TimelineRange::new(0.0, 12.0),
+        ext_widgets::RulerSpec {
+            range: ext_widgets::TimelineRange::new(0.0, 12.0),
             width: 600.0,
             major_step: 2.0,
             minor_step: 0.5,
             label_every: 1,
         },
-        widgets::TimelineRulerOptions::default(),
+        ext_widgets::TimelineRulerOptions::default(),
     );
 }
 
@@ -6975,12 +7445,12 @@ fn popup_controls(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) 
         LayoutStyle::new().with_width_percent(1.0),
     );
     if state.popup_open {
-        let panel = widgets::popup_panel(
+        let panel = ext_widgets::popup_panel(
             ui,
             parent,
             "popup_panel.inline_preview",
             UiRect::new(0.0, 20.0, 160.0, 104.0),
-            widgets::PopupOptions {
+            ext_widgets::PopupOptions {
                 z_index: 4,
                 portal: UiPortalTarget::Parent,
                 accessibility: Some(
@@ -7037,11 +7507,17 @@ fn popup_controls(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) 
 
 fn styling_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "styling", "Styling");
-    let mut grid_layout = LayoutStyle::row()
-        .with_width_percent(1.0)
-        .with_height_percent(1.0)
-        .gap(10.0);
-    grid_layout.as_taffy_style_mut().flex_wrap = LayoutFlexWrap::Wrap.to_taffy();
+    let grid_layout = operad::layout::with_grid_template_columns(
+        Layout::grid()
+            .size(LayoutSize::percent(1.0, 1.0))
+            .gap(LayoutGap::points(10.0, 10.0))
+            .to_layout_style(),
+        [
+            LayoutGridTrack::points(300.0),
+            LayoutGridTrack::points(1.0),
+            LayoutGridTrack::points(210.0),
+        ],
+    );
     let grid = ui.add_child(body, UiNode::container("styling.grid", grid_layout));
     let controls = ui.add_child(
         grid,
@@ -7109,24 +7585,24 @@ fn styling_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
         "Pick fill color",
     );
     if state.styling_fill_picker_open {
-        widgets::color_picker(
+        ext_widgets::color_picker(
             ui,
             controls,
             "styling.fill_picker",
             &state.styling_fill_picker,
-            widgets::ColorPickerOptions::default()
+            ext_widgets::ColorPickerOptions::default()
                 .with_label("Fill")
                 .with_action_prefix("styling.fill_picker"),
         );
     }
     style_stroke_row(ui, controls, state);
     if state.styling_stroke_picker_open {
-        widgets::color_picker(
+        ext_widgets::color_picker(
             ui,
             controls,
             "styling.stroke_picker",
             &state.styling_stroke_picker,
-            widgets::ColorPickerOptions::default()
+            ext_widgets::ColorPickerOptions::default()
                 .with_label("Stroke color")
                 .with_action_prefix("styling.stroke_picker"),
         );
@@ -7251,12 +7727,12 @@ fn style_shadow_group(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSta
         "Pick shadow color",
     );
     if state.styling_shadow_picker_open {
-        widgets::color_picker(
+        ext_widgets::color_picker(
             ui,
             fields,
             "styling.shadow_picker",
             &state.styling_shadow_picker,
-            widgets::ColorPickerOptions::default()
+            ext_widgets::ColorPickerOptions::default()
                 .with_label("Shadow color")
                 .with_action_prefix("styling.shadow_picker"),
         );
@@ -7281,12 +7757,13 @@ fn style_stroke_row(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState
         0.0..4.0,
         1,
     );
-    widgets::color_edit_button_rgba(
+    ext_widgets::color_edit_button(
         ui,
         row,
         "styling.stroke_color_button",
         state.styling.stroke_color(),
         color_mini_button_options("styling.stroke_color_button")
+            .with_format(ext_widgets::ColorValueFormat::Rgba)
             .accessibility_label("Pick stroke color"),
     );
     let mut options = widgets::SliderOptions::default()
@@ -7364,18 +7841,20 @@ fn style_color_button_row(
                 .with_height(24.0),
         );
     }
-    widgets::color_edit_button_rgba(
+    ext_widgets::color_edit_button(
         ui,
         row,
         action,
         value,
-        color_mini_button_options(action).accessibility_label(accessibility_label),
+        color_mini_button_options(action)
+            .with_format(ext_widgets::ColorValueFormat::Rgba)
+            .accessibility_label(accessibility_label),
     );
     widgets::label(
         ui,
         row,
         format!("{action}.value"),
-        widgets::format_hex_color(value, value.a < 255),
+        ext_widgets::color_picker::format_hex_color(value, value.a < 255),
         text(12.0, color(226, 232, 242)),
         LayoutStyle::new().with_width(96.0).with_height(24.0),
     );
@@ -7440,11 +7919,11 @@ fn style_value_input(
                 .with_height(22.0)
                 .with_flex_shrink(0.0),
         )
-        .with_range(widgets::NumericRange::new(
+        .with_range(ext_widgets::NumericRange::new(
             f64::from(range.start),
             f64::from(range.end),
         ))
-        .with_precision(widgets::NumericPrecision::decimals(decimals))
+        .with_precision(ext_widgets::NumericPrecision::decimals(decimals))
         .with_action(name);
     options.text_style = text(12.0, color(226, 232, 242));
     widgets::drag_value_input(ui, parent, name, f64::from(value), options);
@@ -7463,8 +7942,8 @@ fn style_compact_checkbox(
     widgets::checkbox(ui, parent, name, label, checked, options);
 }
 
-fn color_mini_button_options(action: &'static str) -> widgets::ColorButtonOptions {
-    widgets::ColorButtonOptions::default()
+fn color_mini_button_options(action: &'static str) -> ext_widgets::ColorButtonOptions {
+    ext_widgets::ColorButtonOptions::default()
         .with_layout(LayoutStyle::size(28.0, 24.0).with_flex_shrink(0.0))
         .with_swatch_size(UiSize::new(22.0, 18.0))
         .with_action(action)
@@ -7528,14 +8007,14 @@ fn slider_options(state: &ShowcaseState, width: f32) -> widgets::SliderOptions {
             .with_flex_shrink(0.0),
     );
     options.fill_color = if state.slider_trailing_color {
-        state.slider_trailing_picker.value
+        state.slider_trailing_picker.value()
     } else {
         color(42, 49, 58)
     };
     options.thumb_shape = match state.slider_thumb_shape {
-        SliderThumbChoice::Circle => widgets::SliderThumbShape::Circle,
-        SliderThumbChoice::Square => widgets::SliderThumbShape::Square,
-        SliderThumbChoice::Rectangle => widgets::SliderThumbShape::Rectangle,
+        SliderThumbChoice::Circle => widgets::slider::SliderThumbShape::Circle,
+        SliderThumbChoice::Square => widgets::slider::SliderThumbShape::Square,
+        SliderThumbChoice::Rectangle => widgets::slider::SliderThumbShape::Rectangle,
     };
     options
 }
@@ -7560,13 +8039,172 @@ fn slider_number_input(
     widgets::text_input(ui, parent, name, input, options);
 }
 
+fn form_status_chip(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: &'static str,
+    label: &'static str,
+    active: bool,
+) {
+    let chip = ui.add_child(
+        parent,
+        UiNode::container(
+            name,
+            LayoutStyle::new()
+                .with_width(82.0)
+                .with_height(24.0)
+                .with_padding(4.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_visual(UiVisual::panel(
+            if active {
+                color(35, 74, 54)
+            } else {
+                color(28, 34, 43)
+            },
+            Some(StrokeStyle::new(
+                if active {
+                    color(90, 160, 112)
+                } else {
+                    color(60, 72, 88)
+                },
+                1.0,
+            )),
+            4.0,
+        )),
+    );
+    widgets::label(
+        ui,
+        chip,
+        format!("{name}.label"),
+        label,
+        text(11.0, color(218, 228, 240)),
+        LayoutStyle::new()
+            .with_width_percent(1.0)
+            .with_height_percent(1.0),
+    );
+}
+
 #[allow(clippy::field_reassign_with_default)]
-fn form_text_field(ui: &mut UiDocument, parent: UiNodeId, name: &'static str, value: &'static str) {
+fn form_text_field(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: &'static str,
+    input: &TextInputState,
+    focused: FocusedTextInput,
+    state: &ShowcaseState,
+) {
     let mut options = TextInputOptions::default();
     options.layout = LayoutStyle::new().with_width_percent(1.0).with_height(30.0);
     options.text_style = text(12.0, color(230, 236, 246));
-    options.read_only = true;
-    widgets::text_input(ui, parent, name, &TextInputState::new(value), options);
+    options.placeholder_style = text(12.0, color(144, 156, 174));
+    options.placeholder = "Required".to_string();
+    options.edit_action = Some(format!("{name}.edit").into());
+    options.focused = state.focused_text == Some(focused);
+    options.caret_visible = caret_visible(state.caret_phase);
+    widgets::text_input(ui, parent, name, input, options);
+}
+
+fn profile_email_valid(email: &str) -> bool {
+    let email = email.trim();
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && domain.contains('.') && !domain.ends_with('.')
+}
+
+fn drag_source_layout() -> LayoutStyle {
+    LayoutStyle::row()
+        .with_width(128.0)
+        .with_height(40.0)
+        .with_padding(8.0)
+        .with_gap(6.0)
+        .with_flex_shrink(0.0)
+}
+
+fn drop_zone_layout() -> LayoutStyle {
+    LayoutStyle::column()
+        .with_width(128.0)
+        .with_height(78.0)
+        .with_padding(10.0)
+        .with_gap(6.0)
+        .with_flex_shrink(0.0)
+}
+
+fn dnd_operation_chip(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    name: &'static str,
+    label: &'static str,
+) {
+    let chip = ui.add_child(
+        parent,
+        UiNode::container(
+            name,
+            LayoutStyle::new()
+                .with_width(58.0)
+                .with_height(22.0)
+                .with_padding(3.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_visual(UiVisual::panel(
+            color(26, 32, 42),
+            Some(StrokeStyle::new(color(62, 76, 94), 1.0)),
+            3.0,
+        )),
+    );
+    widgets::label(
+        ui,
+        chip,
+        format!("{name}.label"),
+        label,
+        text(11.0, color(190, 204, 222)),
+        LayoutStyle::new()
+            .with_width_percent(1.0)
+            .with_height_percent(1.0),
+    );
+}
+
+fn media_preview_image_layout() -> LayoutStyle {
+    LayoutStyle::size(46.0, 46.0).with_flex_shrink(0.0)
+}
+
+fn media_icon_tile(ui: &mut UiDocument, parent: UiNodeId, icon: BuiltInIcon) {
+    let name = icon.key().replace('.', "_").replace('-', "_");
+    let tile = ui.add_child(
+        parent,
+        UiNode::container(
+            format!("media.icon_tile.{name}"),
+            LayoutStyle::column()
+                .with_width(70.0)
+                .with_height(78.0)
+                .with_padding(6.0)
+                .with_gap(4.0)
+                .with_flex_shrink(0.0),
+        )
+        .with_visual(UiVisual::panel(
+            color(17, 22, 30),
+            Some(StrokeStyle::new(color(50, 62, 78), 1.0)),
+            4.0,
+        )),
+    );
+    widgets::image(
+        ui,
+        tile,
+        format!("media.icon.{name}"),
+        icon_image(icon),
+        widgets::ImageOptions::default()
+            .with_layout(LayoutStyle::size(28.0, 28.0))
+            .with_accessibility_label(icon.label()),
+    );
+    widgets::label(
+        ui,
+        tile,
+        format!("media.icon_label.{name}"),
+        icon.label(),
+        text(9.0, color(180, 194, 214)),
+        LayoutStyle::new().with_width_percent(1.0).with_height(30.0),
+    );
 }
 
 fn slider_checkbox(
@@ -7685,25 +8323,37 @@ fn section_with_min_viewport(
     min_viewport_size: UiSize,
 ) -> UiNodeId {
     let name = name.into();
-    let mut layout = LayoutStyle::column()
-        .with_width_percent(1.0)
-        .with_height_percent(1.0)
-        .with_flex_grow(1.0)
-        .gap(10.0);
-    layout.as_taffy_style_mut().min_size.width = operad::length(min_viewport_size.width.max(0.0));
-    layout.as_taffy_style_mut().min_size.height = operad::length(min_viewport_size.height.max(0.0));
-    let axes = if min_viewport_size.width > 0.0 {
-        ScrollAxes::BOTH
-    } else {
-        ScrollAxes::VERTICAL
-    };
-    widgets::scroll_area(ui, parent, format!("{name}.section_scroll"), axes, layout)
+    let layout = Layout::column()
+        .size(LayoutSize::percent(1.0, 1.0))
+        .min_size(LayoutSize::points(
+            min_viewport_size.width.max(0.0),
+            min_viewport_size.height.max(0.0),
+        ))
+        .gap(LayoutGap::points(10.0, 10.0))
+        .flex(1.0, 1.0, LayoutDimension::Auto)
+        .to_layout_style();
+    widgets::scroll_area(
+        ui,
+        parent,
+        format!("{name}.section_scroll"),
+        ScrollAxes::BOTH,
+        layout,
+    )
 }
 
 fn row(ui: &mut UiDocument, parent: UiNodeId, name: impl Into<String>, gap: f32) -> UiNodeId {
     ui.add_child(
         parent,
-        UiNode::container(name, LayoutStyle::row().with_width_percent(1.0).gap(gap)),
+        UiNode::container(
+            name,
+            Layout::row()
+                .size(LayoutSize::new(
+                    LayoutDimension::percent(1.0),
+                    LayoutDimension::Auto,
+                ))
+                .gap(LayoutGap::points(gap, gap))
+                .to_layout_style(),
+        ),
     )
 }
 
@@ -7713,9 +8363,20 @@ fn wrapping_row(
     name: impl Into<String>,
     gap: f32,
 ) -> UiNodeId {
-    let mut layout = LayoutStyle::row().with_width_percent(1.0).gap(gap);
-    layout.as_taffy_style_mut().flex_wrap = LayoutFlexWrap::Wrap.to_taffy();
-    ui.add_child(parent, UiNode::container(name, layout))
+    ui.add_child(
+        parent,
+        UiNode::container(
+            name,
+            Layout::row()
+                .size(LayoutSize::new(
+                    LayoutDimension::percent(1.0),
+                    LayoutDimension::Auto,
+                ))
+                .gap(LayoutGap::points(gap, gap))
+                .flex_wrap(LayoutFlexWrap::Wrap)
+                .to_layout_style(),
+        ),
+    )
 }
 
 fn egui_panel_contents(
@@ -7761,9 +8422,9 @@ fn egui_panel_contents(
             .with_padding(8.0)
             .with_gap(6.0),
     );
-    ui.node_mut(scroll).action = Some(format!("{name}.scroll").into());
-    if let Some(scroll_state) = ui.node_mut(scroll).scroll.as_mut() {
-        scroll_state.offset.y = offset_y;
+    ui.node_mut(scroll).set_action(format!("{name}.scroll"));
+    if let Some(scroll_state) = ui.node_mut(scroll).scroll_mut() {
+        scroll_state.set_offset(UiPoint::new(0.0, offset_y));
     }
     for (index, line) in lorem_lines().iter().take(8).enumerate() {
         widgets::label(
@@ -7809,16 +8470,16 @@ fn button_visual(r: u8, g: u8, b: u8) -> UiVisual {
     )
 }
 
-fn color_square_button_options(action: &'static str) -> widgets::ColorButtonOptions {
-    widgets::ColorButtonOptions::default()
+fn color_square_button_options(action: &'static str) -> ext_widgets::ColorButtonOptions {
+    ext_widgets::ColorButtonOptions::default()
         .with_layout(LayoutStyle::size(30.0, 30.0).with_flex_shrink(0.0))
         .with_swatch_size(UiSize::new(30.0, 30.0))
         .with_action(action)
         .show_label(false)
 }
 
-fn color_value_button_options(action: &'static str, width: f32) -> widgets::ColorButtonOptions {
-    widgets::ColorButtonOptions::default()
+fn color_value_button_options(action: &'static str, width: f32) -> ext_widgets::ColorButtonOptions {
+    ext_widgets::ColorButtonOptions::default()
         .with_layout(
             LayoutStyle::new()
                 .with_width(width)
@@ -7853,24 +8514,24 @@ fn adjust_color(color: ColorRgba, delta: i16) -> ColorRgba {
     )
 }
 
-fn select_options() -> Vec<widgets::SelectOption> {
+fn select_options() -> Vec<ext_widgets::SelectOption> {
     vec![
-        widgets::SelectOption::new("compact", "Compact"),
-        widgets::SelectOption::new("comfortable", "Comfortable"),
-        widgets::SelectOption::new("spacious", "Spacious"),
-        widgets::SelectOption::new("disabled", "Disabled").disabled(),
+        ext_widgets::SelectOption::new("compact", "Compact"),
+        ext_widgets::SelectOption::new("comfortable", "Comfortable"),
+        ext_widgets::SelectOption::new("spacious", "Spacious"),
+        ext_widgets::SelectOption::new("disabled", "Disabled").disabled(),
     ]
 }
 
-fn label_locale_options() -> Vec<widgets::SelectOption> {
+fn label_locale_options() -> Vec<ext_widgets::SelectOption> {
     vec![
-        widgets::SelectOption::new("en-US", "English"),
-        widgets::SelectOption::new("es-MX", "Español"),
-        widgets::SelectOption::new("fr-FR", "Français"),
-        widgets::SelectOption::new("de-DE", "Deutsch"),
-        widgets::SelectOption::new("it-IT", "Italiano"),
-        widgets::SelectOption::new("pt-BR", "Português"),
-        widgets::SelectOption::new("nl-NL", "Nederlands"),
+        ext_widgets::SelectOption::new("en-US", "English"),
+        ext_widgets::SelectOption::new("es-MX", "Español"),
+        ext_widgets::SelectOption::new("fr-FR", "Français"),
+        ext_widgets::SelectOption::new("de-DE", "Deutsch"),
+        ext_widgets::SelectOption::new("it-IT", "Italiano"),
+        ext_widgets::SelectOption::new("pt-BR", "Português"),
+        ext_widgets::SelectOption::new("nl-NL", "Nederlands"),
     ]
 }
 
@@ -7899,45 +8560,45 @@ fn lorem_lines() -> [&'static str; 8] {
     ]
 }
 
-fn menu_bar_menus(autosave: bool, grid: bool) -> Vec<widgets::MenuBarMenu> {
+fn menu_bar_menus(autosave: bool, grid: bool) -> Vec<ext_widgets::MenuBarMenu> {
     vec![
-        widgets::MenuBarMenu::new("file", "File", menu_items(autosave)),
-        widgets::MenuBarMenu::new(
+        ext_widgets::MenuBarMenu::new("file", "File", menu_items(autosave)),
+        ext_widgets::MenuBarMenu::new(
             "edit",
             "Edit",
             vec![
-                widgets::MenuItem::command("undo", "Undo").shortcut("Ctrl+Z"),
-                widgets::MenuItem::command("redo", "Redo").shortcut("Ctrl+Shift+Z"),
+                ext_widgets::MenuItem::command("undo", "Undo").shortcut("Ctrl+Z"),
+                ext_widgets::MenuItem::command("redo", "Redo").shortcut("Ctrl+Shift+Z"),
             ],
         ),
-        widgets::MenuBarMenu::new(
+        ext_widgets::MenuBarMenu::new(
             "view",
             "View",
-            vec![widgets::MenuItem::check("grid", "Grid", grid)],
+            vec![ext_widgets::MenuItem::check("grid", "Grid", grid)],
         ),
     ]
 }
 
-fn menu_items(autosave: bool) -> Vec<widgets::MenuItem> {
+fn menu_items(autosave: bool) -> Vec<ext_widgets::MenuItem> {
     vec![
-        widgets::MenuItem::command("new", "New").shortcut("Ctrl+N"),
-        widgets::MenuItem::command("open", "Open").shortcut("Ctrl+O"),
-        widgets::MenuItem::separator(),
-        widgets::MenuItem::check("autosave", "Autosave", autosave),
-        widgets::MenuItem::submenu(
+        ext_widgets::MenuItem::command("new", "New").shortcut("Ctrl+N"),
+        ext_widgets::MenuItem::command("open", "Open").shortcut("Ctrl+O"),
+        ext_widgets::MenuItem::separator(),
+        ext_widgets::MenuItem::check("autosave", "Autosave", autosave),
+        ext_widgets::MenuItem::submenu(
             "recent",
             "Recent",
             vec![
-                widgets::MenuItem::command("recent.one", "demo.rs"),
-                widgets::MenuItem::command("recent.two", "notes.md"),
+                ext_widgets::MenuItem::command("recent.one", "demo.rs"),
+                ext_widgets::MenuItem::command("recent.two", "notes.md"),
             ],
         ),
-        widgets::MenuItem::command("delete", "Delete").destructive(),
-        widgets::MenuItem::command("disabled", "Disabled").disabled(),
+        ext_widgets::MenuItem::command("delete", "Delete").destructive(),
+        ext_widgets::MenuItem::command("disabled", "Disabled").disabled(),
     ]
 }
 
-fn menu_item_top_offset(items: &[widgets::MenuItem], index: usize) -> f32 {
+fn menu_item_top_offset(items: &[ext_widgets::MenuItem], index: usize) -> f32 {
     items
         .iter()
         .take(index)
@@ -7945,46 +8606,46 @@ fn menu_item_top_offset(items: &[widgets::MenuItem], index: usize) -> f32 {
         .sum()
 }
 
-fn menu_item_height(item: Option<&widgets::MenuItem>) -> f32 {
-    if item.is_some_and(widgets::MenuItem::is_separator) {
+fn menu_item_height(item: Option<&ext_widgets::MenuItem>) -> f32 {
+    if item.is_some_and(ext_widgets::MenuItem::is_separator) {
         8.0
     } else {
         28.0
     }
 }
 
-fn command_palette_items() -> Vec<widgets::CommandPaletteItem> {
+fn command_palette_items() -> Vec<ext_widgets::CommandPaletteItem> {
     vec![
-        widgets::CommandPaletteItem::new("open", "Open")
+        ext_widgets::CommandPaletteItem::new("open", "Open")
             .subtitle("Open a document")
             .shortcut("Ctrl+O")
             .keyword("file"),
-        widgets::CommandPaletteItem::new("save", "Save")
+        ext_widgets::CommandPaletteItem::new("save", "Save")
             .subtitle("Write current changes")
             .shortcut("Ctrl+S"),
-        widgets::CommandPaletteItem::new("format", "Format document")
+        ext_widgets::CommandPaletteItem::new("format", "Format document")
             .subtitle("Apply source formatting")
             .keyword("code"),
-        widgets::CommandPaletteItem::new("rename", "Rename symbol")
+        ext_widgets::CommandPaletteItem::new("rename", "Rename symbol")
             .subtitle("Change every reference")
             .shortcut("F2"),
-        widgets::CommandPaletteItem::new("toggle_sidebar", "Toggle sidebar")
+        ext_widgets::CommandPaletteItem::new("toggle_sidebar", "Toggle sidebar")
             .subtitle("Show or hide the widget panel")
             .shortcut("Ctrl+B"),
-        widgets::CommandPaletteItem::new("run", "Run current example")
+        ext_widgets::CommandPaletteItem::new("run", "Run current example")
             .subtitle("Launch showcase")
             .shortcut("Ctrl+R"),
-        widgets::CommandPaletteItem::new("focus_canvas", "Focus canvas")
+        ext_widgets::CommandPaletteItem::new("focus_canvas", "Focus canvas")
             .subtitle("Move interaction to the canvas window"),
-        widgets::CommandPaletteItem::new("reset_layout", "Reset window layout")
+        ext_widgets::CommandPaletteItem::new("reset_layout", "Reset window layout")
             .subtitle("Restore the default showcase positions"),
-        widgets::CommandPaletteItem::new("disabled", "Disabled command").disabled(),
+        ext_widgets::CommandPaletteItem::new("disabled", "Disabled command").disabled(),
     ]
 }
 
 fn command_palette_items_with_history(
-    history: &widgets::CommandPaletteHistory,
-) -> Vec<widgets::CommandPaletteItem> {
+    history: &ext_widgets::CommandPaletteHistory,
+) -> Vec<ext_widgets::CommandPaletteItem> {
     let mut items = command_palette_items()
         .into_iter()
         .map(|item| {
@@ -8032,27 +8693,27 @@ fn table_columns() -> Vec<widgets::TableColumn> {
     ]
 }
 
-fn virtual_table_columns(state: &ShowcaseState) -> Vec<widgets::DataTableColumn> {
+fn virtual_table_columns(state: &ShowcaseState) -> Vec<ext_widgets::DataTableColumn> {
     let sort = if state.virtual_table_descending {
-        widgets::DataTableSortState::descending()
+        ext_widgets::DataTableSortState::descending()
     } else {
-        widgets::DataTableSortState::ascending()
+        ext_widgets::DataTableSortState::ascending()
     };
     let filter = if state.virtual_table_ready_only {
-        widgets::DataTableFilterState::active("status").with_value("Ready")
+        ext_widgets::DataTableFilterState::active("status").with_value("Ready")
     } else {
-        widgets::DataTableFilterState::inactive()
+        ext_widgets::DataTableFilterState::inactive()
     };
     vec![
-        widgets::DataTableColumn::new("name", "Virtualized", 160.0)
+        ext_widgets::DataTableColumn::new("name", "Virtualized", 160.0)
             .with_sort(sort)
             .sortable("lists_tables.virtualized_table.sort.name"),
-        widgets::DataTableColumn::new("status", "Status", 110.0)
+        ext_widgets::DataTableColumn::new("status", "Status", 110.0)
             .with_filter(filter)
             .filterable("lists_tables.virtualized_table.filter.status"),
-        widgets::DataTableColumn::new("value", "Value", state.virtual_table_value_width)
+        ext_widgets::DataTableColumn::new("value", "Value", state.virtual_table_value_width)
             .with_min_width(56.0)
-            .with_alignment(widgets::DataCellAlignment::End)
+            .with_alignment(ext_widgets::DataCellAlignment::End)
             .resize_command("lists_tables.virtualized_table.resize.value"),
     ]
 }
@@ -8076,28 +8737,28 @@ fn virtual_table_cell_value(source_row: usize, column: usize) -> String {
     }
 }
 
-fn tree_items() -> Vec<widgets::TreeItem> {
+fn tree_items() -> Vec<ext_widgets::TreeItem> {
     vec![
-        widgets::TreeItem::new("root", "Project").with_children(vec![
-            widgets::TreeItem::new("src", "src").with_children(vec![
-                widgets::TreeItem::new("lib", "lib.rs"),
-                widgets::TreeItem::new("widgets", "widgets.rs"),
+        ext_widgets::TreeItem::new("root", "Project").with_children(vec![
+            ext_widgets::TreeItem::new("src", "src").with_children(vec![
+                ext_widgets::TreeItem::new("lib", "lib.rs"),
+                ext_widgets::TreeItem::new("widgets", "widgets.rs"),
             ]),
-            widgets::TreeItem::new("assets", "assets").with_children(vec![
-                widgets::TreeItem::new("shader", "shader.wgsl"),
-                widgets::TreeItem::new("logo", "logo.png"),
+            ext_widgets::TreeItem::new("assets", "assets").with_children(vec![
+                ext_widgets::TreeItem::new("shader", "shader.wgsl"),
+                ext_widgets::TreeItem::new("logo", "logo.png"),
             ]),
-            widgets::TreeItem::new("target", "target").disabled(),
+            ext_widgets::TreeItem::new("target", "target").disabled(),
         ]),
     ]
 }
 
-fn virtual_tree_items() -> Vec<widgets::TreeItem> {
+fn virtual_tree_items() -> Vec<ext_widgets::TreeItem> {
     vec![
-        widgets::TreeItem::new("root", "Large project").with_children(
+        ext_widgets::TreeItem::new("root", "Large project").with_children(
             (0..48)
                 .map(|index| {
-                    widgets::TreeItem::new(
+                    ext_widgets::TreeItem::new(
                         format!("file-{index:02}"),
                         format!("File {index:02}.rs"),
                     )
@@ -8107,18 +8768,18 @@ fn virtual_tree_items() -> Vec<widgets::TreeItem> {
     ]
 }
 
-fn tree_table_items() -> Vec<widgets::TreeItem> {
+fn tree_table_items() -> Vec<ext_widgets::TreeItem> {
     vec![
-        widgets::TreeItem::new("root", "Workspace").with_children(vec![
-            widgets::TreeItem::new("branch-a", "Interface").with_children(vec![
-                widgets::TreeItem::new("widgets", "widgets.rs"),
-                widgets::TreeItem::new("layout", "layout.rs"),
+        ext_widgets::TreeItem::new("root", "Workspace").with_children(vec![
+            ext_widgets::TreeItem::new("branch-a", "Interface").with_children(vec![
+                ext_widgets::TreeItem::new("widgets", "widgets.rs"),
+                ext_widgets::TreeItem::new("layout", "layout.rs"),
             ]),
-            widgets::TreeItem::new("branch-b", "Renderer").with_children(vec![
-                widgets::TreeItem::new("wgpu", "wgpu.rs"),
-                widgets::TreeItem::new("paint", "paint.rs").disabled(),
+            ext_widgets::TreeItem::new("branch-b", "Renderer").with_children(vec![
+                ext_widgets::TreeItem::new("wgpu", "wgpu.rs"),
+                ext_widgets::TreeItem::new("paint", "paint.rs").disabled(),
             ]),
-            widgets::TreeItem::new("docs", "docs"),
+            ext_widgets::TreeItem::new("docs", "docs"),
         ]),
     ]
 }
@@ -8131,14 +8792,14 @@ fn parse_calendar_date(value: &str) -> Option<CalendarDate> {
     CalendarDate::new(year, month, day)
 }
 
-fn parse_table_cell(value: &str) -> Option<widgets::DataTableCellIndex> {
+fn parse_table_cell(value: &str) -> Option<ext_widgets::DataTableCellIndex> {
     let mut parts = value.split('.');
     let row = parts.next()?.parse().ok()?;
     let column = parts.next()?.parse().ok()?;
     if parts.next().is_some() {
         return None;
     }
-    Some(widgets::DataTableCellIndex::new(row, column))
+    Some(ext_widgets::DataTableCellIndex::new(row, column))
 }
 
 fn unit(value: f32) -> f32 {
@@ -8152,8 +8813,9 @@ fn smooth_loop(phase: f32, offset: f32) -> f32 {
 fn profile_form_state() -> FormState {
     let mut form = FormState::new("profile")
         .with_field("name", "Operad")
-        .with_field("email", "invalid@example")
-        .with_field("role", "Designer");
+        .with_field("email", "ada@example.com")
+        .with_field("role", "Designer")
+        .with_field("newsletter", "true");
     let _ = form.update_field("email", "invalid@example");
     let request = form.begin_form_validation();
     let _ = form.apply_form_validation(
@@ -8167,8 +8829,15 @@ fn profile_form_state() -> FormState {
     form
 }
 
+fn profile_form_value(form: &FormState, id: &str) -> String {
+    form.fields
+        .iter()
+        .find_map(|(field_id, field)| (field_id.as_str() == id).then(|| field.value.clone()))
+        .unwrap_or_default()
+}
+
 fn scaled_slider(rect: UiRect, point: UiPoint, min: f32, max: f32) -> f32 {
-    min + unit(widgets::slider_value_from_control_point(
+    min + unit(widgets::slider::slider_value_from_control_point(
         rect,
         point,
         0.0..1.0,
@@ -8176,12 +8845,12 @@ fn scaled_slider(rect: UiRect, point: UiPoint, min: f32, max: f32) -> f32 {
 }
 
 fn scroll_state(offset_y: f32, viewport_height: f32, content_height: f32) -> operad::ScrollState {
-    operad::ScrollState {
-        axes: ScrollAxes::VERTICAL,
-        offset: UiPoint::new(0.0, offset_y),
-        viewport_size: UiSize::new(8.0, viewport_height),
-        content_size: UiSize::new(8.0, content_height),
-    }
+    operad::ScrollState::new(ScrollAxes::VERTICAL)
+        .with_sizes(
+            UiSize::new(8.0, viewport_height),
+            UiSize::new(8.0, content_height),
+        )
+        .with_offset(UiPoint::new(0.0, offset_y))
 }
 
 fn controls_list_viewport_height(viewport_height: f32) -> f32 {
@@ -8192,19 +8861,17 @@ fn controls_scroll_state_for_view(
     saved: operad::ScrollState,
     viewport_height: f32,
 ) -> operad::ScrollState {
-    let viewport_height = if saved.viewport_size.height > f32::EPSILON {
-        saved.viewport_size.height
+    let viewport_height = if saved.viewport_size().height > f32::EPSILON {
+        saved.viewport_size().height
     } else {
         viewport_height
     };
-    let content_height = if saved.content_size.height > f32::EPSILON {
-        saved.content_size.height
+    let content_height = if saved.content_size().height > f32::EPSILON {
+        saved.content_size().height
     } else {
         controls_list_content_height()
     };
-    let mut scroll = scroll_state(saved.offset.y, viewport_height, content_height);
-    scroll.offset = scroll.clamp_offset(scroll.offset);
-    scroll
+    scroll_state(saved.offset().y, viewport_height, content_height)
 }
 
 fn controls_list_content_height() -> f32 {

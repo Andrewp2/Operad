@@ -18,11 +18,19 @@ const ALL_OPERATIONS: [DragOperation; 3] = [
 
 /// Stable id for a draggable UI element.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DragSourceId(pub String);
+pub struct DragSourceId(pub(crate) String);
 
 impl DragSourceId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
     }
 }
 
@@ -40,11 +48,19 @@ impl From<String> for DragSourceId {
 
 /// Stable id for a drop target.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DropTargetId(pub String);
+pub struct DropTargetId(pub(crate) String);
 
 impl DropTargetId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
     }
 }
 
@@ -196,7 +212,7 @@ impl DragSourceDescriptor {
     ) -> Self {
         let id = id.into();
         Self {
-            platform_id: DragId::new(id.0.clone()),
+            platform_id: DragId::new(id.as_str().to_string()),
             id,
             kind,
             bounds,

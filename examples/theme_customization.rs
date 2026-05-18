@@ -1,17 +1,20 @@
-use operad::widgets::{self, ThemeEditorPanelOptions};
+use operad::debug::DebugThemeSnapshot;
+use operad::native::NativeWindowResult;
+use operad::widgets;
+use operad::widgets::ext::{self as ext_widgets, ThemeEditorPanelOptions};
 use operad::{
-    root_style, ColorRgba, DebugThemeSnapshot, LayoutStyle, StrokeStyle, TextStyle, Theme,
-    UiDocument, UiNode, UiSize, UiVisual,
+    root_style, ColorRgba, LayoutStyle, StrokeStyle, TextStyle, Theme, UiDocument, UiNode, UiSize,
+    UiVisual,
 };
 
-fn main() -> operad::NativeWindowResult {
-    operad::run("Theme customization", theme_document)
+fn main() -> NativeWindowResult {
+    operad::native::run("Theme customization", theme_document)
 }
 
 fn theme_document(viewport: UiSize) -> UiDocument {
     let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
     let panel = ui.add_child(
-        ui.root,
+        ui.root(),
         UiNode::container(
             "theme.panel",
             LayoutStyle::column()
@@ -67,6 +70,6 @@ fn theme_document(viewport: UiSize) -> UiDocument {
         )),
     );
 
-    widgets::theme_editor_panel(&mut ui, editor, "theme.editor", &snapshot, options);
+    ext_widgets::theme_editor_panel(&mut ui, editor, "theme.editor", &snapshot, options);
     ui
 }

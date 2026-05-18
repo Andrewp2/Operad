@@ -7,11 +7,12 @@ use taffy::prelude::{
     Size as TaffySize, Style,
 };
 
+use crate::tooltips::ShortcutFormatter;
 use crate::{
     length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba,
     CommandId, CommandRegistry, CommandScope, ImageContent, InputBehavior, KeyCode, LayoutStyle,
-    ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle, UiDocument, UiInputEvent,
-    UiNode, UiNodeId, UiNodeStyle, UiSize, UiVisual,
+    ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId,
+    UiNodeStyle, UiSize, UiVisual,
 };
 
 use super::menu::{
@@ -127,9 +128,9 @@ pub struct CommandPaletteCommandSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandPaletteState {
-    pub query: String,
-    pub active_match: Option<usize>,
-    pub max_results: usize,
+    query: String,
+    active_match: Option<usize>,
+    max_results: usize,
 }
 
 impl CommandPaletteState {
@@ -145,6 +146,32 @@ impl CommandPaletteState {
         self.query = query.into();
         self.active_match = None;
         self
+    }
+
+    pub fn with_max_results(mut self, max_results: usize) -> Self {
+        self.max_results = max_results;
+        self
+    }
+
+    pub fn with_first_active_match(mut self, items: &[CommandPaletteItem]) -> Self {
+        self.refresh_active_match(items);
+        self
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn active_match(&self) -> Option<usize> {
+        self.active_match
+    }
+
+    pub fn max_results(&self) -> usize {
+        self.max_results
+    }
+
+    pub fn set_max_results(&mut self, max_results: usize) {
+        self.max_results = max_results;
     }
 
     pub fn search_field(&self) -> SearchFieldState {
@@ -208,6 +235,11 @@ impl CommandPaletteState {
     pub fn set_query(&mut self, query: impl Into<String>, items: &[CommandPaletteItem]) {
         self.query = query.into();
         self.active_match = first_enabled_palette_match(items, &self.matches(items));
+    }
+
+    pub fn refresh_active_match(&mut self, items: &[CommandPaletteItem]) -> Option<usize> {
+        self.active_match = first_enabled_palette_match(items, &self.matches(items));
+        self.active_match
     }
 
     pub fn move_active(
@@ -585,8 +617,11 @@ pub fn command_palette(
     let search_field = state.search_field();
     let search_status = search_field.status(matches.len(), items.len(), "command", "commands");
     let visible_rows = visible_row_count(matches.len(), options.max_visible_rows);
-    let visible_range =
-        visible_match_range(matches.len(), state.active_match, options.max_visible_rows);
+    let visible_range = visible_match_range(
+        matches.len(),
+        state.active_match(),
+        options.max_visible_rows,
+    );
     let height = 42.0 + visible_rows as f32 * options.row_height;
     let root = if let Some(popup) = popup {
         let layout = place_popup(
@@ -690,10 +725,10 @@ pub fn command_palette(
         document,
         input,
         format!("{name}.query"),
-        if state.query.is_empty() {
+        if state.query().is_empty() {
             ""
         } else {
-            &state.query
+            state.query()
         },
         options.text_style.clone(),
         LayoutStyle::from_taffy_style(Style {
@@ -738,7 +773,7 @@ pub fn command_palette(
         let Some(item) = items.get(palette_match.index) else {
             continue;
         };
-        let active = state.active_match == Some(actual_match_index);
+        let active = state.active_match() == Some(actual_match_index);
         let visual = if active {
             options.active_row_visual
         } else {
@@ -843,7 +878,7 @@ pub fn command_palette(
         }
         rows.push(row);
     }
-    let active_row = state.active_match.and_then(|index| {
+    let active_row = state.active_match().and_then(|index| {
         visible_range
             .contains(&index)
             .then(|| rows.get(index - visible_range.start))
@@ -974,7 +1009,7 @@ fn score_command_palette_item(item: &CommandPaletteItem, query: &str) -> Option<
     Some(score)
 }
 
-pub(in crate::widget_ext) fn first_enabled_palette_match(
+pub(in crate::widgets::ext) fn first_enabled_palette_match(
     items: &[CommandPaletteItem],
     matches: &[CommandPaletteMatch],
 ) -> Option<usize> {

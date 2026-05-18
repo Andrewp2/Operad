@@ -13,38 +13,70 @@ use crate::platform::{CursorRequest, TextImeRequest};
 use crate::renderer::RenderTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct WindowId(pub String);
+pub struct WindowId(pub(crate) String);
 
 impl WindowId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DocumentId(pub String);
+pub struct DocumentId(pub(crate) String);
 
 impl DocumentId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SurfaceId(pub String);
+pub struct SurfaceId(pub(crate) String);
 
 impl SurfaceId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct OverlayId(pub String);
+pub struct OverlayId(pub(crate) String);
 
 impl OverlayId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
     }
 }
 
@@ -684,7 +716,7 @@ impl WindowRouter {
             RenderTarget::Window { id, .. } | RenderTarget::AppOwned { id, .. } => id,
             RenderTarget::Offscreen { .. } | RenderTarget::Snapshot { .. } => return Ok(()),
         };
-        if target_window_id == &window_id.0 {
+        if target_window_id == window_id.as_str() {
             return Ok(());
         }
         let rejection = WindowRouteRejection::RenderTargetWindowMismatch {
@@ -747,11 +779,11 @@ impl From<String> for OverlayId {
 
 #[cfg(test)]
 mod tests {
+    use crate::accessibility::AccessibilityAdapterRequest;
+    use crate::input::RawKeyboardEvent;
     use crate::platform::{LogicalRect, TextImeSession, TextInputId};
-    use crate::{
-        AccessibilityAdapterRequest, FocusRestoreTarget, KeyCode, KeyModifiers, RawKeyboardEvent,
-        RenderTarget, UiNodeId, UiPoint, UiSize,
-    };
+    use crate::renderer::RenderTarget;
+    use crate::{FocusRestoreTarget, KeyCode, KeyModifiers, UiNodeId, UiPoint, UiSize};
 
     use super::*;
 

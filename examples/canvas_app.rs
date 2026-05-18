@@ -1,11 +1,11 @@
+use operad::native::{NativeWindowOptions, NativeWindowResult};
 use operad::{
-    root_style, widgets, CanvasContent, CanvasRenderProgram, ColorRgba, LayoutStyle,
-    NativeWindowOptions, StrokeStyle, TextStyle, UiDocument, UiNode, UiSize, UiVisual,
-    WidgetAction,
+    root_style, widgets, CanvasContent, CanvasRenderProgram, ColorRgba, LayoutStyle, StrokeStyle,
+    TextStyle, UiDocument, UiNode, UiSize, UiVisual, WidgetAction,
 };
 
-fn main() -> operad::NativeWindowResult {
-    operad::run_app_with(
+fn main() -> NativeWindowResult {
+    operad::native::run_app_with(
         NativeWindowOptions::new("Canvas app")
             .with_min_size(520.0, 380.0)
             .with_tick_action("runtime.tick")
@@ -35,7 +35,7 @@ impl CanvasApp {
     fn view(&self, viewport: UiSize) -> UiDocument {
         let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
         let panel = ui.add_child(
-            ui.root,
+            ui.root(),
             UiNode::container(
                 "canvas.app",
                 LayoutStyle::column()

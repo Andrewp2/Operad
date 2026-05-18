@@ -6,11 +6,13 @@ use taffy::prelude::{
 };
 
 use crate::{
+    drag_drop::{
+        DragSourceDescriptor, DragSourceId, DropTargetDescriptor, DropTargetHit, DropTargetId,
+    },
     length,
     platform::{DragOperation, DragPayload},
     widgets::publish_inline_intrinsic_size,
-    AccessibilityMeta, AccessibilityRole, ClipBehavior, DragDropSurfaceKind, DragSourceDescriptor,
-    DragSourceId, DropPayloadFilter, DropTargetDescriptor, DropTargetHit, DropTargetId,
+    AccessibilityMeta, AccessibilityRole, ClipBehavior, DragDropSurfaceKind, DropPayloadFilter,
     ImageContent, InputBehavior, LayoutStyle, ShaderEffect, StrokeStyle, TextStyle, UiDocument,
     UiNode, UiNodeId, UiNodeStyle, UiRect, UiSize, UiVisual, WidgetActionBinding,
 };
@@ -570,7 +572,7 @@ impl DockWorkspaceState {
         hit: &DropTargetHit,
         floating_rect: UiRect,
     ) -> Option<DockWorkspaceStateChange> {
-        let placement = dock_drop_placement_from_target_id(hit.target_id.0.as_str())?;
+        let placement = dock_drop_placement_from_target_id(hit.target_id.as_str())?;
         self.apply_drop_to_panels(panels, payload, placement, floating_rect)
     }
 
@@ -641,7 +643,7 @@ impl DockWorkspaceState {
         payload: &DragPayload,
         hit: &DropTargetHit,
     ) -> Option<DockWorkspaceReorderChange> {
-        let target = dock_panel_reorder_target_from_id(hit.target_id.0.as_str())?;
+        let target = dock_panel_reorder_target_from_id(hit.target_id.as_str())?;
         self.apply_reorder_to_panels(panels, payload, &target.panel_id, target.placement)
     }
 }

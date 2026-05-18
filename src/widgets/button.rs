@@ -215,11 +215,13 @@ pub fn button(
     layout.align_items = Some(AlignItems::Center);
     layout.justify_content = Some(JustifyContent::Center);
     if !label.is_empty() && padding_is_zero(layout.padding) {
+        let auto_width = layout.size.width == Dimension::auto();
+        let auto_height = layout.size.height == Dimension::auto();
         layout.padding = taffy::prelude::Rect {
-            left: taffy::prelude::LengthPercentage::length(12.0),
-            right: taffy::prelude::LengthPercentage::length(12.0),
-            top: taffy::prelude::LengthPercentage::length(6.0),
-            bottom: taffy::prelude::LengthPercentage::length(6.0),
+            left: taffy::prelude::LengthPercentage::length(if auto_width { 12.0 } else { 0.0 }),
+            right: taffy::prelude::LengthPercentage::length(if auto_width { 12.0 } else { 0.0 }),
+            top: taffy::prelude::LengthPercentage::length(if auto_height { 6.0 } else { 0.0 }),
+            bottom: taffy::prelude::LengthPercentage::length(if auto_height { 6.0 } else { 0.0 }),
         };
     }
     if !label.is_empty() && layout.size.height == Dimension::auto() {

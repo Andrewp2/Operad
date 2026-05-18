@@ -1,8 +1,11 @@
 use super::*;
+use crate::scrolling::ScrollbarVisibility;
+use crate::widgets::scrollbar::{scrollbar, ScrollAxis, ScrollbarOptions};
 
 #[derive(Debug, Clone)]
 pub struct ScrollContainerOptions {
     pub layout: LayoutStyle,
+    pub viewport_layout: LayoutStyle,
     pub axes: ScrollAxes,
     pub vertical_scrollbar: ScrollbarOptions,
     pub horizontal_scrollbar: ScrollbarOptions,
@@ -21,6 +24,11 @@ impl Default for ScrollContainerOptions {
                 .with_width(240.0)
                 .with_height(160.0)
                 .with_gap(4.0),
+            viewport_layout: LayoutStyle::new()
+                .with_width(0.0)
+                .with_height_percent(1.0)
+                .with_flex_grow(1.0)
+                .with_flex_shrink(1.0),
             axes: ScrollAxes::VERTICAL,
             vertical_scrollbar: ScrollbarOptions::default(),
             horizontal_scrollbar: ScrollbarOptions::default()
@@ -36,11 +44,20 @@ impl Default for ScrollContainerOptions {
     }
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "scroll_area now provides automatic scrollbar affordances; use scroll_container for explicit scrollbar nodes"
+)]
 pub type ScrollAreaWithBarsOptions = ScrollContainerOptions;
 
 impl ScrollContainerOptions {
     pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
         self.layout = layout.into();
+        self
+    }
+
+    pub fn with_viewport_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.viewport_layout = layout.into();
         self
     }
 
@@ -101,8 +118,18 @@ pub struct ScrollContainerNodes {
     pub horizontal_scrollbar: Option<UiNodeId>,
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "scroll_area now provides automatic scrollbar affordances; use ScrollContainerNodes for explicit scrollbar nodes"
+)]
 pub type ScrollAreaWithBarsNodes = ScrollContainerNodes;
 
+/// Create a clipped scroll viewport with automatic overlay scrollbars.
+///
+/// This is the default "just works" scroll primitive: when measured content
+/// overflows the viewport, the renderer paints scrollbar affordances on the
+/// overflowing axes. Use [`scroll_container`] when explicit scrollbar nodes are
+/// needed.
 pub fn scroll_area(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -110,25 +137,47 @@ pub fn scroll_area(
     axes: ScrollAxes,
     layout: impl Into<LayoutStyle>,
 ) -> UiNodeId {
+    scroll_viewport(document, parent, name, axes, layout, true)
+}
+
+fn raw_scroll_area(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    axes: ScrollAxes,
+    layout: impl Into<LayoutStyle>,
+) -> UiNodeId {
+    scroll_viewport(document, parent, name, axes, layout, false)
+}
+
+fn scroll_viewport(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    axes: ScrollAxes,
+    layout: impl Into<LayoutStyle>,
+    auto_scrollbar: bool,
+) -> UiNodeId {
     let name = name.into();
     let layout = layout.into();
-    document.add_child(
-        parent,
-        UiNode::container(
-            name.clone(),
-            UiNodeStyle {
-                layout: layout.style,
-                clip: ClipBehavior::Clip,
-                ..Default::default()
-            },
-        )
-        .with_scroll(axes)
-        .with_accessibility(
-            AccessibilityMeta::new(AccessibilityRole::List)
-                .label(name)
-                .value(scroll_axes_value(axes)),
-        ),
+    let mut node = UiNode::container(
+        name.clone(),
+        UiNodeStyle {
+            layout: layout.style,
+            clip: ClipBehavior::Clip,
+            ..Default::default()
+        },
     )
+    .with_scroll(axes)
+    .with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::List)
+            .label(name)
+            .value(scroll_axes_value(axes)),
+    );
+    if !auto_scrollbar {
+        node = node.without_auto_scrollbar();
+    }
+    document.add_child(parent, node)
 }
 
 pub fn scroll_container(
@@ -179,31 +228,34 @@ pub fn scroll_container_shell(
             ),
         ),
     );
+    let mut row_layout = LayoutStyle::row()
+        .with_width_percent(1.0)
+        .with_height(0.0)
+        .with_flex_grow(1.0)
+        .with_flex_shrink(1.0)
+        .with_gap(options.gap);
+    row_layout.style.min_size.width = length(0.0);
+    row_layout.style.min_size.height = length(0.0);
     let row = document.add_child(
         root,
         UiNode::container(
             format!("{name}.row"),
             UiNodeStyle {
-                layout: LayoutStyle::row()
-                    .with_width_percent(1.0)
-                    .with_flex_grow(1.0)
-                    .with_gap(options.gap)
-                    .style,
+                layout: row_layout.style,
                 clip: ClipBehavior::Clip,
                 ..Default::default()
             },
         ),
     );
-    let viewport = scroll_area(
+    let mut viewport_layout = options.viewport_layout.clone();
+    viewport_layout.style.min_size.width = length(0.0);
+    viewport_layout.style.min_size.height = length(0.0);
+    let viewport = raw_scroll_area(
         document,
         row,
         format!("{name}.viewport"),
         options.axes,
-        LayoutStyle::new()
-            .with_width(0.0)
-            .with_height_percent(1.0)
-            .with_flex_grow(1.0)
-            .with_flex_shrink(1.0),
+        viewport_layout,
     );
     document.node_mut(viewport).action = options
         .auto_actions
@@ -321,6 +373,11 @@ pub fn scroll_container_shell(
     }
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "scroll_area now provides automatic scrollbar affordances; use scroll_container for explicit scrollbar nodes"
+)]
+#[allow(deprecated)]
 pub fn scroll_area_with_bars(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -455,6 +512,41 @@ mod tests {
         assert_eq!(fallback.track_size, UiSize::new(10.0, 120.0));
     }
 
+    #[test]
+    fn scroll_area_enables_automatic_scrollbars_by_default() {
+        let mut document = UiDocument::new(root_style(320.0, 220.0));
+        let root = document.root;
+        let viewport = scroll_area(
+            &mut document,
+            root,
+            "content",
+            ScrollAxes::VERTICAL,
+            LayoutStyle::size(120.0, 80.0),
+        );
+
+        let node = document.node(viewport);
+        assert!(node.scroll.is_some());
+        assert!(node.auto_scrollbar);
+    }
+
+    #[test]
+    fn raw_scroll_area_keeps_scrollbar_affordance_opt_in() {
+        let mut document = UiDocument::new(root_style(320.0, 220.0));
+        let root = document.root;
+        let viewport = raw_scroll_area(
+            &mut document,
+            root,
+            "custom.chrome",
+            ScrollAxes::VERTICAL,
+            LayoutStyle::size(120.0, 80.0),
+        );
+
+        let node = document.node(viewport);
+        assert!(node.scroll.is_some());
+        assert!(!node.auto_scrollbar);
+    }
+
+    #[allow(deprecated)]
     #[test]
     fn scroll_area_with_bars_builds_viewport_and_aligned_scrollbars() {
         let mut document = UiDocument::new(root_style(320.0, 220.0));

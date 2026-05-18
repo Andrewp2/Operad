@@ -6,11 +6,15 @@
 use crate::{UiNodeId, UiPoint, UiRect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OverlayId(pub u64);
+pub struct OverlayId(pub(crate) u64);
 
 impl OverlayId {
     pub const fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
     }
 }
 

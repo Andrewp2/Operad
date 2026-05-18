@@ -68,9 +68,9 @@ pub struct SelectSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectMenuState {
-    pub open: bool,
-    pub selected: Option<usize>,
-    pub active: Option<usize>,
+    open: bool,
+    selected: Option<usize>,
+    active: Option<usize>,
 }
 
 impl SelectMenuState {
@@ -88,6 +88,28 @@ impl SelectMenuState {
             selected: Some(selected),
             active: Some(selected),
         }
+    }
+
+    pub fn with_open(mut self, options: &[SelectOption]) -> Self {
+        self.open(options);
+        self
+    }
+
+    pub fn with_active(mut self, options: &[SelectOption], active: usize) -> Self {
+        self.activate_index(options, active);
+        self
+    }
+
+    pub const fn is_open(&self) -> bool {
+        self.open
+    }
+
+    pub const fn selected_index(&self) -> Option<usize> {
+        self.selected
+    }
+
+    pub const fn active_index(&self) -> Option<usize> {
+        self.active
     }
 
     pub fn selected_id<'a>(&self, options: &'a [SelectOption]) -> Option<&'a str> {
@@ -130,6 +152,15 @@ impl SelectMenuState {
         let active = next_enabled_select_index(options, self.active, direction);
         self.active = active;
         active
+    }
+
+    pub fn activate_index(&mut self, options: &[SelectOption], index: usize) -> Option<usize> {
+        let option = options.get(index)?;
+        if !option.enabled {
+            return None;
+        }
+        self.active = Some(index);
+        Some(index)
     }
 
     pub fn select_active(&mut self, options: &[SelectOption]) -> Option<SelectSelection> {
@@ -1505,7 +1536,7 @@ fn option_accessibility_label(option: &SelectOption) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::PopupPlacement;
+    use crate::widgets::ext::PopupPlacement;
     use crate::{root_style, ApproxTextMeasurer, UiRect};
 
     #[test]

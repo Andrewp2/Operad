@@ -100,12 +100,14 @@ fn surface_animation_trigger(name: &str) -> AnimationTrigger {
 mod tests {
     use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
+    use crate::accessibility::{AccessibilityAdapterRequest, AccessibilityCapabilities};
+    use crate::drag_drop::DropTargetDescriptor;
     use crate::platform::{DragOperation, DragPayload};
     use crate::*;
 
     use super::*;
     use super::{surface_animation_trigger, SURFACE_CLOSE_TRIGGER, SURFACE_OPEN_TRIGGER};
-    use crate::widget_ext::{
+    use crate::widgets::ext::{
         dialog::*, dock_workspace::*, popover::*, progress_indicator::*, split_pane::*,
         timeline_ruler::*, toast::*,
     };
@@ -411,7 +413,7 @@ mod tests {
             &source.allowed_operations,
         )
         .expect("top hit");
-        assert_eq!(top_hit.target_id.0, "dock.drop.top");
+        assert_eq!(top_hit.target_id.as_str(), "dock.drop.top");
         assert_eq!(top_hit.kind, DragDropSurfaceKind::DockTarget);
 
         let center_hit = DropTargetDescriptor::hit_test(
@@ -421,7 +423,7 @@ mod tests {
             &source.allowed_operations,
         )
         .expect("center hit");
-        assert_eq!(center_hit.target_id.0, "dock.drop.center");
+        assert_eq!(center_hit.target_id.as_str(), "dock.drop.center");
 
         let platform_payload = DragPayload::text("not a dock panel");
         assert_eq!(dock_panel_id_from_payload(&platform_payload), None);
@@ -529,8 +531,14 @@ mod tests {
             DockWorkspaceReorderOptions::default().target_thickness(20.0),
         );
         assert_eq!(targets.len(), 4);
-        assert_eq!(targets[0].target.id.0, "dock.reorder.left.inspector.before");
-        assert_eq!(targets[1].target.id.0, "dock.reorder.left.inspector.after");
+        assert_eq!(
+            targets[0].target.id.as_str(),
+            "dock.reorder.left.inspector.before"
+        );
+        assert_eq!(
+            targets[1].target.id.as_str(),
+            "dock.reorder.left.inspector.after"
+        );
         assert_eq!(
             targets[0].target.bounds,
             UiRect::new(10.0, 20.0, 100.0, 20.0)
@@ -848,7 +856,7 @@ mod tests {
         stack.push(ToastSeverity::Info, "One", None, Some(1.0));
         stack.push(ToastSeverity::Success, "Two", None, None);
         let action_toast = Toast::new(
-            ToastId(99),
+            ToastId::new(99),
             ToastSeverity::Warning,
             "Three",
             Some("Body".to_string()),

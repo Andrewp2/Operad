@@ -640,6 +640,7 @@ impl Default for FloatingDesktopState {
 pub struct FloatingDesktopOptions {
     pub layout: LayoutStyle,
     pub bounds: UiSize,
+    pub bounds_rect: UiRect,
     pub margin: f32,
     pub gap: f32,
     pub cascade_offset: f32,
@@ -665,8 +666,20 @@ impl FloatingDesktopOptions {
     pub fn new(bounds: UiSize) -> Self {
         Self {
             bounds,
+            bounds_rect: UiRect::new(0.0, 0.0, bounds.width, bounds.height),
             ..Default::default()
         }
+    }
+
+    pub fn with_bounds_rect(mut self, bounds_rect: UiRect) -> Self {
+        self.bounds_rect = UiRect::new(
+            finite_or(bounds_rect.x, 0.0),
+            finite_or(bounds_rect.y, 0.0),
+            finite_or(bounds_rect.width, 0.0).max(0.0),
+            finite_or(bounds_rect.height, 0.0).max(0.0),
+        );
+        self.bounds = UiSize::new(self.bounds_rect.width, self.bounds_rect.height);
+        self
     }
 
     pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
@@ -707,6 +720,7 @@ impl Default for FloatingDesktopOptions {
                 .with_width_percent(1.0)
                 .with_height_percent(1.0),
             bounds: UiSize::new(800.0, 600.0),
+            bounds_rect: UiRect::new(0.0, 0.0, 800.0, 600.0),
             margin: 18.0,
             gap: 14.0,
             cascade_offset: 28.0,
@@ -800,12 +814,18 @@ pub fn floating_window_layout(
     let gap = finite_or(options.gap, 0.0).max(0.0);
     let cascade_offset = finite_or(options.cascade_offset, 0.0).max(0.0);
     let mut placements = Vec::new();
-    let bounds_rect = UiRect::new(
+    let default_bounds_rect = UiRect::new(
         0.0,
         0.0,
         finite_or(bounds.width, 0.0).max(0.0),
         finite_or(bounds.height, 0.0).max(0.0),
     );
+    let bounds_rect = if options.bounds_rect.width > 0.0 || options.bounds_rect.height > 0.0 {
+        options.bounds_rect
+    } else {
+        default_bounds_rect
+    };
+    let usable_bounds = UiSize::new(bounds_rect.width, bounds_rect.height);
     let inner_bounds = layout::inset_rect(bounds_rect, margin);
     let mut flow = layout::ContainedFlowLayout::new(inner_bounds)
         .with_gap(gap)
@@ -817,12 +837,12 @@ pub fn floating_window_layout(
         .filter(|(_, window)| window.visible)
     {
         let (size, min_size) = if window.collapsed {
-            let collapsed_size = resolved_collapsed_min_size(window, bounds, options);
+            let collapsed_size = resolved_collapsed_min_size(window, usable_bounds, options);
             (collapsed_size, collapsed_size)
         } else {
             (
-                resolved_size(window, bounds, options),
-                resolved_min_size(window, bounds, options),
+                resolved_size(window, usable_bounds, options),
+                resolved_min_size(window, usable_bounds, options),
             )
         };
         let z_index = window.z_index.unwrap_or_else(|| {
@@ -1228,15 +1248,7 @@ fn add_floating_window(
     if !descriptor.collapsed {
         constraint_sources.push(content);
     }
-    let bounds = layout::inset_rect(
-        UiRect::new(
-            0.0,
-            0.0,
-            options.bounds.width.max(0.0),
-            options.bounds.height.max(0.0),
-        ),
-        options.margin,
-    );
+    let bounds = layout::inset_rect(options.bounds_rect, options.margin);
     let constraint_min_size = if descriptor.collapsed {
         resolved_collapsed_min_size(descriptor, options.bounds, options)
     } else {

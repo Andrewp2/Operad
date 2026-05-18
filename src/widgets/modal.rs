@@ -1,3 +1,5 @@
+use super::ext::dialog::DialogDescriptor;
+use super::ext::popover::OverlayFrameEvent;
 use super::*;
 
 #[derive(Debug, Clone)]

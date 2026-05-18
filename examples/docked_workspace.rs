@@ -1,17 +1,21 @@
-use operad::widgets::{self, DockPanelDescriptor, DockSide, DockWorkspaceOptions};
+use operad::native::NativeWindowResult;
+use operad::widgets;
+use operad::widgets::ext::{
+    self as ext_widgets, DockPanelDescriptor, DockSide, DockWorkspaceOptions,
+};
 use operad::{
     root_style, ColorRgba, LayoutStyle, StrokeStyle, TextStyle, UiDocument, UiNode, UiSize,
     UiVisual,
 };
 
-fn main() -> operad::NativeWindowResult {
-    operad::run("Docked workspace", workspace_document)
+fn main() -> NativeWindowResult {
+    operad::native::run("Docked workspace", workspace_document)
 }
 
 fn workspace_document(viewport: UiSize) -> UiDocument {
     let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
     let root = ui.add_child(
-        ui.root,
+        ui.root(),
         UiNode::container(
             "workspace.root",
             LayoutStyle::column()
@@ -50,7 +54,7 @@ fn workspace_document(viewport: UiSize) -> UiDocument {
         0.0,
     );
 
-    widgets::dock_workspace(&mut ui, root, "workspace", &panels, options, panel_body);
+    ext_widgets::dock_workspace(&mut ui, root, "workspace", &panels, options, panel_body);
     ui
 }
 

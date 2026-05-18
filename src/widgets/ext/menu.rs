@@ -7,16 +7,16 @@ use taffy::prelude::{
 
 use super::menu_list::{menu_list_popup, MenuListNodes, MenuListOptions};
 
+use crate::tooltips::{CommandTooltipResolver, ShortcutFormatter};
 use crate::widgets::{
     inline_intrinsic_base_size, publish_inline_intrinsic_size, single_line_text_style,
 };
 use crate::{
     layout, length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta,
     AccessibilityRole, AnimationMachine, ClipBehavior, ClipScope, ColorRgba, CommandId,
-    CommandRegistry, CommandScope, CommandTooltipResolver, ImageContent, InputBehavior, KeyCode,
-    KeyModifiers, LayoutStyle, ScrollAxes, ShaderEffect, ShortcutFormatter, StrokeStyle, TextStyle,
-    UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiPortalTarget, UiRect, UiSize,
-    UiVisual, WidgetActionBinding,
+    CommandRegistry, CommandScope, ImageContent, InputBehavior, KeyCode, KeyModifiers, LayoutStyle,
+    ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId,
+    UiNodeStyle, UiPortalTarget, UiRect, UiSize, UiVisual, WidgetActionBinding,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1758,7 +1758,7 @@ fn absolute_rect_style(rect: UiRect) -> LayoutStyle {
     })
 }
 
-pub(in crate::widget_ext) fn next_menu_typeahead_index(
+pub(in crate::widgets::ext) fn next_menu_typeahead_index(
     items: &[MenuItem],
     current: Option<usize>,
     character: char,
@@ -1770,7 +1770,7 @@ pub(in crate::widget_ext) fn next_menu_typeahead_index(
     })
 }
 
-pub(in crate::widget_ext) fn visible_row_count(count: usize, max_visible_rows: usize) -> usize {
+pub(in crate::widgets::ext) fn visible_row_count(count: usize, max_visible_rows: usize) -> usize {
     if max_visible_rows == 0 {
         0
     } else {
@@ -1778,7 +1778,7 @@ pub(in crate::widget_ext) fn visible_row_count(count: usize, max_visible_rows: u
     }
 }
 
-pub(in crate::widget_ext) fn visible_match_range(
+pub(in crate::widgets::ext) fn visible_match_range(
     count: usize,
     active: Option<usize>,
     max_visible_rows: usize,
@@ -1795,7 +1795,7 @@ pub(in crate::widget_ext) fn visible_match_range(
     start..(start + visible_rows)
 }
 
-pub(in crate::widget_ext) fn row_style(height: f32) -> UiNodeStyle {
+pub(in crate::widgets::ext) fn row_style(height: f32) -> UiNodeStyle {
     UiNodeStyle {
         layout: LayoutStyle::from_taffy_style(Style {
             display: Display::Flex,
@@ -1820,7 +1820,7 @@ pub(in crate::widget_ext) fn row_style(height: f32) -> UiNodeStyle {
     }
 }
 
-pub(in crate::widget_ext) fn leading_image(
+pub(in crate::widgets::ext) fn leading_image(
     document: &mut UiDocument,
     parent: UiNodeId,
     name: impl Into<String>,
@@ -1854,14 +1854,14 @@ pub(in crate::widget_ext) fn leading_image(
     )
 }
 
-pub(in crate::widget_ext) fn menu_accessibility_label(
+pub(in crate::widgets::ext) fn menu_accessibility_label(
     name: &str,
     explicit: Option<&String>,
 ) -> String {
     explicit.cloned().unwrap_or_else(|| name.to_string())
 }
 
-pub(in crate::widget_ext) fn set_active_descendant(
+pub(in crate::widgets::ext) fn set_active_descendant(
     document: &mut UiDocument,
     owner: UiNodeId,
     active_descendant: Option<UiNodeId>,
@@ -1873,7 +1873,7 @@ pub(in crate::widget_ext) fn set_active_descendant(
     }
 }
 
-pub(in crate::widget_ext) fn command_shortcut_label(
+pub(in crate::widgets::ext) fn command_shortcut_label(
     registry: &CommandRegistry,
     command: &CommandId,
     active_scopes: &[CommandScope],
@@ -1885,7 +1885,7 @@ pub(in crate::widget_ext) fn command_shortcut_label(
         .map(|shortcut| formatter.format(shortcut))
 }
 
-pub(in crate::widget_ext) fn button_like(
+pub(in crate::widgets::ext) fn button_like(
     document: &mut UiDocument,
     parent: UiNodeId,
     name: impl Into<String>,
@@ -1907,7 +1907,7 @@ pub(in crate::widget_ext) fn button_like(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::widget_ext) fn button_like_with_input(
+pub(in crate::widgets::ext) fn button_like_with_input(
     document: &mut UiDocument,
     parent: UiNodeId,
     name: impl Into<String>,
@@ -1962,7 +1962,7 @@ pub(in crate::widget_ext) fn button_like_with_input(
     root
 }
 
-pub(in crate::widget_ext) fn label(
+pub(in crate::widgets::ext) fn label(
     document: &mut UiDocument,
     parent: UiNodeId,
     name: impl Into<String>,
@@ -1973,28 +1973,28 @@ pub(in crate::widget_ext) fn label(
     document.add_child(parent, UiNode::text(name, text, text_style, layout))
 }
 
-pub(in crate::widget_ext) fn length_percentage(value: f32) -> taffy::prelude::LengthPercentage {
+pub(in crate::widgets::ext) fn length_percentage(value: f32) -> taffy::prelude::LengthPercentage {
     taffy::prelude::LengthPercentage::length(value)
 }
 
-pub(in crate::widget_ext) fn normalize(value: &str) -> String {
+pub(in crate::widgets::ext) fn normalize(value: &str) -> String {
     value.to_lowercase()
 }
 
-pub(in crate::widget_ext) fn first_typeahead_character(text: &str) -> Option<char> {
+pub(in crate::widgets::ext) fn first_typeahead_character(text: &str) -> Option<char> {
     text.chars()
         .find(|character| is_typeahead_character(*character))
 }
 
-pub(in crate::widget_ext) fn is_typeahead_character(character: char) -> bool {
+pub(in crate::widgets::ext) fn is_typeahead_character(character: char) -> bool {
     !character.is_control() && !character.is_whitespace()
 }
 
-pub(in crate::widget_ext) fn normalized_character(character: char) -> Option<String> {
+pub(in crate::widgets::ext) fn normalized_character(character: char) -> Option<String> {
     is_typeahead_character(character).then(|| character.to_lowercase().collect())
 }
 
-pub(in crate::widget_ext) fn next_matching_index(
+pub(in crate::widgets::ext) fn next_matching_index(
     len: usize,
     current: Option<usize>,
     direction: NavigationDirection,
@@ -2033,7 +2033,7 @@ fn search_field_clear_modifier(modifiers: KeyModifiers) -> bool {
     modifiers.ctrl || modifiers.meta
 }
 
-pub(in crate::widget_ext) fn pop_last_char(text: &mut String) -> bool {
+pub(in crate::widgets::ext) fn pop_last_char(text: &mut String) -> bool {
     let Some((index, _)) = text.char_indices().next_back() else {
         return false;
     };
@@ -2045,15 +2045,16 @@ mod tests {
     use taffy::prelude::{Size as TaffySize, Style};
 
     use super::*;
-    use crate::widget_ext::{
+    use crate::input::RawPointerEvent;
+    use crate::tooltips::{ContextMenuSuppressedReason, HelpItemState, ShortcutFormatter};
+    use crate::widgets::ext::{
         command_palette::*, context_menu::*, dropdown::*, menu_bar::*, menu_list::*,
     };
     use crate::{
         root_style, AccessibilityMeta, AccessibilityRole, AnimatedValues, AnimationMachine,
         AnimationState, AnimationTransition, AnimationTrigger, ApproxTextMeasurer, Command,
-        CommandId, CommandMeta, CommandRegistry, CommandScope, ContextMenuSuppressedReason,
-        HelpItemState, KeyModifiers, PointerButton, PointerEventKind, RawPointerEvent,
-        ShaderEffect, Shortcut, ShortcutFormatter, UiContent, UiPoint, WidgetActionBinding,
+        CommandId, CommandMeta, CommandRegistry, CommandScope, KeyModifiers, PointerButton,
+        PointerEventKind, ShaderEffect, Shortcut, UiContent, UiPoint, WidgetActionBinding,
         APP_OVERLAY_PORTAL,
     };
 
@@ -2219,7 +2220,7 @@ mod tests {
             },
         );
         assert!(outcome.opened);
-        assert_eq!(state.active, Some(1));
+        assert_eq!(state.active_index(), Some(1));
 
         let outcome = state.handle_event(
             &options,
@@ -2236,7 +2237,7 @@ mod tests {
             })
         );
         assert_eq!(state.selected_id(&options), Some("b"));
-        assert!(!state.open);
+        assert!(!state.is_open());
     }
 
     #[test]
@@ -2262,12 +2263,12 @@ mod tests {
                 id: "gamma".to_string(),
             })
         );
-        assert_eq!(state.selected, Some(2));
+        assert_eq!(state.selected_index(), Some(2));
 
         state.open(&options);
         let outcome = state.handle_event(&options, &UiInputEvent::TextInput("a".to_string()));
         assert_eq!(outcome.active, Some(0));
-        assert_eq!(state.active, Some(0));
+        assert_eq!(state.active_index(), Some(0));
     }
 
     #[test]
@@ -2647,11 +2648,9 @@ mod tests {
         let options = (0..6)
             .map(|index| SelectOption::new(format!("id-{index}"), format!("Item {index}")))
             .collect::<Vec<_>>();
-        let state = SelectMenuState {
-            open: true,
-            selected: Some(1),
-            active: Some(2),
-        };
+        let state = SelectMenuState::with_selected(1)
+            .with_open(&options)
+            .with_active(&options, 2);
         let nodes = select_menu(
             &mut document,
             root,
@@ -2682,11 +2681,9 @@ mod tests {
             SelectOption::new("comfortable", "Comfortable")
                 .accessibility_label("Comfortable density"),
         ];
-        let state = SelectMenuState {
-            open: true,
-            selected: Some(0),
-            active: Some(1),
-        };
+        let state = SelectMenuState::with_selected(0)
+            .with_open(&options)
+            .with_active(&options, 1);
         let nodes = select_menu(
             &mut document,
             root,
@@ -3443,8 +3440,9 @@ mod tests {
         let matches = filter_command_palette(&items, "save", 10);
         assert_eq!(matches[0].id, "save");
 
-        let mut state = CommandPaletteState::new().with_query("project");
-        state.active_match = first_enabled_palette_match(&items, &state.matches(&items));
+        let state = CommandPaletteState::new()
+            .with_query("project")
+            .with_first_active_match(&items);
         assert_eq!(
             state.select_active(&items),
             Some(CommandPaletteSelection {
@@ -3552,9 +3550,9 @@ mod tests {
 
         let outcome = state.apply_search_field(&field, &items);
         assert!(outcome.query_changed);
-        assert_eq!(state.query, "save");
+        assert_eq!(state.query(), "save");
         assert_eq!(state.matches(&items).len(), 1);
-        assert_eq!(state.active_match, Some(0));
+        assert_eq!(state.active_match(), Some(0));
         assert_eq!(
             state.search_status(&items).text,
             "1 command matches \"save\""
@@ -3566,8 +3564,8 @@ mod tests {
 
         let outcome = state.clear_query(&items);
         assert!(outcome.query_changed);
-        assert_eq!(state.query, "");
-        assert_eq!(state.active_match, Some(0));
+        assert_eq!(state.query(), "");
+        assert_eq!(state.active_match(), Some(0));
         assert_eq!(state.visible_count(&items), 3);
         assert_eq!(state.search_status(&items).text, "3 commands available");
     }
@@ -3583,8 +3581,9 @@ mod tests {
                 .accessibility_label("Open a file"),
             CommandPaletteItem::new("save", "Save Project"),
         ];
-        let mut state = CommandPaletteState::new().with_query("o");
-        state.active_match = Some(0);
+        let state = CommandPaletteState::new()
+            .with_query("o")
+            .with_first_active_match(&items);
 
         let nodes = command_palette(
             &mut document,
@@ -3721,11 +3720,9 @@ mod tests {
 
         let mut open_document = UiDocument::new(root_style(320.0, 160.0));
         let open_root = open_document.root;
-        let open_state = SelectMenuState {
-            open: true,
-            selected: Some(1),
-            active: Some(0),
-        };
+        let open_state = SelectMenuState::with_selected(1)
+            .with_open(&options)
+            .with_active(&options, 0);
         let open_nodes = dropdown_select(
             &mut open_document,
             open_root,

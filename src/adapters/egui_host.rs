@@ -813,6 +813,7 @@ mod tests {
         AccessibilityRequestKind,
     };
     use crate::commands::{Command, CommandMeta, CommandScope, Shortcut};
+    use crate::host::{process_document_frame, HostDocumentFrameRequest, HostFrameOutput};
     use crate::input::{WheelDeltaUnit, WheelPhase};
     use crate::platform::{
         ClipboardRequest, CursorRequest, CursorShape, FileDialogMode, FileDialogRequest,
@@ -821,11 +822,12 @@ mod tests {
         PlatformServiceResponse, RepaintRequest, ResourceHandle, TextImeResponse, TextImeSession,
         TextInputId, TextureHandle,
     };
-    use crate::renderer::{PixelRect, ResourceDescriptor, ResourceFormat, ResourceUpdate};
+    use crate::renderer::{
+        PixelRect, RenderTarget, ResourceDescriptor, ResourceFormat, ResourceUpdate,
+    };
     use crate::testing::AccessibilityResponseAssertions;
     use crate::{
-        process_document_frame, ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy,
-        HostDocumentFrameRequest, HostFrameOutput, InputBehavior, LayoutStyle, RenderTarget,
+        ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy, InputBehavior, LayoutStyle,
         UiContent, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle, UiSize,
     };
     use std::time::Duration;
@@ -1353,7 +1355,7 @@ mod tests {
         let mut canvas = UiNode::canvas(
             "native.viewport",
             "native.viewport",
-            fixed_style(160.0, 96.0).layout,
+            LayoutStyle::size(160.0, 96.0),
         );
         canvas.content = UiContent::Canvas(
             CanvasContent::new("native.viewport")

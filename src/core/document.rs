@@ -21,6 +21,12 @@ use crate::i18n::{
 use crate::paint::*;
 use crate::{actions, input, platform, renderer};
 
+const AUTO_SCROLLBAR_THICKNESS: f32 = 6.0;
+const AUTO_SCROLLBAR_INSET: f32 = 3.0;
+const AUTO_SCROLLBAR_MIN_THUMB: f32 = 18.0;
+const AUTO_SCROLLBAR_TRACK_COLOR: ColorRgba = ColorRgba::new(28, 34, 42, 170);
+const AUTO_SCROLLBAR_THUMB_COLOR: ColorRgba = ColorRgba::new(112, 130, 156, 230);
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UiPoint {
     pub x: f32,
@@ -112,7 +118,23 @@ impl UiRect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct UiNodeId(pub usize);
+pub struct UiNodeId(pub(crate) usize);
+
+impl UiNodeId {
+    pub const ROOT: Self = Self(0);
+
+    pub const fn root() -> Self {
+        Self::ROOT
+    }
+
+    pub const fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColorRgba {
@@ -404,13 +426,21 @@ impl Default for FontFamily {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FontWeight(pub u16);
+pub struct FontWeight(pub(crate) u16);
 
 impl FontWeight {
     pub const THIN: Self = Self(100);
     pub const NORMAL: Self = Self(400);
     pub const BOLD: Self = Self(700);
     pub const BLACK: Self = Self(900);
+
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u16 {
+        self.0
+    }
 }
 
 impl Default for FontWeight {
@@ -1461,10 +1491,10 @@ impl ScrollAxes {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollState {
-    pub axes: ScrollAxes,
-    pub offset: UiPoint,
-    pub viewport_size: UiSize,
-    pub content_size: UiSize,
+    pub(crate) axes: ScrollAxes,
+    pub(crate) offset: UiPoint,
+    pub(crate) viewport_size: UiSize,
+    pub(crate) content_size: UiSize,
 }
 
 impl ScrollState {
@@ -1475,6 +1505,61 @@ impl ScrollState {
             viewport_size: UiSize::ZERO,
             content_size: UiSize::ZERO,
         }
+    }
+
+    pub const fn axes(self) -> ScrollAxes {
+        self.axes
+    }
+
+    pub const fn offset(self) -> UiPoint {
+        self.offset
+    }
+
+    pub const fn viewport_size(self) -> UiSize {
+        self.viewport_size
+    }
+
+    pub const fn content_size(self) -> UiSize {
+        self.content_size
+    }
+
+    pub fn with_offset(mut self, offset: UiPoint) -> Self {
+        self.offset = self.sanitize_offset(offset);
+        self
+    }
+
+    pub const fn with_viewport_size(mut self, viewport_size: UiSize) -> Self {
+        self.viewport_size = viewport_size;
+        self
+    }
+
+    pub const fn with_content_size(mut self, content_size: UiSize) -> Self {
+        self.content_size = content_size;
+        self
+    }
+
+    pub const fn with_sizes(mut self, viewport_size: UiSize, content_size: UiSize) -> Self {
+        self.viewport_size = viewport_size;
+        self.content_size = content_size;
+        self
+    }
+
+    pub fn set_offset(&mut self, offset: UiPoint) {
+        self.offset = self.sanitize_offset(offset);
+    }
+
+    pub fn sanitize_offset(self, offset: UiPoint) -> UiPoint {
+        let x = if self.axes.horizontal && offset.x.is_finite() {
+            offset.x.max(0.0)
+        } else {
+            0.0
+        };
+        let y = if self.axes.vertical && offset.y.is_finite() {
+            offset.y.max(0.0)
+        } else {
+            0.0
+        };
+        UiPoint::new(x, y)
     }
 
     pub fn max_offset(self) -> UiPoint {
@@ -1493,6 +1578,7 @@ impl ScrollState {
     }
 
     pub fn clamp_offset(self, offset: UiPoint) -> UiPoint {
+        let offset = self.sanitize_offset(offset);
         let max = self.max_offset();
         UiPoint::new(offset.x.clamp(0.0, max.x), offset.y.clamp(0.0, max.y))
     }
@@ -1543,16 +1629,43 @@ impl LayoutStyle {
         }
     }
 
-    pub fn from_taffy_style(style: Style) -> Self {
+    /// Build a layout style directly from Taffy.
+    ///
+    /// Prefer the typed builders in [`crate::layout::Layout`] for application
+    /// code. This is an escape hatch for adapters, migration code, and widgets
+    /// that need layout fields not yet wrapped by Operad.
+    pub(crate) fn from_taffy_style(style: Style) -> Self {
         Self { style }
     }
 
-    pub fn as_taffy_style(&self) -> &Style {
+    /// Return the raw Taffy style for inspection or adapter interop.
+    pub(crate) fn as_taffy_style(&self) -> &Style {
         &self.style
     }
 
-    pub fn as_taffy_style_mut(&mut self) -> &mut Style {
+    /// Mutate the raw Taffy style directly.
+    ///
+    /// Prefer typed layout helpers when possible; direct mutation bypasses
+    /// Operad's named layout concepts and can make it easier to miss intrinsic
+    /// sizing or scroll affordance behavior.
+    pub(crate) fn as_taffy_style_mut(&mut self) -> &mut Style {
         &mut self.style
+    }
+
+    pub fn to_layout(&self) -> Option<crate::layout::Layout> {
+        crate::layout::Layout::from_layout_style(self)
+    }
+
+    pub fn min_size(&self) -> Option<crate::layout::LayoutSize> {
+        crate::layout::LayoutSize::from_taffy(self.style.min_size)
+    }
+
+    pub fn grid_template_column_count(&self) -> usize {
+        self.style.grid_template_columns.len()
+    }
+
+    pub fn grid_template_row_count(&self) -> usize {
+        self.style.grid_template_rows.len()
     }
 
     pub fn is_absolute(&self) -> bool {
@@ -1585,7 +1698,12 @@ impl LayoutStyle {
         Self::new().with_size(width, height)
     }
 
-    pub fn absolute_rect(rect: UiRect) -> Self {
+    /// Position a node at an absolute rectangle.
+    ///
+    /// This is primarily for overlays, handles, and canvas-local chrome. Normal
+    /// widget composition should use flex/grid layout so sizing constraints can
+    /// be computed from children.
+    pub(crate) fn absolute_rect(rect: UiRect) -> Self {
         Self::from_taffy_style(Style {
             position: taffy::prelude::Position::Absolute,
             inset: taffy::prelude::Rect {
@@ -1672,12 +1790,6 @@ impl LayoutStyle {
     }
 }
 
-impl From<Style> for LayoutStyle {
-    fn from(style: Style) -> Self {
-        Self::from_taffy_style(style)
-    }
-}
-
 impl Default for LayoutStyle {
     fn default() -> Self {
         Self::new()
@@ -1686,25 +1798,73 @@ impl Default for LayoutStyle {
 
 #[derive(Debug, Clone)]
 pub struct UiNodeStyle {
-    pub layout: Style,
-    pub clip: ClipBehavior,
-    pub opacity: f32,
-    pub z_index: i16,
+    pub(crate) layout: Style,
+    pub(crate) clip: ClipBehavior,
+    pub(crate) opacity: f32,
+    pub(crate) z_index: i16,
+}
+
+impl UiNodeStyle {
+    pub fn new(layout: impl Into<LayoutStyle>) -> Self {
+        layout.into().into()
+    }
+
+    pub fn clipped(layout: impl Into<LayoutStyle>) -> Self {
+        Self::new(layout).with_clip(ClipBehavior::Clip)
+    }
+
+    pub fn layout_style(&self) -> LayoutStyle {
+        LayoutStyle::from_taffy_style(self.layout.clone())
+    }
+
+    pub fn layout(&self) -> Option<crate::layout::Layout> {
+        self.layout_style().to_layout()
+    }
+
+    pub const fn clip(&self) -> ClipBehavior {
+        self.clip
+    }
+
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    pub const fn z_index(&self) -> i16 {
+        self.z_index
+    }
+
+    pub fn with_clip(mut self, clip: ClipBehavior) -> Self {
+        self.clip = clip;
+        self
+    }
+
+    pub fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
+    }
+
+    pub const fn with_z_index(mut self, z_index: i16) -> Self {
+        self.z_index = z_index;
+        self
+    }
+
+    pub fn set_clip(&mut self, clip: ClipBehavior) {
+        self.clip = clip;
+    }
+
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity;
+    }
+
+    pub fn set_z_index(&mut self, z_index: i16) {
+        self.z_index = z_index;
+    }
 }
 
 impl From<LayoutStyle> for UiNodeStyle {
     fn from(layout: LayoutStyle) -> Self {
         Self {
             layout: layout.style,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<Style> for UiNodeStyle {
-    fn from(style: Style) -> Self {
-        Self {
-            layout: style,
             ..Default::default()
         }
     }
@@ -1723,29 +1883,140 @@ impl Default for UiNodeStyle {
 
 #[derive(Debug, Clone)]
 pub struct UiNode {
-    pub name: String,
-    pub parent: Option<UiNodeId>,
-    pub children: Vec<UiNodeId>,
-    pub style: UiNodeStyle,
-    pub layer: Option<platform::UiLayer>,
-    pub clip_scope: ClipScope,
-    pub visual: UiVisual,
-    pub interaction_visuals: Option<InteractionVisuals>,
-    pub interaction_text_styles: Option<TextInteractionStyles>,
-    pub action: Option<actions::WidgetActionBinding>,
-    pub action_mode: actions::WidgetActionMode,
-    pub content: UiContent,
-    pub input: InputBehavior,
-    pub scroll: Option<ScrollState>,
-    pub scrollbar: Option<ScrollbarAuditState>,
-    pub animation: Option<AnimationMachine>,
-    pub accessibility: Option<AccessibilityMeta>,
-    pub shader: Option<ShaderEffect>,
-    pub layout_constraint: Option<UiNodeLayoutConstraint>,
-    pub layout: ComputedLayout,
+    pub(crate) name: String,
+    pub(crate) parent: Option<UiNodeId>,
+    pub(crate) children: Vec<UiNodeId>,
+    pub(crate) style: UiNodeStyle,
+    pub(crate) layer: Option<platform::UiLayer>,
+    pub(crate) clip_scope: ClipScope,
+    pub(crate) visual: UiVisual,
+    pub(crate) interaction_visuals: Option<InteractionVisuals>,
+    pub(crate) interaction_text_styles: Option<TextInteractionStyles>,
+    pub(crate) action: Option<actions::WidgetActionBinding>,
+    pub(crate) action_mode: actions::WidgetActionMode,
+    pub(crate) content: UiContent,
+    pub(crate) input: InputBehavior,
+    pub(crate) scroll: Option<ScrollState>,
+    pub(crate) scrollbar: Option<ScrollbarAuditState>,
+    pub(crate) auto_scrollbar: bool,
+    pub(crate) animation: Option<AnimationMachine>,
+    pub(crate) accessibility: Option<AccessibilityMeta>,
+    pub(crate) shader: Option<ShaderEffect>,
+    pub(crate) layout_constraint: Option<UiNodeLayoutConstraint>,
+    pub(crate) layout: ComputedLayout,
 }
 
 impl UiNode {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn parent(&self) -> Option<UiNodeId> {
+        self.parent
+    }
+
+    pub fn children(&self) -> &[UiNodeId] {
+        &self.children
+    }
+
+    pub fn style(&self) -> &UiNodeStyle {
+        &self.style
+    }
+
+    pub fn style_mut(&mut self) -> &mut UiNodeStyle {
+        &mut self.style
+    }
+
+    pub fn layer(&self) -> Option<platform::UiLayer> {
+        self.layer
+    }
+
+    pub fn clip_scope(&self) -> ClipScope {
+        self.clip_scope
+    }
+
+    pub fn visual(&self) -> &UiVisual {
+        &self.visual
+    }
+
+    pub fn set_visual(&mut self, visual: UiVisual) {
+        self.visual = visual;
+    }
+
+    pub fn interaction_visuals(&self) -> Option<&InteractionVisuals> {
+        self.interaction_visuals.as_ref()
+    }
+
+    pub fn interaction_text_styles(&self) -> Option<&TextInteractionStyles> {
+        self.interaction_text_styles.as_ref()
+    }
+
+    pub fn action(&self) -> Option<&actions::WidgetActionBinding> {
+        self.action.as_ref()
+    }
+
+    pub fn set_action(&mut self, action: impl Into<actions::WidgetActionBinding>) {
+        self.action = Some(action.into());
+    }
+
+    pub fn clear_action(&mut self) {
+        self.action = None;
+    }
+
+    pub fn action_mode(&self) -> actions::WidgetActionMode {
+        self.action_mode
+    }
+
+    pub fn content(&self) -> &UiContent {
+        &self.content
+    }
+
+    pub fn input(&self) -> InputBehavior {
+        self.input
+    }
+
+    pub fn scroll(&self) -> Option<&ScrollState> {
+        self.scroll.as_ref()
+    }
+
+    pub fn scroll_mut(&mut self) -> Option<&mut ScrollState> {
+        self.scroll.as_mut()
+    }
+
+    pub fn set_scroll(&mut self, scroll: ScrollState) {
+        self.style.clip = ClipBehavior::Clip;
+        self.scroll = Some(scroll);
+        self.auto_scrollbar = true;
+    }
+
+    pub fn scrollbar(&self) -> Option<&ScrollbarAuditState> {
+        self.scrollbar.as_ref()
+    }
+
+    pub fn has_auto_scrollbar(&self) -> bool {
+        self.auto_scrollbar
+    }
+
+    pub fn animation(&self) -> Option<&AnimationMachine> {
+        self.animation.as_ref()
+    }
+
+    pub fn accessibility(&self) -> Option<&AccessibilityMeta> {
+        self.accessibility.as_ref()
+    }
+
+    pub fn shader(&self) -> Option<&ShaderEffect> {
+        self.shader.as_ref()
+    }
+
+    pub fn layout_constraint(&self) -> Option<&UiNodeLayoutConstraint> {
+        self.layout_constraint.as_ref()
+    }
+
+    pub fn layout(&self) -> ComputedLayout {
+        self.layout
+    }
+
     pub fn container(name: impl Into<String>, style: impl Into<UiNodeStyle>) -> Self {
         Self {
             name: name.into(),
@@ -1763,6 +2034,7 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             scrollbar: None,
+            auto_scrollbar: false,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1784,6 +2056,7 @@ impl UiNode {
             children: Vec::new(),
             style: UiNodeStyle {
                 layout: layout.style,
+                clip: ClipBehavior::Clip,
                 ..Default::default()
             },
             layer: None,
@@ -1797,6 +2070,7 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             scrollbar: None,
+            auto_scrollbar: false,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1819,6 +2093,7 @@ impl UiNode {
             children: Vec::new(),
             style: UiNodeStyle {
                 layout: layout.style,
+                clip: ClipBehavior::Clip,
                 ..Default::default()
             },
             layer: None,
@@ -1835,6 +2110,7 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             scrollbar: None,
+            auto_scrollbar: false,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1873,6 +2149,7 @@ impl UiNode {
             },
             scroll: None,
             scrollbar: None,
+            auto_scrollbar: false,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1924,6 +2201,7 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             scrollbar: None,
+            auto_scrollbar: false,
             animation: None,
             accessibility: None,
             shader: None,
@@ -1958,6 +2236,7 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             scrollbar: None,
+            auto_scrollbar: false,
             animation: None,
             accessibility: None,
             shader: None,
@@ -2004,6 +2283,7 @@ impl UiNode {
             input: InputBehavior::NONE,
             scroll: None,
             scrollbar: None,
+            auto_scrollbar: false,
             animation: None,
             accessibility: None,
             shader: None,
@@ -2068,10 +2348,16 @@ impl UiNode {
     pub fn with_scroll(mut self, axes: ScrollAxes) -> Self {
         self.style.clip = ClipBehavior::Clip;
         self.scroll = Some(ScrollState::new(axes));
+        self.auto_scrollbar = true;
         self
     }
 
-    pub fn with_scrollbar_audit(mut self, axis: AuditAxis, scroll: ScrollState) -> Self {
+    pub(crate) fn without_auto_scrollbar(mut self) -> Self {
+        self.auto_scrollbar = false;
+        self
+    }
+
+    pub(crate) fn with_scrollbar_audit(mut self, axis: AuditAxis, scroll: ScrollState) -> Self {
         self.scrollbar = Some(ScrollbarAuditState::new(axis, scroll));
         self
     }
@@ -2458,7 +2744,7 @@ fn cosmic_family(family: &FontFamily) -> CosmicFamily<'_> {
 
 #[cfg(feature = "text-cosmic")]
 fn cosmic_weight(weight: FontWeight) -> CosmicWeight {
-    CosmicWeight(weight.0)
+    CosmicWeight(weight.value())
 }
 
 #[cfg(feature = "text-cosmic")]
@@ -2525,7 +2811,7 @@ impl TextMeasureKey {
         hash = fnv_mix(hash, text.style.font_size.to_bits() as u64);
         hash = fnv_mix(hash, text.style.line_height.to_bits() as u64);
         hash = fnv_mix(hash, font_family_key(&text.style.family));
-        hash = fnv_mix(hash, text.style.weight.0 as u64);
+        hash = fnv_mix(hash, text.style.weight.value() as u64);
         hash = fnv_mix(hash, font_style_key(text.style.style));
         hash = fnv_mix(hash, font_stretch_key(text.style.stretch));
         hash = fnv_mix(hash, wrap_key(text.style.wrap) as u64);
@@ -2541,7 +2827,7 @@ impl TextMeasureKey {
             font_size_bits: text.style.font_size.to_bits(),
             line_height_bits: text.style.line_height.to_bits(),
             family: text.style.family.clone(),
-            weight: text.style.weight.0,
+            weight: text.style.weight.value(),
             style: text.style.style,
             stretch: text.style.stretch,
             wrap: wrap_key(text.style.wrap),
@@ -2557,7 +2843,7 @@ impl TextMeasureKey {
             && self.font_size_bits == text.style.font_size.to_bits()
             && self.line_height_bits == text.style.line_height.to_bits()
             && self.family == text.style.family
-            && self.weight == text.style.weight.0
+            && self.weight == text.style.weight.value()
             && self.style == text.style.style
             && self.stretch == text.style.stretch
             && self.wrap == wrap_key(text.style.wrap)
@@ -2800,9 +3086,9 @@ impl Default for UiDocumentScale {
 
 #[derive(Debug)]
 pub struct UiDocument {
-    pub root: UiNodeId,
-    pub focus: UiFocusState,
-    pub scale: UiDocumentScale,
+    pub(crate) root: UiNodeId,
+    pub(crate) focus: UiFocusState,
+    pub(crate) scale: UiDocumentScale,
     pub(crate) nodes: Vec<UiNode>,
     portal_hosts: HashMap<UiPortalId, UiNodeId>,
     layout_revision: u64,
@@ -2830,9 +3116,17 @@ impl UiDocument {
         }
     }
 
+    pub const fn root(&self) -> UiNodeId {
+        self.root
+    }
+
     pub fn with_scale(mut self, scale: UiDocumentScale) -> Self {
         self.set_scale(scale);
         self
+    }
+
+    pub fn scale(&self) -> UiDocumentScale {
+        self.scale
     }
 
     pub fn set_scale(&mut self, scale: UiDocumentScale) {
@@ -2861,6 +3155,10 @@ impl UiDocument {
 
     pub fn effective_scale(&self) -> f32 {
         self.scale.effective_scale()
+    }
+
+    pub fn focus_state(&self) -> &UiFocusState {
+        &self.focus
     }
 
     pub fn add_child(&mut self, parent: UiNodeId, mut node: UiNode) -> UiNodeId {
@@ -3598,16 +3896,34 @@ impl UiDocument {
 
         let gap_count = children.len().saturating_sub(1) as f32;
         match style.flex_direction {
-            FlexDirection::Row | FlexDirection::RowReverse => UiSize::new(
-                children.iter().map(|child| child.width).sum::<f32>()
-                    + length_percentage_points(style.gap.width, 0.0, 1.0) * gap_count
-                    + spacing_width,
-                children
-                    .iter()
-                    .map(|child| child.height)
-                    .fold(0.0, f32::max)
-                    + spacing_height,
-            ),
+            FlexDirection::Row | FlexDirection::RowReverse => {
+                let horizontal_gap = length_percentage_points(style.gap.width, 0.0, 1.0);
+                let vertical_gap = length_percentage_points(style.gap.height, 0.0, 1.0);
+                if style.flex_wrap != FlexWrap::NoWrap {
+                    if let Some(width) = content_width {
+                        let wrapped = wrapped_row_intrinsic_size(
+                            &children,
+                            width,
+                            horizontal_gap,
+                            vertical_gap,
+                        );
+                        return UiSize::new(
+                            wrapped.width + spacing_width,
+                            wrapped.height + spacing_height,
+                        );
+                    }
+                }
+                UiSize::new(
+                    children.iter().map(|child| child.width).sum::<f32>()
+                        + horizontal_gap * gap_count
+                        + spacing_width,
+                    children
+                        .iter()
+                        .map(|child| child.height)
+                        .fold(0.0, f32::max)
+                        + spacing_height,
+                )
+            }
             FlexDirection::Column | FlexDirection::ColumnReverse => UiSize::new(
                 children.iter().map(|child| child.width).fold(0.0, f32::max) + spacing_width,
                 children.iter().map(|child| child.height).sum::<f32>()
@@ -3654,16 +3970,34 @@ impl UiDocument {
 
         let gap_count = children.len().saturating_sub(1) as f32;
         match style.flex_direction {
-            FlexDirection::Row | FlexDirection::RowReverse => UiSize::new(
-                children.iter().map(|child| child.width).sum::<f32>()
-                    + length_percentage_points(style.gap.width, 0.0, 1.0) * gap_count
-                    + spacing_width,
-                children
-                    .iter()
-                    .map(|child| child.height)
-                    .fold(0.0, f32::max)
-                    + spacing_height,
-            ),
+            FlexDirection::Row | FlexDirection::RowReverse => {
+                let horizontal_gap = length_percentage_points(style.gap.width, 0.0, 1.0);
+                let vertical_gap = length_percentage_points(style.gap.height, 0.0, 1.0);
+                if style.flex_wrap != FlexWrap::NoWrap {
+                    if let Some(width) = content_width {
+                        let wrapped = wrapped_row_intrinsic_size(
+                            &children,
+                            width,
+                            horizontal_gap,
+                            vertical_gap,
+                        );
+                        return UiSize::new(
+                            wrapped.width + spacing_width,
+                            wrapped.height + spacing_height,
+                        );
+                    }
+                }
+                UiSize::new(
+                    children.iter().map(|child| child.width).sum::<f32>()
+                        + horizontal_gap * gap_count
+                        + spacing_width,
+                    children
+                        .iter()
+                        .map(|child| child.height)
+                        .fold(0.0, f32::max)
+                        + spacing_height,
+                )
+            }
             FlexDirection::Column | FlexDirection::ColumnReverse => UiSize::new(
                 children.iter().map(|child| child.width).fold(0.0, f32::max) + spacing_width,
                 children.iter().map(|child| child.height).sum::<f32>()
@@ -4187,6 +4521,22 @@ impl UiDocument {
         }
     }
 
+    pub(crate) fn refresh_interaction_animation_inputs(
+        &mut self,
+        previous_focus: UiFocusState,
+        pointer: Option<UiPoint>,
+    ) {
+        self.sanitize_focus_state();
+        let previous_focus = self.sanitized_focus_state(previous_focus);
+        self.sync_interaction_animation_inputs_for(
+            previous_focus.hovered,
+            previous_focus.pressed,
+            previous_focus.focused,
+            pointer,
+            None,
+        );
+    }
+
     fn sync_interaction_animation_inputs_for(
         &mut self,
         previous_hovered: Option<UiNodeId>,
@@ -4530,11 +4880,19 @@ impl UiDocument {
 
     pub fn paint_list(&self) -> PaintList {
         let mut list = PaintList {
-            items: Vec::with_capacity(self.nodes.len()),
+            items: Vec::with_capacity(self.nodes.len() + 8),
         };
         let layer_orders = self.effective_layer_orders();
-        for index in self.visual_order_with_layer(&layer_orders) {
+        let visual_order = self.visual_order_with_layer(&layer_orders);
+        let mut pending_auto_scrollbars = Vec::new();
+        for index in visual_order {
             let id = UiNodeId(index);
+            self.flush_closed_auto_scrollbars(
+                &mut list,
+                &mut pending_auto_scrollbars,
+                id,
+                &layer_orders,
+            );
             let node = &self.nodes[index];
             if !node.layout.visible
                 || node.layout.clip_rect.width <= f32::EPSILON
@@ -4666,8 +5024,93 @@ impl UiDocument {
                     }
                 }
             }
+            if node_has_visible_scroll_range(node) {
+                pending_auto_scrollbars.push(id);
+            }
+        }
+        while let Some(id) = pending_auto_scrollbars.pop() {
+            self.push_auto_scrollbars(&mut list, id, &layer_orders);
         }
         list
+    }
+
+    fn flush_closed_auto_scrollbars(
+        &self,
+        list: &mut PaintList,
+        pending: &mut Vec<UiNodeId>,
+        next: UiNodeId,
+        layer_orders: &[platform::LayerOrder],
+    ) {
+        while pending
+            .last()
+            .is_some_and(|scroll| !self.node_is_descendant_or_self(*scroll, next))
+        {
+            let scroll = pending.pop().expect("pending scrollbar");
+            self.push_auto_scrollbars(list, scroll, layer_orders);
+        }
+    }
+
+    fn push_auto_scrollbars(
+        &self,
+        list: &mut PaintList,
+        id: UiNodeId,
+        layer_orders: &[platform::LayerOrder],
+    ) {
+        let Some(node) = self.nodes.get(id.0) else {
+            return;
+        };
+        if !node.layout.visible {
+            return;
+        }
+        let Some(scroll) = node.scroll else {
+            return;
+        };
+        let Some(viewport) = node.layout.rect.intersection(node.layout.clip_rect) else {
+            return;
+        };
+        let max_offset = scroll.max_offset();
+        let vertical = scroll.axes.vertical
+            && max_offset.y > f32::EPSILON
+            && !self.has_visible_scrollbar_for_scroll_node(id, scroll, AuditAxis::Vertical);
+        let horizontal = scroll.axes.horizontal
+            && max_offset.x > f32::EPSILON
+            && !self.has_visible_scrollbar_for_scroll_node(id, scroll, AuditAxis::Horizontal);
+        if vertical {
+            if let Some(track) = auto_vertical_scrollbar_track(viewport, horizontal) {
+                push_auto_scrollbar_rect(list, id, track, node, layer_orders, true);
+                if let Some(thumb) = auto_vertical_scrollbar_thumb(scroll, track) {
+                    push_auto_scrollbar_rect(list, id, thumb, node, layer_orders, false);
+                }
+            }
+        }
+        if horizontal {
+            if let Some(track) = auto_horizontal_scrollbar_track(viewport, vertical) {
+                push_auto_scrollbar_rect(list, id, track, node, layer_orders, true);
+                if let Some(thumb) = auto_horizontal_scrollbar_thumb(scroll, track) {
+                    push_auto_scrollbar_rect(list, id, thumb, node, layer_orders, false);
+                }
+            }
+        }
+    }
+
+    fn has_visible_scrollbar_for_scroll_node(
+        &self,
+        scroll_node: UiNodeId,
+        scroll: ScrollState,
+        axis: AuditAxis,
+    ) -> bool {
+        let Some(scroll_node) = self.nodes.get(scroll_node.0) else {
+            return false;
+        };
+        let scroll_rect = scroll_node.layout.rect;
+        self.nodes.iter().any(|node| {
+            node.layout.visible
+                && node.scrollbar.is_some_and(|scrollbar| {
+                    scrollbar.axis == axis
+                        && scrollbar_scroll_matches(axis, scroll, scrollbar.scroll)
+                        && scrollbar_rect_matches_scroll_rect(axis, scroll_rect, node.layout.rect)
+                })
+        })
     }
 
     fn node_animation_values(node: &UiNode) -> AnimatedValues {
@@ -4727,6 +5170,170 @@ impl UiDocument {
         }
         orders
     }
+}
+
+fn node_has_visible_scroll_range(node: &UiNode) -> bool {
+    node.auto_scrollbar
+        && node.scroll.is_some_and(|scroll| {
+            let max = scroll.max_offset();
+            (scroll.axes.vertical && max.y > f32::EPSILON)
+                || (scroll.axes.horizontal && max.x > f32::EPSILON)
+        })
+}
+
+fn scrollbar_scroll_matches(axis: AuditAxis, scroll: ScrollState, scrollbar: ScrollState) -> bool {
+    match axis {
+        AuditAxis::Horizontal => {
+            approx_same_scalar(scroll.viewport_size.width, scrollbar.viewport_size.width)
+                && approx_same_scalar(scroll.content_size.width, scrollbar.content_size.width)
+                && approx_same_scalar(scroll.max_offset().x, scrollbar.max_offset().x)
+        }
+        AuditAxis::Vertical => {
+            approx_same_scalar(scroll.viewport_size.height, scrollbar.viewport_size.height)
+                && approx_same_scalar(scroll.content_size.height, scrollbar.content_size.height)
+                && approx_same_scalar(scroll.max_offset().y, scrollbar.max_offset().y)
+        }
+    }
+}
+
+fn scrollbar_rect_matches_scroll_rect(axis: AuditAxis, scroll: UiRect, scrollbar: UiRect) -> bool {
+    match axis {
+        AuditAxis::Horizontal => {
+            axis_ranges_overlap(scroll.x, scroll.right(), scrollbar.x, scrollbar.right())
+                && scrollbar.y >= scroll.y - 16.0
+                && scrollbar.y <= scroll.bottom() + 16.0
+        }
+        AuditAxis::Vertical => {
+            axis_ranges_overlap(scroll.y, scroll.bottom(), scrollbar.y, scrollbar.bottom())
+                && scrollbar.x >= scroll.x - 16.0
+                && scrollbar.x <= scroll.right() + 16.0
+        }
+    }
+}
+
+fn axis_ranges_overlap(a_start: f32, a_end: f32, b_start: f32, b_end: f32) -> bool {
+    a_start < b_end && a_end > b_start
+}
+
+fn approx_same_scalar(left: f32, right: f32) -> bool {
+    (left - right).abs() <= 0.5
+}
+
+fn auto_vertical_scrollbar_track(viewport: UiRect, has_horizontal: bool) -> Option<UiRect> {
+    let thickness =
+        AUTO_SCROLLBAR_THICKNESS.min((viewport.width - AUTO_SCROLLBAR_INSET * 2.0).max(0.0));
+    let reserved_cross = if has_horizontal {
+        AUTO_SCROLLBAR_THICKNESS + AUTO_SCROLLBAR_INSET
+    } else {
+        0.0
+    };
+    let height = viewport.height - AUTO_SCROLLBAR_INSET * 2.0 - reserved_cross;
+    if thickness <= f32::EPSILON || height <= f32::EPSILON {
+        return None;
+    }
+    Some(UiRect::new(
+        viewport.right() - thickness - AUTO_SCROLLBAR_INSET,
+        viewport.y + AUTO_SCROLLBAR_INSET,
+        thickness,
+        height,
+    ))
+}
+
+fn auto_horizontal_scrollbar_track(viewport: UiRect, has_vertical: bool) -> Option<UiRect> {
+    let thickness =
+        AUTO_SCROLLBAR_THICKNESS.min((viewport.height - AUTO_SCROLLBAR_INSET * 2.0).max(0.0));
+    let reserved_cross = if has_vertical {
+        AUTO_SCROLLBAR_THICKNESS + AUTO_SCROLLBAR_INSET
+    } else {
+        0.0
+    };
+    let width = viewport.width - AUTO_SCROLLBAR_INSET * 2.0 - reserved_cross;
+    if thickness <= f32::EPSILON || width <= f32::EPSILON {
+        return None;
+    }
+    Some(UiRect::new(
+        viewport.x + AUTO_SCROLLBAR_INSET,
+        viewport.bottom() - thickness - AUTO_SCROLLBAR_INSET,
+        width,
+        thickness,
+    ))
+}
+
+fn auto_vertical_scrollbar_thumb(scroll: ScrollState, track: UiRect) -> Option<UiRect> {
+    let length = track.height;
+    if length <= f32::EPSILON {
+        return None;
+    }
+    let viewport = scroll.viewport_size.height;
+    let content = scroll.content_size.height;
+    let max_offset = scroll.max_offset().y;
+    if viewport <= f32::EPSILON || content <= viewport || max_offset <= f32::EPSILON {
+        return None;
+    }
+    let thumb_length =
+        (length * (viewport / content).clamp(0.0, 1.0)).max(AUTO_SCROLLBAR_MIN_THUMB.min(length));
+    let travel = (length - thumb_length).max(0.0);
+    let offset_ratio = (scroll.offset.y / max_offset).clamp(0.0, 1.0);
+    Some(UiRect::new(
+        track.x,
+        track.y + travel * offset_ratio,
+        track.width,
+        thumb_length,
+    ))
+}
+
+fn auto_horizontal_scrollbar_thumb(scroll: ScrollState, track: UiRect) -> Option<UiRect> {
+    let length = track.width;
+    if length <= f32::EPSILON {
+        return None;
+    }
+    let viewport = scroll.viewport_size.width;
+    let content = scroll.content_size.width;
+    let max_offset = scroll.max_offset().x;
+    if viewport <= f32::EPSILON || content <= viewport || max_offset <= f32::EPSILON {
+        return None;
+    }
+    let thumb_length =
+        (length * (viewport / content).clamp(0.0, 1.0)).max(AUTO_SCROLLBAR_MIN_THUMB.min(length));
+    let travel = (length - thumb_length).max(0.0);
+    let offset_ratio = (scroll.offset.x / max_offset).clamp(0.0, 1.0);
+    Some(UiRect::new(
+        track.x + travel * offset_ratio,
+        track.y,
+        thumb_length,
+        track.height,
+    ))
+}
+
+fn push_auto_scrollbar_rect(
+    list: &mut PaintList,
+    id: UiNodeId,
+    rect: UiRect,
+    node: &UiNode,
+    layer_orders: &[platform::LayerOrder],
+    track: bool,
+) {
+    let scrollbar_layer =
+        platform::LayerOrder::new(layer_orders[id.0].layer, platform::LAYER_LOCAL_Z_MAX);
+    list.items.push(PaintItem {
+        node: id,
+        rect,
+        clip_rect: node.layout.clip_rect,
+        z_index: scrollbar_layer.local_z,
+        layer_order: scrollbar_layer,
+        opacity: node.layout.opacity,
+        transform: PaintTransform::default(),
+        shader: None,
+        kind: PaintKind::Rect {
+            fill: if track {
+                AUTO_SCROLLBAR_TRACK_COLOR
+            } else {
+                AUTO_SCROLLBAR_THUMB_COLOR
+            },
+            stroke: None,
+            corner_radius: AUTO_SCROLLBAR_THICKNESS * 0.5,
+        },
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -6214,7 +6821,8 @@ fn effective_foreground_color(foreground: ColorRgba, background: ColorRgba) -> C
 }
 
 fn required_text_contrast_ratio(style: &TextStyle) -> f32 {
-    if style.font_size >= 24.0 || (style.font_size >= 18.66 && style.weight.0 >= FontWeight::BOLD.0)
+    if style.font_size >= 24.0
+        || (style.font_size >= 18.66 && style.weight.value() >= FontWeight::BOLD.value())
     {
         3.0
     } else {
@@ -6931,6 +7539,56 @@ fn outer_intrinsic_size(size: UiSize, style: &Style) -> UiSize {
                 .unwrap_or(0.0)
                 .max(0.0),
     )
+}
+
+fn wrapped_row_intrinsic_size(
+    children: &[UiSize],
+    available_width: f32,
+    horizontal_gap: f32,
+    vertical_gap: f32,
+) -> UiSize {
+    let available_width = finite_or(available_width, 0.0).max(0.0);
+    let horizontal_gap = finite_or(horizontal_gap, 0.0).max(0.0);
+    let vertical_gap = finite_or(vertical_gap, 0.0).max(0.0);
+    let mut max_line_width: f32 = 0.0;
+    let mut total_height: f32 = 0.0;
+    let mut line_width: f32 = 0.0;
+    let mut line_height: f32 = 0.0;
+    let mut line_count = 0usize;
+
+    for child in children {
+        let child_width = finite_or(child.width, 0.0).max(0.0);
+        let child_height = finite_or(child.height, 0.0).max(0.0);
+        let gap = if line_width > 0.0 {
+            horizontal_gap
+        } else {
+            0.0
+        };
+        let next_width = line_width + gap + child_width;
+        if line_width > 0.0 && next_width > available_width {
+            max_line_width = max_line_width.max(line_width);
+            if line_count > 0 {
+                total_height += vertical_gap;
+            }
+            total_height += line_height;
+            line_count += 1;
+            line_width = child_width;
+            line_height = child_height;
+        } else {
+            line_width = next_width;
+            line_height = line_height.max(child_height);
+        }
+    }
+
+    if line_width > 0.0 || line_height > 0.0 {
+        max_line_width = max_line_width.max(line_width);
+        if line_count > 0 {
+            total_height += vertical_gap;
+        }
+        total_height += line_height;
+    }
+
+    UiSize::new(max_line_width.max(available_width), total_height)
 }
 
 fn length_percentage_auto_points(value: LengthPercentageAuto) -> Option<f32> {
@@ -8222,7 +8880,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_node_factories_accept_legacy_taffy_styles() {
+    fn ui_node_factories_accept_internal_taffy_layout_styles() {
         let legacy = Style {
             size: TaffySize {
                 width: length(200.0),
@@ -8230,15 +8888,16 @@ mod tests {
             },
             ..Default::default()
         };
-        let container = UiNode::container("legacy-container", legacy.clone());
-        let text = UiNode::text("legacy-text", "label", TextStyle::default(), legacy.clone());
+        let layout = LayoutStyle::from_taffy_style(legacy.clone());
+        let container = UiNode::container("legacy-container", layout.clone());
+        let text = UiNode::text("legacy-text", "label", TextStyle::default(), layout.clone());
         let image = UiNode::image(
             "legacy-image",
             ImageContent::new("icons.render"),
-            legacy.clone(),
+            layout.clone(),
         );
-        let scene = UiNode::scene("legacy-scene", Vec::new(), legacy.clone());
-        let canvas = UiNode::canvas("legacy-canvas", "canvas_key", legacy.clone());
+        let scene = UiNode::scene("legacy-scene", Vec::new(), layout.clone());
+        let canvas = UiNode::canvas("legacy-canvas", "canvas_key", layout);
 
         assert_eq!(container.style.layout.size, legacy.size);
         assert_eq!(text.style.layout.size, legacy.size);
@@ -8266,7 +8925,7 @@ mod tests {
     }
 
     #[test]
-    fn document_accepts_legacy_taffy_root_and_style_updates() {
+    fn document_accepts_internal_taffy_root_and_style_updates() {
         let legacy = Style {
             size: TaffySize {
                 width: length(800.0),
@@ -8274,7 +8933,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut doc = UiDocument::new(legacy.clone());
+        let mut doc = UiDocument::new(LayoutStyle::from_taffy_style(legacy.clone()));
         let child = doc.add_child(
             doc.root,
             UiNode::container(
@@ -8299,7 +8958,7 @@ mod tests {
             },
             ..Default::default()
         };
-        doc.set_node_style(child, updated.clone());
+        doc.set_node_style(child, LayoutStyle::from_taffy_style(updated.clone()));
         let child_style = &doc.node(child).style.layout;
         assert_eq!(child_style.size, updated.size);
         assert_eq!(doc.node(doc.root).style.layout.size, legacy.size);
@@ -8362,8 +9021,7 @@ mod tests {
                         height: Dimension::auto(),
                     },
                     ..Default::default()
-                })
-                .style,
+                }),
             ),
         );
         doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
@@ -8371,6 +9029,35 @@ mod tests {
         let rect = doc.node(text).layout.rect;
         assert!(rect.width > 0.0);
         assert!(rect.height > 0.0);
+    }
+
+    #[test]
+    fn text_nodes_clip_paint_to_their_own_layout_rect() {
+        let mut doc = UiDocument::new(root_style(200.0, 100.0));
+        let text = doc.add_child(
+            doc.root,
+            UiNode::text(
+                "clipped.label",
+                "A label that is intentionally wider than its cell",
+                TextStyle {
+                    wrap: TextWrap::None,
+                    ..Default::default()
+                },
+                LayoutStyle::size(48.0, 24.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(200.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let text_rect = doc.node(text).layout.rect;
+        let text_item = doc
+            .paint_list()
+            .items
+            .into_iter()
+            .find(|item| item.node == text && matches!(item.kind, PaintKind::Text(_)))
+            .expect("text paint item");
+
+        assert_eq!(text_item.clip_rect, text_rect);
     }
 
     #[test]
@@ -8397,6 +9084,46 @@ mod tests {
             intrinsic.preferred.width > intrinsic.min.width,
             "{intrinsic:?}"
         );
+    }
+
+    #[test]
+    fn intrinsic_wrapped_row_uses_wrapped_extent_instead_of_unbounded_row_width() {
+        let mut doc = UiDocument::new(root_style(320.0, 240.0));
+        let grid = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "wrap.grid",
+                LayoutStyle::from_taffy_style(Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    size: TaffySize {
+                        width: length(248.0),
+                        height: Dimension::auto(),
+                    },
+                    gap: TaffySize {
+                        width: LengthPercentage::length(4.0),
+                        height: LengthPercentage::length(4.0),
+                    },
+                    ..Default::default()
+                }),
+            ),
+        );
+        for index in 0..42 {
+            doc.add_child(
+                grid,
+                UiNode::container(format!("wrap.cell.{index}"), LayoutStyle::size(32.0, 28.0)),
+            );
+        }
+
+        let intrinsic = doc
+            .intrinsic_size(grid, &mut ApproxTextMeasurer)
+            .expect("intrinsic size");
+
+        assert_eq!(intrinsic.min.width, 248.0);
+        assert_eq!(intrinsic.preferred.width, 248.0);
+        assert_eq!(intrinsic.min.height, 188.0);
+        assert_eq!(intrinsic.preferred.height, 188.0);
     }
 
     #[test]
@@ -9886,6 +10613,199 @@ mod tests {
     }
 
     #[test]
+    fn scroll_container_paints_automatic_scrollbar_when_content_overflows() {
+        let mut doc = UiDocument::new(root_style(160.0, 120.0));
+        let scroll = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(80.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll,
+            UiNode::container(
+                "content",
+                LayoutStyle::size(70.0, 160.0).with_flex_shrink(0.0),
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(60, 90, 130, 255), None, 0.0)),
+        );
+        doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let scrollbar_paint = paint
+            .items
+            .iter()
+            .filter(|item| {
+                item.node == scroll
+                    && matches!(item.kind, PaintKind::Rect { .. })
+                    && item.rect.width <= AUTO_SCROLLBAR_THICKNESS + 0.5
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(scrollbar_paint.len(), 2, "{scrollbar_paint:#?}");
+        assert!(scrollbar_paint
+            .iter()
+            .any(|item| item.rect.height >= AUTO_SCROLLBAR_MIN_THUMB));
+        assert!(scrollbar_paint
+            .iter()
+            .all(|item| item.rect.right() <= doc.node(scroll).layout.rect.right()));
+    }
+
+    #[test]
+    fn scroll_container_omits_automatic_scrollbar_without_overflow() {
+        let mut doc = UiDocument::new(root_style(160.0, 120.0));
+        let scroll = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(80.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll,
+            UiNode::container(
+                "content",
+                LayoutStyle::size(70.0, 40.0).with_flex_shrink(0.0),
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(60, 90, 130, 255), None, 0.0)),
+        );
+        doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        assert!(
+            paint
+                .items
+                .iter()
+                .filter(|item| item.node == scroll && matches!(item.kind, PaintKind::Rect { .. }))
+                .count()
+                == 0
+        );
+    }
+
+    #[test]
+    fn scroll_container_does_not_duplicate_explicit_scrollbar() {
+        let scroll_state = ScrollState {
+            axes: ScrollAxes::VERTICAL,
+            offset: UiPoint::new(0.0, 0.0),
+            viewport_size: UiSize::new(80.0, 60.0),
+            content_size: UiSize::new(80.0, 160.0),
+        };
+        let mut doc = UiDocument::new(root_style(160.0, 120.0));
+        let scroll = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 80.0, 60.0)).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        if let Some(scroll) = doc.node_mut(scroll).scroll.as_mut() {
+            *scroll = scroll_state;
+        }
+        doc.add_child(
+            scroll,
+            UiNode::container(
+                "content",
+                LayoutStyle::size(70.0, 160.0).with_flex_shrink(0.0),
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(60, 90, 130, 255), None, 0.0)),
+        );
+        doc.add_child(
+            doc.root,
+            UiNode::container(
+                "explicit.scrollbar",
+                LayoutStyle::absolute_rect(UiRect::new(84.0, 0.0, 8.0, 60.0)),
+            )
+            .with_visual(UiVisual::panel(
+                ColorRgba::new(103, 119, 143, 255),
+                None,
+                4.0,
+            ))
+            .with_scrollbar_audit(AuditAxis::Vertical, scroll_state),
+        );
+        doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        assert_eq!(
+            paint
+                .items
+                .iter()
+                .filter(|item| item.node == scroll && matches!(item.kind, PaintKind::Rect { .. }))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn automatic_scrollbar_paints_above_scrolled_content() {
+        let mut doc = UiDocument::new(root_style(160.0, 120.0));
+        let scroll = doc.add_child(
+            doc.root,
+            UiNode::container(
+                "scroll",
+                UiNodeStyle {
+                    layout: LayoutStyle::size(80.0, 60.0).style,
+                    clip: ClipBehavior::Clip,
+                    ..Default::default()
+                },
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        let mut content_style: UiNodeStyle =
+            LayoutStyle::size(70.0, 160.0).with_flex_shrink(0.0).into();
+        content_style.z_index = 20;
+        let content = doc.add_child(
+            scroll,
+            UiNode::container("content", content_style).with_visual(UiVisual::panel(
+                ColorRgba::new(60, 90, 130, 255),
+                None,
+                0.0,
+            )),
+        );
+        doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let content_paint = paint
+            .items
+            .iter()
+            .find(|item| item.node == content && matches!(item.kind, PaintKind::Rect { .. }))
+            .expect("content paint");
+        let scrollbar_paint = paint
+            .items
+            .iter()
+            .filter(|item| {
+                item.node == scroll
+                    && matches!(item.kind, PaintKind::Rect { .. })
+                    && item.rect.width <= AUTO_SCROLLBAR_THICKNESS + 0.5
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(scrollbar_paint.len(), 2, "{scrollbar_paint:#?}");
+        assert!(scrollbar_paint.iter().all(|item| {
+            item.layer_order.layer == content_paint.layer_order.layer
+                && item.layer_order.local_z == platform::LAYER_LOCAL_Z_MAX
+                && item.layer_order > content_paint.layer_order
+        }));
+    }
+
+    #[test]
     fn compute_layout_clamps_stale_scroll_offsets_to_current_range() {
         let mut doc = UiDocument::new(root_style(200.0, 120.0));
         let scroll_area = doc.add_child(
@@ -10019,7 +10939,7 @@ mod tests {
                     color: ColorRgba::new(42, 48, 56, 255),
                     ..Default::default()
                 },
-                button_style(120.0, 20.0).layout,
+                LayoutStyle::from_taffy_style(button_style(120.0, 20.0).layout),
             ),
         );
         let good = doc.add_child(
@@ -10033,7 +10953,7 @@ mod tests {
                     color: ColorRgba::new(230, 238, 248, 255),
                     ..Default::default()
                 },
-                button_style(120.0, 20.0).layout,
+                LayoutStyle::from_taffy_style(button_style(120.0, 20.0).layout),
             ),
         );
         doc.compute_layout(UiSize::new(240.0, 80.0), &mut ApproxTextMeasurer)
@@ -11669,6 +12589,91 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
+    }
+
+    #[test]
+    fn refresh_interaction_animation_inputs_reapplies_pointer_values_after_runtime_restore() {
+        fn interaction_doc() -> (UiDocument, UiNodeId) {
+            let rest_values = AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0);
+            let right_values =
+                AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(1.0);
+            let animation = AnimationMachine::new(
+                vec![
+                    AnimationState::new("rest", rest_values),
+                    AnimationState::new("right", right_values),
+                ],
+                Vec::new(),
+                "rest",
+            )
+            .expect("animation")
+            .with_number_input(ANIMATION_INPUT_POINTER_NORM_X, 0.0)
+            .with_blend_binding(AnimationBlendBinding::new(
+                ANIMATION_INPUT_POINTER_NORM_X,
+                "rest",
+                "right",
+            ));
+            let mut doc = UiDocument::new(root_style(160.0, 100.0));
+            let button = doc.add_child(
+                doc.root,
+                UiNode::container("button", button_style(80.0, 40.0))
+                    .with_input(InputBehavior::BUTTON)
+                    .with_animation(animation),
+            );
+            doc.compute_layout(UiSize::new(160.0, 100.0), &mut ApproxTextMeasurer)
+                .expect("layout");
+            (doc, button)
+        }
+
+        let pointer = UiPoint::new(60.0, 20.0);
+        let (mut previous, previous_button) = interaction_doc();
+        previous.handle_input(UiInputEvent::PointerMove(pointer));
+        let previous_focus = previous.focus_state().clone();
+        let previous_animation = previous
+            .node(previous_button)
+            .animation
+            .as_ref()
+            .expect("previous animation")
+            .clone();
+        assert!(
+            previous_animation.values().morph > 0.70,
+            "{:?}",
+            previous_animation.values()
+        );
+
+        let (mut fresh, button) = interaction_doc();
+        let mut restored_animation = fresh
+            .node(button)
+            .animation
+            .as_ref()
+            .expect("fresh animation")
+            .clone();
+        assert!(restored_animation.retain_runtime_from(&previous_animation));
+        fresh.node_mut(button).animation = Some(restored_animation);
+        assert!(
+            fresh
+                .node(button)
+                .animation
+                .as_ref()
+                .expect("restored animation")
+                .values()
+                .morph
+                <= 0.01
+        );
+
+        fresh.set_focus_state(previous_focus.clone());
+        let mut current_focus = fresh.focus_state().clone();
+        current_focus.hovered = fresh.hit_test(pointer);
+        fresh.set_focus_state(current_focus);
+        fresh.refresh_interaction_animation_inputs(previous_focus, Some(pointer));
+
+        let animation = fresh.node(button).animation.as_ref().unwrap();
+        assert_eq!(
+            animation
+                .input(ANIMATION_INPUT_POINTER_NORM_X)
+                .and_then(|value| value.as_number()),
+            Some(0.75)
+        );
+        assert!(animation.values().morph > 0.70, "{:?}", animation.values());
     }
 
     #[test]

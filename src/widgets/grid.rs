@@ -1,5 +1,9 @@
 use super::*;
 
+/// Options for an accessibility grid composed from row and cell widgets.
+///
+/// This is a semantic data/grid widget helper. For CSS Grid-style layout
+/// composition, prefer [`crate::layout::Layout::grid`] with grid track helpers.
 #[derive(Debug, Clone)]
 pub struct GridOptions {
     pub layout: LayoutStyle,

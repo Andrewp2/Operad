@@ -4,9 +4,11 @@ use taffy::prelude::{
     Dimension, Display, FlexDirection, LengthPercentage, Size as TaffySize, Style,
 };
 
+use crate::commands::{ShortcutBinding, ShortcutConflict};
+use crate::tooltips::ShortcutFormatter;
 use crate::{
-    ColorRgba, Command, CommandId, CommandRegistry, CommandScope, LayoutStyle, ShortcutBinding,
-    ShortcutConflict, ShortcutFormatter, TextStyle, UiDocument, UiNode, UiNodeId, UiNodeStyle,
+    ColorRgba, Command, CommandId, CommandRegistry, CommandScope, LayoutStyle, TextStyle,
+    UiDocument, UiNode, UiNodeId, UiNodeStyle,
 };
 
 use super::data::PropertyValueKind;

@@ -256,13 +256,13 @@ impl ColorPalette {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorPickerState {
-    pub value: ColorRgba,
-    pub hsv: ColorHsv,
-    pub oklch: ColorOklch,
-    pub mode: ColorPickerMode,
-    pub palette: ColorPalette,
-    pub recent: Vec<ColorRgba>,
-    pub max_recent: usize,
+    value: ColorRgba,
+    hsv: ColorHsv,
+    oklch: ColorOklch,
+    mode: ColorPickerMode,
+    palette: ColorPalette,
+    recent: Vec<ColorRgba>,
+    max_recent: usize,
 }
 
 impl ColorPickerState {
@@ -283,12 +283,33 @@ impl ColorPickerState {
         self
     }
 
+    pub fn set_palette(&mut self, palette: ColorPalette) {
+        self.palette = palette;
+    }
+
+    pub fn palette(&self) -> &ColorPalette {
+        &self.palette
+    }
+
+    pub fn palette_mut(&mut self) -> &mut ColorPalette {
+        &mut self.palette
+    }
+
     pub fn with_recent(mut self, recent: impl IntoIterator<Item = ColorRgba>) -> Self {
         let colors: Vec<_> = recent.into_iter().collect();
         for color in colors.into_iter().rev() {
             self.remember_recent(color);
         }
         self
+    }
+
+    pub fn with_max_recent(mut self, max_recent: usize) -> Self {
+        self.set_max_recent(max_recent);
+        self
+    }
+
+    pub fn value(&self) -> ColorRgba {
+        self.value
     }
 
     pub fn hsv(&self) -> ColorHsv {
@@ -301,6 +322,23 @@ impl ColorPickerState {
 
     pub fn mode(&self) -> ColorPickerMode {
         self.mode
+    }
+
+    pub fn recent(&self) -> &[ColorRgba] {
+        &self.recent
+    }
+
+    pub fn max_recent(&self) -> usize {
+        self.max_recent
+    }
+
+    pub fn set_max_recent(&mut self, max_recent: usize) {
+        self.max_recent = max_recent;
+        self.recent.truncate(self.max_recent);
+    }
+
+    pub fn clear_recent(&mut self) {
+        self.recent.clear();
     }
 
     pub fn with_mode(mut self, mode: ColorPickerMode) -> Self {
@@ -1170,6 +1208,25 @@ pub fn color_swatch_button(
     color_button(document, parent, name, color, options.show_label(false))
 }
 
+/// Create a color edit button using the format configured in
+/// [`ColorButtonOptions`].
+///
+/// This is the application-facing entry point. Use
+/// [`ColorButtonOptions::with_format`] to choose how the value is presented.
+pub fn color_edit_button(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    color: ColorRgba,
+    options: ColorButtonOptions,
+) -> ColorButtonNodes {
+    color_button(document, parent, name, color, options)
+}
+
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::Rgb)"
+)]
 pub fn color_edit_button_rgb(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1186,6 +1243,10 @@ pub fn color_edit_button_rgb(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::Rgba)"
+)]
 pub fn color_edit_button_rgba(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1202,6 +1263,10 @@ pub fn color_edit_button_rgba(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::RgbaPremultiplied)"
+)]
 pub fn color_edit_button_rgba_premultiplied(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1219,6 +1284,10 @@ pub fn color_edit_button_rgba_premultiplied(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::RgbaUnmultiplied)"
+)]
 pub fn color_edit_button_rgba_unmultiplied(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1235,6 +1304,10 @@ pub fn color_edit_button_rgba_unmultiplied(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::Srgb)"
+)]
 pub fn color_edit_button_srgb(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1251,6 +1324,10 @@ pub fn color_edit_button_srgb(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::Srgba)"
+)]
 pub fn color_edit_button_srgba(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1267,6 +1344,10 @@ pub fn color_edit_button_srgba(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::SrgbaPremultiplied)"
+)]
 pub fn color_edit_button_srgba_premultiplied(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1284,6 +1365,10 @@ pub fn color_edit_button_srgba_premultiplied(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::SrgbaUnmultiplied)"
+)]
 pub fn color_edit_button_srgba_unmultiplied(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1300,6 +1385,10 @@ pub fn color_edit_button_srgba_unmultiplied(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::Color32)"
+)]
 pub fn color_picker_color32(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1316,6 +1405,10 @@ pub fn color_picker_color32(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::Hsva)"
+)]
 pub fn color_edit_button_hsva(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -1332,6 +1425,10 @@ pub fn color_edit_button_hsva(
     )
 }
 
+#[deprecated(
+    since = "8.0.0",
+    note = "use color_edit_button with ColorButtonOptions::with_format(ColorValueFormat::Oklch)"
+)]
 pub fn color_edit_button_oklch(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -2701,6 +2798,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn color_button_builders_expose_common_formats_and_actions() {
         let mut document = UiDocument::new(root_style(360.0, 180.0));
         let root = document.root;
@@ -2787,6 +2885,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn color_button_builders_cover_egui_style_color_conveniences() {
         let mut document = UiDocument::new(root_style(420.0, 240.0));
         let root = document.root;

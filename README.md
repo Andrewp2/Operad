@@ -144,6 +144,8 @@ scripts/test-full.sh
 That adds the full all-feature test suite and the supported WASM showcase check
 for `wasm32-unknown-unknown`.
 
+The release flow lives in [docs/release_process.md](docs/release_process.md).
+
 ## Learn More
 
 - [API documentation](https://docs.rs/operad)

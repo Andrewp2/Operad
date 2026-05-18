@@ -1,4 +1,4 @@
-//! Shared picker primitives and legacy picker exports.
+//! Shared picker primitives and picker convenience exports.
 //!
 //! Concrete picker widget implementations live in the dedicated widget modules:
 //! `color_picker`, `date_picker`, `numeric_input`, and `path_picker`.
@@ -6,15 +6,13 @@
 use crate::{ColorRgba, ImageContent, ShaderEffect};
 
 pub use super::color_picker::{
-    color_edit_button_hsva, color_edit_button_oklch, color_edit_button_rgb, color_edit_button_rgba,
-    color_edit_button_rgba_premultiplied, color_edit_button_rgba_unmultiplied,
-    color_edit_button_srgb, color_edit_button_srgba, color_edit_button_srgba_premultiplied,
-    color_edit_button_srgba_unmultiplied, color_picker, color_picker_color32, color_picker_hsva_2d,
-    color_swatch_button, compact_color_button, format_color_value, format_hex_color,
-    parse_hex_color, show_color, show_color_at, ColorButtonNodes, ColorButtonOptions, ColorChannel,
-    ColorChannelStep, ColorHsv, ColorHsva2dNodes, ColorHsva2dOptions, ColorOklch,
-    ColorOklchChannel, ColorPalette, ColorPickerMode, ColorPickerNodes, ColorPickerOptions,
-    ColorPickerState, ColorPickerStyle, ColorPickerUpdate, ColorSwatch, ColorValueFormat,
+    color_edit_button, color_picker, color_picker_hsva_2d, color_swatch_button,
+    compact_color_button, format_color_value, format_hex_color, parse_hex_color, show_color,
+    show_color_at, ColorButtonNodes, ColorButtonOptions, ColorChannel, ColorChannelStep, ColorHsv,
+    ColorHsva2dNodes, ColorHsva2dOptions, ColorOklch, ColorOklchChannel, ColorPalette,
+    ColorPickerActionOptions, ColorPickerActionOutcome, ColorPickerChannel, ColorPickerEffect,
+    ColorPickerMode, ColorPickerNodes, ColorPickerOptions, ColorPickerState, ColorPickerStyle,
+    ColorPickerTarget, ColorPickerUpdate, ColorSwatch, ColorValueFormat,
 };
 pub use super::date_picker::{
     CalendarDate, CalendarDayCell, CalendarMonth, DatePickerBuilder, DatePickerControl,
@@ -276,14 +274,14 @@ mod tests {
 
         let update = picker.select_swatch("blue").unwrap();
         assert_eq!(update.phase, EditPhase::CommitEdit);
-        assert_eq!(picker.value, ColorRgba::new(0, 0, 255, 255));
-        assert_eq!(picker.recent[0], picker.value);
+        assert_eq!(picker.value(), ColorRgba::new(0, 0, 255, 255));
+        assert_eq!(picker.recent()[0], picker.value());
 
         picker.remember_recent(ColorRgba::new(1, 2, 3, 255));
-        assert_eq!(picker.recent[0], ColorRgba::new(1, 2, 3, 255));
+        assert_eq!(picker.recent()[0], ColorRgba::new(1, 2, 3, 255));
         assert_eq!(
             picker
-                .recent
+                .recent()
                 .iter()
                 .filter(|color| **color == ColorRgba::new(1, 2, 3, 255))
                 .count(),
@@ -313,7 +311,7 @@ mod tests {
         assert!((picker.hsv().hue - preserved_hue).abs() < 0.01);
         assert!((picker.hsv().saturation - 0.5).abs() < 0.01);
         assert!((picker.hsv().value - 0.5).abs() < 0.01);
-        assert_ne!(picker.value.r, 255, "hue must not snap to red");
+        assert_ne!(picker.value().r, 255, "hue must not snap to red");
     }
 
     #[test]
@@ -328,7 +326,7 @@ mod tests {
         );
 
         assert_eq!(picker.hsv().hue, 360.0);
-        assert_eq!(picker.value, ColorRgba::new(255, 0, 0, 255));
+        assert_eq!(picker.value(), ColorRgba::new(255, 0, 0, 255));
     }
 
     #[test]
@@ -353,7 +351,7 @@ mod tests {
         assert_eq!(picker.oklch().hue, 360.0);
 
         picker.set_oklch_channel(ColorOklchChannel::Alpha, 0.5, EditPhase::UpdateEdit);
-        assert_eq!(picker.value.a, 128);
+        assert_eq!(picker.value().a, 128);
     }
 
     #[test]

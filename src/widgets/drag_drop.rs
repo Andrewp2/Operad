@@ -1,3 +1,4 @@
+use crate::drag_drop::{DragSourceDescriptor, DragSourceId, DropTargetDescriptor, DropTargetId};
 use crate::platform::{
     DragDropRequest, DragImage, DragOperation, DragPayload, LogicalPoint, LogicalSize,
 };
@@ -848,7 +849,7 @@ mod tests {
         );
         let event = GestureEvent::Drag(DragGesture {
             target: source.label,
-            pointer_id: crate::input::PointerId(1),
+            pointer_id: crate::input::PointerId::new(1),
             button: PointerButton::Primary,
             phase: GesturePhase::Update,
             origin: UiPoint::new(10.0, 10.0),

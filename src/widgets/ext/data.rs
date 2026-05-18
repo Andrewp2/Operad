@@ -82,6 +82,8 @@ mod tests {
         tree_view::*,
     };
     use super::*;
+    use crate::core::document::AuditWarning;
+    use crate::drag_drop::{DragSourceId, DropTargetId};
     use crate::{
         platform::{ClipboardRequest, DragOperation, DragPayload},
         *,

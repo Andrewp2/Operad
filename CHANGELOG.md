@@ -1,5 +1,41 @@
 # Changelog
 
+## 8.0.0 - 2026-05-18
+
+- Added application-shell APIs for command registries, scoped hotkeys,
+  shortcut remapping, command diagnostics, and command palette examples.
+- Added the animation state-machine runtime with inputs, triggers, blend
+  bindings, topology morph values, debug graph views, and showcase examples for
+  timed, scrubbed, boolean, and interaction-driven animation.
+- Added host capability profiles and backend diagnostics for native, web, and
+  test hosts so applications can gate hotkeys, text editing, canvas editing,
+  flycam input, docking, drag/drop, and accessibility behavior explicitly.
+- Expanded canvas input support with key release, raw mouse motion, cursor
+  capture requests, host-capture diagnostics, WGPU canvas callbacks, and replay
+  coverage for editor-style and flycam-style interactions.
+- Added reusable diagnostics for layout, paint, intrinsic sizing, accessibility,
+  command routing, theme editing, animation, runtime errors, platform responses,
+  virtualization, and performance summaries.
+- Added interaction recording and replay infrastructure, scenario harnesses,
+  long-wheel helpers, topmost input-consumption assertions, and external
+  showcase regression tests.
+- Added virtualized tree and data-table APIs with stable focus preservation,
+  selection/export/sort/filter/resize metadata, sticky regions, diagnostics,
+  and showcase coverage.
+- Added docking workspace primitives with split panes, drawers, drawer rails,
+  persisted layout snapshots, panel reorder targets, floating panel state, and
+  domain-neutral dock drag/drop contracts.
+- Added layout animation transition records and reduced-motion-aware paint-list
+  interpolation while keeping layout output authoritative.
+- Hardened widget layout, scroll, overlay, text input, selection, scrollbar,
+  color picker, styling, forms, media, drag/drop, and showcase behavior through
+  generic primitive fixes instead of showcase-only sizing patches.
+- Added the WASM/WebGPU showcase path for GitHub Pages, including root and
+  `/showcase/` artifacts, favicon packaging, browser smoke checks, and web
+  startup error reporting.
+- Documented v8 API stability categories and the reusable release process for
+  future Operad releases.
+
 ## 7.0.0 - 2026-05-14
 
 - Started the v7 source-organization pass by moving retained document

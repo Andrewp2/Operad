@@ -12,10 +12,18 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PointerId(pub u64);
+pub struct PointerId(pub(crate) u64);
 
 impl PointerId {
     pub const MOUSE: Self = Self(1);
+
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

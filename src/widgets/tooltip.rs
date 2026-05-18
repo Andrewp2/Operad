@@ -1,4 +1,8 @@
 use super::*;
+use crate::tooltips::{
+    resolve_tooltip_request, HelpItemState, HelpTimingPolicy, TooltipAnchor, TooltipContent,
+    TooltipInvocationKind, TooltipPlacement, TooltipRequest, TooltipResolution,
+};
 
 #[derive(Debug, Clone)]
 pub struct TooltipBoxOptions {
@@ -390,6 +394,7 @@ pub fn tooltip_box_from_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tooltips::TooltipVisibility;
 
     #[test]
     fn tooltip_rect_clamps_absolute_overlay_to_viewport() {

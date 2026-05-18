@@ -7,11 +7,12 @@
 
 use taffy::prelude::{
     AlignContent, AlignItems, CompactLength, Dimension, Display, FlexDirection, FlexWrap,
-    JustifyContent, LengthPercentage, LengthPercentageAuto, Position, Rect, Size as TaffySize,
-    Style,
+    GridTemplateComponent, JustifyContent, LengthPercentage, LengthPercentageAuto,
+    MaxTrackSizingFunction, MinTrackSizingFunction, Position, Rect, Size as TaffySize, Style,
+    TrackSizingFunction,
 };
 
-use crate::{ClipBehavior, LayoutStyle, UiNodeStyle, UiPoint, UiRect, UiSize};
+use crate::{LayoutStyle, UiNodeStyle, UiPoint, UiRect, UiSize};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayoutLength {
@@ -70,6 +71,13 @@ impl LayoutDimension {
 
     pub const fn percent(value: f32) -> Self {
         Self::Percent(value)
+    }
+
+    pub const fn points_value(self) -> Option<f32> {
+        match self {
+            Self::Points(value) => Some(value),
+            Self::Auto | Self::Percent(_) => None,
+        }
     }
 
     pub const fn to_taffy(self) -> Dimension {
@@ -472,6 +480,7 @@ impl From<LayoutGap> for TaffySize<LengthPercentage> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutDisplay {
     Flex,
+    Grid,
     None,
 }
 
@@ -479,6 +488,7 @@ impl LayoutDisplay {
     pub const fn to_taffy(self) -> Display {
         match self {
             Self::Flex => Display::Flex,
+            Self::Grid => Display::Grid,
             Self::None => Display::None,
         }
     }
@@ -486,6 +496,7 @@ impl LayoutDisplay {
     pub const fn from_taffy(value: Display) -> Option<Self> {
         match value {
             Display::Flex => Some(Self::Flex),
+            Display::Grid => Some(Self::Grid),
             Display::None => Some(Self::None),
             _ => None,
         }
@@ -708,6 +719,57 @@ impl From<LayoutJustifyContent> for JustifyContent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayoutGridTrack {
+    Auto,
+    Points(f32),
+    Fraction(f32),
+    MinMaxPointsFraction { min: f32, max_fraction: f32 },
+}
+
+impl LayoutGridTrack {
+    pub const fn auto() -> Self {
+        Self::Auto
+    }
+
+    pub const fn points(value: f32) -> Self {
+        Self::Points(value)
+    }
+
+    pub const fn fraction(value: f32) -> Self {
+        Self::Fraction(value)
+    }
+
+    pub const fn minmax_points_fraction(min: f32, max_fraction: f32) -> Self {
+        Self::MinMaxPointsFraction { min, max_fraction }
+    }
+
+    fn to_taffy(self) -> GridTemplateComponent<String> {
+        let track = match self {
+            Self::Auto => TrackSizingFunction {
+                min: MinTrackSizingFunction::auto(),
+                max: MaxTrackSizingFunction::auto(),
+            },
+            Self::Points(value) => {
+                let value = value.max(0.0);
+                TrackSizingFunction {
+                    min: MinTrackSizingFunction::length(value),
+                    max: MaxTrackSizingFunction::length(value),
+                }
+            }
+            Self::Fraction(value) => TrackSizingFunction {
+                min: MinTrackSizingFunction::length(0.0),
+                max: MaxTrackSizingFunction::fr(value.max(0.0)),
+            },
+            Self::MinMaxPointsFraction { min, max_fraction } => TrackSizingFunction {
+                min: MinTrackSizingFunction::length(min.max(0.0)),
+                max: MaxTrackSizingFunction::fr(max_fraction.max(0.0)),
+            },
+        };
+        GridTemplateComponent::Single(track)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
     pub display: LayoutDisplay,
     pub position: LayoutPosition,
@@ -757,6 +819,10 @@ impl Layout {
 
     pub const fn column() -> Self {
         Self::row().flex_direction(LayoutFlexDirection::Column)
+    }
+
+    pub const fn grid() -> Self {
+        Self::new().display(LayoutDisplay::Grid)
     }
 
     pub const fn fixed(width: f32, height: f32) -> Self {
@@ -985,6 +1051,28 @@ pub fn wrapping_row() -> LayoutStyle {
         .to_layout_style()
 }
 
+pub fn grid() -> LayoutStyle {
+    Layout::grid().to_layout_style()
+}
+
+pub fn with_grid_template_columns(
+    mut style: LayoutStyle,
+    columns: impl IntoIterator<Item = LayoutGridTrack>,
+) -> LayoutStyle {
+    style.as_taffy_style_mut().grid_template_columns =
+        columns.into_iter().map(LayoutGridTrack::to_taffy).collect();
+    style
+}
+
+pub fn with_grid_template_rows(
+    mut style: LayoutStyle,
+    rows: impl IntoIterator<Item = LayoutGridTrack>,
+) -> LayoutStyle {
+    style.as_taffy_style_mut().grid_template_rows =
+        rows.into_iter().map(LayoutGridTrack::to_taffy).collect();
+    style
+}
+
 pub fn centered_column() -> LayoutStyle {
     with_centered_children(column())
 }
@@ -1097,20 +1185,11 @@ pub fn with_auto_horizontal_margin(mut style: LayoutStyle) -> LayoutStyle {
 }
 
 pub fn node_style(layout: impl Into<LayoutStyle>) -> UiNodeStyle {
-    let layout = layout.into();
-    UiNodeStyle {
-        layout: layout.style,
-        ..Default::default()
-    }
+    UiNodeStyle::new(layout)
 }
 
 pub fn clipped_node_style(layout: impl Into<LayoutStyle>) -> UiNodeStyle {
-    let layout = layout.into();
-    UiNodeStyle {
-        layout: layout.style,
-        clip: ClipBehavior::Clip,
-        ..Default::default()
-    }
+    UiNodeStyle::clipped(layout)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1302,7 +1381,8 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use taffy::prelude::{
-        AlignContent, AlignItems, Dimension, LengthPercentage, LengthPercentageAuto, Position,
+        AlignContent, AlignItems, Dimension, Display, LengthPercentage, LengthPercentageAuto,
+        Position,
     };
 
     use super::*;
@@ -1384,6 +1464,30 @@ mod tests {
         assert_eq!(
             LayoutLength::from_taffy(LengthPercentage::length(6.0)),
             Some(LayoutLength::Points(6.0))
+        );
+    }
+
+    #[test]
+    fn grid_layout_sets_display_and_tracks() {
+        let style = with_grid_template_columns(
+            Layout::grid()
+                .size(LayoutSize::points(320.0, 120.0))
+                .gap(LayoutGap::points(8.0, 12.0))
+                .to_layout_style(),
+            [
+                LayoutGridTrack::points(120.0),
+                LayoutGridTrack::minmax_points_fraction(80.0, 1.0),
+                LayoutGridTrack::fraction(2.0),
+            ],
+        );
+        let taffy = style.as_taffy_style();
+
+        assert_eq!(taffy.display, Display::Grid);
+        assert_eq!(taffy.grid_template_columns.len(), 3);
+        assert_eq!(taffy.gap.width, LengthPercentage::length(8.0));
+        assert_eq!(
+            LayoutDisplay::from_taffy(Display::Grid),
+            Some(LayoutDisplay::Grid)
         );
     }
 

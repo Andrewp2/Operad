@@ -10,14 +10,22 @@ mod showcase_app {
         use super::*;
         use std::time::{Duration, Instant};
 
+        use operad::diagnostics::AuditWarning;
+        use operad::host::{process_document_frame, HostDocumentFrameRequest, HostFrameOutput};
         #[cfg(feature = "wgpu")]
-        use operad::WgpuRenderer;
+        use operad::platform::PixelSize;
+        #[cfg(feature = "wgpu")]
+        use operad::renderer::{RenderOptions, RenderedImage, ResourceFormat};
+        use operad::renderer::{RenderTarget, RendererAdapter};
+        use operad::testing::EmptyResourceResolver;
+        #[cfg(feature = "wgpu")]
+        use operad::wgpu_renderer::WgpuRenderer;
+        #[cfg(feature = "wgpu")]
+        use operad::ColorRgba;
         use operad::{
-            process_document_frame, AnimationInputValue, ApproxTextMeasurer, AuditWarning,
-            CosmicTextMeasurer, EmptyResourceResolver, HostDocumentFrameRequest, HostFrameOutput,
-            KeyCode, KeyModifiers, PaintKind, RenderTarget, RendererAdapter, TextMeasurer,
-            TextWrap, UiContent, UiFocusState, UiInputEvent, UiWheelEvent, WidgetPointerEdit,
-            WidgetValueEditPhase,
+            AnimationInputValue, ApproxTextMeasurer, CosmicTextMeasurer, KeyCode, KeyModifiers,
+            PaintKind, TextMeasurer, TextWrap, UiContent, UiFocusState, UiInputEvent, UiWheelEvent,
+            WidgetPointerEdit, WidgetValueEditPhase,
         };
 
         fn state_with_window(id: &str) -> ShowcaseState {
@@ -45,7 +53,7 @@ mod showcase_app {
             state.overlay_popup_open = true;
             state.overlay_modal_open = true;
             state.combo_open = true;
-            state.dropdown.open = true;
+            state.dropdown.open(&select_options());
             state.slider_trailing_picker_open = true;
             state.menu_button.open(&menu_items(state.menu_autosave));
             state
@@ -59,7 +67,9 @@ mod showcase_app {
                 .nodes()
                 .iter()
                 .enumerate()
-                .find_map(|(index, node)| (node.name == name).then_some(UiNodeId(index)))
+                .find_map(|(index, node)| {
+                    (node.name() == name).then_some(UiNodeId::from_index(index))
+                })
                 .unwrap_or_else(|| panic!("missing node {name:?}"))
         }
 
@@ -68,7 +78,9 @@ mod showcase_app {
                 .nodes()
                 .iter()
                 .enumerate()
-                .find_map(|(index, node)| (node.name == name).then_some(UiNodeId(index)))
+                .find_map(|(index, node)| {
+                    (node.name() == name).then_some(UiNodeId::from_index(index))
+                })
         }
 
         fn severe_layout_warning(warning: &AuditWarning) -> bool {
@@ -94,7 +106,7 @@ mod showcase_app {
 
         fn first_scene_rect(document: &UiDocument, name: &str) -> UiRect {
             let node = document.node(node_id(document, name));
-            let UiContent::Scene(primitives) = &node.content else {
+            let UiContent::Scene(primitives) = node.content() else {
                 panic!("{name:?} is not a scene node");
             };
             let Some(ScenePrimitive::Rect(rect)) = primitives.first() else {
@@ -366,14 +378,14 @@ mod showcase_app {
         ) {
             let scrolls = (0..document.node_count())
                 .filter_map(|index| {
-                    let id = UiNodeId(index);
+                    let id = UiNodeId::from_index(index);
                     let mut scroll = document.scroll_state(id)?;
-                    scroll.offset = scroll.max_offset();
+                    scroll.set_offset(scroll.max_offset());
                     Some((id, scroll))
                 })
                 .collect::<Vec<_>>();
             for (id, scroll) in scrolls {
-                document.node_mut(id).scroll = Some(scroll);
+                document.node_mut(id).set_scroll(scroll);
             }
             document.invalidate_layout();
             document
@@ -387,9 +399,9 @@ mod showcase_app {
                 .iter()
                 .enumerate()
                 .find_map(|(index, node)| {
-                    let id = UiNodeId(index);
-                    (node.action.is_some()
-                        && node.layout.visible
+                    let id = UiNodeId::from_index(index);
+                    (node.action().is_some()
+                        && node.layout().visible
                         && is_descendant_or_self(document, root, id))
                     .then_some(id)
                 })
@@ -405,7 +417,7 @@ mod showcase_app {
                 if id == ancestor {
                     return true;
                 }
-                current = document.node(id).parent;
+                current = document.node(id).parent();
             }
             false
         }
@@ -426,7 +438,7 @@ mod showcase_app {
         fn showcase_bulk_actions_open_all_and_publish_fps_counter() {
             let mut state = ShowcaseState::default();
             state.windows.clear_all();
-            state.update(WidgetAction::activate(UiNodeId(0), "window.add_all"));
+            state.update(WidgetAction::activate(UiNodeId::root(), "window.add_all"));
             for id in SHOWCASE_WIDGET_WINDOW_IDS {
                 assert!(state.windows.is_visible(id), "{id}");
             }
@@ -442,13 +454,12 @@ mod showcase_app {
             let organize_button = document.node(node_id(&document, "showcase.organize_windows"));
             assert_eq!(
                 organize_button
-                    .action
-                    .as_ref()
+                    .action()
                     .and_then(|action| action.action_id())
                     .map(|id| id.as_str()),
                 Some("window.organize_open")
             );
-            let UiContent::Text(text) = &fps_label.content else {
+            let UiContent::Text(text) = fps_label.content() else {
                 panic!("fps label should be text");
             };
             assert_eq!(text.text, "59 FPS");
@@ -462,17 +473,41 @@ mod showcase_app {
                 })
                 .expect("fps text paint");
             assert!(
-                fps_text_paint.rect.x >= fps_panel.layout.rect.x + 4.0,
+                fps_text_paint.rect.x >= fps_panel.layout().rect.x + 4.0,
                 "{:?} {:?}",
                 fps_text_paint.rect,
-                fps_panel.layout.rect
+                fps_panel.layout().rect
             );
             assert!(
-                fps_text_paint.rect.y >= fps_panel.layout.rect.y + 4.0,
+                fps_text_paint.rect.y >= fps_panel.layout().rect.y + 4.0,
                 "{:?} {:?}",
                 fps_text_paint.rect,
-                fps_panel.layout.rect
+                fps_panel.layout().rect
             );
+        }
+
+        #[test]
+        fn showcase_default_window_placement_reserves_organize_button_space() {
+            let viewport = UiSize::new(900.0, 760.0);
+            for id in SHOWCASE_WIDGET_WINDOW_IDS {
+                let state = state_with_window(id);
+                let mut document = state.view(viewport);
+                document
+                    .compute_layout(viewport, &mut ApproxTextMeasurer)
+                    .unwrap_or_else(|error| panic!("{id} layout failed: {error}"));
+                let organize = document
+                    .node(node_id(&document, "showcase.organize_windows"))
+                    .layout()
+                    .rect;
+                let window = document
+                    .node(node_id(&document, &format!("showcase.windows.window.{id}")))
+                    .layout()
+                    .rect;
+                assert!(
+                    !rects_overlap(organize, window),
+                    "{id} default window overlaps organize button: organize={organize:?} window={window:?}"
+                );
+            }
         }
 
         #[test]
@@ -496,7 +531,10 @@ mod showcase_app {
                 .insert("labels".to_string(), UiPoint::new(500.0, 500.0));
             state.last_desktop_size = UiSize::new(900.0, 700.0);
 
-            state.update(WidgetAction::activate(UiNodeId(0), "window.organize_open"));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.organize_open",
+            ));
 
             let rects = ["checkbox", "progress"]
                 .into_iter()
@@ -550,7 +588,10 @@ mod showcase_app {
                 state.desktop.ensure_window(id, window_defaults(id));
             }
             state.last_desktop_size = UiSize::new(1900.0, 1180.0);
-            state.update(WidgetAction::activate(UiNodeId(0), "window.organize_open"));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.organize_open",
+            ));
             for id in ids {
                 assert!(
                     !state.desktop.is_collapsed(id),
@@ -568,7 +609,7 @@ mod showcase_app {
                 .into_iter()
                 .map(|id| {
                     let name = format!("showcase.windows.window.{id}");
-                    (id, document.node(node_id(&document, &name)).layout.rect)
+                    (id, document.node(node_id(&document, &name)).layout().rect)
                 })
                 .collect::<Vec<_>>();
 
@@ -590,6 +631,41 @@ mod showcase_app {
         }
 
         #[test]
+        fn showcase_date_picker_spawns_at_content_width() {
+            let state = state_with_window("date_picker");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            let mut measurer = CosmicTextMeasurer::new();
+            document
+                .compute_layout(viewport, &mut measurer)
+                .expect("showcase layout");
+
+            let window = document
+                .node(node_id(&document, "showcase.windows.window.date_picker"))
+                .layout()
+                .rect;
+            let picker_id = node_id(&document, "date.picker");
+            let picker = document.node(picker_id).layout().rect;
+            let controls = document
+                .node(node_id(&document, "date.options"))
+                .layout()
+                .rect;
+
+            assert!(
+                window.width <= 304.0,
+                "window={window:?} picker={picker:?} controls={controls:?}"
+            );
+            assert!(
+                picker.right() <= window.right(),
+                "picker={picker:?} window={window:?}"
+            );
+            assert!(
+                controls.right() <= window.right(),
+                "controls={controls:?} window={window:?}"
+            );
+        }
+
+        #[test]
         fn showcase_organize_all_open_windows_without_overlap() {
             let mut state = ShowcaseState::default();
             state.windows.open_all();
@@ -597,7 +673,10 @@ mod showcase_app {
                 state.desktop.ensure_window(id, window_defaults(id));
             }
             state.last_desktop_size = UiSize::new(1900.0, 1180.0);
-            state.update(WidgetAction::activate(UiNodeId(0), "window.organize_open"));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.organize_open",
+            ));
 
             let viewport = UiSize::new(2200.0, 1180.0);
             let mut document = state.view(viewport);
@@ -609,7 +688,7 @@ mod showcase_app {
                 .into_iter()
                 .map(|id| {
                     let name = format!("showcase.windows.window.{id}");
-                    (id, document.node(node_id(&document, &name)).layout.rect)
+                    (id, document.node(node_id(&document, &name)).layout().rect)
                 })
                 .collect::<Vec<_>>();
 
@@ -648,7 +727,10 @@ mod showcase_app {
             }
             state.last_desktop_size = UiSize::new(1900.0, 397.0);
 
-            state.update(WidgetAction::activate(UiNodeId(0), "window.organize_open"));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.organize_open",
+            ));
 
             for id in ids {
                 assert!(
@@ -673,7 +755,7 @@ mod showcase_app {
             ));
             assert_eq!(
                 name_header
-                    .action
+                    .action()
                     .as_ref()
                     .and_then(|action| action.action_id())
                     .map(|id| id.as_str()),
@@ -686,12 +768,12 @@ mod showcase_app {
             .is_some());
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "lists_tables.virtualized_table.sort.name",
             ));
             assert!(state.virtual_table_descending);
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "lists_tables.virtualized_table.filter.status",
             ));
             assert!(state.virtual_table_ready_only);
@@ -705,11 +787,11 @@ mod showcase_app {
                     &document,
                     "lists_tables.virtualized_table.header.value",
                 ))
-                .layout
+                .layout()
                 .rect;
             let drag_origin = UiPoint::new(value_header.right(), value_header.y + 12.0);
             state.update(WidgetAction::pointer_edit(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "lists_tables.virtualized_table.resize.value",
                 WidgetPointerEdit::new(
                     WidgetValueEditPhase::Begin,
@@ -719,7 +801,7 @@ mod showcase_app {
                 ),
             ));
             state.update(WidgetAction::pointer_edit(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "lists_tables.virtualized_table.resize.value",
                 WidgetPointerEdit::new(
                     WidgetValueEditPhase::Commit,
@@ -731,7 +813,7 @@ mod showcase_app {
             assert!(state.virtual_table_value_width > 100.0);
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "lists_tables.virtualized_table.resize.reset",
             ));
             assert_eq!(state.virtual_table_value_width, 70.0);
@@ -763,14 +845,14 @@ mod showcase_app {
             );
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "diagnostics.animation.controls.transport.pause_toggle",
             ));
             assert!(state.diagnostics_animation_paused);
 
             let before_step = state.diagnostics_animation_scrub;
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "diagnostics.animation.controls.transport.step",
             ));
             assert!(state.diagnostics_animation_paused);
@@ -781,13 +863,13 @@ mod showcase_app {
                     &document,
                     "diagnostics.animation.controls.transport.scrub",
                 ))
-                .layout
+                .layout()
                 .rect;
             let scrub_point =
                 UiPoint::new(scrub_rect.x + scrub_rect.width * 0.75, scrub_rect.y + 8.0);
             let expected_scrub = scaled_slider(scrub_rect, scrub_point, 0.0, 1.0);
             state.update(WidgetAction::pointer_edit(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "diagnostics.animation.controls.transport.scrub",
                 WidgetPointerEdit::new(
                     WidgetValueEditPhase::Commit,
@@ -799,7 +881,7 @@ mod showcase_app {
             assert!((state.diagnostics_animation_scrub - expected_scrub).abs() < 0.01);
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "diagnostics.animation.controls.input.active.toggle",
             ));
             assert!(!state.diagnostics_animation_active);
@@ -809,13 +891,13 @@ mod showcase_app {
                     &document,
                     "diagnostics.animation.controls.input.hover.set.slider",
                 ))
-                .layout
+                .layout()
                 .rect;
             let hover_point =
                 UiPoint::new(hover_rect.x + hover_rect.width * 0.2, hover_rect.y + 8.0);
             let expected_hover = scaled_slider(hover_rect, hover_point, 0.0, 1.0);
             state.update(WidgetAction::pointer_edit(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "diagnostics.animation.controls.input.hover.set",
                 WidgetPointerEdit::new(
                     WidgetValueEditPhase::Commit,
@@ -827,7 +909,7 @@ mod showcase_app {
             assert!((state.diagnostics_animation_hover - expected_hover).abs() < 0.01);
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "diagnostics.animation.controls.input.pulse.fire",
             ));
             assert_eq!(state.diagnostics_animation_pulse_count, 1);
@@ -846,6 +928,43 @@ mod showcase_app {
         }
 
         #[test]
+        fn showcase_diagnostics_accessibility_overlay_preview_clips_children() {
+            let state = state_with_window("diagnostics");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("diagnostics layout");
+
+            let preview = node_id(&document, "diagnostics.a11y.preview");
+            let preview_rect = document.node(preview).layout().rect;
+            assert!(
+                preview_rect.height >= 130.0,
+                "diagnostics overlay preview collapsed: {preview_rect:?}"
+            );
+            let panel = document.node(node_id(&document, "diagnostics.a11y"));
+            assert!(
+                panel.layout().rect.y >= preview_rect.bottom() - 0.5,
+                "diagnostics overlay panel overlapped preview: panel={:?} preview={preview_rect:?}",
+                panel.layout().rect
+            );
+            let paint = document.paint_list();
+            for item in paint
+                .items
+                .iter()
+                .filter(|item| is_descendant_or_self(&document, preview, item.node))
+            {
+                assert!(
+                    item.clip_rect.x >= preview_rect.x - 0.5
+                        && item.clip_rect.y >= preview_rect.y - 0.5
+                        && item.clip_rect.right() <= preview_rect.right() + 0.5
+                        && item.clip_rect.bottom() <= preview_rect.bottom() + 0.5,
+                    "diagnostics overlay preview leaked paint outside the preview: item={item:#?} preview={preview_rect:?}"
+                );
+            }
+        }
+
+        #[test]
         fn showcase_trees_include_tree_table_and_focus_preservation_example() {
             let state = state_with_window("trees");
             let viewport = UiSize::new(1100.0, 820.0);
@@ -859,14 +978,15 @@ mod showcase_app {
             assert!(maybe_node_id(&document, "trees.table.row.1.cell.name").is_some());
             assert!(maybe_node_id(&document, "trees.table.cell.1.0.label").is_some());
 
-            let previous_state = widgets::TreeViewState::expanded(["root", "branch-a"]);
-            let next_state = widgets::TreeViewState::expanded(["root"]);
+            let previous_state = ext_widgets::TreeViewState::expanded(["root", "branch-a"]);
+            let next_state = ext_widgets::TreeViewState::expanded(["root"]);
             let previous = previous_state.visible_items(&tree_table_items());
             let next = next_state.visible_items(&tree_table_items());
-            let focus = widgets::tree_focus_preservation_by_id(&previous, &next, "docs");
+            let focus =
+                ext_widgets::tree_view::tree_focus_preservation_by_id(&previous, &next, "docs");
             assert_eq!(focus.index_before, Some(5));
             assert_eq!(focus.index_after, Some(3));
-            let plan = widgets::VirtualTreeViewSpec::new(24.0, 96.0)
+            let plan = ext_widgets::VirtualTreeViewSpec::new(24.0, 96.0)
                 .focus(focus.clone())
                 .plan(next.len());
             assert_eq!(plan.focus, Some(focus));
@@ -876,15 +996,15 @@ mod showcase_app {
         fn showcase_clear_all_accepts_stale_focus_from_previous_all_widgets_frame() {
             let mut state = ShowcaseState::default();
             state.windows.clear_all();
-            state.update(WidgetAction::activate(UiNodeId(0), "window.add_all"));
+            state.update(WidgetAction::activate(UiNodeId::root(), "window.add_all"));
             let viewport = UiSize::new(900.0, 760.0);
             let mut all_document = state.view(viewport);
             all_document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
                 .expect("all widgets layout");
-            let stale = UiNodeId(all_document.node_count().saturating_sub(1));
+            let stale = UiNodeId::from_index(all_document.node_count().saturating_sub(1));
 
-            state.update(WidgetAction::activate(UiNodeId(0), "window.clear_all"));
+            state.update(WidgetAction::activate(UiNodeId::root(), "window.clear_all"));
             let mut cleared_document = state.view(viewport);
             cleared_document.set_focus_state(UiFocusState {
                 hovered: Some(stale),
@@ -894,25 +1014,25 @@ mod showcase_app {
             cleared_document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
                 .expect("cleared showcase layout");
-            assert!(cleared_document.node_count() < stale.0);
-            assert_eq!(cleared_document.focus.hovered, None);
-            assert_eq!(cleared_document.focus.focused, None);
-            assert_eq!(cleared_document.focus.pressed, None);
+            assert!(cleared_document.node_count() < stale.index());
+            assert_eq!(cleared_document.focus_state().hovered, None);
+            assert_eq!(cleared_document.focus_state().focused, None);
+            assert_eq!(cleared_document.focus_state().pressed, None);
         }
 
         #[test]
         fn showcase_styling_uses_color_buttons_for_stroke_and_shadow_colors() {
             let mut state = state_with_window("styling");
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "styling.stroke_color_button",
             ));
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "styling.fill_color_button",
             ));
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "styling.shadow_color_button",
             ));
 
@@ -931,6 +1051,21 @@ mod showcase_app {
             assert!(maybe_node_id(&document, "styling.stroke_color.slider").is_none());
             assert!(maybe_node_id(&document, "styling.fill.slider").is_none());
             assert!(maybe_node_id(&document, "styling.shadow_alpha.slider").is_none());
+        }
+
+        #[test]
+        fn showcase_styling_composes_controls_and_preview_with_grid_layout() {
+            let state = state_with_window("styling");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let grid = document.node(node_id(&document, "styling.grid"));
+            let grid_layout = grid.style().layout().expect("styling grid layout");
+            assert_eq!(grid_layout.display, operad::LayoutDisplay::Grid);
+            assert_eq!(grid.style().layout_style().grid_template_column_count(), 3);
         }
 
         #[test]
@@ -975,13 +1110,13 @@ mod showcase_app {
                 .expect("styling layout");
 
             let scene = node_id(&document, "styling.preview.scene");
-            let scene_rect = document.node(scene).layout.rect;
+            let scene_rect = document.node(scene).layout().rect;
             let content = document
                 .node(node_id(
                     &document,
                     "showcase.windows.window.styling.content",
                 ))
-                .layout
+                .layout()
                 .rect;
             assert!(
                 scene_rect.right() <= content.right(),
@@ -1006,6 +1141,485 @@ mod showcase_app {
         }
 
         #[test]
+        fn showcase_forms_overlays_drag_drop_and_media_minimums_keep_demo_content_reachable() {
+            let viewport = UiSize::new(900.0, 760.0);
+            let specs: [(&str, &[&str], &[&str]); 4] = [
+                (
+                    "forms",
+                    &[
+                        "forms.profile",
+                        "forms.profile.status.dirty",
+                        "forms.profile.status.pending",
+                        "forms.profile.status.submitted",
+                        "forms.profile.name.label",
+                        "forms.profile.name.input",
+                        "forms.profile.name.help",
+                        "forms.profile.email.label",
+                        "forms.profile.email.input",
+                        "forms.profile.email.validation",
+                        "forms.profile.role.label",
+                        "forms.profile.role.input",
+                        "forms.profile.role.help",
+                        "forms.profile.newsletter.input",
+                        "forms.profile.newsletter.help",
+                        "forms.profile.errors",
+                        "forms.profile.actions.submit",
+                        "forms.profile.actions.apply",
+                        "forms.profile.actions.cancel",
+                        "forms.profile.actions.reset",
+                        "forms.profile.status",
+                    ],
+                    &["forms.profile.status"],
+                ),
+                (
+                    "overlays",
+                    &[
+                        "overlays.collapsing",
+                        "overlays.collapsing.body",
+                        "overlays.popup.toggle",
+                        "overlays.modal.open",
+                        "overlays.tooltip",
+                        "overlays.tooltip.body",
+                        "overlays.tooltip.shortcut",
+                        "overlays.tooltip.disabled_reason",
+                        "overlays.tooltip_rect.preview",
+                        "overlays.tooltip_rect.scene",
+                        "overlays.popup_panel",
+                        "overlays.popup_panel.close",
+                        "overlays.modal",
+                        "overlays.modal.close",
+                        "overlays.modal.body.close",
+                    ],
+                    &["overlays.tooltip_rect.scene"],
+                ),
+                (
+                    "drag_drop",
+                    &[
+                        "drag_drop.text_source",
+                        "drag_drop.file_source",
+                        "drag_drop.bytes_source",
+                        "drag_drop.accept_text",
+                        "drag_drop.files_only",
+                        "drag_drop.image_bytes",
+                        "drag_drop.disabled",
+                        "drag_drop.operation.copy",
+                        "drag_drop.operation.move",
+                        "drag_drop.operation.link",
+                        "drag_drop.status",
+                    ],
+                    &["drag_drop.status"],
+                ),
+                (
+                    "media",
+                    &[
+                        "media.icons.label",
+                        "media.variants.label",
+                        "media.image.untinted",
+                        "media.image.warning",
+                        "media.image.shader",
+                        "media.image.note",
+                    ],
+                    &["media.image.note"],
+                ),
+            ];
+
+            for (id, required_nodes, bottom_nodes) in specs {
+                let mut document = minimized_showcase_window_document(id, viewport);
+                assert_window_resolved_to_minimum(&document, id);
+                assert_no_severe_showcase_warnings(id, "minimum", &document);
+                assert_required_demo_nodes_fit_minimized_window(&document, id, required_nodes);
+
+                if id == "media" {
+                    assert_media_icon_grid_present_and_inside_window(&document);
+                }
+
+                let mut measurer = CosmicTextMeasurer::new();
+                scroll_all_nodes_to_end(&mut document, viewport, &mut measurer);
+                assert_no_severe_showcase_warnings(id, "minimum scrolled", &document);
+                for name in bottom_nodes {
+                    assert_node_has_visible_paint_inside_clip(&document, name);
+                }
+            }
+        }
+
+        fn minimized_showcase_window_document(id: &str, viewport: UiSize) -> UiDocument {
+            let mut state = state_with_window(id);
+            state
+                .desktop
+                .sizes
+                .insert(id.to_string(), UiSize::new(1.0, 1.0));
+            state.desktop.user_sized.insert(id.to_string());
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .unwrap_or_else(|error| panic!("{id} minimum failed layout: {error}"));
+            document
+        }
+
+        fn assert_window_resolved_to_minimum(document: &UiDocument, id: &str) {
+            let window = document.node(node_id(document, &format!("showcase.windows.window.{id}")));
+            let min_size = window.style().layout_style().min_size();
+            let min_width = min_size
+                .and_then(|size| size.width.points_value())
+                .unwrap_or(window.layout().rect.width);
+            let min_height = min_size
+                .and_then(|size| size.height.points_value())
+                .unwrap_or(window.layout().rect.height);
+            assert!(
+                (window.layout().rect.width - min_width).abs() < 0.5,
+                "{id} window was not minimized to its computed minimum width: rect={:?} min_width={min_width}",
+                window.layout().rect
+            );
+            assert!(
+                (window.layout().rect.height - min_height).abs() < 0.5,
+                "{id} window was not minimized to its computed minimum height: rect={:?} min_height={min_height}",
+                window.layout().rect
+            );
+        }
+
+        fn assert_required_demo_nodes_fit_minimized_window(
+            document: &UiDocument,
+            id: &str,
+            required_nodes: &[&str],
+        ) {
+            let window_content =
+                node_id(document, &format!("showcase.windows.window.{id}.content"));
+            let content_rect = document.node(window_content).layout().rect;
+            for name in required_nodes {
+                let node = node_id(document, name);
+                let rect = document.node(node).layout().rect;
+                assert!(
+                    rect.width.is_finite()
+                        && rect.height.is_finite()
+                        && rect.width >= 0.0
+                        && rect.height >= 0.0,
+                    "{id} required node {name:?} had invalid geometry: {rect:?}"
+                );
+                if is_descendant_or_self(document, window_content, node) {
+                    assert!(
+                        rect.x >= content_rect.x - 0.5
+                            && rect.right() <= content_rect.right() + 0.5,
+                        "{id} required node {name:?} escaped minimized content horizontally: node={rect:?} content={content_rect:?}"
+                    );
+                }
+            }
+        }
+
+        fn assert_media_icon_grid_present_and_inside_window(document: &UiDocument) {
+            let mut required = Vec::new();
+            for icon in BuiltInIcon::COMMON {
+                let key = media_icon_test_name(icon);
+                required.push(format!("media.icon_tile.{key}"));
+                required.push(format!("media.icon.{key}"));
+                required.push(format!("media.icon_label.{key}"));
+            }
+            let names = required.iter().map(String::as_str).collect::<Vec<_>>();
+            assert_required_demo_nodes_fit_minimized_window(document, "media", &names);
+        }
+
+        fn media_icon_test_name(icon: BuiltInIcon) -> String {
+            icon.key().replace('.', "_").replace('-', "_")
+        }
+
+        fn assert_node_has_visible_paint_inside_clip(document: &UiDocument, name: &str) {
+            let node = node_id(document, name);
+            let paint = document.paint_list();
+            let matching = paint
+                .items
+                .iter()
+                .filter(|item| item.node == node)
+                .collect::<Vec<_>>();
+            assert!(
+                !matching.is_empty(),
+                "expected {name:?} to produce paint after scrolling to the minimized demo end"
+            );
+            assert!(
+                matching.iter().any(|item| {
+                    item.rect.width > 0.0
+                        && item.rect.height > 0.0
+                        && rects_overlap(item.rect, item.clip_rect)
+                        && item.rect.x >= item.clip_rect.x - 0.5
+                        && item.rect.y >= item.clip_rect.y - 0.5
+                        && item.rect.right() <= item.clip_rect.right() + 0.5
+                        && item.rect.bottom() <= item.clip_rect.bottom() + 0.5
+                }),
+                "expected at least one visible paint item for {name:?}, got {matching:#?}"
+            );
+        }
+
+        #[test]
+        fn showcase_media_minimized_scroll_area_has_visible_scrollbar_affordance() {
+            let document = minimized_showcase_window_document("media", UiSize::new(900.0, 760.0));
+            assert_scroll_area_has_visible_auto_scrollbar(&document, "media.section_scroll");
+        }
+
+        fn assert_scroll_area_has_visible_auto_scrollbar(document: &UiDocument, name: &str) {
+            let scroll_node = node_id(document, name);
+            let scroll = document
+                .scroll_state(scroll_node)
+                .unwrap_or_else(|| panic!("{name:?} should be scrollable"));
+            assert!(
+                scroll.max_offset().y > 0.0,
+                "{name:?} should have a vertical scroll range: {scroll:?}"
+            );
+            let rect = document.node(scroll_node).layout().rect;
+            let scrollbar_items = document
+                .paint_list()
+                .items
+                .into_iter()
+                .filter(|item| {
+                    item.node == scroll_node
+                        && matches!(item.kind, PaintKind::Rect { .. })
+                        && item.rect.width <= 8.0
+                        && item.rect.height >= 18.0
+                        && item.rect.x >= rect.right() - 12.0
+                        && item.rect.right() <= rect.right() + 0.5
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                scrollbar_items.len() >= 2,
+                "{name:?} should paint an automatic track and thumb, got {scrollbar_items:#?}"
+            );
+        }
+
+        #[cfg(feature = "wgpu")]
+        #[test]
+        fn showcase_forms_overlays_drag_drop_and_media_minimized_snapshots_have_visible_regions() {
+            let viewport = UiSize::new(900.0, 760.0);
+            let specs: [(&str, &[&str], &[&str]); 4] = [
+                (
+                    "forms",
+                    &[
+                        "forms.profile.name.input",
+                        "forms.profile.email.input",
+                        "forms.profile.actions.submit",
+                    ],
+                    &["forms.profile.status"],
+                ),
+                (
+                    "overlays",
+                    &[
+                        "overlays.tooltip.body",
+                        "overlays.tooltip_rect.scene",
+                        "overlays.popup_panel",
+                        "overlays.modal",
+                    ],
+                    &["overlays.tooltip_rect.scene"],
+                ),
+                (
+                    "drag_drop",
+                    &[
+                        "drag_drop.text_source",
+                        "drag_drop.accept_text",
+                        "drag_drop.operation.copy",
+                    ],
+                    &["drag_drop.status"],
+                ),
+                (
+                    "media",
+                    &["media.icons.label"],
+                    &[
+                        "media.image.untinted",
+                        "media.image.warning",
+                        "media.image.shader",
+                        "media.image.note",
+                    ],
+                ),
+            ];
+
+            let mut renderer = WgpuRenderer::default();
+            renderer.warm_up().expect("wgpu warm-up");
+            for (id, visible_nodes, bottom_nodes) in specs {
+                let mut document = minimized_showcase_window_document(id, viewport);
+                let image =
+                    render_showcase_snapshot(&mut document, viewport, &mut renderer, id, "top");
+                for name in visible_nodes {
+                    assert_rendered_node_has_visible_detail(&image, &document, name);
+                }
+
+                let mut measurer = CosmicTextMeasurer::new();
+                scroll_all_nodes_to_end(&mut document, viewport, &mut measurer);
+                let image =
+                    render_showcase_snapshot(&mut document, viewport, &mut renderer, id, "bottom");
+                for name in bottom_nodes {
+                    assert_rendered_node_has_visible_detail(&image, &document, name);
+                }
+            }
+        }
+
+        #[cfg(feature = "wgpu")]
+        #[test]
+        #[ignore = "manual visual audit generator; set OPERAD_SHOWCASE_VISUAL_DUMP_DIR to collect every demo snapshot"]
+        fn showcase_all_demo_windows_visual_audit_snapshots() {
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut renderer = WgpuRenderer::default();
+            renderer.warm_up().expect("wgpu warm-up");
+
+            for id in SHOWCASE_WIDGET_WINDOW_IDS {
+                let state = state_with_window(id);
+                let mut document = state.view(viewport);
+                let image =
+                    render_showcase_snapshot(&mut document, viewport, &mut renderer, id, "default");
+                let window_name = format!("showcase.windows.window.{id}");
+                assert_rendered_node_has_visible_detail(&image, &document, &window_name);
+                assert_no_severe_showcase_warnings(id, "visual default", &document);
+
+                let mut scrolled = state.view(viewport);
+                scrolled
+                    .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                    .unwrap_or_else(|error| panic!("{id} visual bottom layout failed: {error}"));
+                let mut measurer = CosmicTextMeasurer::new();
+                scroll_all_nodes_to_end(&mut scrolled, viewport, &mut measurer);
+                let image =
+                    render_showcase_snapshot(&mut scrolled, viewport, &mut renderer, id, "bottom");
+                assert_rendered_node_has_visible_detail(&image, &scrolled, &window_name);
+                assert_no_severe_showcase_warnings(id, "visual bottom", &scrolled);
+            }
+        }
+
+        #[cfg(feature = "wgpu")]
+        fn render_showcase_snapshot(
+            document: &mut UiDocument,
+            viewport: UiSize,
+            renderer: &mut WgpuRenderer,
+            id: &str,
+            variant: &str,
+        ) -> RenderedImage {
+            let pixel_size =
+                PixelSize::new(viewport.width.ceil() as u32, viewport.height.ceil() as u32);
+            let request = HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::snapshot(pixel_size),
+                HostFrameOutput::new(Default::default()),
+            )
+            .render_options(RenderOptions {
+                clear_color: ColorRgba::new(13, 17, 23, 255),
+                ..RenderOptions::default()
+            });
+            let frame = process_document_frame(document, &mut CosmicTextMeasurer::new(), request)
+                .unwrap_or_else(|error| panic!("{id} {variant} snapshot layout failed: {error}"));
+            let output = renderer
+                .render_frame(frame.render_request, &EmptyResourceResolver)
+                .unwrap_or_else(|error| panic!("{id} {variant} snapshot render failed: {error}"));
+            let image = output
+                .snapshot
+                .expect("snapshot target should render pixels");
+            assert_eq!(image.size, pixel_size);
+            assert_eq!(image.format, ResourceFormat::Rgba8);
+            maybe_dump_showcase_snapshot(&image, id, variant);
+            image
+        }
+
+        #[cfg(feature = "wgpu")]
+        fn assert_rendered_node_has_visible_detail(
+            image: &RenderedImage,
+            document: &UiDocument,
+            name: &str,
+        ) {
+            let node = document.node(node_id(document, name));
+            let visible_rect = node
+                .layout()
+                .rect
+                .intersection(node.layout().clip_rect)
+                .unwrap_or_else(|| panic!("{name:?} has no visible clipped region"));
+            let stats = rendered_region_stats(image, visible_rect);
+            let minimum_changed = 4.max(stats.total_pixels / 500);
+            assert!(
+                stats.total_pixels >= 16,
+                "{name:?} visible region is too small for visual inspection: {visible_rect:?}"
+            );
+            assert!(
+                stats.changed_pixels >= minimum_changed && stats.max_channel_span >= 8,
+                "{name:?} did not render enough visible pixel detail: rect={visible_rect:?} stats={stats:?}"
+            );
+        }
+
+        #[cfg(feature = "wgpu")]
+        #[derive(Debug)]
+        struct RenderedRegionStats {
+            total_pixels: usize,
+            changed_pixels: usize,
+            max_channel_span: u8,
+        }
+
+        #[cfg(feature = "wgpu")]
+        fn rendered_region_stats(image: &RenderedImage, rect: UiRect) -> RenderedRegionStats {
+            let width = image.size.width as usize;
+            let height = image.size.height as usize;
+            let x0 = rect.x.max(0.0).floor() as usize;
+            let y0 = rect.y.max(0.0).floor() as usize;
+            let x1 = rect.right().min(image.size.width as f32).ceil() as usize;
+            let y1 = rect.bottom().min(image.size.height as f32).ceil() as usize;
+            let x1 = x1.min(width);
+            let y1 = y1.min(height);
+
+            let mut first = None;
+            let mut changed_pixels = 0;
+            let mut min_channel = [u8::MAX; 3];
+            let mut max_channel = [0_u8; 3];
+            let mut total_pixels = 0;
+
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let offset = (y * width + x) * 4;
+                    let pixel = [
+                        image.pixels[offset],
+                        image.pixels[offset + 1],
+                        image.pixels[offset + 2],
+                        image.pixels[offset + 3],
+                    ];
+                    if let Some(first) = first {
+                        if pixel_channel_delta(pixel, first) > 4 {
+                            changed_pixels += 1;
+                        }
+                    } else {
+                        first = Some(pixel);
+                    }
+                    for channel in 0..3 {
+                        min_channel[channel] = min_channel[channel].min(pixel[channel]);
+                        max_channel[channel] = max_channel[channel].max(pixel[channel]);
+                    }
+                    total_pixels += 1;
+                }
+            }
+
+            let max_channel_span = (0..3)
+                .map(|channel| max_channel[channel].saturating_sub(min_channel[channel]))
+                .max()
+                .unwrap_or(0);
+            RenderedRegionStats {
+                total_pixels,
+                changed_pixels,
+                max_channel_span,
+            }
+        }
+
+        #[cfg(feature = "wgpu")]
+        fn pixel_channel_delta(left: [u8; 4], right: [u8; 4]) -> u8 {
+            (0..4)
+                .map(|channel| left[channel].abs_diff(right[channel]))
+                .max()
+                .unwrap_or(0)
+        }
+
+        #[cfg(feature = "wgpu")]
+        fn maybe_dump_showcase_snapshot(image: &RenderedImage, id: &str, variant: &str) {
+            let Ok(dir) = std::env::var("OPERAD_SHOWCASE_VISUAL_DUMP_DIR") else {
+                return;
+            };
+            let path = std::path::Path::new(&dir).join(format!("{id}-{variant}.ppm"));
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create showcase visual dump dir");
+            }
+            let mut bytes =
+                format!("P6\n{} {}\n255\n", image.size.width, image.size.height).into_bytes();
+            for pixel in image.pixels.chunks_exact(4) {
+                bytes.extend_from_slice(&pixel[0..3]);
+            }
+            std::fs::write(&path, bytes).expect("write showcase visual dump");
+        }
+
+        #[test]
         fn showcase_windows_survive_small_user_resizes() {
             let viewport = UiSize::new(900.0, 760.0);
             for id in SHOWCASE_WIDGET_WINDOW_IDS {
@@ -1017,7 +1631,7 @@ mod showcase_app {
                 state.desktop.user_sized.insert(id.to_string());
                 if id == "selection" {
                     state.combo_open = true;
-                    state.dropdown.open = true;
+                    state.dropdown.open(&select_options());
                 }
                 if id == "slider" {
                     state.slider_trailing_picker_open = true;
@@ -1064,8 +1678,8 @@ mod showcase_app {
                 document
                     .compute_layout(viewport, &mut ApproxTextMeasurer)
                     .expect("showcase layout");
-                let list = node_id(&document, "controls.widget_list");
-                let rect = document.node(list).layout.rect;
+                let list = node_id(&document, "controls.widget_list.viewport");
+                let rect = document.node(list).layout().rect;
                 let wheel_point =
                     UiPoint::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
                 let result = document.handle_input(UiInputEvent::Wheel(UiWheelEvent::pixels(
@@ -1086,26 +1700,88 @@ mod showcase_app {
             document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
                 .expect("showcase layout");
-            let list = node_id(&document, "controls.widget_list");
+            let list = node_id(&document, "controls.widget_list.viewport");
             let scroll = document.scroll_state(list).expect("scroll state");
             let max_offset = scroll.max_offset().y;
             assert!(max_offset > 0.0, "{scroll:?}");
             assert!(
-                (scroll.offset.y - max_offset).abs() < 0.01,
+                (scroll.offset().y - max_offset).abs() < 0.01,
                 "scroll did not reach max offset: {scroll:?}"
             );
 
             let track = document
-                .node(node_id(&document, "controls.widget_list.scrollbar"))
-                .layout
+                .node(node_id(
+                    &document,
+                    "controls.widget_list.vertical-scrollbar",
+                ))
+                .layout()
                 .rect;
             let thumb = document
-                .node(node_id(&document, "controls.widget_list.scrollbar.thumb"))
-                .layout
+                .node(node_id(
+                    &document,
+                    "controls.widget_list.vertical-scrollbar.thumb",
+                ))
+                .layout()
                 .rect;
             assert!(
                 (thumb.bottom() - track.bottom()).abs() < 0.01,
                 "thumb={thumb:?} track={track:?} scroll={scroll:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_widget_list_scrollbar_thumb_drag_updates_scroll() {
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut state = ShowcaseState::default();
+            state.windows.clear_all();
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let scrollbar = node_id(&document, "controls.widget_list.vertical-scrollbar");
+            let thumb = node_id(&document, "controls.widget_list.vertical-scrollbar.thumb");
+            let track_rect = document.node(scrollbar).layout().rect;
+            let thumb_rect = document.node(thumb).layout().rect;
+            let start = UiPoint::new(thumb_rect.x + thumb_rect.width * 0.5, thumb_rect.y + 2.0);
+            let end = UiPoint::new(start.x, track_rect.bottom() - 2.0);
+
+            assert_eq!(
+                document
+                    .handle_input(UiInputEvent::PointerDown(start))
+                    .pressed,
+                Some(scrollbar)
+            );
+            state.update(WidgetAction::pointer_edit(
+                scrollbar,
+                "controls.widget_list.scrollbar",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Begin,
+                    start,
+                    UiPoint::new(start.x - track_rect.x, start.y - track_rect.y),
+                    track_rect,
+                ),
+            ));
+            state.update(WidgetAction::pointer_edit(
+                scrollbar,
+                "controls.widget_list.scrollbar",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Commit,
+                    end,
+                    UiPoint::new(end.x - track_rect.x, end.y - track_rect.y),
+                    track_rect,
+                ),
+            ));
+
+            let mut scrolled = state.view(viewport);
+            scrolled
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("scrolled showcase layout");
+            let list = node_id(&scrolled, "controls.widget_list.viewport");
+            let scroll = scrolled.scroll_state(list).expect("scroll state");
+            assert!(
+                scroll.offset().y > scroll.max_offset().y * 0.9,
+                "dragging scrollbar thumb should move the widget list near the bottom: {scroll:?}"
             );
         }
 
@@ -1127,9 +1803,9 @@ mod showcase_app {
             let canvas = document
                 .nodes()
                 .iter()
-                .find(|node| node.name == "canvas.shader")
+                .find(|node| node.name() == "canvas.shader")
                 .expect("canvas shader node");
-            let rect = canvas.layout.rect;
+            let rect = canvas.layout().rect;
             assert!(rect.width > 0.0 && rect.height > 0.0, "{rect:?}");
             assert!(
                 (rect.width / rect.height - 16.0 / 9.0).abs() < 0.01,
@@ -1149,7 +1825,7 @@ mod showcase_app {
 
             let window = document
                 .node(node_id(&document, "showcase.windows.window.canvas"))
-                .layout
+                .layout()
                 .rect;
             assert!(window.width >= 560.0, "{window:?}");
             assert!(window.height >= 390.0, "{window:?}");
@@ -1174,9 +1850,9 @@ mod showcase_app {
                 let slider = document
                     .nodes()
                     .iter()
-                    .find(|node| node.name == "slider.value")
+                    .find(|node| node.name() == "slider.value")
                     .expect("primary slider node");
-                widths.push(slider.layout.rect.width);
+                widths.push(slider.layout().rect.width);
             }
 
             assert!((widths[0] - 180.0).abs() < 0.01, "{widths:?}");
@@ -1193,11 +1869,11 @@ mod showcase_app {
                 .expect("initial buttons layout");
             let window = document
                 .node(node_id(&document, "showcase.windows.window.buttons"))
-                .layout
+                .layout()
                 .rect;
             let resize_origin = UiPoint::new(window.right(), window.bottom());
             state.update(WidgetAction::pointer_edit(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "window.resize.buttons",
                 WidgetPointerEdit::new(
                     WidgetValueEditPhase::Begin,
@@ -1207,7 +1883,7 @@ mod showcase_app {
                 ),
             ));
             state.update(WidgetAction::pointer_edit(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "window.resize.buttons",
                 WidgetPointerEdit::new(
                     WidgetValueEditPhase::Commit,
@@ -1223,7 +1899,7 @@ mod showcase_app {
                 .expect("resized buttons layout");
             let resized_window = resized
                 .node(node_id(&resized, "showcase.windows.window.buttons"))
-                .layout
+                .layout()
                 .rect;
             assert!(
                 resized_window.width >= 494.0,
@@ -1235,9 +1911,12 @@ mod showcase_app {
             );
             let content = resized
                 .node(node_id(&resized, "showcase.windows.window.buttons.content"))
-                .layout
+                .layout()
                 .rect;
-            let last = resized.node(node_id(&resized, "buttons.last")).layout.rect;
+            let last = resized
+                .node(node_id(&resized, "buttons.last"))
+                .layout()
+                .rect;
             assert!(
                 last.bottom() <= content.bottom(),
                 "last={last:?} content={content:?}"
@@ -1272,7 +1951,7 @@ mod showcase_app {
             .is_some());
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "layout_widgets.drawer.assets",
             ));
             assert!(state.layout_dock.is_hidden("assets"));
@@ -1283,7 +1962,7 @@ mod showcase_app {
             assert!(maybe_node_id(&document, "layout_widgets.dock.panel.assets").is_none());
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "layout_widgets.reorder.assets.before.inspector",
             ));
             assert!(!state.layout_dock.is_hidden("assets"));
@@ -1296,7 +1975,7 @@ mod showcase_app {
             assert_eq!(order, vec!["assets", "inspector", "document"]);
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "layout_widgets.float_inspector",
             ));
             assert!(state.layout_dock.is_floating("inspector"));
@@ -1308,7 +1987,7 @@ mod showcase_app {
             assert!(maybe_node_id(&document, "layout_widgets.dock.panel.inspector").is_none());
 
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "layout_widgets.dock_inspector",
             ));
             assert!(!state.layout_dock.is_floating("inspector"));
@@ -1337,12 +2016,15 @@ mod showcase_app {
 
             let content = document
                 .node(node_id(&document, "showcase.windows.window.labels.content"))
-                .layout
+                .layout()
                 .rect;
-            let link = document.node(node_id(&document, "labels.link")).layout.rect;
+            let link = document
+                .node(node_id(&document, "labels.link"))
+                .layout()
+                .rect;
             let hyperlink = document
                 .node(node_id(&document, "labels.hyperlink"))
-                .layout
+                .layout()
                 .rect;
             assert!(
                 link.bottom() <= content.bottom() && hyperlink.bottom() <= content.bottom(),
@@ -1361,18 +2043,18 @@ mod showcase_app {
 
             let window = document
                 .node(node_id(&document, "showcase.windows.window.color_picker"))
-                .layout
+                .layout()
                 .rect;
             let picker = document
                 .node(node_id(&document, "color.picker"))
-                .layout
+                .layout()
                 .rect;
             let content = document
                 .node(node_id(
                     &document,
                     "showcase.windows.window.color_picker.content",
                 ))
-                .layout
+                .layout()
                 .rect;
             let left_padding = picker.x - content.x;
             let right_padding = content.right() - picker.right();
@@ -1407,11 +2089,11 @@ mod showcase_app {
                     &document,
                     "showcase.windows.window.numeric.content",
                 ))
-                .layout
+                .layout()
                 .rect;
             let note = document
                 .node(node_id(&document, "numeric.note"))
-                .layout
+                .layout()
                 .rect;
             assert!(
                 note.bottom() <= content.bottom(),
@@ -1420,15 +2102,15 @@ mod showcase_app {
 
             let degrees = document
                 .node(node_id(&document, "numeric.drag_angle"))
-                .layout
+                .layout()
                 .rect;
             let degrees_value = document
                 .node(node_id(&document, "numeric.drag_angle.value"))
-                .layout
+                .layout()
                 .rect;
-            let UiContent::Text(degrees_text) = &document
+            let UiContent::Text(degrees_text) = document
                 .node(node_id(&document, "numeric.drag_angle.value"))
-                .content
+                .content()
             else {
                 panic!("numeric angle value should be text");
             };
@@ -1449,13 +2131,13 @@ mod showcase_app {
                 "text.code_editor.edit",
             ] {
                 let before = match action {
-                    "text.multiline.edit" => state.multiline_text.text.clone(),
-                    "text.area.edit" => state.text_area_text.text.clone(),
-                    "text.code_editor.edit" => state.code_editor_text.text.clone(),
+                    "text.multiline.edit" => state.multiline_text.text().to_string(),
+                    "text.area.edit" => state.text_area_text.text().to_string(),
+                    "text.code_editor.edit" => state.code_editor_text.text().to_string(),
                     _ => unreachable!(),
                 };
                 state.update(WidgetAction::text_edit(
-                    UiNodeId(0),
+                    UiNodeId::root(),
                     action,
                     UiInputEvent::Key {
                         key: KeyCode::Enter,
@@ -1463,9 +2145,9 @@ mod showcase_app {
                     },
                 ));
                 let after = match action {
-                    "text.multiline.edit" => &state.multiline_text.text,
-                    "text.area.edit" => &state.text_area_text.text,
-                    "text.code_editor.edit" => &state.code_editor_text.text,
+                    "text.multiline.edit" => state.multiline_text.text(),
+                    "text.area.edit" => state.text_area_text.text(),
+                    "text.code_editor.edit" => state.code_editor_text.text(),
                     _ => unreachable!(),
                 };
                 assert_eq!(after, &format!("{before}\n"), "{action}");
@@ -1489,7 +2171,7 @@ mod showcase_app {
         fn showcase_select_dropdown_popups_are_anchored_to_controls() {
             let mut state = state_with_window("selection");
             state.combo_open = true;
-            state.dropdown.open = true;
+            state.dropdown.open(&select_options());
 
             let viewport = UiSize::new(900.0, 760.0);
             let mut document = state.view(viewport);
@@ -1501,8 +2183,11 @@ mod showcase_app {
                 ("combo.toggle", "selection.combo_menu"),
                 ("selection.dropdown", "selection.dropdown.popup"),
             ] {
-                let trigger = document.node(node_id(&document, trigger_name)).layout.rect;
-                let popup = document.node(node_id(&document, popup_name)).layout.rect;
+                let trigger = document
+                    .node(node_id(&document, trigger_name))
+                    .layout()
+                    .rect;
+                let popup = document.node(node_id(&document, popup_name)).layout().rect;
                 assert!(
                     (popup.x - trigger.x).abs() <= 1.0,
                     "{popup_name} should align to {trigger_name}: popup={popup:?} trigger={trigger:?}"
@@ -1512,6 +2197,30 @@ mod showcase_app {
                     "{popup_name} should open below {trigger_name}: popup={popup:?} trigger={trigger:?}"
                 );
             }
+        }
+
+        #[test]
+        fn showcase_popup_panel_close_button_label_is_visible() {
+            let state = state_with_window("popup_panel");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("popup panel layout");
+
+            let close_label = node_id(&document, "popup_panel.inline_preview.close.label");
+            let text_item = document
+                .paint_list()
+                .items
+                .into_iter()
+                .find(|item| item.node == close_label && matches!(item.kind, PaintKind::Text(_)))
+                .expect("popup close label paint");
+            assert!(
+                text_item.rect.width >= 6.0 && text_item.clip_rect.width >= 6.0,
+                "popup close label should be visible: rect={:?} clip={:?}",
+                text_item.rect,
+                text_item.clip_rect
+            );
         }
 
         #[test]
@@ -1538,8 +2247,8 @@ mod showcase_app {
                     "animation.interaction.target",
                 ),
             ] {
-                let stage = document.node(node_id(&document, stage_name)).layout.rect;
-                let scene = document.node(node_id(&document, scene_name)).layout.rect;
+                let stage = document.node(node_id(&document, stage_name)).layout().rect;
+                let scene = document.node(node_id(&document, scene_name)).layout().rect;
                 assert!(stage.width >= ANIMATION_STAGE_MIN_WIDTH, "{stage_name}");
                 assert!(stage.height >= ANIMATION_STAGE_HEIGHT, "{stage_name}");
                 assert!(
@@ -1571,11 +2280,11 @@ mod showcase_app {
 
                 let stage = document
                     .node(node_id(&document, "animation.state.stage"))
-                    .layout
+                    .layout()
                     .rect;
                 let scene = document
                     .node(node_id(&document, "animation.state.panel"))
-                    .layout
+                    .layout()
                     .rect;
                 let primitive = first_scene_rect(&document, "animation.state.panel");
                 let panel = UiRect::new(
@@ -1603,7 +2312,7 @@ mod showcase_app {
                 .expect("showcase layout");
 
             let node = document.node(node_id(&document, "animation.scrub.shape"));
-            let UiContent::Scene(primitives) = &node.content else {
+            let UiContent::Scene(primitives) = node.content() else {
                 panic!("scrubbed animation shape should be a scene");
             };
             let Some(ScenePrimitive::MorphPolygon {
@@ -1666,14 +2375,14 @@ mod showcase_app {
                 .expect("showcase layout");
 
             let target = node_id(&document, "animation.interaction.target");
-            let target_rect = document.node(target).layout.rect;
+            let target_rect = document.node(target).layout().rect;
             let input = document.handle_input(UiInputEvent::PointerMove(UiPoint::new(
                 target_rect.x + target_rect.width * 0.75,
                 target_rect.y + target_rect.height * 0.5,
             )));
             let hovered_name = input
                 .hovered
-                .map(|hovered| document.node(hovered).name.clone());
+                .map(|hovered| document.node(hovered).name().to_owned());
             assert_eq!(
                 input.hovered,
                 Some(target),
@@ -1682,7 +2391,7 @@ mod showcase_app {
 
             let values = document
                 .node(target)
-                .animation
+                .animation()
                 .as_ref()
                 .expect("interaction target animation")
                 .values();
@@ -1705,7 +2414,7 @@ mod showcase_app {
             )));
             let values = document
                 .node(target)
-                .animation
+                .animation()
                 .as_ref()
                 .expect("interaction target animation")
                 .values();
@@ -1729,11 +2438,11 @@ mod showcase_app {
 
             let window = document
                 .node(node_id(&document, "showcase.windows.window.animation"))
-                .layout
+                .layout()
                 .rect;
             let section = document
                 .node(node_id(&document, "animation.section_scroll"))
-                .layout
+                .layout()
                 .rect;
             assert!(window.height >= ANIMATION_STAGE_HEIGHT * 4.0, "{window:?}");
             assert!(
@@ -1800,7 +2509,7 @@ mod showcase_app {
                 let intrinsic = document
                     .intrinsic_size(label, &mut ApproxTextMeasurer)
                     .expect("label intrinsic size");
-                let rect = document.node(label).layout.rect;
+                let rect = document.node(label).layout().rect;
                 assert!(
                     rect.width + 0.5 >= intrinsic.preferred.width,
                     "{label:?}: rect={rect:?} intrinsic={intrinsic:?}"
@@ -1812,7 +2521,7 @@ mod showcase_app {
         fn showcase_slider_color_button_opens_inline_picker() {
             let mut state = state_with_window("slider");
             state.update(WidgetAction::activate(
-                UiNodeId(0),
+                UiNodeId::root(),
                 "slider.trailing_color_button",
             ));
             assert!(state.slider_trailing_picker_open);
@@ -1825,11 +2534,11 @@ mod showcase_app {
             assert!(document
                 .nodes()
                 .iter()
-                .any(|node| node.name == "slider.trailing_picker"));
+                .any(|node| node.name() == "slider.trailing_picker"));
             assert!(!document
                 .nodes()
                 .iter()
-                .any(|node| node.name == "slider.trailing_color_button.label"));
+                .any(|node| node.name() == "slider.trailing_color_button.label"));
         }
 
         #[test]
@@ -1837,7 +2546,7 @@ mod showcase_app {
         fn showcase_progress_phase_does_not_wrap_on_tick() {
             let mut state = ShowcaseState::default();
             state.progress_phase = std::f32::consts::TAU - 0.001;
-            state.update(WidgetAction::activate(UiNodeId(0), "runtime.tick"));
+            state.update(WidgetAction::activate(UiNodeId::root(), "runtime.tick"));
             assert!(state.progress_phase > std::f32::consts::TAU);
         }
     }

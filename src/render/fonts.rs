@@ -112,10 +112,18 @@ impl FontSourceDescriptor {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FontGeneration(pub u64);
+pub struct FontGeneration(pub(crate) u64);
 
 impl FontGeneration {
     pub const ZERO: Self = Self(0);
+
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
 
     pub const fn next(self) -> Self {
         Self(self.0.wrapping_add(1))
@@ -712,7 +720,7 @@ fn sorted_loaded_faces(faces: &HashMap<FontFaceId, CachedFontFace>) -> Vec<&Cach
 fn face_id_order(face_id: &FontFaceId) -> (&str, u16, u8, u8) {
     (
         face_id.family.as_str(),
-        face_id.weight.0,
+        face_id.weight.value(),
         font_style_order(face_id.style),
         font_stretch_order(face_id.stretch),
     )
@@ -746,7 +754,7 @@ mod tests {
         FontFaceDescriptor::new(
             face(family),
             FontSourceDescriptor::memory(format!("{family}-regular")),
-            FontGeneration(generation),
+            FontGeneration::new(generation),
         )
     }
 
@@ -758,7 +766,7 @@ mod tests {
     ) -> FontFaceId {
         let id = face(family);
         registry.register_face(descriptor(family, generation));
-        registry.mark_loaded(&id, FontGeneration(generation), bytes);
+        registry.mark_loaded(&id, FontGeneration::new(generation), bytes);
         id
     }
 
@@ -768,7 +776,7 @@ mod tests {
         let missing = face("Missing Sans");
         let loaded = register_loaded(&mut registry, "App Sans", 1, 128);
         registry.register_face(descriptor("Missing Sans", 1));
-        registry.mark_missing(&missing, FontGeneration(1));
+        registry.mark_missing(&missing, FontGeneration::new(1));
 
         let resolution = registry.resolve_fallback_stack(
             &FontFallbackStack::new(["Missing Sans", "App Sans", "System Sans"]),
@@ -790,8 +798,8 @@ mod tests {
         registry.register_face(descriptor("Missing Sans", 1));
         registry.register_face(descriptor("Broken Serif", 1));
 
-        let missing_report = registry.mark_missing(&missing, FontGeneration(1));
-        let failed_report = registry.mark_failed(&failed, FontGeneration(1), "parse error");
+        let missing_report = registry.mark_missing(&missing, FontGeneration::new(1));
+        let failed_report = registry.mark_failed(&failed, FontGeneration::new(1), "parse error");
 
         assert_eq!(missing_report.outcome, FontLifecycleOutcome::Missing);
         assert_eq!(failed_report.outcome, FontLifecycleOutcome::Failed);
@@ -819,14 +827,14 @@ mod tests {
         let id = face("App Sans");
         registry.register_face(descriptor("App Sans", 2));
 
-        let report = registry.mark_loaded(&id, FontGeneration(1), 128);
+        let report = registry.mark_loaded(&id, FontGeneration::new(1), 128);
 
         assert_eq!(report.outcome, FontLifecycleOutcome::Stale);
         assert_eq!(
             report.issue,
             Some(FontLifecycleIssue::StaleGeneration {
-                current_generation: FontGeneration(2),
-                update_generation: FontGeneration(1),
+                current_generation: FontGeneration::new(2),
+                update_generation: FontGeneration::new(1),
             })
         );
         assert_eq!(registry.total_bytes(), 0);
@@ -846,12 +854,12 @@ mod tests {
         registry.register_face(descriptor("Missing Sans", 1));
         registry.register_face(descriptor("Broken Serif", 1));
 
-        registry.mark_loaded(&loaded, FontGeneration(1), 200);
-        registry.mark_missing(&missing, FontGeneration(1));
-        registry.mark_failed(&failed, FontGeneration(1), "parse error");
+        registry.mark_loaded(&loaded, FontGeneration::new(1), 200);
+        registry.mark_missing(&missing, FontGeneration::new(1));
+        registry.mark_failed(&failed, FontGeneration::new(1), "parse error");
         assert_eq!(registry.total_bytes(), 200);
 
-        registry.mark_loaded(&loaded, FontGeneration(2), 80);
+        registry.mark_loaded(&loaded, FontGeneration::new(2), 80);
 
         assert_eq!(registry.total_bytes(), 80);
         assert_eq!(registry.face(&loaded).map(|face| face.bytes), Some(80));

@@ -70,9 +70,19 @@ impl fmt::Display for FieldId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ValidationGeneration(pub u64);
+pub struct ValidationGeneration(pub(crate) u64);
 
 impl ValidationGeneration {
+    pub const ZERO: Self = Self(0);
+
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
     pub const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
     }
@@ -231,7 +241,7 @@ impl FieldState {
             dirty: false,
             pending: false,
             validating: false,
-            validation_generation: ValidationGeneration(0),
+            validation_generation: ValidationGeneration::ZERO,
             pending_generation: None,
             messages: Vec::new(),
         }
@@ -276,7 +286,7 @@ impl FormState {
             pending: false,
             validating: false,
             submitted: false,
-            validation_generation: ValidationGeneration(0),
+            validation_generation: ValidationGeneration::ZERO,
             pending_generation: None,
         }
     }
@@ -349,7 +359,7 @@ impl FormState {
         self.phase = FormPhase::Reset;
         self.form_messages.clear();
         self.submitted = false;
-        self.validation_generation = ValidationGeneration(0);
+        self.validation_generation = ValidationGeneration::ZERO;
         self.pending_generation = None;
         for field in self.fields.values_mut() {
             field.value.clear();
@@ -357,7 +367,7 @@ impl FormState {
             field.dirty = false;
             field.pending = false;
             field.validating = false;
-            field.validation_generation = ValidationGeneration(0);
+            field.validation_generation = ValidationGeneration::ZERO;
             field.pending_generation = None;
             field.messages.clear();
         }

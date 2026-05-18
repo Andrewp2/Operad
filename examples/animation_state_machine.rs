@@ -1,16 +1,16 @@
+use operad::native::{NativeWindowOptions, NativeWindowResult};
 use operad::{
     root_style, widgets, AccessibilityMeta, AccessibilityRole, AnimatedValues,
     AnimationBlendBinding, AnimationCondition, AnimationMachine, AnimationState,
-    AnimationTransition, ColorRgba, InputBehavior, LayoutStyle, NativeWindowOptions,
-    ScenePrimitive, StrokeStyle, TextStyle, UiDocument, UiNode, UiPoint, UiSize, UiVisual,
-    WidgetAction,
+    AnimationTransition, ColorRgba, InputBehavior, LayoutStyle, ScenePrimitive, StrokeStyle,
+    TextStyle, UiDocument, UiNode, UiPoint, UiSize, UiVisual, WidgetAction,
 };
 
 const INPUT_OPEN: &str = "open";
 const INPUT_MORPH: &str = "morph";
 
-fn main() -> operad::NativeWindowResult {
-    operad::run_app_with(
+fn main() -> NativeWindowResult {
+    operad::native::run_app_with(
         NativeWindowOptions::new("Animation state machine").with_min_size(540.0, 360.0),
         AnimationApp::default(),
         AnimationApp::update,
@@ -37,7 +37,7 @@ impl AnimationApp {
     fn view(&self, viewport: UiSize) -> UiDocument {
         let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
         let panel = ui.add_child(
-            ui.root,
+            ui.root(),
             UiNode::container(
                 "animation.panel",
                 LayoutStyle::column()
