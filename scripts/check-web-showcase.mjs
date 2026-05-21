@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -22,6 +23,7 @@ const runUat = boolFromEnv("OPERAD_WEB_SHOWCASE_UAT");
 const viewportWidth = numberFromEnv("OPERAD_WEB_SMOKE_WIDTH", 1440);
 const viewportHeight = numberFromEnv("OPERAD_WEB_SMOKE_HEIGHT", 1000);
 const showcaseUrl = runUat ? withQueryParam(url, "operad_uat", "1") : url;
+const debuggingPort = await reservePort();
 const showcaseWindowIds = [
   "labels",
   "buttons",
@@ -69,9 +71,11 @@ const chrome = spawn(
   chromePath,
   [
     "--headless=new",
-    "--remote-debugging-port=0",
+    `--remote-debugging-port=${debuggingPort}`,
+    "--remote-allow-origins=*",
     "--enable-unsafe-webgpu",
     "--ignore-gpu-blocklist",
+    "--disable-dev-shm-usage",
     `--window-size=${viewportWidth},${viewportHeight}`,
     "--force-device-scale-factor=1",
     "--no-first-run",
@@ -144,16 +148,51 @@ function findChrome() {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-function waitForDevtoolsEndpoint() {
+function reservePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port);
+        } else {
+          reject(new Error("Could not reserve a Chrome debugging port."));
+        }
+      });
+    });
+    server.on("error", reject);
+  });
+}
+
+async function waitForDevtoolsEndpoint() {
+  const endpoint = `http://127.0.0.1:${debuggingPort}/json/version`;
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + 10_000;
-    const timer = setInterval(() => {
+    const timer = setInterval(async () => {
       const text = `${stderr}\n${stdout}`;
       const match = text.match(/DevTools listening on (ws:\/\/[^\s]+)/);
       if (match) {
         clearInterval(timer);
         resolve(match[1]);
-      } else if (Date.now() > deadline) {
+        return;
+      }
+
+      try {
+        const response = await fetch(endpoint);
+        if (response.ok) {
+          const metadata = await response.json();
+          if (typeof metadata.webSocketDebuggerUrl === "string") {
+            clearInterval(timer);
+            resolve(metadata.webSocketDebuggerUrl);
+            return;
+          }
+        }
+      } catch {
+        // Chrome is still starting.
+      }
+
+      if (Date.now() > deadline) {
         clearInterval(timer);
         reject(
           new Error(
