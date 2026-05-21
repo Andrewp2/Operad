@@ -16,6 +16,8 @@ use crate::{
 };
 
 pub const OPERAD_DARK_THEME_NAME: &str = "operad.dark.v3";
+pub const OPERAD_LIGHT_THEME_NAME: &str = "operad.light.v3";
+pub const OPERAD_BUBBLEGUM_THEME_NAME: &str = "operad.bubblegum.v3";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
@@ -33,7 +35,18 @@ pub struct Theme {
 
 impl Theme {
     pub fn dark() -> Self {
-        let colors = ColorTokens::dark();
+        Self::from_colors(OPERAD_DARK_THEME_NAME, ColorTokens::dark())
+    }
+
+    pub fn light() -> Self {
+        Self::from_colors(OPERAD_LIGHT_THEME_NAME, ColorTokens::light())
+    }
+
+    pub fn bubblegum() -> Self {
+        Self::from_colors(OPERAD_BUBBLEGUM_THEME_NAME, ColorTokens::bubblegum())
+    }
+
+    fn from_colors(name: &'static str, colors: ColorTokens) -> Self {
         let spacing = SpacingTokens::dense();
         let typography = TypographyTokens::dark(&colors);
         let radius = RadiusTokens::default();
@@ -45,7 +58,7 @@ impl Theme {
             ComponentTokens::dark(&colors, &spacing, &typography, &radius, &stroke, &opacity);
 
         Self {
-            name: OPERAD_DARK_THEME_NAME,
+            name,
             colors,
             spacing,
             typography,
@@ -733,6 +746,100 @@ impl ColorTokens {
             editor_lane: ColorRgba::new(25, 25, 25, 255),
             editor_lane_alternate: ColorRgba::new(21, 21, 21, 255),
             transport_active: ColorRgba::new(92, 212, 165, 255),
+        }
+    }
+
+    pub const fn light() -> Self {
+        Self {
+            canvas: ColorRgba::new(244, 246, 249, 255),
+            canvas_subtle: ColorRgba::new(235, 239, 245, 255),
+            surface: ColorRgba::new(255, 255, 255, 255),
+            surface_muted: ColorRgba::new(243, 246, 250, 255),
+            surface_elevated: ColorRgba::new(255, 255, 255, 255),
+            surface_overlay: ColorRgba::new(250, 252, 255, 255),
+            surface_sunken: ColorRgba::new(229, 235, 243, 255),
+            border: ColorRgba::new(185, 195, 209, 255),
+            border_muted: ColorRgba::new(214, 222, 234, 255),
+            border_strong: ColorRgba::new(126, 142, 164, 255),
+            divider: ColorRgba::new(208, 216, 228, 255),
+            text: ColorRgba::new(25, 32, 43, 255),
+            text_muted: ColorRgba::new(74, 86, 105, 255),
+            text_subtle: ColorRgba::new(112, 126, 146, 255),
+            text_disabled: ColorRgba::new(128, 142, 162, 185),
+            text_inverse: ColorRgba::new(250, 252, 255, 255),
+            accent: ColorRgba::new(24, 116, 184, 255),
+            accent_hover: ColorRgba::new(18, 102, 168, 255),
+            accent_pressed: ColorRgba::new(12, 82, 138, 255),
+            accent_muted: ColorRgba::new(216, 236, 250, 255),
+            accent_strong: ColorRgba::new(9, 94, 158, 255),
+            accent_text: ColorRgba::new(255, 255, 255, 255),
+            success: ColorRgba::new(25, 132, 88, 255),
+            warning: ColorRgba::new(177, 111, 20, 255),
+            danger: ColorRgba::new(198, 54, 78, 255),
+            info: ColorRgba::new(52, 101, 190, 255),
+            selected: ColorRgba::new(208, 231, 248, 255),
+            selected_hover: ColorRgba::new(190, 220, 244, 255),
+            selected_text: ColorRgba::new(18, 50, 76, 255),
+            focus_ring: ColorRgba::new(21, 123, 198, 255),
+            overlay_scrim: ColorRgba::new(24, 32, 45, 120),
+            editor_background: ColorRgba::new(250, 252, 255, 255),
+            editor_grid_major: ColorRgba::new(205, 216, 230, 255),
+            editor_grid_minor: ColorRgba::new(228, 235, 244, 255),
+            lane_header: ColorRgba::new(232, 238, 247, 255),
+            lane_header_selected: ColorRgba::new(205, 229, 247, 255),
+            range_item_primary: ColorRgba::new(42, 137, 198, 255),
+            range_item_secondary: ColorRgba::new(68, 152, 106, 255),
+            range_item_accent: ColorRgba::new(146, 90, 190, 255),
+            editor_lane: ColorRgba::new(246, 249, 253, 255),
+            editor_lane_alternate: ColorRgba::new(239, 244, 250, 255),
+            transport_active: ColorRgba::new(18, 134, 92, 255),
+        }
+    }
+
+    pub const fn bubblegum() -> Self {
+        Self {
+            canvas: ColorRgba::new(255, 238, 247, 255),
+            canvas_subtle: ColorRgba::new(250, 220, 238, 255),
+            surface: ColorRgba::new(255, 248, 252, 255),
+            surface_muted: ColorRgba::new(250, 231, 243, 255),
+            surface_elevated: ColorRgba::new(255, 252, 254, 255),
+            surface_overlay: ColorRgba::new(255, 244, 251, 255),
+            surface_sunken: ColorRgba::new(244, 212, 233, 255),
+            border: ColorRgba::new(218, 139, 183, 255),
+            border_muted: ColorRgba::new(238, 186, 216, 255),
+            border_strong: ColorRgba::new(172, 62, 126, 255),
+            divider: ColorRgba::new(232, 176, 208, 255),
+            text: ColorRgba::new(67, 21, 48, 255),
+            text_muted: ColorRgba::new(111, 58, 88, 255),
+            text_subtle: ColorRgba::new(150, 89, 123, 255),
+            text_disabled: ColorRgba::new(150, 102, 130, 185),
+            text_inverse: ColorRgba::new(255, 250, 253, 255),
+            accent: ColorRgba::new(209, 45, 132, 255),
+            accent_hover: ColorRgba::new(229, 72, 156, 255),
+            accent_pressed: ColorRgba::new(170, 24, 103, 255),
+            accent_muted: ColorRgba::new(249, 197, 226, 255),
+            accent_strong: ColorRgba::new(181, 28, 112, 255),
+            accent_text: ColorRgba::new(255, 255, 255, 255),
+            success: ColorRgba::new(22, 138, 117, 255),
+            warning: ColorRgba::new(179, 103, 14, 255),
+            danger: ColorRgba::new(205, 47, 84, 255),
+            info: ColorRgba::new(101, 79, 208, 255),
+            selected: ColorRgba::new(246, 191, 224, 255),
+            selected_hover: ColorRgba::new(242, 169, 211, 255),
+            selected_text: ColorRgba::new(82, 17, 55, 255),
+            focus_ring: ColorRgba::new(209, 45, 132, 255),
+            overlay_scrim: ColorRgba::new(84, 30, 62, 125),
+            editor_background: ColorRgba::new(255, 246, 251, 255),
+            editor_grid_major: ColorRgba::new(230, 169, 204, 255),
+            editor_grid_minor: ColorRgba::new(245, 212, 232, 255),
+            lane_header: ColorRgba::new(247, 219, 236, 255),
+            lane_header_selected: ColorRgba::new(240, 184, 218, 255),
+            range_item_primary: ColorRgba::new(215, 55, 139, 255),
+            range_item_secondary: ColorRgba::new(35, 151, 132, 255),
+            range_item_accent: ColorRgba::new(115, 82, 218, 255),
+            editor_lane: ColorRgba::new(255, 241, 249, 255),
+            editor_lane_alternate: ColorRgba::new(250, 230, 242, 255),
+            transport_active: ColorRgba::new(34, 154, 127, 255),
         }
     }
 }
@@ -2937,6 +3044,32 @@ mod tests {
         assert_eq!(theme.colors.focus_ring.a, 255);
         assert_ne!(theme.colors.success, theme.colors.warning);
         assert_ne!(theme.colors.warning, theme.colors.danger);
+    }
+
+    #[test]
+    fn built_in_themes_have_distinct_names_and_readable_text() {
+        let dark = Theme::dark();
+        let light = Theme::light();
+        let bubblegum = Theme::bubblegum();
+
+        assert_eq!(light.name, OPERAD_LIGHT_THEME_NAME);
+        assert_eq!(bubblegum.name, OPERAD_BUBBLEGUM_THEME_NAME);
+        assert_ne!(dark.colors.canvas, light.colors.canvas);
+        assert_ne!(light.colors.canvas, bubblegum.colors.canvas);
+        assert_ne!(dark.colors.accent, bubblegum.colors.accent);
+
+        for theme in [dark, light, bubblegum] {
+            assert!(
+                theme.colors.text.contrast_ratio(theme.colors.canvas) >= 7.0,
+                "{} should keep readable text on the app canvas",
+                theme.name
+            );
+            assert!(
+                theme.colors.text.contrast_ratio(theme.colors.surface) >= 7.0,
+                "{} should keep readable text on normal surfaces",
+                theme.name
+            );
+        }
     }
 
     #[test]

@@ -1702,7 +1702,7 @@ mod tests {
                 inset: Rect {
                     left: LengthPercentageAuto::length(0.0),
                     top: LengthPercentageAuto::length(0.0),
-                    ..Rect::length(0.0)
+                    ..Rect::length(0.0_f32)
                 },
                 size: TaffySize {
                     width: length(width),

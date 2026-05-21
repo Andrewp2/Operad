@@ -367,7 +367,7 @@ impl Default for FormActionButtonsOptions {
                         width: length(88.0),
                         height: length(32.0),
                     },
-                    padding: taffy::prelude::Rect::length(8.0),
+                    padding: taffy::prelude::Rect::length(8.0_f32),
                     ..Default::default()
                 }),
                 ..Default::default()

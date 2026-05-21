@@ -5250,6 +5250,7 @@ mod tests {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Canvas(canvas),
         });
         let request = RenderFrameRequest::new(
@@ -6041,6 +6042,7 @@ mod tests {
                         opacity: 1.0,
                         transform: PaintTransform::default(),
                         shader: None,
+                        material: None,
                         kind: PaintKind::Rect {
                             fill: ColorRgba::new(16, 24, 32, 255),
                             stroke: None,

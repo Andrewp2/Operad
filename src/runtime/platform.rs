@@ -260,6 +260,30 @@ impl ResourceHandle {
     }
 }
 
+impl From<ImageHandle> for ResourceHandle {
+    fn from(handle: ImageHandle) -> Self {
+        Self::Image(handle)
+    }
+}
+
+impl From<IconHandle> for ResourceHandle {
+    fn from(handle: IconHandle) -> Self {
+        Self::Icon(handle)
+    }
+}
+
+impl From<TextureHandle> for ResourceHandle {
+    fn from(handle: TextureHandle) -> Self {
+        Self::Texture(handle)
+    }
+}
+
+impl From<ThumbnailHandle> for ResourceHandle {
+    fn from(handle: ThumbnailHandle) -> Self {
+        Self::Thumbnail(handle)
+    }
+}
+
 pub const LAYER_LOCAL_Z_MIN: i16 = -999;
 pub const LAYER_LOCAL_Z_MAX: i16 = 999;
 

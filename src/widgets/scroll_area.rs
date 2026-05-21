@@ -127,9 +127,9 @@ pub type ScrollAreaWithBarsNodes = ScrollContainerNodes;
 /// Create a clipped scroll viewport with automatic overlay scrollbars.
 ///
 /// This is the default "just works" scroll primitive: when measured content
-/// overflows the viewport, the renderer paints scrollbar affordances on the
-/// overflowing axes. Use [`scroll_container`] when explicit scrollbar nodes are
-/// needed.
+/// overflows the viewport, the renderer reveals hover-driven scrollbar
+/// affordances on the overflowing axes. Use [`scroll_container`] when explicit
+/// scrollbar nodes are needed.
 pub fn scroll_area(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -263,9 +263,7 @@ pub fn scroll_container_shell(
     if let Some(viewport_scroll) = document.node_mut(viewport).scroll.as_mut() {
         *viewport_scroll = ScrollState {
             axes: options.axes,
-            offset: scroll.offset,
-            viewport_size: scroll.viewport_size,
-            content_size: scroll.content_size,
+            ..scroll
         };
     }
     let vertical_scrollbar = show_scrollbar(
@@ -477,12 +475,9 @@ mod tests {
     use super::*;
 
     fn scroll_state() -> ScrollState {
-        ScrollState {
-            axes: ScrollAxes::BOTH,
-            offset: UiPoint::new(40.0, 60.0),
-            viewport_size: UiSize::new(200.0, 100.0),
-            content_size: UiSize::new(400.0, 300.0),
-        }
+        ScrollState::new(ScrollAxes::BOTH)
+            .with_sizes(UiSize::new(200.0, 100.0), UiSize::new(400.0, 300.0))
+            .with_offset(UiPoint::new(40.0, 60.0))
     }
 
     #[test]
@@ -688,12 +683,8 @@ mod tests {
     fn scroll_container_can_auto_hide_unneeded_scrollbars() {
         let mut document = UiDocument::new(root_style(320.0, 220.0));
         let root = document.root;
-        let scroll = ScrollState {
-            axes: ScrollAxes::BOTH,
-            offset: UiPoint::new(0.0, 0.0),
-            viewport_size: UiSize::new(200.0, 100.0),
-            content_size: UiSize::new(200.0, 260.0),
-        };
+        let scroll = ScrollState::new(ScrollAxes::BOTH)
+            .with_sizes(UiSize::new(200.0, 100.0), UiSize::new(200.0, 260.0));
         let nodes = scroll_container_shell(
             &mut document,
             root,
@@ -713,12 +704,8 @@ mod tests {
     fn scroll_container_omits_unneeded_scrollbars_even_when_visibility_is_always() {
         let mut document = UiDocument::new(root_style(320.0, 220.0));
         let root = document.root;
-        let scroll = ScrollState {
-            axes: ScrollAxes::BOTH,
-            offset: UiPoint::new(0.0, 0.0),
-            viewport_size: UiSize::new(200.0, 100.0),
-            content_size: UiSize::new(200.0, 100.0),
-        };
+        let scroll = ScrollState::new(ScrollAxes::BOTH)
+            .with_sizes(UiSize::new(200.0, 100.0), UiSize::new(200.0, 100.0));
         let nodes = scroll_container_shell(
             &mut document,
             root,

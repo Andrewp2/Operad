@@ -15,9 +15,11 @@ pub use super::color_picker::{
     ColorPickerTarget, ColorPickerUpdate, ColorSwatch, ColorValueFormat,
 };
 pub use super::date_picker::{
-    CalendarDate, CalendarDayCell, CalendarMonth, DatePickerBuilder, DatePickerControl,
-    DatePickerKeyboardStep, DatePickerModel, DatePickerNodes, DatePickerOptions,
-    DatePickerSelection, DatePickerStyle, Weekday,
+    date_range_picker, CalendarDate, CalendarDateRange, CalendarDayCell, CalendarMonth,
+    DatePickerBuilder, DatePickerControl, DatePickerKeyboardStep, DatePickerModel, DatePickerNodes,
+    DatePickerOptions, DatePickerSelection, DatePickerStyle, DateRangeCellPosition,
+    DateRangePickerBuilder, DateRangePickerModel, DateRangePickerOptions, DateRangePickerSelection,
+    DateRangePickerStyle, DateRangeSelectionMode, Weekday,
 };
 pub use super::numeric_input::{
     drag_value, NumericDragSpec, NumericDragSpeed, NumericInputOutcome, NumericInputState,
@@ -240,6 +242,108 @@ mod tests {
         let today = picker.control_accessibility_meta(DatePickerControl::Today);
         assert_eq!(today.role, AccessibilityRole::Button);
         assert_eq!(today.value.as_deref(), Some("2024-05-15"));
+    }
+
+    #[test]
+    fn date_range_picker_selects_custom_ranges_and_whole_weeks() {
+        let start = CalendarDate::new(2024, 5, 14).unwrap();
+        let end = CalendarDate::new(2024, 5, 18).unwrap();
+        let mut picker = DateRangePickerModel::builder()
+            .today(Some(start))
+            .first_weekday(Weekday::Monday)
+            .build();
+
+        let first = picker.select(start);
+        assert_eq!(first.phase, EditPhase::CommitEdit);
+        assert_eq!(picker.range, Some(CalendarDateRange::single_day(start)));
+        assert_eq!(picker.pending_start, Some(start));
+
+        let completed = picker.select(end);
+        assert_eq!(completed.phase, EditPhase::CommitEdit);
+        assert_eq!(picker.range, Some(CalendarDateRange::new(start, end)));
+        assert_eq!(picker.pending_start, None);
+        assert_eq!(
+            picker
+                .range
+                .unwrap()
+                .position(CalendarDate::new(2024, 5, 16).unwrap()),
+            Some(DateRangeCellPosition::Middle)
+        );
+
+        picker.mode = DateRangeSelectionMode::Week;
+        let week = picker.select(CalendarDate::new(2024, 5, 22).unwrap());
+        assert_eq!(week.phase, EditPhase::CommitEdit);
+        assert_eq!(
+            picker.range,
+            Some(CalendarDateRange::new(
+                CalendarDate::new(2024, 5, 20).unwrap(),
+                CalendarDate::new(2024, 5, 26).unwrap(),
+            ))
+        );
+
+        let mut bounded = DateRangePickerModel::builder()
+            .bounds(
+                CalendarDate::new(2024, 5, 1),
+                CalendarDate::new(2024, 5, 24),
+            )
+            .first_weekday(Weekday::Monday)
+            .mode(DateRangeSelectionMode::Week)
+            .build();
+        let rejected = bounded.select(CalendarDate::new(2024, 5, 22).unwrap());
+        assert_eq!(rejected.phase, EditPhase::Preview);
+        assert_eq!(bounded.range, None);
+    }
+
+    #[test]
+    fn date_range_picker_marks_range_cells_accessibly() {
+        fn find_node(document: &UiDocument, name: &str) -> UiNodeId {
+            document
+                .nodes()
+                .iter()
+                .enumerate()
+                .find_map(|(index, node)| {
+                    (node.name() == name).then_some(UiNodeId::from_index(index))
+                })
+                .unwrap_or_else(|| panic!("missing node {name}"))
+        }
+
+        let range = CalendarDateRange::new(
+            CalendarDate::new(2024, 5, 14).unwrap(),
+            CalendarDate::new(2024, 5, 18).unwrap(),
+        );
+        let picker = DateRangePickerModel::builder()
+            .range(Some(range))
+            .visible_month(CalendarMonth::new(2024, 5).unwrap())
+            .today(Some(CalendarDate::new(2024, 5, 15).unwrap()))
+            .build();
+        let mut document = UiDocument::new(root_style(320.0, 260.0));
+        let root = document.root;
+        date_range_picker(
+            &mut document,
+            root,
+            "vacation",
+            &picker,
+            DateRangePickerOptions::default().with_action_prefix("vacation"),
+        );
+        document
+            .compute_layout(UiSize::new(320.0, 260.0), &mut ApproxTextMeasurer)
+            .expect("date range picker layout");
+
+        let middle = document.node(find_node(&document, "vacation.day.2024-05-16"));
+        assert_eq!(
+            middle.accessibility().and_then(|meta| meta.selected),
+            Some(true)
+        );
+        assert!(middle
+            .accessibility()
+            .and_then(|meta| meta.hint.as_deref())
+            .is_some_and(|hint| hint.contains("inside selected range")));
+
+        let root_meta = document
+            .node(find_node(&document, "vacation"))
+            .accessibility()
+            .expect("range picker accessibility");
+        assert_eq!(root_meta.value.as_deref(), Some("2024-05-14..2024-05-18"));
     }
 
     #[test]

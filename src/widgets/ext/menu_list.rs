@@ -4,10 +4,11 @@ use taffy::prelude::{
     Dimension, Display, FlexDirection, JustifyContent, Rect as TaffyRect, Size as TaffySize, Style,
 };
 
+use crate::widgets::single_line_text_style;
 use crate::{
     length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba,
     InputBehavior, LayoutStyle, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiDocument,
-    UiNode, UiNodeId, UiNodeStyle, UiSize, UiVisual, WidgetActionBinding,
+    UiNode, UiNodeId, UiNodeStyle, UiPortalTarget, UiSize, UiVisual, WidgetActionBinding,
 };
 
 use super::menu::{
@@ -34,6 +35,7 @@ pub struct MenuListOptions {
     pub menu_shader: Option<ShaderEffect>,
     pub active_shader: Option<ShaderEffect>,
     pub menu_animation: Option<AnimationMachine>,
+    pub portal: UiPortalTarget,
     pub z_index: i16,
     pub action_prefix: Option<String>,
 }
@@ -71,6 +73,7 @@ impl Default for MenuListOptions {
             menu_shader: None,
             active_shader: None,
             menu_animation: None,
+            portal: UiPortalTarget::AppOverlay,
             z_index: 100,
             action_prefix: None,
         }
@@ -80,6 +83,11 @@ impl Default for MenuListOptions {
 impl MenuListOptions {
     pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.action_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn with_portal(mut self, portal: UiPortalTarget) -> Self {
+        self.portal = portal;
         self
     }
 }
@@ -133,6 +141,7 @@ pub fn menu_list_popup(
         PopupOptions {
             visual: options.menu_visual,
             z_index: options.z_index,
+            portal: options.portal.clone(),
             scroll_axes: if menu_row_count_for_scroll(items) > options.max_visible_rows {
                 ScrollAxes::VERTICAL
             } else {
@@ -244,7 +253,7 @@ fn populate_menu_list(
             row,
             format!("{name}.item.{index}.label"),
             menu_item_label(item),
-            text_style,
+            single_line_text_style(text_style),
             LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
                     width: Dimension::percent(1.0),
@@ -254,19 +263,12 @@ fn populate_menu_list(
             }),
         );
         if let MenuItemKind::Check { checked } = &item.kind {
-            label(
+            trailing_menu_label(
                 document,
                 row,
                 format!("{name}.item.{index}.check"),
                 if *checked { "x" } else { "" },
-                options.shortcut_text_style.clone(),
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(18.0),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
-                }),
+                single_line_text_style(options.shortcut_text_style.clone()),
             );
         } else if let Some(shortcut) = &item.shortcut {
             label(
@@ -274,7 +276,7 @@ fn populate_menu_list(
                 row,
                 format!("{name}.item.{index}.shortcut"),
                 shortcut,
-                options.shortcut_text_style.clone(),
+                single_line_text_style(options.shortcut_text_style.clone()),
                 LayoutStyle::from_taffy_style(Style {
                     size: TaffySize {
                         width: Dimension::auto(),
@@ -284,19 +286,12 @@ fn populate_menu_list(
                 }),
             );
         } else if item.children().is_some() {
-            label(
+            trailing_menu_label(
                 document,
                 row,
                 format!("{name}.item.{index}.submenu"),
                 ">",
-                options.shortcut_text_style.clone(),
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
-                }),
+                single_line_text_style(options.shortcut_text_style.clone()),
             );
         }
         rows.push(row);
@@ -343,6 +338,54 @@ fn menu_item_row_node(
         }
     }
     node
+}
+
+fn trailing_menu_label(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    text: impl Into<String>,
+    text_style: TextStyle,
+) -> UiNodeId {
+    let name = name.into();
+    let root = document.add_child(
+        parent,
+        UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: LayoutStyle::from_taffy_style(Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    align_items: Some(taffy::prelude::AlignItems::Center),
+                    justify_content: Some(JustifyContent::Center),
+                    size: TaffySize {
+                        width: length(18.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                })
+                .style,
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        ),
+    );
+    label(
+        document,
+        root,
+        format!("{name}.label"),
+        text,
+        text_style,
+        LayoutStyle::from_taffy_style(Style {
+            size: TaffySize {
+                width: Dimension::auto(),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        }),
+    );
+    root
 }
 
 fn menu_item_text_style(item: &MenuItem, options: &MenuListOptions) -> TextStyle {

@@ -5,6 +5,7 @@ pub struct CollapsingHeaderOptions {
     pub layout: LayoutStyle,
     pub header_layout: LayoutStyle,
     pub body_layout: LayoutStyle,
+    pub root_visual: UiVisual,
     pub header_visual: UiVisual,
     pub hovered_visual: UiVisual,
     pub pressed_visual: UiVisual,
@@ -32,6 +33,7 @@ impl Default for CollapsingHeaderOptions {
                 .with_width_percent(1.0)
                 .with_padding(8.0)
                 .with_gap(8.0),
+            root_visual: UiVisual::TRANSPARENT,
             header_visual: UiVisual::panel(ColorRgba::TRANSPARENT, None, 0.0),
             hovered_visual: UiVisual::panel(ColorRgba::new(38, 48, 61, 255), None, 4.0),
             pressed_visual: UiVisual::panel(ColorRgba::new(27, 36, 48, 255), None, 4.0),
@@ -60,6 +62,11 @@ impl CollapsingHeaderOptions {
 
     pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
         self.layout = layout.into();
+        self
+    }
+
+    pub fn with_root_visual(mut self, visual: UiVisual) -> Self {
+        self.root_visual = visual;
         self
     }
 }
@@ -94,7 +101,7 @@ pub fn collapsing_header(
                 ..Default::default()
             },
         )
-        .with_visual(UiVisual::TRANSPARENT)
+        .with_visual(options.root_visual)
         .with_accessibility(
             AccessibilityMeta::new(AccessibilityRole::Group).label(
                 options
@@ -242,7 +249,13 @@ mod tests {
             root,
             "advanced",
             "Advanced",
-            CollapsingHeaderOptions::default().with_toggle_action("toggle.advanced"),
+            CollapsingHeaderOptions::default()
+                .with_toggle_action("toggle.advanced")
+                .with_root_visual(UiVisual::panel(
+                    ColorRgba::new(10, 14, 18, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(80, 90, 110, 255), 1.0)),
+                    6.0,
+                )),
         );
 
         let body = nodes.body.expect("expanded header body");
@@ -250,6 +263,10 @@ mod tests {
         assert_eq!(header_accessibility.expanded, Some(true));
         assert_eq!(header_accessibility.relations.controls, vec![body]);
         assert!(document.node(nodes.header).input.pointer);
+        assert_eq!(
+            document.node(nodes.root).visual().fill,
+            ColorRgba::new(10, 14, 18, 255)
+        );
     }
 
     #[test]

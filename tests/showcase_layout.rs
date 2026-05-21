@@ -11,21 +11,22 @@ mod showcase_app {
         use std::time::{Duration, Instant};
 
         use operad::diagnostics::AuditWarning;
-        use operad::host::{process_document_frame, HostDocumentFrameRequest, HostFrameOutput};
-        #[cfg(feature = "wgpu")]
-        use operad::platform::PixelSize;
-        #[cfg(feature = "wgpu")]
-        use operad::renderer::{RenderOptions, RenderedImage, ResourceFormat};
+        use operad::host::{
+            collect_document_widget_actions, process_document_frame,
+            process_host_frame_input_with_target_resolver, HostDocumentFrameRequest,
+            HostDocumentFrameState, HostFrameOutput, HostFrameRequest,
+        };
+        use operad::input::{RawInputEvent, RawPointerEvent};
+        use operad::platform::{CursorRequest, CursorShape, PlatformRequest};
         use operad::renderer::{RenderTarget, RendererAdapter};
         use operad::testing::EmptyResourceResolver;
         #[cfg(feature = "wgpu")]
         use operad::wgpu_renderer::WgpuRenderer;
-        #[cfg(feature = "wgpu")]
-        use operad::ColorRgba;
         use operad::{
-            AnimationInputValue, ApproxTextMeasurer, CosmicTextMeasurer, KeyCode, KeyModifiers,
-            PaintKind, TextMeasurer, TextWrap, UiContent, UiFocusState, UiInputEvent, UiWheelEvent,
-            WidgetPointerEdit, WidgetValueEditPhase,
+            AccessibilityChecked, AnimationInputValue, ApproxTextMeasurer, CosmicTextMeasurer,
+            KeyCode, KeyModifiers, PaintKind, PointerButton, PointerEventKind, TextMeasurer,
+            TextWrap, UiContent, UiFocusState, UiInputEvent, UiNodeLayoutConstraint, UiWheelEvent,
+            WidgetDrag, WidgetDragPhase, WidgetPointerEdit, WidgetTextEdit, WidgetValueEditPhase,
         };
 
         fn state_with_window(id: &str) -> ShowcaseState {
@@ -33,26 +34,21 @@ mod showcase_app {
             state.windows.clear_all();
             *state.windows.slot_mut(id).expect("known showcase window") = true;
             state.desktop.ensure_window(id, window_defaults(id));
-            if id == "popup_panel" {
-                state.popup_open = true;
-            }
             if id == "overlays" {
                 state.overlay_popup_open = true;
                 state.overlay_modal_open = true;
+                state.toast_visible = true;
             }
             state
         }
 
-        fn state_with_all_windows() -> ShowcaseState {
+        fn state_with_all_windows(viewport: UiSize) -> ShowcaseState {
             let mut state = ShowcaseState::default();
-            for id in SHOWCASE_WIDGET_WINDOW_IDS {
-                *state.windows.slot_mut(id).expect("known showcase window") = true;
-                state.desktop.ensure_window(id, window_defaults(id));
-            }
-            state.popup_open = true;
+            state.windows.clear_all();
+            state.last_desktop_size = desktop_size_for_viewport(viewport);
+            state.update(WidgetAction::activate(UiNodeId::root(), "window.add_all"));
             state.overlay_popup_open = true;
             state.overlay_modal_open = true;
-            state.combo_open = true;
             state.dropdown.open(&select_options());
             state.slider_trailing_picker_open = true;
             state.menu_button.open(&menu_items(state.menu_autosave));
@@ -83,6 +79,79 @@ mod showcase_app {
                 })
         }
 
+        fn raw_pointer(kind: PointerEventKind, position: UiPoint, timestamp: u64) -> RawInputEvent {
+            RawInputEvent::Pointer(RawPointerEvent::new(kind, position, timestamp))
+        }
+
+        fn apply_showcase_pointer_frame(
+            state: &mut ShowcaseState,
+            frame_state: &mut HostDocumentFrameState,
+            viewport: UiSize,
+            event: RawInputEvent,
+        ) -> UiDocument {
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("pre-input showcase layout");
+            let host_output = process_host_frame_input_with_target_resolver(
+                frame_state.host_frame_request(viewport).raw_event(event),
+                |event, interaction| match event {
+                    RawInputEvent::Pointer(pointer) => interaction
+                        .drag_capture
+                        .filter(|capture| {
+                            capture.pointer_id == pointer.pointer_id
+                                && matches!(
+                                    pointer.kind,
+                                    PointerEventKind::Move | PointerEventKind::Cancel
+                                )
+                        })
+                        .map(|capture| capture.target)
+                        .or_else(|| document.hit_test(pointer.position)),
+                    RawInputEvent::Wheel(wheel) => interaction
+                        .wheel_target
+                        .or(interaction.hovered)
+                        .or_else(|| document.hit_test(wheel.position)),
+                    RawInputEvent::Keyboard(_)
+                    | RawInputEvent::Text(_)
+                    | RawInputEvent::Focus(_) => None,
+                },
+            );
+            frame_state.apply_host_frame_output(&host_output);
+            let frame = process_document_frame(
+                &mut document,
+                &mut ApproxTextMeasurer,
+                frame_state.document_frame_request(
+                    viewport,
+                    RenderTarget::window("showcase", viewport),
+                    host_output,
+                ),
+            )
+            .expect("showcase input frame");
+            for action in collect_document_widget_actions(&document, &frame) {
+                state.update(action);
+            }
+            frame_state.apply_document_frame_output(&frame);
+            document
+        }
+
+        fn text_paint_rect(document: &UiDocument, name: &str) -> UiRect {
+            let node = node_id(document, name);
+            document
+                .paint_list()
+                .items
+                .into_iter()
+                .find(|item| item.node == node && matches!(item.kind, PaintKind::Text(_)))
+                .map(|item| item.rect)
+                .unwrap_or_else(|| panic!("missing text paint for {name:?}"))
+        }
+
+        fn text_content(document: &UiDocument, name: &str) -> String {
+            let UiContent::Text(text) = document.node(node_id(document, name)).content() else {
+                panic!("{name:?} should be a text node");
+            };
+            text.text.clone()
+        }
+
         fn severe_layout_warning(warning: &AuditWarning) -> bool {
             matches!(
                 warning,
@@ -93,6 +162,7 @@ mod showcase_app {
                     | AuditWarning::ScrollOffsetOutOfRange { .. }
                     | AuditWarning::ScrollbarVisibleWithoutRange { .. }
                     | AuditWarning::NodeOutsideRoot { .. }
+                    | AuditWarning::DuplicateNodeName { .. }
                     | AuditWarning::PaintItemEmptyClip { .. }
             )
         }
@@ -102,6 +172,52 @@ mod showcase_app {
                 && left.x + left.width > right.x
                 && left.y < right.y + right.height
                 && left.y + left.height > right.y
+        }
+
+        fn rect_center(rect: UiRect) -> UiPoint {
+            UiPoint::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+        }
+
+        fn assert_rect_centers_match(left: UiRect, right: UiRect) {
+            let left = rect_center(left);
+            let right = rect_center(right);
+            assert!(
+                (left.x - right.x).abs() < 0.01,
+                "x centers differ: {left:?} vs {right:?}"
+            );
+            assert!(
+                (left.y - right.y).abs() < 0.01,
+                "y centers differ: {left:?} vs {right:?}"
+            );
+        }
+
+        fn assert_circle_paint_centered_on_rect(
+            document: &UiDocument,
+            rect: UiRect,
+            node: UiNodeId,
+        ) {
+            let expected = rect_center(rect);
+            let Some(item) =
+                document.paint_list().items.into_iter().find(|item| {
+                    item.node == node && matches!(item.kind, PaintKind::Circle { .. })
+                })
+            else {
+                panic!(
+                    "missing circle paint for node {:?}",
+                    document.node(node).name()
+                );
+            };
+            let PaintKind::Circle { center, .. } = item.kind else {
+                unreachable!();
+            };
+            assert!(
+                (expected.x - center.x).abs() < 0.01,
+                "paint x centers differ: {expected:?} vs {center:?}"
+            );
+            assert!(
+                (expected.y - center.y).abs() < 0.01,
+                "paint y centers differ: {expected:?} vs {center:?}"
+            );
         }
 
         fn first_scene_rect(document: &UiDocument, name: &str) -> UiRect {
@@ -117,8 +233,8 @@ mod showcase_app {
 
         #[test]
         fn showcase_all_widgets_open_frame_stays_within_interactive_budget() {
-            let state = state_with_all_windows();
             let viewport = UiSize::new(1200.0, 900.0);
+            let state = state_with_all_windows(viewport);
             let mut measurer = CosmicTextMeasurer::new();
 
             let mut startup_document = ShowcaseState::default().view(viewport);
@@ -285,98 +401,6 @@ mod showcase_app {
             );
         }
 
-        #[test]
-        fn showcase_windows_avoid_hard_clipping_at_common_viewport_sizes() {
-            let viewports = [
-                UiSize::new(900.0, 760.0),
-                UiSize::new(720.0, 560.0),
-                UiSize::new(1180.0, 820.0),
-            ];
-
-            for viewport in viewports {
-                for id in SHOWCASE_WIDGET_WINDOW_IDS {
-                    let state = state_with_window(id);
-                    let mut document = state.view(viewport);
-                    document
-                        .compute_layout(viewport, &mut ApproxTextMeasurer)
-                        .expect("showcase layout");
-                    let warnings = document
-                        .audit_layout()
-                        .into_iter()
-                        .filter(severe_layout_warning)
-                        .collect::<Vec<_>>();
-                    assert!(
-                    warnings.is_empty(),
-                    "window {id:?} at {viewport:?} emitted severe layout warnings: {warnings:#?}"
-                );
-                }
-            }
-        }
-
-        #[test]
-        fn showcase_state_matrix_audits_every_widget_window_common_states() {
-            let viewport = UiSize::new(940.0, 780.0);
-            for id in SHOWCASE_WIDGET_WINDOW_IDS {
-                audit_showcase_window_variant(id, "normal", viewport, |_, _| {});
-                audit_showcase_window_variant(id, "collapsed", viewport, |state, id| {
-                    state.desktop.collapsed.insert(id.to_string());
-                });
-                audit_showcase_window_variant(id, "narrow", viewport, |state, id| {
-                    state
-                        .desktop
-                        .sizes
-                        .insert(id.to_string(), UiSize::new(220.0, 140.0));
-                    state.desktop.user_sized.insert(id.to_string());
-                });
-                audit_showcase_window_variant(id, "scrolled", viewport, |_, _| {});
-                audit_showcase_window_focus_variant(id, "focused", viewport, true);
-                audit_showcase_window_focus_variant(id, "hovered", viewport, false);
-            }
-        }
-
-        fn audit_showcase_window_variant(
-            id: &str,
-            variant: &str,
-            viewport: UiSize,
-            configure: impl FnOnce(&mut ShowcaseState, &str),
-        ) {
-            let mut state = state_with_window(id);
-            configure(&mut state, id);
-            let mut document = state.view(viewport);
-            let mut measurer = CosmicTextMeasurer::new();
-            document
-                .compute_layout(viewport, &mut measurer)
-                .unwrap_or_else(|error| panic!("{id} {variant} failed layout: {error}"));
-            if variant == "scrolled" {
-                scroll_all_nodes_to_end(&mut document, viewport, &mut measurer);
-            }
-            assert_no_severe_showcase_warnings(id, variant, &document);
-        }
-
-        fn audit_showcase_window_focus_variant(
-            id: &str,
-            variant: &str,
-            viewport: UiSize,
-            focused: bool,
-        ) {
-            let state = state_with_window(id);
-            let mut document = state.view(viewport);
-            let mut measurer = CosmicTextMeasurer::new();
-            document
-                .compute_layout(viewport, &mut measurer)
-                .unwrap_or_else(|error| panic!("{id} {variant} failed layout: {error}"));
-            let window_name = format!("showcase.windows.window.{id}");
-            let window = node_id(&document, &window_name);
-            if let Some(target) = first_interactive_descendant(&document, window) {
-                document.set_focus_state(UiFocusState {
-                    hovered: Some(target),
-                    focused: focused.then_some(target),
-                    pressed: None,
-                });
-            }
-            assert_no_severe_showcase_warnings(id, variant, &document);
-        }
-
         fn scroll_all_nodes_to_end(
             document: &mut UiDocument,
             viewport: UiSize,
@@ -397,20 +421,6 @@ mod showcase_app {
             document
                 .compute_layout(viewport, measurer)
                 .expect("scrolled showcase layout");
-        }
-
-        fn first_interactive_descendant(document: &UiDocument, root: UiNodeId) -> Option<UiNodeId> {
-            document
-                .nodes()
-                .iter()
-                .enumerate()
-                .find_map(|(index, node)| {
-                    let id = UiNodeId::from_index(index);
-                    (node.action().is_some()
-                        && node.layout().visible
-                        && is_descendant_or_self(document, root, id))
-                    .then_some(id)
-                })
         }
 
         fn is_descendant_or_self(
@@ -450,7 +460,7 @@ mod showcase_app {
             }
 
             state.fps = 58.6;
-            let viewport = UiSize::new(900.0, 760.0);
+            let viewport = UiSize::new(1180.0, 820.0);
             let mut document = state.view(viewport);
             document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
@@ -493,6 +503,156 @@ mod showcase_app {
         }
 
         #[test]
+        fn showcase_widget_menu_checked_mark_uses_high_contrast_color() {
+            let viewport = UiSize::new(900.0, 760.0);
+            let state = state_with_window("labels");
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let expected = Theme::dark().colors.accent_text;
+            let check_node = document.node(node_id(&document, "controls.labels.check"));
+            let UiContent::Scene(primitives) = check_node.content() else {
+                panic!("controls.labels.check should be a vector check mark");
+            };
+            let line_colors = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    ScenePrimitive::Line { stroke, .. } => Some(stroke.color),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(line_colors, vec![expected, expected]);
+        }
+
+        #[test]
+        fn showcase_widget_menu_gaps_do_not_toggle_adjacent_checkboxes() {
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut state = ShowcaseState::default();
+            let list_height = controls_list_viewport_height(viewport.height);
+            let content_height = controls_list_content_height();
+            state.controls_scroll = scroll_state(content_height, list_height, content_height);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let timeline = node_id(&document, "controls.timeline");
+            let canvas = node_id(&document, "controls.canvas");
+            let theme = node_id(&document, "controls.theme");
+            let timeline_rect = document.node(timeline).layout().rect;
+            let canvas_rect = document.node(canvas).layout().rect;
+            let theme_rect = document.node(theme).layout().rect;
+
+            assert!(timeline_rect.height <= CONTROLS_WIDGET_ROW_HEIGHT + 0.01);
+            assert!(
+                canvas_rect.y - timeline_rect.bottom() >= CONTROLS_WIDGET_ROW_GAP - 0.01,
+                "timeline={timeline_rect:?} canvas={canvas_rect:?}"
+            );
+            assert!(
+                theme_rect.y - canvas_rect.bottom() >= CONTROLS_WIDGET_ROW_GAP - 0.01,
+                "canvas={canvas_rect:?} theme={theme_rect:?}"
+            );
+
+            for (above, below) in [(timeline, canvas), (canvas, theme)] {
+                let above_rect = document.node(above).layout().rect;
+                let below_rect = document.node(below).layout().rect;
+                let point = UiPoint::new(
+                    above_rect.x + 8.0,
+                    above_rect.bottom() + (below_rect.y - above_rect.bottom()) * 0.5,
+                );
+                let hit = document.hit_test(point);
+                assert_ne!(hit, Some(above), "gap point hit row above: {point:?}");
+                assert_ne!(hit, Some(below), "gap point hit row below: {point:?}");
+                if let Some(hit) = hit {
+                    let action = document
+                        .node(hit)
+                        .action()
+                        .and_then(|action| action.action_id())
+                        .map(|id| id.as_str());
+                    assert!(
+                        action.is_none_or(|action| !action.starts_with("window.toggle.")),
+                        "gap point should not hit a widget toggle action: point={point:?} action={action:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn showcase_theme_demo_switches_the_app_theme() {
+            let mut state = state_with_window("theme");
+            let viewport = UiSize::new(1180.0, 820.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("theme layout");
+
+            assert_eq!(
+                text_content(&document, "theme.current"),
+                "Current theme: operad.dark.v3"
+            );
+            assert!(maybe_node_id(&document, "theme.choice.light").is_some());
+            assert!(maybe_node_id(&document, "theme.choice.dark").is_some());
+            assert!(maybe_node_id(&document, "theme.choice.bubblegum").is_some());
+            assert_eq!(
+                document.node(document.root()).visual().fill,
+                Theme::dark().colors.canvas
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "theme.demo.bubblegum",
+            ));
+            let mut bubblegum = state.view(viewport);
+            bubblegum
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("bubblegum theme layout");
+
+            assert_eq!(
+                text_content(&bubblegum, "theme.current"),
+                "Current theme: operad.bubblegum.v3"
+            );
+            assert_eq!(
+                bubblegum.node(bubblegum.root()).visual().fill,
+                Theme::bubblegum().colors.canvas
+            );
+            assert_eq!(
+                bubblegum
+                    .node(node_id(&bubblegum, "showcase.controls"))
+                    .visual()
+                    .fill,
+                Theme::bubblegum().colors.surface
+            );
+        }
+
+        #[test]
+        fn showcase_light_theme_keeps_existing_demo_text_readable() {
+            let mut state = state_with_window("labels");
+            state.update(WidgetAction::activate(UiNodeId::root(), "theme.demo.light"));
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("light labels layout");
+
+            let UiContent::Text(label) =
+                document.node(node_id(&document, "labels.plain")).content()
+            else {
+                panic!("labels.plain should be text");
+            };
+            assert_eq!(label.style.color, Theme::light().colors.text);
+            assert!(
+                label
+                    .style
+                    .color
+                    .contrast_ratio(Theme::light().colors.surface)
+                    >= 7.0
+            );
+        }
+
+        #[test]
         fn showcase_default_window_placement_reserves_organize_button_space() {
             let viewport = UiSize::new(900.0, 760.0);
             for id in SHOWCASE_WIDGET_WINDOW_IDS {
@@ -513,6 +673,51 @@ mod showcase_app {
                     !rects_overlap(organize, window),
                     "{id} default window overlaps organize button: organize={organize:?} window={window:?}"
                 );
+            }
+        }
+
+        #[test]
+        fn showcase_initial_frame_organizes_default_visible_windows() {
+            let viewport = UiSize::new(2200.0, 1180.0);
+            let ids = ["labels", "buttons", "color_picker", "canvas"];
+            let mut state = ShowcaseState::default();
+            state.prepare_frame(viewport);
+
+            for id in ids {
+                assert!(
+                    state.windows.is_visible(id),
+                    "default-visible window {id} should remain visible"
+                );
+                assert!(
+                    !state.desktop.is_collapsed(id),
+                    "wide startup viewport should keep {id} expanded"
+                );
+            }
+
+            let mut document = state.view(viewport);
+            let mut measurer = CosmicTextMeasurer::new();
+            document
+                .compute_layout(viewport, &mut measurer)
+                .expect("showcase layout");
+            let rects = ids
+                .into_iter()
+                .map(|id| {
+                    let name = format!("showcase.windows.window.{id}");
+                    (id, document.node(node_id(&document, &name)).layout().rect)
+                })
+                .collect::<Vec<_>>();
+
+            for (left_index, (left_id, left_rect)) in rects.iter().enumerate() {
+                assert!(
+                    left_rect.y >= SHOWCASE_ORGANIZE_BUTTON_RESERVED_HEIGHT,
+                    "{left_id} overlaps the organize control band: {left_rect:?}"
+                );
+                for (right_id, right_rect) in rects.iter().skip(left_index + 1) {
+                    assert!(
+                        !rects_overlap(*left_rect, *right_rect),
+                        "{left_id} {left_rect:?} overlapped {right_id} {right_rect:?}"
+                    );
+                }
             }
         }
 
@@ -582,6 +787,165 @@ mod showcase_app {
                 UiPoint::new(500.0, 500.0)
             );
             assert!(!state.windows.is_visible("labels"));
+        }
+
+        #[test]
+        fn showcase_floating_window_drag_does_not_close_window() {
+            let viewport = UiSize::new(1180.0, 820.0);
+            let mut state = state_with_window("labels");
+            let mut frame_state = HostDocumentFrameState::default();
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+            let title_bar = document
+                .node(node_id(
+                    &document,
+                    "showcase.windows.window.labels.title_bar",
+                ))
+                .layout()
+                .rect;
+            let start = UiPoint::new(title_bar.x + 120.0, title_bar.y + title_bar.height * 0.5);
+
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(PointerEventKind::Down(PointerButton::Primary), start, 1),
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Move,
+                    UiPoint::new(start.x + 80.0, start.y + 30.0),
+                    2,
+                ),
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Up(PointerButton::Primary),
+                    UiPoint::new(start.x + 80.0, start.y + 30.0),
+                    3,
+                ),
+            );
+
+            assert!(
+                state.windows.is_visible("labels"),
+                "dragging the title bar must move the window, not close it"
+            );
+            let moved = state
+                .desktop
+                .position("labels", default_window_position("labels"));
+            assert!(
+                moved.x > default_window_position("labels").x + 1.0
+                    || moved.y > default_window_position("labels").y + 1.0,
+                "drag should update the stored position: {moved:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_floating_window_header_control_drags_do_not_activate() {
+            let viewport = UiSize::new(1180.0, 820.0);
+
+            let mut close_state = state_with_window("labels");
+            let mut close_frame_state = HostDocumentFrameState::default();
+            let mut document = close_state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+            let close_rect = document
+                .node(node_id(&document, "showcase.windows.window.labels.close"))
+                .layout()
+                .rect;
+            let close_start = rect_center(close_rect);
+            apply_showcase_pointer_frame(
+                &mut close_state,
+                &mut close_frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Down(PointerButton::Primary),
+                    close_start,
+                    1,
+                ),
+            );
+            apply_showcase_pointer_frame(
+                &mut close_state,
+                &mut close_frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Move,
+                    UiPoint::new(close_start.x - 40.0, close_start.y + 24.0),
+                    2,
+                ),
+            );
+            apply_showcase_pointer_frame(
+                &mut close_state,
+                &mut close_frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Up(PointerButton::Primary),
+                    UiPoint::new(close_start.x - 40.0, close_start.y + 24.0),
+                    3,
+                ),
+            );
+            assert!(
+                close_state.windows.is_visible("labels"),
+                "dragging from a close button must not close the window"
+            );
+
+            let mut collapse_state = state_with_window("labels");
+            let mut collapse_frame_state = HostDocumentFrameState::default();
+            let mut document = collapse_state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+            let collapse_rect = document
+                .node(node_id(
+                    &document,
+                    "showcase.windows.window.labels.collapse",
+                ))
+                .layout()
+                .rect;
+            let collapse_start = rect_center(collapse_rect);
+            apply_showcase_pointer_frame(
+                &mut collapse_state,
+                &mut collapse_frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Down(PointerButton::Primary),
+                    collapse_start,
+                    1,
+                ),
+            );
+            apply_showcase_pointer_frame(
+                &mut collapse_state,
+                &mut collapse_frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Move,
+                    UiPoint::new(collapse_start.x + 40.0, collapse_start.y + 24.0),
+                    2,
+                ),
+            );
+            apply_showcase_pointer_frame(
+                &mut collapse_state,
+                &mut collapse_frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Up(PointerButton::Primary),
+                    UiPoint::new(collapse_start.x + 40.0, collapse_start.y + 24.0),
+                    3,
+                ),
+            );
+            assert!(
+                !collapse_state.desktop.is_collapsed("labels"),
+                "dragging from a collapse button must not collapse the window"
+            );
         }
 
         #[test]
@@ -658,7 +1022,7 @@ mod showcase_app {
                 .rect;
 
             assert!(
-                window.width <= 304.0,
+                window.width <= 340.0,
                 "window={window:?} picker={picker:?} controls={controls:?}"
             );
             assert!(
@@ -669,6 +1033,112 @@ mod showcase_app {
                 controls.right() <= window.right(),
                 "controls={controls:?} window={window:?}"
             );
+        }
+
+        #[test]
+        fn showcase_date_picker_demonstrates_custom_and_week_ranges() {
+            let mut state = state_with_window("date_picker");
+            state.update(WidgetAction::activate(UiNodeId::root(), "date.mode.range"));
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            let mut measurer = CosmicTextMeasurer::new();
+            document
+                .compute_layout(viewport, &mut measurer)
+                .expect("showcase layout");
+
+            for name in [
+                "date.mode.single",
+                "date.mode.range",
+                "date.mode.week",
+                "date.bounds.toggle",
+                "date.clear",
+            ] {
+                assert!(maybe_node_id(&document, name).is_some(), "{name}");
+            }
+
+            let middle = document.node(node_id(&document, "date.picker.day.2026-05-14"));
+            assert_eq!(
+                middle.accessibility().and_then(|meta| meta.selected),
+                Some(true)
+            );
+            assert!(middle
+                .accessibility()
+                .and_then(|meta| meta.hint.as_deref())
+                .is_some_and(|hint| hint.contains("inside selected range")));
+
+            state.update(WidgetAction::activate(UiNodeId::root(), "date.mode.week"));
+            assert_eq!(
+                state.date_range.range,
+                Some(ext_widgets::CalendarDateRange::new(
+                    CalendarDate::new(2026, 5, 10).unwrap(),
+                    CalendarDate::new(2026, 5, 16).unwrap(),
+                ))
+            );
+            state.update(WidgetAction::activate(UiNodeId::root(), "date.week.monday"));
+            assert_eq!(
+                state.date_range.range,
+                Some(ext_widgets::CalendarDateRange::new(
+                    CalendarDate::new(2026, 5, 4).unwrap(),
+                    CalendarDate::new(2026, 5, 10).unwrap(),
+                ))
+            );
+        }
+
+        #[test]
+        fn showcase_property_inspector_minimum_keeps_text_visible() {
+            let mut state = state_with_window("property_inspector");
+            state
+                .desktop
+                .sizes
+                .insert("property_inspector".to_string(), UiSize::new(140.0, 120.0));
+            state
+                .desktop
+                .user_sized
+                .insert("property_inspector".to_string());
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            let mut measurer = CosmicTextMeasurer::new();
+            document
+                .compute_layout(viewport, &mut measurer)
+                .expect("showcase layout");
+
+            let window = document
+                .node(node_id(
+                    &document,
+                    "showcase.windows.window.property_inspector",
+                ))
+                .layout()
+                .rect;
+            assert!(
+                window.width > 140.0,
+                "property inspector should grow from tiny user sizes to its text-driven minimum: {window:?}"
+            );
+
+            for name in [
+                "property_inspector.grid.row.target.label",
+                "property_inspector.grid.row.target.value",
+                "property_inspector.grid.row.radius.label",
+                "property_inspector.grid.row.radius.value",
+                "property_inspector.grid.row.state.value",
+            ] {
+                let node = node_id(&document, name);
+                let text_item = document
+                    .paint_list()
+                    .items
+                    .into_iter()
+                    .find(|item| item.node == node && matches!(item.kind, PaintKind::Text(_)))
+                    .unwrap_or_else(|| panic!("missing text paint for {name}"));
+                assert!(
+                    text_item.rect.x >= text_item.clip_rect.x - 0.5
+                        && text_item.rect.y >= text_item.clip_rect.y - 0.5
+                        && text_item.rect.right() <= text_item.clip_rect.right() + 0.5
+                        && text_item.rect.bottom() <= text_item.clip_rect.bottom() + 0.5,
+                    "{name} should not be clipped at the property inspector minimum: text={:?} clip={:?}",
+                    text_item.rect,
+                    text_item.clip_rect
+                );
+            }
         }
 
         #[test]
@@ -716,7 +1186,69 @@ mod showcase_app {
         }
 
         #[test]
-        fn showcase_organize_short_desktop_collapses_open_windows() {
+        fn showcase_add_all_then_repeated_organize_stays_non_overlapping() {
+            let viewport = UiSize::new(2200.0, 1180.0);
+            let mut state = ShowcaseState::default();
+            let mut initial = state.view(viewport);
+            initial
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("initial showcase layout");
+
+            state.update(WidgetAction::activate(UiNodeId::root(), "window.add_all"));
+            let after_add_all = organized_window_rects(&mut state, viewport);
+            assert_window_rects_do_not_overlap("after Add all", &after_add_all);
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.organize_open",
+            ));
+            let after_first_organize = organized_window_rects(&mut state, viewport);
+            assert_window_rects_do_not_overlap("after first Organize", &after_first_organize);
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.organize_open",
+            ));
+            let after_second_organize = organized_window_rects(&mut state, viewport);
+            assert_window_rects_do_not_overlap("after second Organize", &after_second_organize);
+
+            assert_eq!(
+                after_first_organize, after_second_organize,
+                "Organize should be idempotent once all windows are open"
+            );
+        }
+
+        fn organized_window_rects(
+            state: &mut ShowcaseState,
+            viewport: UiSize,
+        ) -> Vec<(&'static str, UiRect)> {
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("showcase layout");
+            SHOWCASE_WIDGET_WINDOW_IDS
+                .into_iter()
+                .filter(|id| state.windows.is_visible(id))
+                .map(|id| {
+                    let name = format!("showcase.windows.window.{id}");
+                    (id, document.node(node_id(&document, &name)).layout().rect)
+                })
+                .collect()
+        }
+
+        fn assert_window_rects_do_not_overlap(label: &str, rects: &[(&str, UiRect)]) {
+            for (left_index, (left_id, left_rect)) in rects.iter().enumerate() {
+                for (right_id, right_rect) in rects.iter().skip(left_index + 1) {
+                    assert!(
+                        !rects_overlap(*left_rect, *right_rect),
+                        "{label}: {left_id} {left_rect:?} overlapped {right_id} {right_rect:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn showcase_organize_short_desktop_collapses_overflow_suffix() {
             let mut state = ShowcaseState::default();
             let ids = [
                 "labels",
@@ -731,17 +1263,31 @@ mod showcase_app {
                 *state.windows.slot_mut(id).expect("known showcase window") = true;
                 state.desktop.ensure_window(id, window_defaults(id));
             }
-            state.last_desktop_size = UiSize::new(1900.0, 397.0);
+            state.last_desktop_size = UiSize::new(1900.0, 620.0);
 
             state.update(WidgetAction::activate(
                 UiNodeId::root(),
                 "window.organize_open",
             ));
 
-            for id in ids {
+            let first_collapsed = ids
+                .iter()
+                .position(|id| state.desktop.is_collapsed(id))
+                .expect("short desktop should collapse at least one overflow window");
+            assert!(
+                first_collapsed > 0,
+                "organize should keep the largest fitting prefix expanded"
+            );
+            for id in ids.iter().take(first_collapsed) {
+                assert!(
+                    !state.desktop.is_collapsed(id),
+                    "organize should keep prefix window {id} expanded"
+                );
+            }
+            for id in ids.iter().skip(first_collapsed) {
                 assert!(
                     state.desktop.is_collapsed(id),
-                    "organize should collapse {id} when a short desktop cannot fit the expanded layout"
+                    "organize should collapse overflow suffix window {id}"
                 );
             }
         }
@@ -822,7 +1368,113 @@ mod showcase_app {
                 UiNodeId::root(),
                 "lists_tables.virtualized_table.resize.reset",
             ));
-            assert_eq!(state.virtual_table_value_width, 70.0);
+            assert_eq!(state.virtual_table_value_width, 120.0);
+        }
+
+        #[test]
+        fn showcase_lists_tables_use_scroll_viewports_instead_of_manual_scrollbar_pairs() {
+            let state = state_with_window("lists_tables");
+            let viewport = UiSize::new(920.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("lists layout");
+
+            for old_scrollbar in [
+                "lists_tables.scroll_area.scrollbar",
+                "lists_tables.virtual_list.scrollbar",
+                "lists_tables.data_table.scrollbar",
+                "lists_tables.virtualized_table.scrollbar",
+            ] {
+                assert!(
+                    maybe_node_id(&document, old_scrollbar).is_none(),
+                    "{old_scrollbar} should not be hand-composed next to a scroll viewport"
+                );
+            }
+
+            for viewport_name in [
+                "lists_tables.scroll_area",
+                "lists_tables.virtual_list",
+                "lists_tables.virtualized_table.body",
+            ] {
+                assert!(
+                    document
+                        .node(node_id(&document, viewport_name))
+                        .has_auto_scrollbar(),
+                    "{viewport_name} should publish automatic scrollbar affordances"
+                );
+            }
+            assert!(maybe_node_id(&document, "lists_tables.table_header").is_none());
+            assert!(maybe_node_id(&document, "lists_tables.data_table").is_none());
+        }
+
+        #[test]
+        fn showcase_lists_tables_has_compact_clear_table_layout() {
+            let state = state_with_window("lists_tables");
+            let viewport = UiSize::new(920.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("lists layout");
+
+            let window = document
+                .node(node_id(&document, "showcase.windows.window.lists_tables"))
+                .layout()
+                .rect;
+            assert!(
+                window.height <= 540.0,
+                "Lists and tables should spawn as a compact demo, not a long mostly empty window: {window:?}"
+            );
+
+            let scroll_list = document
+                .node(node_id(&document, "lists_tables.scroll_area.column"))
+                .layout()
+                .rect;
+            let virtual_list = document
+                .node(node_id(&document, "lists_tables.virtual_list.column"))
+                .layout()
+                .rect;
+            assert!(
+                virtual_list.x > scroll_list.x,
+                "scroll and virtual list demos should share the top row instead of stretching the window vertically: scroll={scroll_list:?} virtual={virtual_list:?}"
+            );
+
+            let header = document
+                .node(node_id(&document, "lists_tables.virtualized_table.header"))
+                .layout()
+                .rect;
+            let value_header = document
+                .node(node_id(
+                    &document,
+                    "lists_tables.virtualized_table.header.value",
+                ))
+                .layout()
+                .rect;
+            assert!(
+                value_header.right() >= header.right() - 90.0,
+                "virtualized table columns should occupy the header rather than leaving a large unexplained blank zone: value={value_header:?} header={header:?}"
+            );
+
+            let resize = document
+                .node(node_id(
+                    &document,
+                    "lists_tables.virtualized_table.header.value.resize",
+                ))
+                .layout()
+                .rect;
+            let resize_line = document
+                .node(node_id(
+                    &document,
+                    "lists_tables.virtualized_table.header.value.resize.line",
+                ))
+                .layout()
+                .rect;
+            assert_eq!(resize.width, 8.0);
+            assert_eq!(resize_line.width, 2.0);
+            assert!(
+                resize_line.height < resize.height,
+                "column resize affordance should read as a small grip, not a full-height unexplained bar: resize={resize:?} line={resize_line:?}"
+            );
         }
 
         #[test]
@@ -971,18 +1623,160 @@ mod showcase_app {
         }
 
         #[test]
-        fn showcase_trees_include_tree_table_and_focus_preservation_example() {
-            let state = state_with_window("trees");
+        fn showcase_diagnostics_uses_clear_labeled_rows_instead_of_raw_debug_blobs() {
+            let state = state_with_window("diagnostics");
+            let viewport = UiSize::new(1000.0, 820.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("diagnostics layout");
+
+            assert_eq!(
+                text_content(&document, "diagnostics.inspector.rows.row.name.value"),
+                "Preview action"
+            );
+            assert_eq!(
+                text_content(
+                    &document,
+                    "diagnostics.commands.row.diagnostics_palette.label"
+                ),
+                "Open command palette"
+            );
+            assert_eq!(
+                text_content(
+                    &document,
+                    "diagnostics.commands.row.diagnostics_palette.shortcut"
+                ),
+                "Ctrl+K"
+            );
+            assert_eq!(
+                text_content(&document, "diagnostics.theme.token.colors_accent.label"),
+                "colors.accent"
+            );
+            assert_eq!(
+                text_content(&document, "diagnostics.commands.conflicts.value"),
+                "None"
+            );
+            assert_no_severe_showcase_warnings("diagnostics", "clear rows", &document);
+        }
+
+        #[test]
+        fn showcase_diagnostics_panels_do_not_overlap_section_scrollbar() {
+            let state = state_with_window("diagnostics");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("diagnostics layout");
+
+            let scroll = node_id(&document, "diagnostics.section_scroll");
+            let scroll_rect = document.node(scroll).layout().rect;
+            document.handle_input(UiInputEvent::PointerMove(UiPoint::new(
+                scroll_rect.x + 8.0,
+                scroll_rect.y + 8.0,
+            )));
+            let paint = document.paint_list();
+            let track = paint
+                .items
+                .iter()
+                .filter(|item| {
+                    item.node == scroll
+                        && matches!(item.kind, PaintKind::Rect { .. })
+                        && item.rect.width <= 8.0
+                })
+                .max_by(|left, right| left.rect.height.total_cmp(&right.rect.height))
+                .expect("diagnostics vertical scrollbar track");
+
+            for panel_name in [
+                "diagnostics.inspector",
+                "diagnostics.animation.graph",
+                "diagnostics.animation.controls",
+                "diagnostics.a11y.preview",
+                "diagnostics.a11y",
+                "diagnostics.commands",
+                "diagnostics.theme",
+            ] {
+                let rect = document.node(node_id(&document, panel_name)).layout().rect;
+                assert!(
+                    rect.right() <= track.rect.x + 0.5,
+                    "{panel_name} should end before the diagnostics scrollbar gutter: panel={rect:?} track={:?}",
+                    track.rect
+                );
+            }
+        }
+
+        #[test]
+        fn showcase_trees_include_editable_tree_table_and_focus_preservation_example() {
+            let mut state = state_with_window("trees");
             let viewport = UiSize::new(1100.0, 820.0);
             let mut document = state.view(viewport);
             document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
                 .expect("trees layout");
 
+            assert_eq!(
+                text_content(&document, "trees.tree_view.title"),
+                "Editable tree"
+            );
+            assert!(
+                maybe_node_id(&document, "trees.tree_view.row.child-0.action.delete").is_some()
+            );
+            assert!(maybe_node_id(&document, "trees.tree_view.row.child-0.action.add").is_some());
+            assert!(
+                maybe_node_id(&document, "trees.tree_view.row.child-0-3.indent.1.guide").is_some()
+            );
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "trees.tree.action.child-0.add",
+            ));
+            let mut edited_document = state.view(viewport);
+            edited_document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("edited trees layout");
+            assert!(
+                maybe_node_id(&edited_document, "trees.tree_view.row.editable-100").is_some(),
+                "add action should insert a visible child under the expanded item"
+            );
+            assert_eq!(
+                text_content(&edited_document, "trees.editable.status"),
+                "Added child #4 under child #0"
+            );
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "trees.tree.action.child-1-2.delete",
+            ));
+            let mut deleted_document = state.view(viewport);
+            deleted_document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("deleted trees layout");
+            assert!(
+                maybe_node_id(&deleted_document, "trees.tree_view.row.child-1-2").is_none(),
+                "delete action should remove the selected branch from the editable tree"
+            );
+
+            assert!(maybe_node_id(&document, "trees.virtual.row.root").is_some());
+            assert!(maybe_node_id(&document, "trees.virtual.row.src").is_some());
+            assert!(maybe_node_id(&document, "trees.virtual.row.src-file-00").is_some());
+            assert_eq!(
+                text_content(&document, "trees.virtual.row.root.disclosure"),
+                "v"
+            );
             assert!(maybe_node_id(&document, "trees.table").is_some());
             assert!(maybe_node_id(&document, "trees.table.header.name").is_some());
             assert!(maybe_node_id(&document, "trees.table.row.1.cell.name").is_some());
             assert!(maybe_node_id(&document, "trees.table.cell.1.0.label").is_some());
+            assert_eq!(
+                text_content(&document, "trees.table.row.root.disclosure"),
+                "v"
+            );
+            assert_eq!(
+                text_content(&document, "trees.table.row.branch-a.disclosure"),
+                "v"
+            );
+            assert_eq!(
+                text_content(&document, "trees.table.cell.0.0.label"),
+                "Workspace"
+            );
 
             let previous_state = ext_widgets::TreeViewState::expanded(["root", "branch-a"]);
             let next_state = ext_widgets::TreeViewState::expanded(["root"]);
@@ -996,6 +1790,144 @@ mod showcase_app {
                 .focus(focus.clone())
                 .plan(next.len());
             assert_eq!(plan.focus, Some(focus));
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "trees.virtual.row.root",
+            ));
+            assert!(!state.tree_virtual.is_expanded("root"));
+            let mut collapsed_virtual = state.view(viewport);
+            collapsed_virtual
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("collapsed virtual tree layout");
+            assert!(maybe_node_id(&collapsed_virtual, "trees.virtual.row.src").is_none());
+            assert_eq!(
+                text_content(&collapsed_virtual, "trees.virtual.row.root.disclosure"),
+                ">"
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "trees.table.row.1",
+            ));
+            assert!(!state.tree_table.is_expanded("branch-a"));
+            let mut collapsed_table = state.view(viewport);
+            collapsed_table
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("collapsed tree table layout");
+            assert!(
+                maybe_node_id(&collapsed_table, "trees.table.row.widgets.disclosure").is_none()
+            );
+            assert_eq!(
+                text_content(&collapsed_table, "trees.table.row.branch-a.disclosure"),
+                ">"
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "trees.table.cell.0.0",
+            ));
+            assert!(!state.tree_table.is_expanded("root"));
+        }
+
+        #[test]
+        fn showcase_trees_minimum_uses_scroll_viewport_heights_not_internal_rows() {
+            let viewport = UiSize::new(900.0, 1900.0);
+            let mut reopened_state = ShowcaseState::default();
+            reopened_state.last_desktop_size = viewport;
+            reopened_state.update(WidgetAction::activate(UiNodeId::root(), "window.add_all"));
+            reopened_state.update(WidgetAction::activate(UiNodeId::root(), "window.clear_all"));
+            reopened_state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.toggle.trees",
+            ));
+            let mut reopened_document = reopened_state.view(viewport);
+            reopened_document
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("reopened trees layout");
+            let reopened_window = reopened_document
+                .node(node_id(&reopened_document, "showcase.windows.window.trees"))
+                .layout()
+                .rect;
+            assert!(
+                reopened_window.height <= 720.0,
+                "reopening Trees after Add all/Clear all should spawn at content-fit size, not stale organized height: {reopened_window:?}"
+            );
+
+            let mut stale_state = state_with_window("trees");
+            stale_state
+                .desktop
+                .sizes
+                .insert("trees".to_string(), UiSize::new(416.0, 1800.0));
+            stale_state.desktop.user_sized.insert("trees".to_string());
+            stale_state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.toggle.trees",
+            ));
+            stale_state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.toggle.trees",
+            ));
+            let mut stale_document = stale_state.view(viewport);
+            stale_document
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("stale reopened trees layout");
+            let stale_window = stale_document
+                .node(node_id(&stale_document, "showcase.windows.window.trees"))
+                .layout()
+                .rect;
+            assert!(
+                stale_window.height <= 720.0,
+                "hiding and reopening Trees should discard stale user-sized height: {stale_window:?}"
+            );
+
+            let mut organized_state = state_with_window("trees");
+            organized_state.last_desktop_size = viewport;
+            organized_state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "window.organize_open",
+            ));
+            let organized_size = organized_state
+                .desktop
+                .size("trees", window_defaults("trees").size);
+            assert!(
+                organized_size.height <= 720.0,
+                "organizing should not expand Trees to the 64k measuring viewport through scroll content: {organized_size:?}"
+            );
+
+            let mut state = state_with_window("trees");
+            state
+                .desktop
+                .sizes
+                .insert("trees".to_string(), UiSize::new(1.0, 1.0));
+            state.desktop.user_sized.insert("trees".to_string());
+
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("trees layout");
+
+            let window = document
+                .node(node_id(&document, "showcase.windows.window.trees"))
+                .layout()
+                .rect;
+            let content = document
+                .node(node_id(&document, "showcase.windows.window.trees.content"))
+                .layout()
+                .rect;
+            let table = document
+                .node(node_id(&document, "trees.table"))
+                .layout()
+                .rect;
+            let slack = content.bottom() - table.bottom();
+            assert!(
+                slack <= 48.0,
+                "trees minimum left excess empty content below the fixed tree/table viewports: window={window:?} content={content:?} table={table:?} slack={slack}"
+            );
+            assert!(
+                window.height <= 720.0,
+                "trees minimum should stay close to the visible sections, not virtualized scroll content: {window:?}"
+            );
         }
 
         #[test]
@@ -1057,6 +1989,150 @@ mod showcase_app {
             assert!(maybe_node_id(&document, "styling.stroke_color.slider").is_none());
             assert!(maybe_node_id(&document, "styling.fill.slider").is_none());
             assert!(maybe_node_id(&document, "styling.shadow_alpha.slider").is_none());
+
+            let group_names = [
+                "styling.inner.group",
+                "styling.outer.group",
+                "styling.radius.group",
+                "styling.fill.group",
+                "styling.stroke.group",
+                "styling.shadow.group",
+            ];
+            let first_rect = document
+                .node(node_id(&document, group_names[0]))
+                .layout()
+                .rect;
+            for name in group_names {
+                let rect = document.node(node_id(&document, name)).layout().rect;
+                assert!(
+                    (rect.x - first_rect.x).abs() <= 0.5
+                        && (rect.width - first_rect.width).abs() <= 0.5,
+                    "{name} should align with the other styling control groups: first={first_rect:?} actual={rect:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn showcase_styling_stroke_slider_reaches_large_widths() {
+            let mut state = state_with_window("styling");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let slider = node_id(&document, "styling.stroke.slider");
+            let slider_rect = document.node(slider).layout().rect;
+            let end = UiPoint::new(
+                slider_rect.right(),
+                slider_rect.y + slider_rect.height * 0.5,
+            );
+            state.update(WidgetAction::pointer_edit(
+                slider,
+                "styling.stroke",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Commit,
+                    end,
+                    UiPoint::new(slider_rect.width, slider_rect.height * 0.5),
+                    slider_rect,
+                ),
+            ));
+
+            assert!(
+                (state.styling.stroke_width - STYLING_STROKE_MAX).abs() <= 0.01,
+                "stroke slider should reach {STYLING_STROKE_MAX}px, got {}",
+                state.styling.stroke_width
+            );
+        }
+
+        #[test]
+        fn showcase_styling_zero_stroke_removes_preview_outline() {
+            let mut state = state_with_window("styling");
+            state.styling.stroke_width = 0.0;
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let scene = document.node(node_id(&document, "styling.preview.scene"));
+            let UiContent::Scene(primitives) = scene.content() else {
+                panic!("styling preview should be a scene");
+            };
+            let Some(ScenePrimitive::Rect(rect)) = primitives.first() else {
+                panic!("styling preview should start with the styled rect");
+            };
+            assert_eq!(
+                rect.stroke, None,
+                "zero stroke width should remove the preview outline"
+            );
+        }
+
+        #[test]
+        fn showcase_styling_individual_corner_radii_feed_preview_rect() {
+            let mut state = state_with_window("styling");
+            state.styling.radius_same = false;
+            state.styling.corner_radius = 2.0;
+            state.styling.corner_ne = 8.0;
+            state.styling.corner_sw = 14.0;
+            state.styling.corner_se = 20.0;
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let scene = document.node(node_id(&document, "styling.preview.scene"));
+            let UiContent::Scene(primitives) = scene.content() else {
+                panic!("styling preview should be a scene");
+            };
+            let Some(ScenePrimitive::Rect(rect)) = primitives.first() else {
+                panic!("styling preview should start with the styled rect");
+            };
+            assert_eq!(
+                rect.corner_radii,
+                CornerRadii::new(2.0, 8.0, 20.0, 14.0),
+                "styling preview should preserve independent NW/NE/SE/SW radii"
+            );
+        }
+
+        #[test]
+        fn showcase_color_picker_includes_button_that_opens_picker() {
+            let mut state = state_with_window("color_picker");
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "color.button.open",
+            ));
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("color picker layout");
+
+            let edit = node_id(&document, "color.button.open");
+            let swatch = node_id(&document, "color.button.open.swatch");
+            assert_eq!(
+                text_content(&document, "color.button.label"),
+                "Button opens color picker"
+            );
+            assert!(maybe_node_id(&document, "color.button.open.label").is_none());
+            assert!(maybe_node_id(&document, "color.button_picker").is_some());
+            assert!(maybe_node_id(&document, "color_buttons.edit").is_none());
+
+            let edit_rect = document.node(edit).layout().rect;
+            let swatch_rect = document.node(swatch).layout().rect;
+            assert_eq!(edit_rect.width, swatch_rect.width);
+            assert_eq!(edit_rect.height, swatch_rect.height);
+            assert!(
+                swatch_rect.x >= edit_rect.x
+                    && swatch_rect.y >= edit_rect.y
+                    && swatch_rect.right() <= edit_rect.right()
+                    && swatch_rect.bottom() <= edit_rect.bottom(),
+                "swatch-only color edit button should be a solid button, not cramped text next to a swatch: edit={edit_rect:?} swatch={swatch_rect:?}"
+            );
         }
 
         #[test]
@@ -1072,6 +2148,53 @@ mod showcase_app {
             let grid_layout = grid.style().layout().expect("styling grid layout");
             assert_eq!(grid_layout.display, operad::LayoutDisplay::Grid);
             assert_eq!(grid.style().layout_style().grid_template_column_count(), 3);
+        }
+
+        #[test]
+        fn showcase_styling_compact_controls_stay_inside_control_panel() {
+            let state = state_with_window("styling");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let controls = document
+                .node(node_id(&document, "styling.controls"))
+                .layout()
+                .rect;
+            for name in [
+                "styling.stroke.slider",
+                "styling.shadow_y",
+                "styling.shadow_spread",
+                "styling.shadow.offsets",
+                "styling.shadow.blur_spread",
+            ] {
+                let rect = document.node(node_id(&document, name)).layout().rect;
+                assert!(
+                    rect.right() <= controls.right() + 0.5,
+                    "{name} should not cross out of the styling control panel: rect={rect:?} controls={controls:?}"
+                );
+            }
+
+            for (input_name, text_name) in [
+                ("styling.stroke", "styling.stroke.value"),
+                ("styling.shadow_x", "styling.shadow_x.value"),
+                ("styling.shadow_spread", "styling.shadow_spread.value"),
+            ] {
+                let input = document.node(node_id(&document, input_name)).layout().rect;
+                let text = document.node(node_id(&document, text_name)).layout().rect;
+                let input_center = input.x + input.width * 0.5;
+                let text_center = text.x + text.width * 0.5;
+                assert!(
+                    text.x >= input.x + 3.0 && text.right() <= input.right() - 3.0,
+                    "{text_name} should have readable inset inside {input_name}: text={text:?} input={input:?}"
+                );
+                assert!(
+                    (text_center - input_center).abs() <= 3.0,
+                    "{text_name} should be centered in {input_name}: text={text:?} input={input:?}"
+                );
+            }
         }
 
         #[test]
@@ -1103,13 +2226,19 @@ mod showcase_app {
         #[test]
         fn showcase_styling_window_minimum_keeps_preview_content_visible() {
             let mut state = state_with_window("styling");
+            state.styling.inner_margin = 32.0;
+            state.styling.outer_margin = 40.0;
+            state.styling.shadow_x = 24.0;
+            state.styling.shadow_y = 24.0;
+            state.styling.shadow_blur = 32.0;
+            state.styling.shadow_spread = 16.0;
             state
                 .desktop
                 .sizes
                 .insert("styling".to_string(), UiSize::new(420.0, 260.0));
             state.desktop.user_sized.insert("styling".to_string());
 
-            let viewport = UiSize::new(900.0, 760.0);
+            let viewport = UiSize::new(1200.0, 760.0);
             let mut document = state.view(viewport);
             document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
@@ -1117,6 +2246,10 @@ mod showcase_app {
 
             let scene = node_id(&document, "styling.preview.scene");
             let scene_rect = document.node(scene).layout().rect;
+            let preview_rect = document
+                .node(node_id(&document, "styling.preview"))
+                .layout()
+                .rect;
             let content = document
                 .node(node_id(
                     &document,
@@ -1129,18 +2262,19 @@ mod showcase_app {
                 "scene={scene_rect:?} content={content:?}"
             );
 
-            for item in document
-                .paint_list()
-                .items
-                .into_iter()
-                .filter(|item| item.node == scene)
-            {
+            let paint = document.paint_list();
+            for item in paint.items.iter().filter(|item| item.node == scene) {
                 if matches!(item.kind, PaintKind::RichRect(_) | PaintKind::SceneText(_)) {
                     assert!(
                         item.rect.right() <= item.clip_rect.right() + 0.5,
                         "preview item should fit horizontally: rect={:?} clip={:?}",
                         item.rect,
                         item.clip_rect
+                    );
+                    assert!(
+                        item.rect.right() <= preview_rect.right() + 0.5,
+                        "preview item should fit inside preview host: rect={:?} preview={preview_rect:?}",
+                        item.rect
                     );
                 }
             }
@@ -1154,6 +2288,10 @@ mod showcase_app {
                     "forms",
                     &[
                         "forms.profile",
+                        "forms.profile.summary",
+                        "forms.profile.summary.title",
+                        "forms.profile.summary.detail",
+                        "forms.profile.summary.hint",
                         "forms.profile.status.dirty",
                         "forms.profile.status.pending",
                         "forms.profile.status.submitted",
@@ -1169,6 +2307,7 @@ mod showcase_app {
                         "forms.profile.newsletter.input",
                         "forms.profile.newsletter.help",
                         "forms.profile.errors",
+                        "forms.profile.action_help",
                         "forms.profile.actions.submit",
                         "forms.profile.actions.apply",
                         "forms.profile.actions.cancel",
@@ -1182,16 +2321,16 @@ mod showcase_app {
                     &[
                         "overlays.collapsing",
                         "overlays.collapsing.body",
+                        "overlays.tooltip_target",
                         "overlays.popup.toggle",
                         "overlays.modal.open",
-                        "overlays.tooltip",
-                        "overlays.tooltip.body",
-                        "overlays.tooltip.shortcut",
-                        "overlays.tooltip.disabled_reason",
                         "overlays.tooltip_rect.preview",
                         "overlays.tooltip_rect.scene",
                         "overlays.popup_panel",
                         "overlays.popup_panel.close",
+                        "overlays.toasts.controls",
+                        "overlays.toasts.status",
+                        "overlays.toasts.action_status",
                         "overlays.modal",
                         "overlays.modal.close",
                         "overlays.modal.body.close",
@@ -1223,9 +2362,8 @@ mod showcase_app {
                         "media.image.untinted",
                         "media.image.warning",
                         "media.image.shader",
-                        "media.image.note",
                     ],
-                    &["media.image.note"],
+                    &[],
                 ),
             ];
 
@@ -1246,6 +2384,450 @@ mod showcase_app {
                     assert_node_has_visible_paint_inside_clip(&document, name);
                 }
             }
+        }
+
+        #[test]
+        fn showcase_forms_valid_dirty_email_enables_apply_and_updates_summary() {
+            let mut state = state_with_window("forms");
+            let viewport = UiSize::new(900.0, 760.0);
+
+            let mut initial = state.view(viewport);
+            initial
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("initial forms layout");
+            assert_eq!(
+                text_content(&initial, "forms.profile.summary.title"),
+                "Profile needs fixes"
+            );
+            let initial_apply = initial.node(node_id(&initial, "forms.profile.actions.apply"));
+            assert_eq!(
+                initial_apply.accessibility().map(|meta| meta.enabled),
+                Some(false),
+                "invalid email should keep Apply disabled"
+            );
+
+            state.form_email_text.set_text("new@example.com");
+            state.update_profile_form_field("email", "new@example.com".to_string());
+            let mut valid = state.view(viewport);
+            valid
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("valid forms layout");
+            assert!(maybe_node_id(&valid, "forms.profile.email.validation").is_none());
+            assert_eq!(
+                text_content(&valid, "forms.profile.summary.title"),
+                "Profile draft"
+            );
+            assert!(
+                text_content(&valid, "forms.profile.summary.detail").contains("new@example.com")
+            );
+            assert_eq!(
+                text_content(&valid, "forms.profile.summary.hint"),
+                "Apply saves the draft; Submit saves and marks it submitted."
+            );
+            assert_eq!(
+                text_content(&valid, "forms.profile.action_help"),
+                "Apply changes saves this draft and keeps editing. Submit profile saves and marks it submitted."
+            );
+            assert_eq!(
+                text_content(&valid, "forms.profile.actions.submit.label"),
+                "Submit profile"
+            );
+            assert_eq!(
+                text_content(&valid, "forms.profile.actions.apply.label"),
+                "Apply changes"
+            );
+            let apply = valid.node(node_id(&valid, "forms.profile.actions.apply"));
+            assert_eq!(
+                apply.accessibility().map(|meta| meta.enabled),
+                Some(true),
+                "valid dirty email should enable Apply"
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "forms.profile.apply",
+            ));
+            let mut applied = state.view(viewport);
+            applied
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("applied forms layout");
+            assert_eq!(
+                text_content(&applied, "forms.profile.summary.title"),
+                "Profile saved"
+            );
+            let apply = applied.node(node_id(&applied, "forms.profile.actions.apply"));
+            assert_eq!(
+                apply.accessibility().map(|meta| meta.enabled),
+                Some(false),
+                "saved form should not offer Apply with no changes"
+            );
+        }
+
+        #[test]
+        fn showcase_drag_drop_source_click_cancels_and_drag_updates_cursor() {
+            fn drag(phase: WidgetDragPhase) -> WidgetDrag {
+                WidgetDrag {
+                    phase,
+                    origin: UiPoint::new(10.0, 10.0),
+                    current: UiPoint::new(42.0, 18.0),
+                    previous: UiPoint::new(24.0, 14.0),
+                    delta: UiPoint::new(18.0, 4.0),
+                    total_delta: UiPoint::new(32.0, 8.0),
+                }
+            }
+
+            fn pending_cursor_shape(state: &ShowcaseState) -> Option<CursorShape> {
+                state
+                    .platform
+                    .pending_requests()
+                    .iter()
+                    .rev()
+                    .find_map(|request| match &request.request {
+                        PlatformRequest::Cursor(CursorRequest::SetShape(shape)) => Some(*shape),
+                        _ => None,
+                    })
+            }
+
+            let mut state = state_with_window("drag_drop");
+            state.update(WidgetAction::pointer_activate(
+                UiNodeId::root(),
+                "drag_drop.text_source",
+                1,
+            ));
+            assert_eq!(state.drag_drop_status, "Text drag canceled");
+            assert_eq!(pending_cursor_shape(&state), None);
+
+            state.update(WidgetAction::drag(
+                UiNodeId::root(),
+                "drag_drop.text_source",
+                drag(WidgetDragPhase::Begin),
+            ));
+            assert_eq!(state.drag_drop_status, "Text drag started");
+            assert_eq!(pending_cursor_shape(&state), Some(CursorShape::Grabbing));
+
+            state.platform.drain_requests();
+            state.update(WidgetAction::drag(
+                UiNodeId::root(),
+                "drag_drop.text_source",
+                drag(WidgetDragPhase::Update),
+            ));
+            assert_eq!(state.drag_drop_status, "Text dragging");
+            assert_eq!(
+                pending_cursor_shape(&state),
+                None,
+                "repeated drag updates should not enqueue duplicate cursor requests"
+            );
+
+            state.update(WidgetAction::drag(
+                UiNodeId::root(),
+                "drag_drop.text_source",
+                drag(WidgetDragPhase::Commit),
+            ));
+            assert_eq!(state.drag_drop_status, "Text drag finished");
+            assert_eq!(pending_cursor_shape(&state), Some(CursorShape::Default));
+
+            state.update(WidgetAction::drag(
+                UiNodeId::root(),
+                "drag_drop.text_source",
+                drag(WidgetDragPhase::Begin),
+            ));
+            state.update(WidgetAction::drag(
+                UiNodeId::root(),
+                "drag_drop.text_source",
+                drag(WidgetDragPhase::Commit),
+            ));
+            state.update(WidgetAction::drag(
+                UiNodeId::root(),
+                "drag_drop.files_only",
+                drag(WidgetDragPhase::Commit),
+            ));
+            assert_eq!(state.drag_drop_status, "Text drag failed");
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("drag drop layout");
+            assert_eq!(
+                text_content(&document, "drag_drop.status"),
+                "Status: Text drag failed"
+            );
+        }
+
+        #[test]
+        fn showcase_buggy_sections_spawn_content_fit_and_minimize_without_clipping() {
+            let viewport = UiSize::new(1180.0, 820.0);
+            let specs: [(&str, &[&str]); 11] = [
+                (
+                    "lists_tables",
+                    &[
+                        "lists_tables.scroll_area",
+                        "lists_tables.virtual_list",
+                        "lists_tables.data_table.title",
+                        "lists_tables.virtualized_table",
+                    ],
+                ),
+                (
+                    "diagnostics",
+                    &[
+                        "diagnostics.inspector",
+                        "diagnostics.animation.graph",
+                        "diagnostics.animation.controls",
+                        "diagnostics.a11y.preview",
+                        "diagnostics.commands",
+                        "diagnostics.theme",
+                    ],
+                ),
+                (
+                    "trees",
+                    &[
+                        "trees.tree_view",
+                        "trees.editable.status",
+                        "trees.virtual",
+                        "trees.table",
+                    ],
+                ),
+                (
+                    "layout_widgets",
+                    &[
+                        "layout_widgets.dock_shell",
+                        "layout_widgets.dock.panel.panel_a",
+                        "layout_widgets.dock.panel.workspace",
+                        "layout_widgets.dock.panel.panel_b",
+                        "layout.panel_a.scroll_area",
+                        "layout.workspace.scroll_area",
+                        "layout.panel_b.scroll_area",
+                    ],
+                ),
+                (
+                    "containers",
+                    &[
+                        "containers.frame",
+                        "containers.grid",
+                        "containers.scene",
+                        "containers.scroll_area_with_bars",
+                        "containers.area.host",
+                    ],
+                ),
+                (
+                    "panels",
+                    &[
+                        "panels.shell",
+                        "panels.top",
+                        "panels.top_split.handle",
+                        "panels.left",
+                        "panels.left_split.handle",
+                        "panels.center",
+                        "panels.right_split.handle",
+                        "panels.right",
+                        "panels.bottom_split.handle",
+                        "panels.bottom",
+                    ],
+                ),
+                (
+                    "forms",
+                    &[
+                        "forms.profile",
+                        "forms.profile.summary",
+                        "forms.profile.name.input",
+                        "forms.profile.email.input",
+                        "forms.profile.role.input",
+                        "forms.profile.actions.submit",
+                    ],
+                ),
+                (
+                    "overlays",
+                    &[
+                        "overlays.collapsing",
+                        "overlays.tooltip_target",
+                        "overlays.popup.toggle",
+                        "overlays.tooltip_rect.preview",
+                        "overlays.popup_panel",
+                        "overlays.toasts.controls",
+                        "overlays.modal",
+                    ],
+                ),
+                (
+                    "timeline",
+                    &[
+                        "timeline.viewport",
+                        "timeline.lane_labels",
+                        "timeline.lane_labels.video",
+                    ],
+                ),
+                (
+                    "canvas",
+                    &[
+                        "canvas.section_scroll",
+                        "canvas.options",
+                        "canvas.grow_horizontal",
+                        "canvas.grow_vertical",
+                        "canvas.keep_aspect_ratio",
+                        "canvas.shader",
+                    ],
+                ),
+                (
+                    "styling",
+                    &["styling.grid", "styling.controls", "styling.preview.scene"],
+                ),
+            ];
+
+            for (id, required_nodes) in specs {
+                let state = state_with_window(id);
+                let mut document = state.view(viewport);
+                document
+                    .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                    .unwrap_or_else(|error| panic!("{id} startup failed layout: {error}"));
+                assert_default_window_uses_content_fit(&document, id);
+                assert_no_severe_showcase_warnings(id, "startup", &document);
+                assert_required_demo_nodes_fit_minimized_window(&document, id, required_nodes);
+
+                let minimized = minimized_showcase_window_document(id, viewport);
+                assert_window_resolved_to_minimum(&minimized, id);
+                assert_no_severe_showcase_warnings(id, "minimized", &minimized);
+                assert_required_demo_nodes_fit_minimized_window(&minimized, id, required_nodes);
+            }
+        }
+
+        #[test]
+        fn showcase_containers_stays_narrow_and_panels_are_separate() {
+            let viewport = UiSize::new(1180.0, 820.0);
+            let mut containers = state_with_window("containers").view(viewport);
+            containers
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("containers layout");
+            let container_window = containers
+                .node(node_id(&containers, "showcase.windows.window.containers"))
+                .layout()
+                .rect;
+            assert!(
+                container_window.width <= 460.0,
+                "containers should stay a narrow utility demo after panels were split out: {container_window:?}"
+            );
+            assert!(maybe_node_id(&containers, "containers.panels").is_none());
+            assert!(maybe_node_id(&containers, "panels.shell").is_none());
+
+            let mut panels = state_with_window("panels").view(viewport);
+            panels
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("panels layout");
+            for node in [
+                "panels.shell",
+                "panels.top",
+                "panels.top_split.handle",
+                "panels.left",
+                "panels.left_split.handle",
+                "panels.center",
+                "panels.right_split.handle",
+                "panels.right",
+                "panels.bottom_split.handle",
+                "panels.bottom",
+            ] {
+                assert!(maybe_node_id(&panels, node).is_some(), "{node}");
+            }
+            assert!(maybe_node_id(&panels, "panels.group").is_none());
+        }
+
+        #[test]
+        fn showcase_panels_fill_available_shell_and_resize_handles_highlight() {
+            let viewport = UiSize::new(1180.0, 820.0);
+            let mut document = state_with_window("panels").view(viewport);
+            document
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                .expect("panels layout");
+
+            let shell = document
+                .node(node_id(&document, "panels.shell"))
+                .layout()
+                .rect;
+            let top = document
+                .node(node_id(&document, "panels.top"))
+                .layout()
+                .rect;
+            let bottom = document
+                .node(node_id(&document, "panels.bottom"))
+                .layout()
+                .rect;
+            assert!(
+                top.y <= shell.y + 1.0,
+                "top panel should start at the shell top: top={top:?} shell={shell:?}"
+            );
+            assert!(
+                bottom.bottom() >= shell.bottom() - 1.0,
+                "bottom panel should reach the shell bottom instead of leaving unused space: bottom={bottom:?} shell={shell:?}"
+            );
+
+            for (handle_name, action) in [
+                ("panels.top_split.handle", "panels.resize.top"),
+                ("panels.bottom_split.handle", "panels.resize.bottom"),
+                ("panels.left_split.handle", "panels.resize.left"),
+                ("panels.right_split.handle", "panels.resize.right"),
+            ] {
+                let handle = node_id(&document, handle_name);
+                assert_eq!(
+                    document.node(handle).action(),
+                    Some(&WidgetActionBinding::action(action)),
+                    "{handle_name} should publish a resize action"
+                );
+                assert_eq!(
+                    document.node(handle).action_mode(),
+                    operad::WidgetActionMode::PointerEditParentRect,
+                    "{handle_name} should resize using its split root rect"
+                );
+                let rect = document.node(handle).layout().rect;
+                if rect.width > rect.height {
+                    assert!(
+                        rect.height <= 3.0,
+                        "{handle_name} should render as a thin horizontal splitter: {rect:?}"
+                    );
+                } else {
+                    assert!(
+                        rect.width <= 3.0,
+                        "{handle_name} should render as a thin vertical splitter: {rect:?}"
+                    );
+                }
+            }
+
+            let handle = node_id(&document, "panels.left_split.handle");
+            let normal = *document.node(handle).visual();
+            document.set_focus_state(UiFocusState {
+                hovered: Some(handle),
+                pressed: None,
+                focused: None,
+            });
+            assert_ne!(
+                *document.node(handle).visual(),
+                normal,
+                "split handles should visibly highlight on hover"
+            );
+        }
+
+        #[test]
+        fn showcase_all_windows_spawn_with_content_fit_constraints() {
+            let viewport = UiSize::new(1180.0, 820.0);
+            for id in SHOWCASE_WIDGET_WINDOW_IDS {
+                let state = state_with_window(id);
+                let mut document = state.view(viewport);
+                document
+                    .compute_layout(viewport, &mut CosmicTextMeasurer::new())
+                    .unwrap_or_else(|error| panic!("{id} startup failed layout: {error}"));
+                assert_default_window_uses_content_fit(&document, id);
+                assert_no_severe_showcase_warnings(id, "startup", &document);
+            }
+        }
+
+        fn assert_default_window_uses_content_fit(document: &UiDocument, id: &str) {
+            let window = document.node(node_id(document, &format!("showcase.windows.window.{id}")));
+            assert!(
+                matches!(
+                    window.layout_constraint(),
+                    Some(UiNodeLayoutConstraint::StackedIntrinsicSize {
+                        fit_to_preferred: true,
+                        ..
+                    })
+                ),
+                "{id} should start as a content-fit floating window"
+            );
         }
 
         fn minimized_showcase_window_document(id: &str, viewport: UiSize) -> UiDocument {
@@ -1355,11 +2937,618 @@ mod showcase_app {
 
         #[test]
         fn showcase_media_minimized_scroll_area_has_visible_scrollbar_affordance() {
-            let document = minimized_showcase_window_document("media", UiSize::new(900.0, 760.0));
-            assert_scroll_area_has_visible_auto_scrollbar(&document, "media.section_scroll");
+            let mut document =
+                minimized_showcase_window_document("media", UiSize::new(900.0, 760.0));
+            assert_scroll_area_has_visible_auto_scrollbar(&mut document, "media.section_scroll");
         }
 
-        fn assert_scroll_area_has_visible_auto_scrollbar(document: &UiDocument, name: &str) {
+        #[test]
+        fn showcase_media_icons_wrap_to_available_width_without_horizontal_scroll() {
+            let mut state = state_with_window("media");
+            state
+                .desktop
+                .sizes
+                .insert("media".to_string(), UiSize::new(260.0, 430.0));
+            state.desktop.user_sized.insert("media".to_string());
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("media layout");
+
+            let section = node_id(&document, "media.section_scroll");
+            let scroll = document
+                .scroll_state(section)
+                .expect("media section scroll");
+            assert_eq!(
+                scroll.max_offset().x,
+                0.0,
+                "media should wrap icons instead of creating horizontal scroll: {scroll:?}"
+            );
+
+            let section_rect = document.node(section).layout().rect;
+            let icon_rects = BuiltInIcon::COMMON
+                .iter()
+                .take(12)
+                .map(|icon| {
+                    let key = media_icon_test_name(*icon);
+                    document
+                        .node(node_id(&document, &format!("media.icon_tile.{key}")))
+                        .layout()
+                        .rect
+                })
+                .collect::<Vec<_>>();
+            let first_row_y = icon_rects[0].y;
+            let first_row_count = icon_rects
+                .iter()
+                .take_while(|rect| (rect.y - first_row_y).abs() <= 0.5)
+                .count();
+            assert!(
+                first_row_count < MEDIA_ICON_COLUMNS,
+                "narrow media windows should wrap before the five-column cap instead of forcing a wide minimum: {icon_rects:?}"
+            );
+            assert!(
+                first_row_count >= 2,
+                "narrow media windows should still use available row space before wrapping: {icon_rects:?}"
+            );
+            assert!(
+                icon_rects.iter().any(|rect| rect.y > first_row_y + 20.0),
+                "media icon grid should place tiles onto later rows: {icon_rects:?}"
+            );
+            assert!(
+                icon_rects
+                    .iter()
+                    .all(|rect| rect.x >= section_rect.x - 0.5
+                        && rect.right() <= section_rect.right() + 0.5),
+                "wrapped icon tiles should stay inside the visible section width: section={section_rect:?} tiles={icon_rects:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_media_icons_cap_at_five_columns_when_space_allows() {
+            let state = state_with_window("media");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("media layout");
+
+            let icon_rects = BuiltInIcon::COMMON
+                .iter()
+                .take(MEDIA_ICON_COLUMNS + 1)
+                .map(|icon| {
+                    let key = media_icon_test_name(*icon);
+                    document
+                        .node(node_id(&document, &format!("media.icon_tile.{key}")))
+                        .layout()
+                        .rect
+                })
+                .collect::<Vec<_>>();
+            let first_row_y = icon_rects[0].y;
+            for rect in &icon_rects[..MEDIA_ICON_COLUMNS] {
+                assert!(
+                    (rect.y - first_row_y).abs() <= 0.5,
+                    "first five media icon tiles should share the capped grid row: {icon_rects:?}"
+                );
+            }
+            assert!(
+                icon_rects[MEDIA_ICON_COLUMNS].y > first_row_y + 20.0,
+                "sixth media icon tile should wrap after the five-column cap: {icon_rects:?}"
+            );
+            assert!(
+                icon_rects[MEDIA_ICON_COLUMNS - 1].right()
+                    <= icon_rects[0].x + media_icon_grid_width(MEDIA_ICON_COLUMNS) + 0.5,
+                "first media grid row should not exceed the five-column cap: {icon_rects:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_media_window_starts_at_capped_grid_width() {
+            let state = state_with_window("media");
+            let viewport = UiSize::new(1200.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("media layout");
+
+            let window = document
+                .node(node_id(&document, "showcase.windows.window.media"))
+                .layout()
+                .rect;
+            let content = document
+                .node(node_id(&document, "showcase.windows.window.media.content"))
+                .layout()
+                .rect;
+            let grid = document
+                .node(node_id(&document, "media.icons"))
+                .layout()
+                .rect;
+            let title_intrinsic = document
+                .intrinsic_size(
+                    node_id(&document, "showcase.windows.window.media.title_bar"),
+                    &mut ApproxTextMeasurer,
+                )
+                .expect("title intrinsic");
+            let content_intrinsic = document
+                .intrinsic_size(
+                    node_id(&document, "showcase.windows.window.media.content"),
+                    &mut ApproxTextMeasurer,
+                )
+                .expect("content intrinsic");
+            let section_intrinsic = document
+                .intrinsic_size(
+                    node_id(&document, "media.section_scroll"),
+                    &mut ApproxTextMeasurer,
+                )
+                .expect("section intrinsic");
+
+            assert!(
+                window.width <= media_icon_grid_width(MEDIA_ICON_COLUMNS) + 64.0,
+                "media window should spawn near its capped grid width instead of leaving a wide empty surface: window={window:?} content={content:?} grid={grid:?} title_intrinsic={title_intrinsic:?} content_intrinsic={content_intrinsic:?} section_intrinsic={section_intrinsic:?}"
+            );
+            assert!(
+                (grid.width - media_icon_grid_width(MEDIA_ICON_COLUMNS)).abs() <= 0.5,
+                "media icon grid should still use exactly the five-column cap: grid={grid:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_media_wrapped_icon_grid_reserves_its_full_height() {
+            let state = state_with_window("media");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("media layout");
+
+            let icon_bottom = BuiltInIcon::COMMON
+                .iter()
+                .map(|icon| {
+                    let key = media_icon_test_name(*icon);
+                    document
+                        .node(node_id(&document, &format!("media.icon_tile.{key}")))
+                        .layout()
+                        .rect
+                        .bottom()
+                })
+                .fold(f32::NEG_INFINITY, f32::max);
+            let variants_label = document
+                .node(node_id(&document, "media.variants.label"))
+                .layout()
+                .rect;
+            assert!(
+                variants_label.y >= icon_bottom + 9.0,
+                "content after the icon grid should start below every wrapped icon row: icon_bottom={icon_bottom} variants_label={variants_label:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_shader_effects_exposes_element_and_widget_shader_hooks() {
+            let state = state_with_window("shaders");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader showcase layout");
+
+            for (name, key) in [
+                ("shaders.effect.tint.swatch", ShaderEffect::TINT),
+                ("shaders.effect.shine.swatch", ShaderEffect::SHINE),
+                ("shaders.effect.glow.swatch", ShaderEffect::GLOW),
+                ("shaders.widgets.button", ShaderEffect::SHINE),
+                ("shaders.widgets.button.image", ShaderEffect::TINT),
+                ("shaders.widgets.checkbox.check", ShaderEffect::GLOW),
+                ("shaders.widgets.progress.fill", ShaderEffect::SHINE),
+                ("shaders.widgets.slider.fill", ShaderEffect::TINT),
+                ("shaders.widgets.slider.thumb", ShaderEffect::GLOW),
+            ] {
+                let node = document.node(node_id(&document, name));
+                assert_eq!(
+                    node.shader().map(|shader| shader.key.as_str()),
+                    Some(key),
+                    "{name} should expose {key}"
+                );
+            }
+            assert_no_severe_showcase_warnings("shaders", "shader demo", &document);
+        }
+
+        #[test]
+        fn showcase_shader_lab_edits_canvas_source_and_targets_widgets() {
+            let mut state = state_with_window("shader_lab");
+            let viewport = UiSize::new(1000.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab layout");
+
+            assert!(maybe_node_id(&document, "shader_lab.preview.canvas").is_some());
+            assert!(maybe_node_id(&document, "shader_lab.editor").is_some());
+            assert_eq!(
+                document
+                    .node(node_id(&document, "shader_lab.target"))
+                    .action()
+                    .and_then(|action| action.action_id())
+                    .map(|id| id.as_str()),
+                Some("shader_lab.target.toggle")
+            );
+            assert_eq!(
+                document
+                    .node(node_id(&document, "shader_lab.preset"))
+                    .action()
+                    .and_then(|action| action.action_id())
+                    .map(|id| id.as_str()),
+                Some("shader_lab.preset.toggle")
+            );
+            let outset_material = document
+                .node(node_id(&document, "shader_lab.material.outset"))
+                .material()
+                .expect("shader lab should show a declared paint outset material");
+            assert_eq!(
+                outset_material
+                    .shader
+                    .as_ref()
+                    .map(|shader| shader.key.as_str()),
+                Some(ShaderEffect::GLOW)
+            );
+            assert!(
+                outset_material.visual_outset_for_rect(UiRect::new(0.0, 0.0, 40.0, 40.0))
+                    >= SHADER_LAB_MATERIAL_OUTSET
+            );
+            let circle_material = document
+                .node(node_id(&document, "shader_lab.material.circle_hit"))
+                .material()
+                .expect("shader lab should show an explicit hit shape");
+            assert_eq!(circle_material.hit_shape, ElementShape::circle());
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.material.shader.option.grid",
+            ));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.material.shape.option.circle",
+            ));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.material.geometry.option.skew",
+            ));
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab material layout");
+            let current_material = document
+                .node(node_id(&document, "shader_lab.material.current"))
+                .material()
+                .expect("shader lab should expose the selected material");
+            assert_eq!(
+                current_material
+                    .shader
+                    .as_ref()
+                    .map(|shader| shader.key.as_str()),
+                Some(ShaderEffect::GRID)
+            );
+            assert_eq!(current_material.hit_shape, ElementShape::circle());
+            assert_eq!(
+                current_material.geometry_effect,
+                GeometryEffect::skew(0.12, 0.0)
+            );
+            let UiContent::Canvas(canvas) = document
+                .node(node_id(&document, "shader_lab.preview.canvas"))
+                .content()
+            else {
+                panic!("shader lab canvas preview should be a canvas");
+            };
+            let program = canvas.program.as_ref().expect("canvas shader program");
+            assert!(program.wgsl.contains("fn fs_main"));
+            assert!(
+                program
+                    .constants
+                    .iter()
+                    .any(|constant| constant.name == "TIME"),
+                "shader lab canvas should expose time as a shader constant"
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.preset.option.grid",
+            ));
+            assert_eq!(state.shader_lab_preset, ShaderLabPreset::Grid);
+            assert!(state.shader_lab_source.text().contains("grid_line"));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.preset.option.vertex_warp",
+            ));
+            assert_eq!(state.shader_lab_preset, ShaderLabPreset::VertexWarp);
+            assert!(
+                state.shader_lab_source.text().contains("p + bend"),
+                "vertex warp preset should visibly edit vertex positions"
+            );
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.preset.option.grid",
+            ));
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.target.option.frame",
+            ));
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab frame layout");
+            let UiContent::Canvas(frame_shader) = document
+                .node(node_id(&document, "shader_lab.preview.frame.shader"))
+                .content()
+            else {
+                panic!("shader lab frame preview should use a canvas shader");
+            };
+            assert!(
+                frame_shader
+                    .program
+                    .as_ref()
+                    .expect("frame shader program")
+                    .wgsl
+                    .contains("grid_line"),
+                "frame target should use the edited WGSL source"
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.target.option.button",
+            ));
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab button layout");
+            let UiContent::Canvas(button_shader) = document
+                .node(node_id(&document, "shader_lab.preview.button.shader"))
+                .content()
+            else {
+                panic!("shader lab button preview should use a canvas shader");
+            };
+            assert!(
+                button_shader
+                    .program
+                    .as_ref()
+                    .expect("button shader program")
+                    .wgsl
+                    .contains("grid_line"),
+                "button target should use the edited WGSL source"
+            );
+
+            state.shader_lab_source.set_text(
+                "@fragment fn nope() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+            );
+            state.refresh_shader_lab_validation();
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab invalid source layout");
+            let UiContent::Text(validation) = document
+                .node(node_id(&document, "shader_lab.validation"))
+                .content()
+            else {
+                panic!("shader lab should show validation text");
+            };
+            let validation_text = validation.text.as_str();
+            assert!(
+                validation_text.contains("WGSL error"),
+                "invalid WGSL should render an error label: {validation_text}"
+            );
+            let UiContent::Canvas(error_shader) = document
+                .node(node_id(&document, "shader_lab.preview.button.shader"))
+                .content()
+            else {
+                panic!("invalid button preview should still be a canvas");
+            };
+            assert!(
+                error_shader
+                    .program
+                    .as_ref()
+                    .expect("error shader program")
+                    .wgsl
+                    .contains("SHADER_LAB_ERROR")
+                    || error_shader
+                        .program
+                        .as_ref()
+                        .expect("error shader program")
+                        .wgsl
+                        .contains("stripe"),
+                "invalid WGSL should use the fallback error shader"
+            );
+            assert_no_severe_showcase_warnings("shader_lab", "shader lab", &document);
+        }
+
+        #[test]
+        fn showcase_shader_lab_uses_resizable_scrolled_editor_and_larger_preview() {
+            let mut state = state_with_window("shader_lab");
+            let viewport = UiSize::new(1400.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab layout");
+
+            let workspace = node_id(&document, "shader_lab.workspace");
+            let handle = node_id(&document, "shader_lab.workspace.handle");
+            assert_eq!(
+                document
+                    .node(handle)
+                    .action()
+                    .and_then(|action| action.action_id())
+                    .map(|id| id.as_str()),
+                Some("shader_lab.workspace.resize")
+            );
+
+            let preview = document
+                .node(node_id(&document, "shader_lab.preview.surface"))
+                .layout()
+                .rect;
+            assert!(
+                preview.width >= 340.0 && preview.height >= 280.0,
+                "shader preview should start large enough to inspect the live result: {preview:?}"
+            );
+
+            let editor_scroll_node = node_id(&document, "shader_lab.editor.scroll");
+            let editor_scroll = document
+                .scroll_state(editor_scroll_node)
+                .expect("shader source editor should be scrollable");
+            assert_eq!(editor_scroll.axes(), ScrollAxes::BOTH);
+            assert!(
+                editor_scroll.max_offset().x > 0.0 && editor_scroll.max_offset().y > 0.0,
+                "shader editor should scroll both long WGSL lines and tall source: {editor_scroll:?}"
+            );
+
+            state.shader_lab_editor_scroll = UiPoint::new(48.0, 96.0);
+            let mut scrolled = state.view(viewport);
+            scrolled
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("scrolled shader lab layout");
+            let applied_scroll = scrolled
+                .scroll_state(node_id(&scrolled, "shader_lab.editor.scroll"))
+                .expect("shader source editor scroll");
+            assert_eq!(
+                applied_scroll.offset(),
+                applied_scroll.clamp_offset(UiPoint::new(48.0, 96.0)),
+                "shader editor should preserve the user's scroll offset"
+            );
+
+            let workspace_rect = document.node(workspace).layout().rect;
+            let handle_rect = document.node(handle).layout().rect;
+            let start = UiPoint::new(handle_rect.x + handle_rect.width * 0.5, handle_rect.y + 8.0);
+            state.update(WidgetAction::pointer_edit(
+                handle,
+                "shader_lab.workspace.resize",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Begin,
+                    start,
+                    UiPoint::new(start.x - workspace_rect.x, start.y - workspace_rect.y),
+                    workspace_rect,
+                ),
+            ));
+            state.update(WidgetAction::pointer_edit(
+                handle,
+                "shader_lab.workspace.resize",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Commit,
+                    UiPoint::new(start.x + 90.0, start.y),
+                    UiPoint::new(
+                        start.x + 90.0 - workspace_rect.x,
+                        start.y - workspace_rect.y,
+                    ),
+                    workspace_rect,
+                ),
+            ));
+            assert!(
+                state.shader_lab_split.fraction > 0.52,
+                "dragging the shader lab splitter should resize the preview/editor panes: {:?}",
+                state.shader_lab_split
+            );
+        }
+
+        #[test]
+        fn showcase_shader_lab_frame_button_controls_affect_preview_chrome() {
+            let mut state = state_with_window("shader_lab");
+            let viewport = UiSize::new(1400.0, 760.0);
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.target.frame",
+            ));
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab frame layout");
+            let frame = document
+                .node(node_id(&document, "shader_lab.preview.frame"))
+                .layout()
+                .rect;
+            let preview = document
+                .node(node_id(&document, "shader_lab.preview.surface"))
+                .layout()
+                .rect;
+            let frame_label = document
+                .node(node_id(&document, "shader_lab.preview.frame.label"))
+                .layout()
+                .rect;
+            assert!(
+                (rect_center(frame).x - rect_center(frame_label).x).abs() < 1.0,
+                "frame label should be horizontally centered: frame={frame:?} label={frame_label:?}"
+            );
+            assert!(
+                (rect_center(frame).y - rect_center(frame_label).y).abs() < 1.0,
+                "frame label should be vertically centered: frame={frame:?} label={frame_label:?}"
+            );
+            assert!(
+                frame.width >= preview.width * 0.55 && frame.height >= preview.height * 0.35,
+                "frame target should occupy a meaningful part of the preview: frame={frame:?} preview={preview:?}"
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.frame_text.toggle",
+            ));
+            let mut hidden_frame_text = state.view(viewport);
+            hidden_frame_text
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab hidden frame text layout");
+            assert!(
+                maybe_node_id(&hidden_frame_text, "shader_lab.preview.frame.label").is_none(),
+                "frame text toggle should remove the frame label from the preview"
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.target.button",
+            ));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "shader_lab.button_text.toggle",
+            ));
+            let target = UiRect::new(0.0, 0.0, 100.0, 20.0);
+            state.update(WidgetAction::pointer_edit(
+                UiNodeId::root(),
+                "shader_lab.surface.stroke",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Commit,
+                    UiPoint::new(target.x, target.y + 10.0),
+                    UiPoint::new(0.0, 10.0),
+                    target,
+                ),
+            ));
+            state.update(WidgetAction::pointer_edit(
+                UiNodeId::root(),
+                "shader_lab.surface.radius",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Commit,
+                    UiPoint::new(target.right(), target.y + 10.0),
+                    UiPoint::new(target.width, 10.0),
+                    target,
+                ),
+            ));
+            let mut button_document = state.view(viewport);
+            button_document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab button chrome layout");
+            assert_eq!(
+                text_content(&button_document, "shader_lab.preview.button.label"),
+                "",
+                "button text toggle should remove the visible button label"
+            );
+            let button =
+                button_document.node(node_id(&button_document, "shader_lab.preview.button"));
+            assert_eq!(
+                button.visual().stroke,
+                None,
+                "zero border width should remove the button stroke"
+            );
+            assert!(
+                button.visual().corner_radius >= SHADER_LAB_SURFACE_RADIUS_MAX - 0.1,
+                "radius slider should update the button chrome: {:?}",
+                button.visual()
+            );
+        }
+
+        fn assert_scroll_area_has_visible_auto_scrollbar(document: &mut UiDocument, name: &str) {
             let scroll_node = node_id(document, name);
             let scroll = document
                 .scroll_state(scroll_node)
@@ -1369,6 +3558,10 @@ mod showcase_app {
                 "{name:?} should have a vertical scroll range: {scroll:?}"
             );
             let rect = document.node(scroll_node).layout().rect;
+            document.handle_input(UiInputEvent::PointerMove(UiPoint::new(
+                rect.x + 8.0,
+                rect.y + 8.0,
+            )));
             let scrollbar_items = document
                 .paint_list()
                 .items
@@ -1388,289 +3581,34 @@ mod showcase_app {
             );
         }
 
-        #[cfg(feature = "wgpu")]
-        #[test]
-        fn showcase_forms_overlays_drag_drop_and_media_minimized_snapshots_have_visible_regions() {
-            let viewport = UiSize::new(900.0, 760.0);
-            let specs: [(&str, &[&str], &[&str]); 4] = [
-                (
-                    "forms",
-                    &[
-                        "forms.profile.name.input",
-                        "forms.profile.email.input",
-                        "forms.profile.actions.submit",
-                    ],
-                    &["forms.profile.status"],
-                ),
-                (
-                    "overlays",
-                    &[
-                        "overlays.tooltip.body",
-                        "overlays.tooltip_rect.scene",
-                        "overlays.popup_panel",
-                        "overlays.modal",
-                    ],
-                    &["overlays.tooltip_rect.scene"],
-                ),
-                (
-                    "drag_drop",
-                    &[
-                        "drag_drop.text_source",
-                        "drag_drop.accept_text",
-                        "drag_drop.operation.copy",
-                    ],
-                    &["drag_drop.status"],
-                ),
-                (
-                    "media",
-                    &["media.icons.label"],
-                    &[
-                        "media.image.untinted",
-                        "media.image.warning",
-                        "media.image.shader",
-                        "media.image.note",
-                    ],
-                ),
-            ];
-
-            let mut renderer = WgpuRenderer::default();
-            renderer.warm_up().expect("wgpu warm-up");
-            for (id, visible_nodes, bottom_nodes) in specs {
-                let mut document = minimized_showcase_window_document(id, viewport);
-                let image =
-                    render_showcase_snapshot(&mut document, viewport, &mut renderer, id, "top");
-                for name in visible_nodes {
-                    assert_rendered_node_has_visible_detail(&image, &document, name);
-                }
-
-                let mut measurer = CosmicTextMeasurer::new();
-                scroll_all_nodes_to_end(&mut document, viewport, &mut measurer);
-                let image =
-                    render_showcase_snapshot(&mut document, viewport, &mut renderer, id, "bottom");
-                for name in bottom_nodes {
-                    assert_rendered_node_has_visible_detail(&image, &document, name);
-                }
-            }
-        }
-
-        #[cfg(feature = "wgpu")]
-        #[test]
-        #[ignore = "manual visual audit generator; set OPERAD_SHOWCASE_VISUAL_DUMP_DIR to collect every demo snapshot"]
-        fn showcase_all_demo_windows_visual_audit_snapshots() {
-            let viewport = UiSize::new(900.0, 760.0);
-            let mut renderer = WgpuRenderer::default();
-            renderer.warm_up().expect("wgpu warm-up");
-
-            for id in SHOWCASE_WIDGET_WINDOW_IDS {
-                let state = state_with_window(id);
-                let mut document = state.view(viewport);
-                let image =
-                    render_showcase_snapshot(&mut document, viewport, &mut renderer, id, "default");
-                let window_name = format!("showcase.windows.window.{id}");
-                assert_rendered_node_has_visible_detail(&image, &document, &window_name);
-                assert_no_severe_showcase_warnings(id, "visual default", &document);
-
-                let mut scrolled = state.view(viewport);
-                scrolled
-                    .compute_layout(viewport, &mut CosmicTextMeasurer::new())
-                    .unwrap_or_else(|error| panic!("{id} visual bottom layout failed: {error}"));
-                let mut measurer = CosmicTextMeasurer::new();
-                scroll_all_nodes_to_end(&mut scrolled, viewport, &mut measurer);
-                let image =
-                    render_showcase_snapshot(&mut scrolled, viewport, &mut renderer, id, "bottom");
-                assert_rendered_node_has_visible_detail(&image, &scrolled, &window_name);
-                assert_no_severe_showcase_warnings(id, "visual bottom", &scrolled);
-            }
-        }
-
-        #[cfg(feature = "wgpu")]
-        fn render_showcase_snapshot(
-            document: &mut UiDocument,
-            viewport: UiSize,
-            renderer: &mut WgpuRenderer,
-            id: &str,
-            variant: &str,
-        ) -> RenderedImage {
-            let pixel_size =
-                PixelSize::new(viewport.width.ceil() as u32, viewport.height.ceil() as u32);
-            let request = HostDocumentFrameRequest::new(
-                viewport,
-                RenderTarget::snapshot(pixel_size),
-                HostFrameOutput::new(Default::default()),
-            )
-            .render_options(RenderOptions {
-                clear_color: ColorRgba::new(13, 17, 23, 255),
-                ..RenderOptions::default()
-            });
-            let frame = process_document_frame(document, &mut CosmicTextMeasurer::new(), request)
-                .unwrap_or_else(|error| panic!("{id} {variant} snapshot layout failed: {error}"));
-            let output = renderer
-                .render_frame(frame.render_request, &EmptyResourceResolver)
-                .unwrap_or_else(|error| panic!("{id} {variant} snapshot render failed: {error}"));
-            let image = output
-                .snapshot
-                .expect("snapshot target should render pixels");
-            assert_eq!(image.size, pixel_size);
-            assert_eq!(image.format, ResourceFormat::Rgba8);
-            maybe_dump_showcase_snapshot(&image, id, variant);
-            image
-        }
-
-        #[cfg(feature = "wgpu")]
-        fn assert_rendered_node_has_visible_detail(
-            image: &RenderedImage,
-            document: &UiDocument,
-            name: &str,
-        ) {
-            let node = document.node(node_id(document, name));
-            let visible_rect = node
-                .layout()
-                .rect
-                .intersection(node.layout().clip_rect)
-                .unwrap_or_else(|| panic!("{name:?} has no visible clipped region"));
-            let stats = rendered_region_stats(image, visible_rect);
-            let minimum_changed = 4.max(stats.total_pixels / 500);
-            assert!(
-                stats.total_pixels >= 16,
-                "{name:?} visible region is too small for visual inspection: {visible_rect:?}"
+        fn assert_scroll_area_has_no_horizontal_auto_scrollbar(document: &UiDocument, name: &str) {
+            let scroll_node = node_id(document, name);
+            let scroll = document
+                .scroll_state(scroll_node)
+                .unwrap_or_else(|| panic!("{name:?} should be scrollable"));
+            assert_eq!(
+                scroll.max_offset().x,
+                0.0,
+                "{name:?} should not have a horizontal scroll range: {scroll:?}"
             );
+            let rect = document.node(scroll_node).layout().rect;
+            let scrollbar_items = document
+                .paint_list()
+                .items
+                .into_iter()
+                .filter(|item| {
+                    item.node == scroll_node
+                        && matches!(item.kind, PaintKind::Rect { .. })
+                        && item.rect.height <= 8.0
+                        && item.rect.width >= 18.0
+                        && item.rect.y >= rect.bottom() - 12.0
+                        && item.rect.bottom() <= rect.bottom() + 0.5
+                })
+                .collect::<Vec<_>>();
             assert!(
-                stats.changed_pixels >= minimum_changed && stats.max_channel_span >= 8,
-                "{name:?} did not render enough visible pixel detail: rect={visible_rect:?} stats={stats:?}"
+                scrollbar_items.is_empty(),
+                "{name:?} should not paint a horizontal automatic scrollbar, got {scrollbar_items:#?}"
             );
-        }
-
-        #[cfg(feature = "wgpu")]
-        #[derive(Debug)]
-        struct RenderedRegionStats {
-            total_pixels: usize,
-            changed_pixels: usize,
-            max_channel_span: u8,
-        }
-
-        #[cfg(feature = "wgpu")]
-        fn rendered_region_stats(image: &RenderedImage, rect: UiRect) -> RenderedRegionStats {
-            let width = image.size.width as usize;
-            let height = image.size.height as usize;
-            let x0 = rect.x.max(0.0).floor() as usize;
-            let y0 = rect.y.max(0.0).floor() as usize;
-            let x1 = rect.right().min(image.size.width as f32).ceil() as usize;
-            let y1 = rect.bottom().min(image.size.height as f32).ceil() as usize;
-            let x1 = x1.min(width);
-            let y1 = y1.min(height);
-
-            let mut first = None;
-            let mut changed_pixels = 0;
-            let mut min_channel = [u8::MAX; 3];
-            let mut max_channel = [0_u8; 3];
-            let mut total_pixels = 0;
-
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let offset = (y * width + x) * 4;
-                    let pixel = [
-                        image.pixels[offset],
-                        image.pixels[offset + 1],
-                        image.pixels[offset + 2],
-                        image.pixels[offset + 3],
-                    ];
-                    if let Some(first) = first {
-                        if pixel_channel_delta(pixel, first) > 4 {
-                            changed_pixels += 1;
-                        }
-                    } else {
-                        first = Some(pixel);
-                    }
-                    for channel in 0..3 {
-                        min_channel[channel] = min_channel[channel].min(pixel[channel]);
-                        max_channel[channel] = max_channel[channel].max(pixel[channel]);
-                    }
-                    total_pixels += 1;
-                }
-            }
-
-            let max_channel_span = (0..3)
-                .map(|channel| max_channel[channel].saturating_sub(min_channel[channel]))
-                .max()
-                .unwrap_or(0);
-            RenderedRegionStats {
-                total_pixels,
-                changed_pixels,
-                max_channel_span,
-            }
-        }
-
-        #[cfg(feature = "wgpu")]
-        fn pixel_channel_delta(left: [u8; 4], right: [u8; 4]) -> u8 {
-            (0..4)
-                .map(|channel| left[channel].abs_diff(right[channel]))
-                .max()
-                .unwrap_or(0)
-        }
-
-        #[cfg(feature = "wgpu")]
-        fn maybe_dump_showcase_snapshot(image: &RenderedImage, id: &str, variant: &str) {
-            let Ok(dir) = std::env::var("OPERAD_SHOWCASE_VISUAL_DUMP_DIR") else {
-                return;
-            };
-            let path = std::path::Path::new(&dir).join(format!("{id}-{variant}.ppm"));
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("create showcase visual dump dir");
-            }
-            let mut bytes =
-                format!("P6\n{} {}\n255\n", image.size.width, image.size.height).into_bytes();
-            for pixel in image.pixels.chunks_exact(4) {
-                bytes.extend_from_slice(&pixel[0..3]);
-            }
-            std::fs::write(&path, bytes).expect("write showcase visual dump");
-        }
-
-        #[test]
-        fn showcase_windows_survive_small_user_resizes() {
-            let viewport = UiSize::new(900.0, 760.0);
-            for id in SHOWCASE_WIDGET_WINDOW_IDS {
-                let mut state = state_with_window(id);
-                state
-                    .desktop
-                    .sizes
-                    .insert(id.to_string(), UiSize::new(220.0, 140.0));
-                state.desktop.user_sized.insert(id.to_string());
-                if id == "selection" {
-                    state.combo_open = true;
-                    state.dropdown.open(&select_options());
-                }
-                if id == "slider" {
-                    state.slider_trailing_picker_open = true;
-                }
-                if id == "menus" {
-                    state.menu_button.open(&menu_items(state.menu_autosave));
-                    state.context_menu.open_with_items(
-                        UiPoint::new(160.0, 160.0),
-                        &menu_items(state.menu_autosave),
-                    );
-                }
-                if id == "overlays" {
-                    state.overlay_popup_open = true;
-                    state.overlay_modal_open = true;
-                }
-                if id == "popup_panel" {
-                    state.popup_open = true;
-                }
-
-                let mut document = state.view(viewport);
-                document
-                    .compute_layout(viewport, &mut ApproxTextMeasurer)
-                    .expect("showcase layout");
-                let warnings = document
-                    .audit_layout()
-                    .into_iter()
-                    .filter(severe_layout_warning)
-                    .collect::<Vec<_>>();
-                assert!(
-                    warnings.is_empty(),
-                    "resized window {id:?} emitted severe layout warnings: {warnings:#?}"
-                );
-            }
         }
 
         #[test]
@@ -1792,7 +3730,7 @@ mod showcase_app {
         }
 
         #[test]
-        fn showcase_canvas_aspect_fits_when_window_is_short() {
+        fn showcase_canvas_minimum_prevents_tiny_user_size() {
             let mut state = state_with_window("canvas");
             state
                 .desktop
@@ -1800,7 +3738,7 @@ mod showcase_app {
                 .insert("canvas".to_string(), UiSize::new(420.0, 160.0));
             state.desktop.user_sized.insert("canvas".to_string());
 
-            let viewport = UiSize::new(900.0, 760.0);
+            let viewport = UiSize::new(1180.0, 820.0);
             let mut document = state.view(viewport);
             document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
@@ -1817,11 +3755,21 @@ mod showcase_app {
                 (rect.width / rect.height - 16.0 / 9.0).abs() < 0.01,
                 "{rect:?}"
             );
-            assert!(rect.width < 300.0, "{rect:?}");
+            assert!(rect.width >= 719.0, "{rect:?}");
+            assert!(rect.height >= 404.0, "{rect:?}");
+
+            let window = document
+                .node(node_id(&document, "showcase.windows.window.canvas"))
+                .layout()
+                .rect;
+            assert!(
+                window.width >= 740.0 && window.height >= 500.0,
+                "tiny user size should be clamped to the canvas demo's content minimum: window={window:?} canvas={rect:?}"
+            );
         }
 
         #[test]
-        fn showcase_canvas_default_window_spawns_larger() {
+        fn showcase_canvas_default_window_spawns_to_canvas_intrinsic_size() {
             let state = state_with_window("canvas");
             let viewport = UiSize::new(1180.0, 820.0);
             let mut document = state.view(viewport);
@@ -1833,8 +3781,88 @@ mod showcase_app {
                 .node(node_id(&document, "showcase.windows.window.canvas"))
                 .layout()
                 .rect;
-            assert!(window.width >= 560.0, "{window:?}");
-            assert!(window.height >= 390.0, "{window:?}");
+            let canvas = document
+                .node(node_id(&document, "canvas.shader"))
+                .layout()
+                .rect;
+            let content = document
+                .node(node_id(&document, "showcase.windows.window.canvas.content"))
+                .layout()
+                .rect;
+            let body = document
+                .node(node_id(&document, "canvas.section_scroll"))
+                .layout()
+                .rect;
+            let controls = document
+                .node(node_id(&document, "canvas.options"))
+                .layout()
+                .rect;
+            assert!(maybe_node_id(&document, "canvas.grow_horizontal").is_some());
+            assert!(maybe_node_id(&document, "canvas.grow_vertical").is_some());
+            assert!(maybe_node_id(&document, "canvas.keep_aspect_ratio").is_some());
+            assert!(window.width >= 739.0, "{window:?}");
+            assert!(
+                (canvas.width / canvas.height - 16.0 / 9.0).abs() < 0.01,
+                "canvas={canvas:?}"
+            );
+            assert!(
+                canvas.width >= 719.0 && canvas.height >= 404.0,
+                "window={window:?} canvas={canvas:?}"
+            );
+            assert!(
+                window.height <= canvas.height + 112.0,
+                "window should be fit to canvas content instead of old excess height: window={window:?} content={content:?} body={body:?} controls={controls:?} canvas={canvas:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_canvas_sizing_options_toggle_canvas_constraints() {
+            let mut state = state_with_window("canvas");
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "canvas.grow_horizontal",
+            ));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "canvas.grow_vertical",
+            ));
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "canvas.keep_aspect_ratio",
+            ));
+            assert!(!state.canvas_grow_horizontal);
+            assert!(!state.canvas_grow_vertical);
+            assert!(!state.canvas_keep_aspect_ratio);
+
+            let viewport = UiSize::new(1180.0, 820.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            for name in [
+                "canvas.grow_horizontal",
+                "canvas.grow_vertical",
+                "canvas.keep_aspect_ratio",
+            ] {
+                assert_eq!(
+                    document
+                        .node(node_id(&document, name))
+                        .accessibility()
+                        .and_then(|meta| meta.checked),
+                    Some(operad::AccessibilityChecked::False),
+                    "{name} should reflect the toggled-off option"
+                );
+            }
+
+            let canvas = document
+                .node(node_id(&document, "canvas.shader"))
+                .layout()
+                .rect;
+            assert!(
+                (canvas.width - 720.0).abs() < 0.01 && (canvas.height - 405.0).abs() < 0.01,
+                "fixed canvas options should use the intrinsic demo size: {canvas:?}"
+            );
         }
 
         #[test]
@@ -1866,7 +3894,68 @@ mod showcase_app {
         }
 
         #[test]
+        fn showcase_slider_drag_position_does_not_create_horizontal_scrollbar() {
+            let mut state = state_with_window("slider");
+            state
+                .desktop
+                .positions
+                .insert("slider".to_string(), UiPoint::new(133.333, 97.667));
+            state
+                .desktop
+                .sizes
+                .insert("slider".to_string(), UiSize::new(430.0, 560.0));
+            state.desktop.user_sized.insert("slider".to_string());
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            assert_scroll_area_has_no_horizontal_auto_scrollbar(&document, "slider.section_scroll");
+        }
+
+        #[test]
         fn showcase_buttons_window_can_shrink_below_default_height() {
+            fn resize_buttons_window(state: &mut ShowcaseState, window: UiRect, target: UiSize) {
+                let resize_origin = UiPoint::new(window.right(), window.bottom());
+                state.update(WidgetAction::pointer_edit(
+                    UiNodeId::root(),
+                    "window.resize.buttons",
+                    WidgetPointerEdit::new(
+                        WidgetValueEditPhase::Begin,
+                        resize_origin,
+                        UiPoint::new(window.width, window.height),
+                        window,
+                    ),
+                ));
+                state.update(WidgetAction::pointer_edit(
+                    UiNodeId::root(),
+                    "window.resize.buttons",
+                    WidgetPointerEdit::new(
+                        WidgetValueEditPhase::Commit,
+                        UiPoint::new(window.x + target.width, window.y + target.height),
+                        UiPoint::new(target.width, target.height),
+                        window,
+                    ),
+                ));
+            }
+
+            fn assert_buttons_fit(document: &UiDocument) {
+                let content = document
+                    .node(node_id(document, "showcase.windows.window.buttons.content"))
+                    .layout()
+                    .rect;
+                let last = document
+                    .node(node_id(document, "buttons.last"))
+                    .layout()
+                    .rect;
+                assert!(
+                    last.bottom() <= content.bottom(),
+                    "last={last:?} content={content:?}"
+                );
+            }
+
             let mut state = state_with_window("buttons");
             let viewport = UiSize::new(900.0, 760.0);
             let mut document = state.view(viewport);
@@ -1877,32 +3966,12 @@ mod showcase_app {
                 .node(node_id(&document, "showcase.windows.window.buttons"))
                 .layout()
                 .rect;
-            let resize_origin = UiPoint::new(window.right(), window.bottom());
-            state.update(WidgetAction::pointer_edit(
-                UiNodeId::root(),
-                "window.resize.buttons",
-                WidgetPointerEdit::new(
-                    WidgetValueEditPhase::Begin,
-                    resize_origin,
-                    UiPoint::new(window.width, window.height),
-                    window,
-                ),
-            ));
-            state.update(WidgetAction::pointer_edit(
-                UiNodeId::root(),
-                "window.resize.buttons",
-                WidgetPointerEdit::new(
-                    WidgetValueEditPhase::Commit,
-                    UiPoint::new(window.right(), window.y + 150.0),
-                    UiPoint::new(window.width, 150.0),
-                    window,
-                ),
-            ));
+            resize_buttons_window(&mut state, window, UiSize::new(window.width, 150.0));
 
             let mut resized = state.view(viewport);
             resized
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
-                .expect("resized buttons layout");
+                .expect("wide resized buttons layout");
             let resized_window = resized
                 .node(node_id(&resized, "showcase.windows.window.buttons"))
                 .layout()
@@ -1915,18 +3984,118 @@ mod showcase_app {
                 resized_window.height >= 200.0 && resized_window.height <= 240.0,
                 "resized_window={resized_window:?}"
             );
-            let content = resized
-                .node(node_id(&resized, "showcase.windows.window.buttons.content"))
-                .layout()
-                .rect;
-            let last = resized
-                .node(node_id(&resized, "buttons.last"))
+            assert_buttons_fit(&resized);
+
+            resize_buttons_window(&mut state, resized_window, UiSize::new(185.0, 120.0));
+            let mut narrow = state.view(viewport);
+            narrow
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("narrow resized buttons layout");
+            let narrow_window = narrow
+                .node(node_id(&narrow, "showcase.windows.window.buttons"))
                 .layout()
                 .rect;
             assert!(
-                last.bottom() <= content.bottom(),
-                "last={last:?} content={content:?}"
+                narrow_window.width <= 220.0,
+                "narrow_window={narrow_window:?}"
             );
+            assert!(
+                narrow_window.height > resized_window.height + 180.0,
+                "wide={resized_window:?} narrow={narrow_window:?}"
+            );
+            assert_buttons_fit(&narrow);
+        }
+
+        #[test]
+        fn showcase_buttons_toggle_uses_state_visual_without_pressed_flash() {
+            let mut state = state_with_window("buttons");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("buttons layout");
+
+            let toggle = node_id(&document, "button.toggle");
+            let toggle_rect = document.node(toggle).layout().rect;
+            let off_visual = *document.node(toggle).visual();
+            let off_pressed_expected = adjusted_button_visual(off_visual, -34);
+            let input = document.handle_input(UiInputEvent::PointerDown(UiPoint::new(
+                toggle_rect.x + toggle_rect.width * 0.5,
+                toggle_rect.y + toggle_rect.height * 0.5,
+            )));
+            assert_eq!(input.pressed, Some(toggle));
+            assert_eq!(*document.node(toggle).visual(), off_pressed_expected);
+            assert_eq!(text_content(&document, "button.toggle.label"), "Toggle off");
+            let accessibility = document.node(toggle).accessibility().unwrap();
+            assert_eq!(accessibility.role, AccessibilityRole::ToggleButton);
+            assert_eq!(accessibility.pressed, Some(false));
+
+            state.update(WidgetAction::activate(toggle, "button.toggle"));
+            let mut toggled_document = state.view(viewport);
+            toggled_document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("toggled buttons layout");
+
+            let toggled = node_id(&toggled_document, "button.toggle");
+            assert_eq!(
+                text_content(&toggled_document, "button.toggle.label"),
+                "Toggle on"
+            );
+            assert_eq!(
+                *toggled_document.node(toggled).visual(),
+                button_visual(48, 112, 184)
+            );
+            let accessibility = toggled_document.node(toggled).accessibility().unwrap();
+            assert_eq!(accessibility.role, AccessibilityRole::ToggleButton);
+            assert_eq!(accessibility.pressed, Some(true));
+        }
+
+        #[test]
+        fn showcase_wrapped_rows_keep_their_measured_height() {
+            for (window, rows) in [
+                (
+                    "buttons",
+                    &[
+                        ("buttons.row", "buttons.row.options"),
+                        ("buttons.row.options", "buttons.row.helpers"),
+                        ("buttons.row.helpers", "buttons.last"),
+                    ][..],
+                ),
+                ("labels", &[("labels.wrap.row", "labels.links")][..]),
+                (
+                    "toggles",
+                    &[
+                        ("toggles.radio_examples", "toggles.switch.separator"),
+                        ("toggles.switch_examples", "toggles.theme.separator"),
+                    ][..],
+                ),
+            ] {
+                let mut state = state_with_window(window);
+                state
+                    .desktop
+                    .sizes
+                    .insert(window.to_string(), UiSize::new(260.0, 260.0));
+                state.desktop.user_sized.insert(window.to_string());
+
+                let viewport = UiSize::new(900.0, 760.0);
+                let mut document = state.view(viewport);
+                document
+                    .compute_layout(viewport, &mut ApproxTextMeasurer)
+                    .unwrap_or_else(|err| panic!("{window} layout: {err}"));
+
+                for (upper, lower) in rows {
+                    let upper_rect = document.node(node_id(&document, upper)).layout().rect;
+                    let lower_rect = document.node(node_id(&document, lower)).layout().rect;
+                    assert!(
+                        upper_rect.bottom() <= lower_rect.y + 0.5,
+                        "{window}: {upper} should reserve height before {lower}: upper={upper_rect:?} lower={lower_rect:?}"
+                    );
+                    assert!(
+                        !rects_overlap(upper_rect, lower_rect),
+                        "{window}: {upper} overlaps {lower}: upper={upper_rect:?} lower={lower_rect:?}"
+                    );
+                }
+            }
         }
 
         #[test]
@@ -1939,70 +4108,45 @@ mod showcase_app {
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
                 .expect("showcase layout");
             assert!(maybe_node_id(&document, "layout_widgets.dock").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.inspector").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.assets").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.document.tabs").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.dock.drop.left.chip").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.dock.drop.right.chip").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.dock.drop.center.chip").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.dock.drop.floating.chip").is_some());
+            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.panel_a").is_some());
+            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.workspace").is_some());
+            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.panel_b").is_some());
+            assert!(maybe_node_id(&document, "layout.panel_a.scroll_area").is_some());
+            assert!(maybe_node_id(&document, "layout.workspace.scroll_area").is_some());
+            assert!(maybe_node_id(&document, "layout.panel_b.scroll_area").is_some());
+            assert!(maybe_node_id(&document, "layout.workspace.card.one").is_some());
+            assert!(maybe_node_id(&document, "layout_widgets.document.tabs").is_none());
+            assert!(maybe_node_id(&document, "layout_widgets.dock.drop.left.chip").is_none());
             assert!(maybe_node_id(&document, "layout_widgets.dock.drawers").is_some());
             assert!(
-                maybe_node_id(&document, "layout_widgets.dock.drawers.drawer.assets").is_some()
+                maybe_node_id(&document, "layout_widgets.dock.drawers.drawer.panel_b").is_some()
             );
-            assert!(maybe_node_id(
-                &document,
-                "layout_widgets.dock.reorder.left.inspector.before.chip"
-            )
-            .is_some());
+            for (name, expected) in [
+                ("layout_widgets.dock.panel.panel_a.title.label", "Panel A"),
+                (
+                    "layout_widgets.dock.panel.workspace.title.label",
+                    "Workspace",
+                ),
+                ("layout_widgets.dock.panel.panel_b.title.label", "Panel B"),
+            ] {
+                let UiContent::Text(text) = document.node(node_id(&document, name)).content()
+                else {
+                    panic!("{name} should be a text label");
+                };
+                assert_eq!(text.text, expected);
+            }
 
             state.update(WidgetAction::activate(
                 UiNodeId::root(),
-                "layout_widgets.drawer.assets",
+                "layout_widgets.drawer.panel_b",
             ));
-            assert!(state.layout_dock.is_hidden("assets"));
+            assert!(state.layout_dock.is_hidden("panel_b"));
             let mut document = state.view(viewport);
             document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
                 .expect("drawer layout");
-            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.assets").is_none());
-
-            state.update(WidgetAction::activate(
-                UiNodeId::root(),
-                "layout_widgets.reorder.assets.before.inspector",
-            ));
-            assert!(!state.layout_dock.is_hidden("assets"));
-            let order: Vec<_> = state
-                .layout_dock
-                .panel_order()
-                .iter()
-                .map(String::as_str)
-                .collect();
-            assert_eq!(order, vec!["assets", "inspector", "document"]);
-
-            state.update(WidgetAction::activate(
-                UiNodeId::root(),
-                "layout_widgets.float_inspector",
-            ));
-            assert!(state.layout_dock.is_floating("inspector"));
-            let mut document = state.view(viewport);
-            document
-                .compute_layout(viewport, &mut ApproxTextMeasurer)
-                .expect("floating layout");
-            assert!(maybe_node_id(&document, "layout_widgets.floating.inspector").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.inspector").is_none());
-
-            state.update(WidgetAction::activate(
-                UiNodeId::root(),
-                "layout_widgets.dock_inspector",
-            ));
-            assert!(!state.layout_dock.is_floating("inspector"));
-            let mut document = state.view(viewport);
-            document
-                .compute_layout(viewport, &mut ApproxTextMeasurer)
-                .expect("docked layout");
-            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.inspector").is_some());
-            assert!(maybe_node_id(&document, "layout_widgets.floating.inspector").is_none());
+            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.panel_b").is_none());
+            assert!(maybe_node_id(&document, "layout_widgets.dock.panel.workspace").is_some());
         }
 
         #[test]
@@ -2036,6 +4180,37 @@ mod showcase_app {
                 link.bottom() <= content.bottom() && hyperlink.bottom() <= content.bottom(),
                 "links should fit inside minimized labels content: link={link:?} hyperlink={hyperlink:?} content={content:?}"
             );
+        }
+
+        #[test]
+        fn showcase_label_locale_dropdown_has_combobox_affordance() {
+            let state = state_with_window("labels");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("labels layout");
+
+            let trigger = document.node(node_id(&document, "labels.locale"));
+            assert!(
+                trigger.interaction_visuals().is_some(),
+                "locale dropdown should publish hover/pressed visuals"
+            );
+
+            let label = document
+                .node(node_id(&document, "labels.locale.label"))
+                .layout()
+                .rect;
+            let indicator_node = document.node(node_id(&document, "labels.locale.indicator"));
+            let indicator = indicator_node.layout().rect;
+            assert!(
+                label.x < indicator.x,
+                "locale dropdown text should be left of the right-side indicator: label={label:?} indicator={indicator:?}"
+            );
+            assert!(matches!(
+                indicator_node.content(),
+                UiContent::Text(text) if text.text == "▼"
+            ));
         }
 
         #[test]
@@ -2075,9 +4250,8 @@ mod showcase_app {
         }
 
         #[test]
-        fn showcase_numeric_window_minimum_tracks_wrapped_text_and_range_width() {
+        fn showcase_numeric_window_fits_editable_value_unit_and_range_controls() {
             let mut state = state_with_window("numeric");
-            state.numeric_angle = 6.0;
             state
                 .desktop
                 .sizes
@@ -2097,35 +4271,369 @@ mod showcase_app {
                 ))
                 .layout()
                 .rect;
-            let note = document
-                .node(node_id(&document, "numeric.note"))
-                .layout()
-                .rect;
-            assert!(
-                note.bottom() <= content.bottom(),
-                "wrapped numeric note should fit inside minimized content: note={note:?} content={content:?}"
+            for name in [
+                "numeric.value_label",
+                "numeric.value",
+                "numeric.value.value",
+                "numeric.unit",
+                "numeric.range_min",
+                "numeric.range_min.value",
+                "numeric.range_max",
+                "numeric.range_max.value",
+                "numeric.sensitivity",
+                "numeric.note",
+            ] {
+                let rect = document.node(node_id(&document, name)).layout().rect;
+                assert!(
+                    rect.right() <= content.right() + 1.0,
+                    "{name} should fit inside minimized numeric content horizontally: rect={rect:?} content={content:?}"
+                );
+                assert!(
+                    rect.bottom() <= content.bottom() + 1.0,
+                    "{name} should fit inside minimized numeric content vertically: rect={rect:?} content={content:?}"
+                );
+            }
+            assert!(maybe_node_id(&document, "numeric.drag_value").is_none());
+            assert!(maybe_node_id(&document, "numeric.drag_angle").is_none());
+            assert!(maybe_node_id(&document, "numeric.drag_angle_tau").is_none());
+            assert_eq!(
+                document
+                    .node(node_id(&document, "numeric.value"))
+                    .accessibility()
+                    .map(|meta| meta.role),
+                Some(AccessibilityRole::SpinButton)
             );
 
-            let degrees = document
-                .node(node_id(&document, "numeric.drag_angle"))
+            state.focused_text = Some(FocusedTextInput::NumericValue);
+            let mut focused = state.view(viewport);
+            focused
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("focused numeric layout");
+            assert_eq!(
+                focused
+                    .node(node_id(&focused, "numeric.value"))
+                    .accessibility()
+                    .map(|meta| meta.role),
+                Some(AccessibilityRole::TextBox)
+            );
+            assert_eq!(
+                document
+                    .node(node_id(&document, "numeric.range_min.value"))
+                    .accessibility()
+                    .map(|meta| meta.role),
+                Some(AccessibilityRole::TextBox)
+            );
+        }
+
+        #[test]
+        fn showcase_numeric_value_can_be_typed_dragged_and_reformatted_by_unit() {
+            let mut state = state_with_window("numeric");
+
+            state.numeric_text.set_text("");
+            state.update(WidgetAction::text_edit(
+                UiNodeId::root(),
+                "numeric.value.edit",
+                UiInputEvent::TextInput("88.5".to_string()),
+            ));
+            assert_eq!(state.numeric_value, 88.5);
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "numeric.unit.option.deg",
+            ));
+            assert_eq!(numeric_unit_id(&state.numeric_unit), "deg");
+            assert_eq!(state.numeric_text.text(), "88.5");
+            assert_eq!(state.numeric_range_min, 0.0);
+            assert_eq!(state.numeric_range_max, 360.0);
+            assert_eq!(state.numeric_range_min_text.text(), "0.0");
+            assert_eq!(state.numeric_range_max_text.text(), "360.0");
+
+            let target = UiRect::new(0.0, 0.0, 150.0, 30.0);
+            state.update(WidgetAction::pointer_edit(
+                UiNodeId::root(),
+                "numeric.value.drag",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Begin,
+                    UiPoint::new(0.0, 12.0),
+                    UiPoint::new(150.0, 30.0),
+                    target,
+                ),
+            ));
+            state.update(WidgetAction::pointer_edit(
+                UiNodeId::root(),
+                "numeric.value.drag",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Commit,
+                    UiPoint::new(16.0, 12.0),
+                    UiPoint::new(150.0, 30.0),
+                    target,
+                ),
+            ));
+            assert!(state.numeric_value > 88.5);
+
+            state.numeric_range_max_text.set_text("360");
+            state.apply_text_edit(
+                FocusedTextInput::NumericRangeMax,
+                WidgetTextEdit::new(UiInputEvent::Key {
+                    key: KeyCode::Enter,
+                    modifiers: KeyModifiers::default(),
+                }),
+            );
+            assert_eq!(state.numeric_range_max, 360.0);
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "numeric.unit.option.turn",
+            ));
+            assert_eq!(numeric_unit_id(&state.numeric_unit), "turn");
+            assert_eq!(state.numeric_range_min, 0.0);
+            assert_eq!(state.numeric_range_max, 1.0);
+            assert_eq!(state.numeric_range_min_text.text(), "0.000");
+            assert_eq!(state.numeric_range_max_text.text(), "1.000");
+            assert_eq!(state.numeric_value, 1.0);
+            assert_eq!(state.numeric_text.text(), "1.000");
+        }
+
+        #[test]
+        fn showcase_numeric_text_blurs_when_clicking_elsewhere() {
+            let viewport = UiSize::new(860.0, 620.0);
+            let mut state = state_with_window("numeric");
+            let mut frame_state = HostDocumentFrameState::new();
+
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("numeric layout");
+            let value_rect = document
+                .node(node_id(&document, "numeric.value"))
                 .layout()
                 .rect;
-            let degrees_value = document
-                .node(node_id(&document, "numeric.drag_angle.value"))
+            let value_point = UiPoint::new(
+                value_rect.x + value_rect.width * 0.5,
+                value_rect.y + value_rect.height * 0.5,
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Down(PointerButton::Primary),
+                    value_point,
+                    1,
+                ),
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(PointerEventKind::Up(PointerButton::Primary), value_point, 2),
+            );
+            assert_eq!(state.focused_text, Some(FocusedTextInput::NumericValue));
+            state
+                .numeric_text
+                .set_selection(0, state.numeric_text.text().len());
+
+            let mut focused = state.view(viewport);
+            focused
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("focused numeric layout");
+            let label_rect = focused
+                .node(node_id(&focused, "numeric.value_label"))
                 .layout()
                 .rect;
-            let UiContent::Text(degrees_text) = document
-                .node(node_id(&document, "numeric.drag_angle.value"))
+            let label_point = UiPoint::new(
+                label_rect.x + label_rect.width * 0.5,
+                label_rect.y + label_rect.height * 0.5,
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(
+                    PointerEventKind::Down(PointerButton::Primary),
+                    label_point,
+                    3,
+                ),
+            );
+
+            assert_eq!(state.focused_text, None);
+            assert_eq!(state.numeric_text.selection_anchor(), None);
+            let mut blurred = state.view(viewport);
+            blurred
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("blurred numeric layout");
+            assert_eq!(
+                blurred
+                    .node(node_id(&blurred, "numeric.value"))
+                    .accessibility()
+                    .map(|meta| meta.role),
+                Some(AccessibilityRole::SpinButton)
+            );
+        }
+
+        #[test]
+        fn showcase_menu_controls_align_adornments_and_keep_triggers_single_line() {
+            let state = state_with_window("menus");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("menu controls layout");
+
+            let check = document
+                .node(node_id(&document, "menus.menu_list.item.3.check"))
+                .layout()
+                .rect;
+            let submenu = document
+                .node(node_id(&document, "menus.menu_list.item.4.submenu"))
+                .layout()
+                .rect;
+            let check_center_x = check.x + check.width * 0.5;
+            let submenu_center_x = submenu.x + submenu.width * 0.5;
+            assert!(
+                (check_center_x - submenu_center_x).abs() <= 0.5,
+                "menu trailing check and submenu arrow should share an alignment column: check={check:?} submenu={submenu:?}"
+            );
+
+            for (button_name, label_name) in [
+                ("menus.menu_button", "menus.menu_button.label"),
+                (
+                    "menus.image_text_menu_button",
+                    "menus.image_text_menu_button.label",
+                ),
+            ] {
+                let button = document.node(node_id(&document, button_name)).layout().rect;
+                let label = document.node(node_id(&document, label_name));
+                let UiContent::Text(text) = label.content() else {
+                    panic!("{label_name} should be text");
+                };
+                assert_eq!(text.style.wrap, TextWrap::None, "{label_name}");
+                let label_paint = text_paint_rect(&document, label_name);
+                assert!(
+                    label_paint.right() <= button.right() - 9.0
+                        && label_paint.bottom() <= button.bottom() + 0.5,
+                    "menu trigger label should fit on one line inside its button: button={button:?} label={label_paint:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn showcase_menu_submenu_stays_attached_to_parent_menu_row() {
+            let mut state = state_with_window("menus");
+            state.menu_bar.active_item = Some(4);
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("menu controls layout");
+
+            let parent_row = document
+                .node(node_id(&document, "menus.menu_list.item.4"))
+                .layout()
+                .rect;
+            let submenu = document
+                .node(node_id(&document, "menus.submenu"))
+                .layout()
+                .rect;
+            assert!(
+                submenu.x >= parent_row.right() - 0.5
+                    && submenu.x <= parent_row.right() + 8.0
+                    && submenu.y >= parent_row.y - 0.5
+                    && submenu.y <= parent_row.y + 0.5,
+                "submenu should be anchored beside the active parent row: row={parent_row:?} submenu={submenu:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_context_menu_opens_near_demo_controls_not_top_left() {
+            let mut state = state_with_window("menus");
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "menus.context.open",
+            ));
+
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("menu controls layout");
+
+            assert!(maybe_node_id(&document, "menus.menu_list").is_none());
+            let context = document
+                .node(node_id(&document, "menus.context_menu"))
+                .layout()
+                .rect;
+            assert!(
+                context.x > 20.0 && context.y > 120.0 && context.width >= 220.0,
+                "context menu should open near the demo controls with usable width, not as a thin top-left overlay: {context:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_command_palette_opens_near_top_center_with_search_affordance() {
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut state = state_with_window("command_palette");
+            state.last_desktop_size = desktop_size_for_viewport(viewport);
+            state.command_palette_open = true;
+
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("command palette layout");
+
+            let desktop = desktop_size_for_viewport(viewport);
+            let palette = document
+                .node(node_id(&document, "command_palette.panel"))
+                .layout()
+                .rect;
+            let palette_center = palette.x + palette.width * 0.5;
+            assert!(
+                (palette_center - desktop.width * 0.5).abs() <= 1.0,
+                "command palette should be centered over the desktop: palette={palette:?} desktop={desktop:?}"
+            );
+            assert!(
+                palette.y >= 48.0 && palette.y <= 96.0,
+                "command palette should open near the top of the desktop: {palette:?}"
+            );
+
+            let input = document
+                .node(node_id(&document, "command_palette.panel.input"))
+                .layout()
+                .rect;
+            let results = document
+                .node(node_id(&document, "command_palette.panel.results"))
+                .layout()
+                .rect;
+            let results_id = node_id(&document, "command_palette.panel.results");
+            let first_row_id = document.node(results_id).children()[0];
+            let first_row = document.node(first_row_id).layout().rect;
+            assert!(
+                (input.x - results.x).abs() <= 0.5,
+                "command palette search and results should stack in one column: input={input:?} results={results:?}"
+            );
+            assert!(
+                results.y >= input.bottom() - 0.5,
+                "command palette results should appear below the search field: input={input:?} results={results:?}"
+            );
+            assert!(
+                first_row.x >= results.x - 0.5 && first_row.right() <= results.right() + 0.5,
+                "command palette result rows should stay inside the results column: row={first_row:?} results={results:?}"
+            );
+
+            assert!(matches!(
+                document
+                    .node(node_id(&document, "command_palette.panel.search_icon"))
+                    .content(),
+                UiContent::Image(image) if image.key == "icons.search"
+            ));
+            let UiContent::Text(placeholder) = document
+                .node(node_id(&document, "command_palette.panel.query"))
                 .content()
             else {
-                panic!("numeric angle value should be text");
+                panic!("command palette query should be text");
             };
-            assert_eq!(degrees_text.style.wrap, TextWrap::None);
-            assert_eq!(degrees_text.intrinsic_text.as_deref(), Some("360.0 deg"));
-            assert!(
-                degrees.width >= degrees_value.width + 16.0,
-                "degrees input should reserve width for its range maximum: degrees={degrees:?} value={degrees_value:?}"
-            );
+            assert_eq!(placeholder.text, "Search commands");
         }
 
         #[test]
@@ -2174,9 +4682,49 @@ mod showcase_app {
         }
 
         #[test]
+        fn showcase_shader_text_editor_scrollbar_can_be_dragged() {
+            let state = state_with_window("shader_lab");
+            let viewport = UiSize::new(1400.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("shader lab layout");
+
+            let scroll = node_id(&document, "shader_lab.editor.scroll");
+            let scroll_state = document
+                .scroll_state(scroll)
+                .expect("shader text editor scroll state");
+            assert!(
+                scroll_state.max_offset().y > 0.0,
+                "shader text editor should have a vertical scroll range: {scroll_state:?}"
+            );
+            let viewport = document
+                .node(scroll)
+                .layout()
+                .rect
+                .intersection(document.node(scroll).layout().clip_rect)
+                .expect("shader text editor scroll viewport");
+            let start = UiPoint::new(viewport.right() - 1.0, viewport.y + 8.0);
+            let end = UiPoint::new(viewport.right() - 1.0, viewport.bottom() - 8.0);
+
+            let down = document.handle_input(UiInputEvent::PointerDown(start));
+            assert_eq!(down.pressed, Some(scroll));
+            assert_eq!(down.consumed_by, Some(scroll));
+
+            let moved = document.handle_input(UiInputEvent::PointerMove(end));
+            let scroll_state = document
+                .scroll_state(scroll)
+                .expect("shader text editor scroll state");
+            assert_eq!(moved.scrolled, Some(scroll));
+            assert!(
+                scroll_state.offset().y > scroll_state.max_offset().y * 0.5,
+                "dragging the shader text editor scrollbar should update the editor offset: {scroll_state:?}"
+            );
+        }
+
+        #[test]
         fn showcase_select_dropdown_popups_are_anchored_to_controls() {
             let mut state = state_with_window("selection");
-            state.combo_open = true;
             state.dropdown.open(&select_options());
 
             let viewport = UiSize::new(900.0, 760.0);
@@ -2185,10 +4733,7 @@ mod showcase_app {
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
                 .expect("selection layout");
 
-            for (trigger_name, popup_name) in [
-                ("combo.toggle", "selection.combo_menu"),
-                ("selection.dropdown", "selection.dropdown.popup"),
-            ] {
+            for (trigger_name, popup_name) in [("selection.dropdown", "selection.dropdown.popup")] {
                 let trigger = document
                     .node(node_id(&document, trigger_name))
                     .layout()
@@ -2199,22 +4744,77 @@ mod showcase_app {
                     "{popup_name} should align to {trigger_name}: popup={popup:?} trigger={trigger:?}"
                 );
                 assert!(
-                    popup.y >= trigger.bottom() - 1.0,
-                    "{popup_name} should open below {trigger_name}: popup={popup:?} trigger={trigger:?}"
+                    (popup.y - trigger.bottom()).abs() <= 0.5,
+                    "{popup_name} should touch {trigger_name} without a vertical gap: popup={popup:?} trigger={trigger:?}"
                 );
             }
+            assert!(maybe_node_id(&document, "combo.toggle").is_none());
+            assert!(maybe_node_id(&document, "selection.combo_menu").is_none());
         }
 
         #[test]
-        fn showcase_popup_panel_close_button_label_is_visible() {
-            let state = state_with_window("popup_panel");
+        fn showcase_select_controls_use_one_dropdown_model_and_abstract_options() {
+            let state = state_with_window("selection");
             let viewport = UiSize::new(900.0, 760.0);
             let mut document = state.view(viewport);
             document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
-                .expect("popup panel layout");
+                .expect("selection layout");
 
-            let close_label = node_id(&document, "popup_panel.inline_preview.close.label");
+            assert!(maybe_node_id(&document, "selection.combo.anchor").is_none());
+            assert!(maybe_node_id(&document, "combo.toggle").is_none());
+
+            for (name, expected) in [
+                ("selection.dropdown.label", "Label 2"),
+                ("selection.select_menu.option.0.label", "Label 1"),
+                ("selection.select_menu.option.1.label", "Label 2"),
+                ("selection.select_menu.option.2.label", "Label 3"),
+                ("selection.select_menu.option.3.label", "Disabled"),
+                ("selection.image_menu.option.0.label", "Label 1"),
+                ("selection.image_menu.option.1.label", "Label 2"),
+                ("selection.image_menu.option.2.label", "Label 3"),
+                ("selection.image_menu.option.3.label", "Disabled"),
+            ] {
+                let UiContent::Text(text) = document.node(node_id(&document, name)).content()
+                else {
+                    panic!("{name} should be a text label");
+                };
+                assert_eq!(text.text, expected, "{name}");
+            }
+
+            for name in [
+                "selection.image_menu.option.0.image",
+                "selection.image_menu.option.1.image",
+                "selection.image_menu.option.2.image",
+            ] {
+                assert!(
+                    matches!(
+                        document.node(node_id(&document, name)).content(),
+                        UiContent::Image(_)
+                    ),
+                    "{name} should render an image option"
+                );
+            }
+
+            assert!(
+                document
+                    .node(node_id(&document, "selection.select_menu.option.3"))
+                    .action()
+                    .is_none(),
+                "disabled select menu option should not emit actions"
+            );
+        }
+
+        #[test]
+        fn showcase_overlay_popup_panel_close_button_label_is_visible() {
+            let state = state_with_window("overlays");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("overlay layout");
+
+            let close_label = node_id(&document, "overlays.popup_panel.close.label");
             let text_item = document
                 .paint_list()
                 .items
@@ -2226,6 +4826,367 @@ mod showcase_app {
                 "popup close label should be visible: rect={:?} clip={:?}",
                 text_item.rect,
                 text_item.clip_rect
+            );
+        }
+
+        #[test]
+        fn showcase_overlay_popup_panel_preview_is_anchored_inside_demo_host() {
+            let state = state_with_window("overlays");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("overlay layout");
+
+            let host = node_id(&document, "overlays.popup.host");
+            let popup = node_id(&document, "overlays.popup_panel");
+            assert_eq!(document.node(popup).parent(), Some(host));
+
+            let host_rect = document.node(host).layout().rect;
+            let popup_rect = document.node(popup).layout().rect;
+            assert!(
+                popup_rect.x >= host_rect.x
+                    && popup_rect.y >= host_rect.y
+                    && popup_rect.right() <= host_rect.right()
+                    && popup_rect.bottom() <= host_rect.bottom(),
+                "popup preview should fit inside its anchor host: popup={popup_rect:?} host={host_rect:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_overlay_popup_panel_empty_preview_keeps_text_inside_host_padding() {
+            let mut state = state_with_window("overlays");
+            state.overlay_popup_open = false;
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("overlay layout");
+
+            let host = node_id(&document, "overlays.popup.host");
+            let host_rect = document.node(host).layout().rect;
+            let placeholder = node_id(&document, "overlays.popup.empty");
+            let text_item = document
+                .paint_list()
+                .items
+                .into_iter()
+                .find(|item| item.node == placeholder && matches!(item.kind, PaintKind::Text(_)))
+                .expect("placeholder text paint");
+
+            assert!(
+                text_item.rect.x >= host_rect.x + 9.0
+                    && text_item.rect.y >= host_rect.y + 9.0
+                    && text_item.rect.right() <= host_rect.right() - 9.0
+                    && text_item.rect.bottom() <= host_rect.bottom() - 9.0,
+                "placeholder text should remain inside host padding: text={:?} host={host_rect:?}",
+                text_item.rect
+            );
+        }
+
+        #[test]
+        fn showcase_overlay_tooltip_appears_on_hover_and_anchors_to_target() {
+            let state = state_with_window("overlays");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut hidden = state.view(viewport);
+            hidden
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("overlay layout");
+            assert!(maybe_node_id(&hidden, "overlays.tooltip_target.tooltip").is_none());
+
+            let target = node_id(&hidden, "overlays.tooltip_target");
+            let target_rect = hidden.node(target).layout().rect;
+            hidden.set_focus_state(UiFocusState {
+                hovered: Some(target),
+                pressed: None,
+                focused: None,
+            });
+            let frame = process_document_frame(
+                &mut hidden,
+                &mut ApproxTextMeasurer,
+                HostDocumentFrameRequest::new(
+                    viewport,
+                    RenderTarget::window("showcase", viewport),
+                    HostFrameOutput::new(Default::default()),
+                ),
+            )
+            .expect("overlay hover frame");
+            let tooltip = node_id(&hidden, "overlays.tooltip_target.tooltip");
+            assert!(matches!(
+                hidden.node(tooltip).accessibility().map(|meta| meta.role),
+                Some(AccessibilityRole::Tooltip)
+            ));
+            let tooltip_rect = hidden.node(tooltip).layout().rect;
+            assert!(
+                tooltip_rect.y >= target_rect.bottom() + 7.0,
+                "tooltip should be placed below the hovered target: target={target_rect:?} tooltip={tooltip_rect:?}"
+            );
+            assert!(
+                tooltip_rect.x >= target_rect.x - 1.0
+                    && tooltip_rect.x <= target_rect.right() + 1.0,
+                "tooltip should stay horizontally anchored to the target: target={target_rect:?} tooltip={tooltip_rect:?}"
+            );
+            assert!(
+                frame
+                    .render_request
+                    .paint
+                    .items
+                    .iter()
+                    .any(|item| item.node == tooltip),
+                "hover tooltip should be present in the rendered frame"
+            );
+        }
+
+        #[test]
+        fn showcase_overlay_placement_preview_keeps_target_visible() {
+            let state = state_with_window("overlays");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("overlay layout");
+
+            let scene = document.node(node_id(&document, "overlays.tooltip_rect.scene"));
+            let UiContent::Scene(primitives) = scene.content() else {
+                panic!("placement preview should be a scene");
+            };
+            let rects = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    ScenePrimitive::Rect(rect) => Some(rect.rect),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let tooltip = rects
+                .iter()
+                .copied()
+                .find(|rect| (rect.width - 176.0).abs() < 0.01 && rect.height > 50.0)
+                .expect("tooltip preview rect");
+            let target = rects
+                .iter()
+                .copied()
+                .find(|rect| (rect.width - 64.0).abs() < 0.01 && rect.height > 20.0)
+                .expect("target preview rect");
+            assert!(
+                tooltip.right() <= target.x,
+                "tooltip should fall back beside the target instead of covering it: tooltip={tooltip:?} target={target:?}"
+            );
+            assert!(
+                tooltip.y >= 30.0 && target.y >= 30.0,
+                "preview content should not be pinned to the top edge: tooltip={tooltip:?} target={target:?}"
+            );
+
+            let labels = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    ScenePrimitive::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert!(labels.contains(&"Tooltip"), "{labels:?}");
+            assert!(labels.contains(&"Target"), "{labels:?}");
+        }
+
+        #[test]
+        fn showcase_timeline_has_tracks_and_continues_when_wide() {
+            let mut state = state_with_window("timeline");
+            state
+                .desktop
+                .sizes
+                .insert("timeline".to_string(), UiSize::new(1900.0, 280.0));
+            state.desktop.user_sized.insert("timeline".to_string());
+
+            let viewport = UiSize::new(2200.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("timeline layout");
+
+            let viewport_rect = document
+                .node(node_id(&document, "timeline.viewport"))
+                .layout()
+                .rect;
+            let ruler_rect = document
+                .node(node_id(&document, "timeline.ruler"))
+                .layout()
+                .rect;
+            assert!(
+                ruler_rect.width > viewport_rect.width + 300.0,
+                "timeline content should continue beyond a wide viewport: ruler={ruler_rect:?} viewport={viewport_rect:?}"
+            );
+
+            let tracks = document.node(node_id(&document, "timeline.tracks"));
+            let UiContent::Scene(primitives) = tracks.content() else {
+                panic!("timeline tracks should be a scene");
+            };
+            let track_labels = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    ScenePrimitive::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            for label in [
+                "Video",
+                "Audio",
+                "Notes",
+                "Intro",
+                "Music bed",
+                "Playhead 18.5s",
+            ] {
+                assert!(
+                    track_labels.contains(&label),
+                    "timeline should explain what the ruler corresponds to; missing {label:?} in {track_labels:?}"
+                );
+            }
+
+            let furthest_tick = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    ScenePrimitive::Line { from, to, .. } => Some(from.x.max(to.x)),
+                    _ => None,
+                })
+                .fold(0.0_f32, f32::max);
+            assert!(
+                furthest_tick > viewport_rect.width,
+                "timeline grid should extend past the visible viewport when stretched: furthest_tick={furthest_tick} viewport={viewport_rect:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_timeline_horizontal_scrollbar_thumb_drag_updates_scroll() {
+            let viewport = UiSize::new(1100.0, 760.0);
+            let mut state = state_with_window("timeline");
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("timeline layout");
+
+            let scrollbar = node_id(&document, "timeline.horizontal-scrollbar");
+            let thumb = node_id(&document, "timeline.horizontal-scrollbar.thumb");
+            assert_eq!(
+                document
+                    .node(scrollbar)
+                    .action()
+                    .and_then(|action| action.action_id())
+                    .map(|id| id.as_str()),
+                Some("timeline.horizontal-scrollbar")
+            );
+
+            let track_rect = document.node(scrollbar).layout().rect;
+            let thumb_rect = document.node(thumb).layout().rect;
+            let start = UiPoint::new(thumb_rect.x + 2.0, thumb_rect.y + thumb_rect.height * 0.5);
+            let end = UiPoint::new(track_rect.right() - 2.0, start.y);
+
+            assert_eq!(
+                document
+                    .handle_input(UiInputEvent::PointerDown(start))
+                    .pressed,
+                Some(scrollbar)
+            );
+            state.update(WidgetAction::pointer_edit(
+                scrollbar,
+                "timeline.horizontal-scrollbar",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Begin,
+                    start,
+                    UiPoint::new(start.x - track_rect.x, start.y - track_rect.y),
+                    track_rect,
+                ),
+            ));
+            state.update(WidgetAction::pointer_edit(
+                scrollbar,
+                "timeline.horizontal-scrollbar",
+                WidgetPointerEdit::new(
+                    WidgetValueEditPhase::Commit,
+                    end,
+                    UiPoint::new(end.x - track_rect.x, end.y - track_rect.y),
+                    track_rect,
+                ),
+            ));
+
+            assert!(
+                state.timeline_scroll.offset().x > state.timeline_scroll.max_offset().x * 0.75,
+                "dragging the timeline thumb should move near the end: {:?}",
+                state.timeline_scroll
+            );
+
+            let mut scrolled = state.view(viewport);
+            scrolled
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("scrolled timeline layout");
+            let viewport_scroll = scrolled
+                .scroll_state(node_id(&scrolled, "timeline.viewport"))
+                .expect("timeline viewport scroll state");
+            assert!(
+                viewport_scroll.offset().x > 0.0,
+                "timeline viewport should render with dragged scroll offset: {viewport_scroll:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_timeline_horizontal_scrollbar_host_drag_moves_viewport() {
+            let viewport = UiSize::new(1100.0, 760.0);
+            let mut state = state_with_window("timeline");
+            let mut frame_state = HostDocumentFrameState::new();
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("timeline layout");
+
+            let scrollbar = node_id(&document, "timeline.horizontal-scrollbar");
+            let thumb = node_id(&document, "timeline.horizontal-scrollbar.thumb");
+            let track_rect = document.node(scrollbar).layout().rect;
+            let thumb_rect = document.node(thumb).layout().rect;
+            let start = UiPoint::new(thumb_rect.x + 2.0, thumb_rect.y + thumb_rect.height * 0.5);
+            let end = UiPoint::new(track_rect.right() - 2.0, start.y);
+
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(PointerEventKind::Down(PointerButton::Primary), start, 1),
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(PointerEventKind::Move, end, 16),
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(PointerEventKind::Up(PointerButton::Primary), end, 32),
+            );
+
+            assert!(
+                state.timeline_scroll.offset().x > state.timeline_scroll.max_offset().x * 0.75,
+                "host pointer drag should move the timeline scrollbar near the end: {:?}",
+                state.timeline_scroll
+            );
+
+            let mut scrolled = state.view(viewport);
+            scrolled
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("scrolled timeline layout");
+            let viewport_scroll = scrolled
+                .scroll_state(node_id(&scrolled, "timeline.viewport"))
+                .expect("timeline viewport scroll state");
+            let content_rect = scrolled
+                .node(node_id(&scrolled, "timeline.content"))
+                .layout()
+                .rect;
+            let viewport_rect = scrolled
+                .node(node_id(&scrolled, "timeline.viewport"))
+                .layout()
+                .rect;
+            assert!(
+                viewport_scroll.offset().x > 0.0,
+                "timeline viewport should receive the scrollbar drag offset: {viewport_scroll:?}"
+            );
+            assert!(
+                content_rect.x < viewport_rect.x - 100.0,
+                "timeline content should be translated left after dragging: content={content_rect:?} viewport={viewport_rect:?}"
             );
         }
 
@@ -2368,16 +5329,76 @@ mod showcase_app {
         }
 
         #[test]
+        fn showcase_easing_demo_wires_ease_in_and_ease_out_dropdowns_to_curve_scenes() {
+            let mut state = state_with_window("easing");
+            state
+                .easing_in
+                .select_id(&easing_options(EaseDirection::In), "back");
+            state
+                .easing_out
+                .select_id(&easing_options(EaseDirection::Out), "bounce");
+            state.progress_phase = 2.0;
+
+            let viewport = UiSize::new(900.0, 900.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let dropdown_label = text_content(&document, "easing.in.dropdown.label");
+            assert_eq!(dropdown_label, "Ease in back");
+            let dropdown_label = text_content(&document, "easing.out.dropdown.label");
+            assert_eq!(dropdown_label, "Ease out bounce");
+
+            for graph_name in ["easing.in.graph", "easing.out.graph"] {
+                let graph = document.node(node_id(&document, graph_name));
+                let UiContent::Scene(primitives) = graph.content() else {
+                    panic!("{graph_name} should be a scene");
+                };
+                let line_count = primitives
+                    .iter()
+                    .filter(|primitive| matches!(primitive, ScenePrimitive::Line { .. }))
+                    .count();
+                assert!(
+                    line_count >= 40,
+                    "{graph_name} should plot the selected curve, got {line_count} lines"
+                );
+                assert!(
+                    primitives
+                        .iter()
+                        .any(|primitive| matches!(primitive, ScenePrimitive::Circle { .. })),
+                    "{graph_name} should include a live marker"
+                );
+            }
+
+            let ease_in_back = selected_easing(&state.easing_in, EaseDirection::In);
+            let ease_out_back = EasingFunction::new(EaseDirection::Out, EaseCurveKind::Back);
+            let t = 0.25;
+            assert!(
+                (ease_in_back.sample(t) - (1.0 - ease_out_back.sample(1.0 - t))).abs() < 0.0001
+            );
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "easing.in.dropdown.option.expo",
+            ));
+            assert_eq!(
+                selected_easing(&state.easing_in, EaseDirection::In).kind,
+                EaseCurveKind::Expo
+            );
+        }
+
+        #[test]
         fn showcase_interaction_animation_tracks_pointer_input() {
             let mut state = state_with_window("animation");
             state.animation_timed_expanded = false;
             state.animation_scrub_expanded = false;
             state.animation_state_expanded = false;
             state.animation_interaction_expanded = true;
-            let viewport = UiSize::new(900.0, 1120.0);
+            let viewport = UiSize::new(900.0, 1400.0);
             let mut document = state.view(viewport);
             document
-                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .compute_layout(viewport, &mut CosmicTextMeasurer::new())
                 .expect("showcase layout");
 
             let target = node_id(&document, "animation.interaction.target");
@@ -2436,7 +5457,7 @@ mod showcase_app {
                 .insert("animation".to_string(), UiSize::new(160.0, 96.0));
             state.desktop.user_sized.insert("animation".to_string());
 
-            let viewport = UiSize::new(900.0, 1120.0);
+            let viewport = UiSize::new(900.0, 1400.0);
             let mut document = state.view(viewport);
             document
                 .compute_layout(viewport, &mut ApproxTextMeasurer)
@@ -2450,10 +5471,18 @@ mod showcase_app {
                 .node(node_id(&document, "animation.section_scroll"))
                 .layout()
                 .rect;
-            assert!(window.height >= ANIMATION_STAGE_HEIGHT * 4.0, "{window:?}");
+            let section_scroll = document
+                .scroll_state(node_id(&document, "animation.section_scroll"))
+                .expect("animation section scroll state");
+            assert!(window.height >= ANIMATION_CONTENT_MIN_HEIGHT, "{window:?}");
             assert!(
-                section.height >= ANIMATION_STAGE_HEIGHT * 4.0,
+                section.height >= ANIMATION_CONTENT_MIN_HEIGHT,
                 "section={section:?}"
+            );
+            assert_eq!(
+                section_scroll.max_offset(),
+                UiPoint::new(0.0, 0.0),
+                "minimum animation window should fit expanded sections without an internal scrollbar: {section_scroll:?}"
             );
         }
 
@@ -2484,6 +5513,46 @@ mod showcase_app {
             assert!(maybe_node_id(&document, "animation.scrub.header").is_some());
             assert!(maybe_node_id(&document, "animation.scrub.body").is_none());
             assert!(maybe_node_id(&document, "animation.scrub.stage").is_none());
+        }
+
+        #[test]
+        fn showcase_animation_collapsing_sections_are_single_framed_cards() {
+            let state = state_with_window("animation");
+            let viewport = UiSize::new(900.0, 1120.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            for (section, first_child) in [
+                ("animation.timed", "animation.live.stage"),
+                ("animation.scrub", "animation.scrub.row"),
+                ("animation.state", "animation.state.row"),
+                ("animation.interaction", "animation.interaction.stage"),
+            ] {
+                let root = document.node(node_id(&document, section));
+                assert!(
+                    root.visual().stroke.is_some(),
+                    "{section} should render one outer section frame"
+                );
+                let header = document
+                    .node(node_id(&document, &format!("{section}.header")))
+                    .layout()
+                    .rect;
+                let body = document
+                    .node(node_id(&document, &format!("{section}.body")))
+                    .layout()
+                    .rect;
+                let child = document.node(node_id(&document, first_child)).layout().rect;
+                assert!(
+                    (body.y - header.bottom()).abs() <= 0.5,
+                    "{section} body should attach directly below header: header={header:?} body={body:?}"
+                );
+                assert!(
+                    child.x >= body.x + 9.0 && child.y >= body.y + 9.0,
+                    "{section} content should be padded inside the section body: child={child:?} body={body:?}"
+                );
+            }
         }
 
         #[test]
@@ -2531,6 +5600,11 @@ mod showcase_app {
                 "slider.trailing_color_button",
             ));
             assert!(state.slider_trailing_picker_open);
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "slider.thumb_color_button",
+            ));
+            assert!(state.slider_thumb_picker_open);
 
             let viewport = UiSize::new(900.0, 760.0);
             let mut document = state.view(viewport);
@@ -2541,10 +5615,184 @@ mod showcase_app {
                 .nodes()
                 .iter()
                 .any(|node| node.name() == "slider.trailing_picker"));
-            assert!(!document
+            assert!(document
                 .nodes()
                 .iter()
                 .any(|node| node.name() == "slider.trailing_color_button.label"));
+            assert!(document
+                .nodes()
+                .iter()
+                .any(|node| node.name() == "slider.thumb_picker"));
+        }
+
+        #[test]
+        fn showcase_slider_always_clamping_reformats_out_of_range_text() {
+            let mut state = state_with_window("slider");
+            state.slider_clamping = widgets::SliderClamping::Always;
+            state.slider_value_text.set_text("55555");
+            state.apply_slider_value_from_text(55555.0);
+
+            assert_eq!(state.slider, 10000.0);
+            assert_eq!(state.slider_value_text.text(), "10000");
+        }
+
+        #[test]
+        fn showcase_checkbox_demonstrates_state_and_option_variants() {
+            let state = state_with_window("checkbox");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("checkbox layout");
+
+            for name in [
+                "checkbox.enabled",
+                "checkbox.unchecked_sample",
+                "checkbox.checked_sample",
+                "checkbox.indeterminate_sample",
+                "checkbox.disabled",
+                "checkbox.large",
+                "checkbox.custom_color",
+                "checkbox.image_check",
+                "checkbox.compact_gap",
+                "checkbox.indeterminate",
+            ] {
+                assert!(maybe_node_id(&document, name).is_some(), "{name}");
+            }
+
+            let large_box = document
+                .node(node_id(&document, "checkbox.large.box"))
+                .layout()
+                .rect;
+            assert_eq!(large_box.width, 22.0);
+            assert_eq!(large_box.height, 22.0);
+
+            let image_check = node_id(&document, "checkbox.image_check.check");
+            assert!(matches!(
+                document.node(image_check).content(),
+                UiContent::Image(image) if image.key == "showcase.operad-logo.png"
+            ));
+            let image_check_box = document
+                .node(node_id(&document, "checkbox.image_check.box"))
+                .layout()
+                .rect;
+            assert_eq!(image_check_box.width, 72.0);
+            assert_eq!(image_check_box.height, 72.0);
+            let image_check_rect = document.node(image_check).layout().rect;
+            assert_eq!(image_check_rect.width, 64.0);
+            assert_eq!(image_check_rect.height, 64.0);
+            assert_eq!(image_check_rect.x, image_check_box.x + 4.0);
+            assert_eq!(image_check_rect.y, image_check_box.y + 4.0);
+
+            let indeterminate = document.node(node_id(&document, "checkbox.indeterminate"));
+            assert_eq!(
+                indeterminate.accessibility().and_then(|meta| meta.checked),
+                Some(AccessibilityChecked::Mixed)
+            );
+            assert!(maybe_node_id(&document, "checkbox.indeterminate.indeterminate").is_some());
+
+            let disabled = document.node(node_id(&document, "checkbox.disabled"));
+            assert_eq!(
+                disabled.accessibility().map(|meta| meta.enabled),
+                Some(false)
+            );
+            assert_no_severe_showcase_warnings("checkbox", "options", &document);
+        }
+
+        #[test]
+        fn showcase_radio_and_toggle_demonstrates_option_variants() {
+            let state = state_with_window("toggles");
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("toggles layout");
+
+            for (name, expected) in [
+                ("toggles.radio_group.foo.label", "Foo"),
+                ("toggles.radio_group.bar.label", "Bar"),
+                ("toggles.radio_group.baz.label", "Baz"),
+            ] {
+                let UiContent::Text(text) = document.node(node_id(&document, name)).content()
+                else {
+                    panic!("{name} should be a text label");
+                };
+                assert_eq!(text.text, expected);
+            }
+
+            for name in [
+                "toggles.radio_custom",
+                "toggles.radio_custom.dot",
+                "toggles.radio_no_label",
+                "toggles.switch_custom",
+                "toggles.switch_custom.track",
+                "toggles.switch_custom.thumb",
+                "toggles.switch_no_label",
+                "toggles.switch_disabled",
+            ] {
+                assert!(maybe_node_id(&document, name).is_some(), "{name}");
+            }
+            assert!(maybe_node_id(&document, "toggles.radio_no_label.label").is_none());
+            assert!(maybe_node_id(&document, "toggles.switch_no_label.label").is_none());
+
+            let selected_outer = document
+                .node(node_id(&document, "toggles.radio_group.foo.outer"))
+                .layout()
+                .rect;
+            let selected_dot = document
+                .node(node_id(&document, "toggles.radio_group.foo.dot"))
+                .layout()
+                .rect;
+            assert_rect_centers_match(selected_outer, selected_dot);
+            assert_circle_paint_centered_on_rect(
+                &document,
+                selected_outer,
+                node_id(&document, "toggles.radio_group.foo.dot"),
+            );
+
+            let custom_outer = document
+                .node(node_id(&document, "toggles.radio_custom.outer"))
+                .layout()
+                .rect;
+            let custom_dot = document
+                .node(node_id(&document, "toggles.radio_custom.dot"))
+                .layout()
+                .rect;
+            assert_rect_centers_match(custom_outer, custom_dot);
+            assert_circle_paint_centered_on_rect(
+                &document,
+                custom_outer,
+                node_id(&document, "toggles.radio_custom.dot"),
+            );
+
+            let radio_outer = document
+                .node(node_id(&document, "toggles.radio_no_label.outer"))
+                .layout()
+                .rect;
+            assert_eq!(radio_outer.width, 24.0);
+            assert_eq!(radio_outer.height, 24.0);
+
+            let switch_track = document
+                .node(node_id(&document, "toggles.switch_custom.track"))
+                .layout()
+                .rect;
+            assert_eq!(switch_track.width, 74.0);
+            assert_eq!(switch_track.height, 24.0);
+            let switch_thumb = document
+                .node(node_id(&document, "toggles.switch_custom.thumb"))
+                .layout()
+                .rect;
+            assert_eq!(switch_thumb.width, 28.0);
+            assert_eq!(switch_thumb.height, 18.0);
+
+            assert_eq!(
+                document
+                    .node(node_id(&document, "toggles.switch_disabled"))
+                    .accessibility()
+                    .map(|meta| meta.enabled),
+                Some(false)
+            );
+            assert_no_severe_showcase_warnings("toggles", "options", &document);
         }
 
         #[test]
@@ -2554,6 +5802,85 @@ mod showcase_app {
             state.progress_phase = std::f32::consts::TAU - 0.001;
             state.update(WidgetAction::activate(UiNodeId::root(), "runtime.tick"));
             assert!(state.progress_phase > std::f32::consts::TAU);
+        }
+
+        #[test]
+        fn showcase_progress_includes_logged_loading_panel() {
+            let mut state = state_with_window("progress");
+            state.progress_phase = 10.0;
+            state.progress_loading_elapsed = PROGRESS_LOGGED_DURATION_SECONDS;
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("progress layout");
+
+            let progress = node_id(&document, "progress.logged.progress");
+            let reset = node_id(&document, "progress.logged.reset");
+            let logs = node_id(&document, "progress.logged.logs");
+            assert!(
+                document.node(progress).layout().rect.y < document.node(logs).layout().rect.y,
+                "logged progress bar should be above logs"
+            );
+            assert!(
+                document.node(reset).layout().rect.x > document.node(progress).layout().rect.x,
+                "reset button should sit beside the logged progress bar"
+            );
+            assert!(document.node(logs).has_auto_scrollbar());
+            let scroll = document.scroll_state(logs).expect("log scroll state");
+            assert!(
+                (scroll.offset().y - scroll.max_offset().y).abs() < 0.01,
+                "log panel should follow the newest entry while it is at the tail"
+            );
+            assert_eq!(
+                document.node(logs).accessibility().map(|meta| meta.role),
+                Some(AccessibilityRole::List)
+            );
+            assert!(maybe_node_id(&document, "progress.logged.logs.row.0").is_some());
+            assert!(maybe_node_id(&document, "progress.logged.logs.row.5").is_some());
+            assert_no_severe_showcase_warnings("progress", "logged loading panel", &document);
+        }
+
+        #[test]
+        fn showcase_progress_log_scroll_preserves_manual_position() {
+            let mut state = state_with_window("progress");
+            state.progress_loading_elapsed = PROGRESS_LOGGED_DURATION_SECONDS;
+            state.progress_logs_follow_tail = false;
+            state.progress_logs_scroll = progress_log_scroll_state(13.0, 6, false);
+            let viewport = UiSize::new(900.0, 760.0);
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("progress layout");
+
+            let logs = node_id(&document, "progress.logged.logs");
+            let scroll = document.scroll_state(logs).expect("log scroll state");
+            assert!(
+                (scroll.offset().y - 13.0).abs() < 0.01,
+                "log panel should preserve a manual upward scroll offset"
+            );
+            assert!(
+                scroll.max_offset().y > scroll.offset().y,
+                "full log panel should still have newer entries below the preserved position"
+            );
+        }
+
+        #[test]
+        fn showcase_progress_reset_restarts_logged_loading_timeline() {
+            let mut state = state_with_window("progress");
+            state.progress_loading_elapsed = PROGRESS_LOGGED_DURATION_SECONDS;
+            state.progress_logs_follow_tail = false;
+
+            state.update(WidgetAction::activate(
+                UiNodeId::root(),
+                "progress.logged.reset",
+            ));
+            assert_eq!(state.progress_loading_elapsed, 0.0);
+            assert!(state.progress_logs_follow_tail);
+
+            state.update(WidgetAction::activate(UiNodeId::root(), "runtime.tick"));
+            assert!(state.progress_loading_elapsed > 0.0);
+            assert!(state.progress_loading_elapsed < 0.1);
         }
     }
 }

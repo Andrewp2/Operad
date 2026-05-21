@@ -1018,12 +1018,9 @@ mod tests {
         viewport_size: UiSize,
         content_size: UiSize,
     ) -> ScrollState {
-        ScrollState {
-            axes,
-            offset,
-            viewport_size,
-            content_size,
-        }
+        ScrollState::new(axes)
+            .with_sizes(viewport_size, content_size)
+            .with_offset(offset)
     }
 
     #[test]

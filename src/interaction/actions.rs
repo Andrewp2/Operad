@@ -331,6 +331,7 @@ impl WidgetTextEdit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WidgetActionMode {
     Activate,
+    Drag,
     PointerEdit,
     PointerEditParentRect,
 }
@@ -585,6 +586,7 @@ impl WidgetAction {
                     WidgetActionMode::Activate => {
                         Some(Self::pointer_activate(target, binding, click.count))
                     }
+                    WidgetActionMode::Drag => None,
                     WidgetActionMode::PointerEdit => Some(pointer_edit_action(
                         document,
                         target,
@@ -607,26 +609,21 @@ impl WidgetAction {
                 let (target, binding, mode) =
                     resolve_action_target(document, gesture.target, binding_for)?;
                 match mode {
-                    WidgetActionMode::Activate => {
+                    WidgetActionMode::Activate => None,
+                    WidgetActionMode::Drag => {
                         let mut gesture = *gesture;
                         gesture.target = target;
                         Self::drag_from_gesture(&gesture, binding)
                     }
-                    WidgetActionMode::PointerEdit => Some(pointer_edit_action(
-                        document,
-                        target,
-                        target,
-                        binding,
-                        WidgetValueEditPhase::from(gesture.phase),
-                        gesture.current,
+                    WidgetActionMode::PointerEdit => Some(pointer_edit_drag_action(
+                        document, target, target, binding, gesture,
                     )),
-                    WidgetActionMode::PointerEditParentRect => Some(pointer_edit_action(
+                    WidgetActionMode::PointerEditParentRect => Some(pointer_edit_drag_action(
                         document,
                         target,
                         action_rect_parent(document, target),
                         binding,
-                        WidgetValueEditPhase::from(gesture.phase),
-                        gesture.current,
+                        gesture,
                     )),
                 }
             }
@@ -674,6 +671,24 @@ fn pointer_edit_action(
         binding,
         WidgetPointerEdit::new(phase, position, local_position, target_rect),
     )
+}
+
+fn pointer_edit_drag_action(
+    document: &UiDocument,
+    target: UiNodeId,
+    rect_source: UiNodeId,
+    binding: WidgetActionBinding,
+    gesture: &DragGesture,
+) -> WidgetAction {
+    let phase = WidgetValueEditPhase::from(gesture.phase);
+    let position = match gesture.phase {
+        GesturePhase::Begin => gesture.origin,
+        GesturePhase::Preview
+        | GesturePhase::Update
+        | GesturePhase::Commit
+        | GesturePhase::Cancel => gesture.current,
+    };
+    pointer_edit_action(document, target, rect_source, binding, phase, position)
 }
 
 fn action_rect_parent(document: &UiDocument, target: UiNodeId) -> UiNodeId {
@@ -993,6 +1008,75 @@ mod tests {
     }
 
     #[test]
+    fn activate_mode_ignores_drag_gestures_for_document_actions() {
+        let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
+        let target = document.add_child(
+            document.root,
+            UiNode::container("close", LayoutStyle::size(40.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_action("window.close"),
+        );
+        let drag = GestureEvent::Drag(DragGesture {
+            pointer_id: PointerId::MOUSE,
+            target,
+            phase: GesturePhase::Update,
+            origin: UiPoint::new(8.0, 8.0),
+            current: UiPoint::new(40.0, 12.0),
+            previous: UiPoint::new(20.0, 10.0),
+            delta: UiPoint::new(20.0, 2.0),
+            total_delta: UiPoint::new(32.0, 4.0),
+            button: PointerButton::Primary,
+            modifiers: KeyModifiers::NONE,
+            captured: true,
+            timestamp_millis: 16,
+        });
+
+        let action = WidgetAction::from_gesture_event_for_document(&document, &drag, |id| {
+            document.nodes()[id.0].action.clone()
+        });
+
+        assert!(
+            action.is_none(),
+            "ordinary activate buttons must not fire when a drag starts on them"
+        );
+    }
+
+    #[test]
+    fn drag_mode_emits_drag_gestures_for_document_actions() {
+        let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
+        let target = document.add_child(
+            document.root,
+            UiNode::container("drag_source", LayoutStyle::size(80.0, 24.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_action("asset.drag")
+                .with_action_mode(WidgetActionMode::Drag),
+        );
+        let drag = GestureEvent::Drag(DragGesture {
+            pointer_id: PointerId::MOUSE,
+            target,
+            phase: GesturePhase::Update,
+            origin: UiPoint::new(8.0, 8.0),
+            current: UiPoint::new(40.0, 12.0),
+            previous: UiPoint::new(20.0, 10.0),
+            delta: UiPoint::new(20.0, 2.0),
+            total_delta: UiPoint::new(32.0, 4.0),
+            button: PointerButton::Primary,
+            modifiers: KeyModifiers::NONE,
+            captured: true,
+            timestamp_millis: 16,
+        });
+
+        let action = WidgetAction::from_gesture_event_for_document(&document, &drag, |id| {
+            document.nodes()[id.0].action.clone()
+        })
+        .expect("drag action");
+
+        assert_eq!(action.target, target);
+        assert_eq!(action.binding, WidgetActionBinding::action("asset.drag"));
+        assert!(matches!(action.kind, WidgetActionKind::Drag(_)));
+    }
+
+    #[test]
     fn pointer_edit_action_carries_local_position_and_target_rect() {
         let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
         let target = document.add_child(
@@ -1028,6 +1112,47 @@ mod tests {
         assert_eq!(edit.local_position, UiPoint::new(25.0, 8.0));
         assert_eq!(edit.target_rect.width, 100.0);
         assert_eq!(edit.target_rect.height, 20.0);
+    }
+
+    #[test]
+    fn pointer_edit_drag_begin_uses_pointer_origin() {
+        let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
+        let target = document.add_child(
+            document.root,
+            UiNode::container("scrollbar", LayoutStyle::size(120.0, 8.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_pointer_edit_action("scrollbar.drag"),
+        );
+        document
+            .compute_layout(UiSize::new(200.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let drag = GestureEvent::Drag(DragGesture {
+            pointer_id: PointerId::MOUSE,
+            target,
+            phase: GesturePhase::Begin,
+            origin: UiPoint::new(4.0, 4.0),
+            current: UiPoint::new(90.0, 4.0),
+            previous: UiPoint::new(4.0, 4.0),
+            delta: UiPoint::new(86.0, 0.0),
+            total_delta: UiPoint::new(86.0, 0.0),
+            button: PointerButton::Primary,
+            modifiers: KeyModifiers::NONE,
+            captured: true,
+            timestamp_millis: 16,
+        });
+
+        let action = WidgetAction::from_gesture_event_for_document(&document, &drag, |id| {
+            document.nodes()[id.0].action.clone()
+        })
+        .expect("pointer edit action");
+
+        let WidgetActionKind::PointerEdit(edit) = action.kind else {
+            panic!("expected pointer edit");
+        };
+        assert_eq!(edit.phase, WidgetValueEditPhase::Begin);
+        assert_eq!(edit.position, UiPoint::new(4.0, 4.0));
+        assert_eq!(edit.local_position, UiPoint::new(4.0, 4.0));
+        assert_eq!(edit.target_rect.width, 120.0);
     }
 
     #[test]

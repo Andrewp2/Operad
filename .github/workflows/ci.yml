@@ -134,8 +134,8 @@ jobs:
             sleep 1
           done
           test "${ready}" -eq 1
-          node scripts/check-web-showcase.mjs http://127.0.0.1:8787/
-          node scripts/check-web-showcase.mjs http://127.0.0.1:8787/showcase/
+          OPERAD_WEB_SHOWCASE_UAT=1 node scripts/check-web-showcase.mjs http://127.0.0.1:8787/
+          OPERAD_WEB_SHOWCASE_UAT=1 node scripts/check-web-showcase.mjs http://127.0.0.1:8787/showcase/
 
       - name: Configure Pages
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'

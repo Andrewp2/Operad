@@ -27,7 +27,7 @@ impl Default for ComboBoxOptions {
                     width: length(180.0),
                     height: length(30.0),
                 },
-                padding: taffy::prelude::Rect::length(6.0),
+                padding: taffy::prelude::Rect::length(6.0_f32),
                 ..Default::default()
             }),
             visual: UiVisual::panel(

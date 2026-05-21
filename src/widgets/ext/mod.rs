@@ -62,9 +62,11 @@ pub use data_table::{
     VirtualDataTableSpec,
 };
 pub use date_picker::{
-    date_picker, CalendarDate, CalendarDayCell, CalendarMonth, DatePickerBuilder,
-    DatePickerControl, DatePickerKeyboardStep, DatePickerModel, DatePickerNodes, DatePickerOptions,
-    DatePickerSelection, DatePickerStyle, Weekday,
+    date_picker, date_range_picker, CalendarDate, CalendarDateRange, CalendarDayCell,
+    CalendarMonth, DatePickerBuilder, DatePickerControl, DatePickerKeyboardStep, DatePickerModel,
+    DatePickerNodes, DatePickerOptions, DatePickerSelection, DatePickerStyle,
+    DateRangeCellPosition, DateRangePickerBuilder, DateRangePickerModel, DateRangePickerOptions,
+    DateRangePickerSelection, DateRangePickerStyle, DateRangeSelectionMode, Weekday,
 };
 pub use debug_inspector::{
     accessibility_debug_overlay, accessibility_overlay_panel, animation_inspector_controls_panel,
@@ -134,8 +136,9 @@ pub use popover::{
     PopoverDescriptor, PopoverDismissReason, PopoverPlacement, PopoverState,
 };
 pub use progress_indicator::{
-    progress_indicator, ProgressIndicatorKind, ProgressIndicatorNodes, ProgressIndicatorOptions,
-    ProgressIndicatorValue,
+    progress_indicator, progress_log_panel, ProgressIndicatorKind, ProgressIndicatorNodes,
+    ProgressIndicatorOptions, ProgressIndicatorValue, ProgressLogEntry, ProgressLogLevel,
+    ProgressLogPanelNodes, ProgressLogPanelOptions,
 };
 pub use property_inspector::{property_inspector_grid, PropertyGridRow, PropertyInspectorOptions};
 pub use split_pane::{

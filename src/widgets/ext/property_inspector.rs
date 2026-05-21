@@ -4,6 +4,9 @@ use taffy::prelude::{
     AlignItems, Dimension, Display, FlexDirection, LengthPercentageAuto, Size as TaffySize, Style,
 };
 
+use crate::widgets::{
+    inline_intrinsic_base_size, publish_inline_intrinsic_size, single_line_text_style,
+};
 use crate::{
     AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba,
     ImageContent, InputBehavior, LayoutStyle, ShaderEffect, StrokeStyle, TextStyle, TextWrap,
@@ -11,6 +14,8 @@ use crate::{
 };
 
 use super::data::{PropertyRowStatus, PropertyValueKind};
+
+const PROPERTY_CELL_PADDING: f32 = 6.0;
 
 /// One row in a renderer-neutral property inspector grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,7 +152,10 @@ impl Default for PropertyInspectorOptions {
             focused_row_shader: None,
             status_row_shader: None,
             label_style: muted_text_style(),
-            value_style: TextStyle::default(),
+            value_style: TextStyle {
+                wrap: TextWrap::None,
+                ..Default::default()
+            },
             read_only_value_style: read_only_value_text_style(),
             leading_image_size: 16.0,
             accessibility_label: None,
@@ -197,22 +205,22 @@ pub fn property_inspector_grid(
         let focused = options.focused_index == Some(index);
         let visual = property_row_visual(row, selected, &options);
         let shader = property_row_shader(row, selected, focused, &options);
+        let row_layout = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: Some(AlignItems::Center),
+            size: TaffySize {
+                width: Dimension::percent(1.0),
+                height: px(options.row_height),
+            },
+            ..Default::default()
+        };
         let row_node = with_optional_action(
             with_optional_shader(
                 UiNode::container(
                     format!("{name}.row.{}", row.id),
                     UiNodeStyle {
-                        layout: LayoutStyle::from_taffy_style(Style {
-                            display: Display::Flex,
-                            flex_direction: FlexDirection::Row,
-                            align_items: Some(AlignItems::Center),
-                            size: TaffySize {
-                                width: Dimension::percent(1.0),
-                                height: px(options.row_height),
-                            },
-                            ..Default::default()
-                        })
-                        .style,
+                        layout: LayoutStyle::from_taffy_style(row_layout.clone()).style,
                         clip: ClipBehavior::Clip,
                         ..Default::default()
                     },
@@ -235,8 +243,10 @@ pub fn property_inspector_grid(
             row_action(&options.action_prefix, row),
         );
         let row_node = document.add_child(root, row_node);
+        let mut fixed_intrinsic_items = Vec::<Style>::new();
 
         if let Some(image) = row.leading_image.clone() {
+            fixed_intrinsic_items.push(leading_image_style(options.leading_image_size));
             document.add_child(
                 row_node,
                 leading_image_node(
@@ -248,18 +258,23 @@ pub fn property_inspector_grid(
             );
         }
 
-        document.add_child(
+        let label_node = document.add_child(
             row_node,
             UiNode::text(
                 format!("{name}.row.{}.label", row.id),
                 &row.label,
-                options.label_style.clone(),
+                single_line_text_style(options.label_style.clone()),
                 LayoutStyle::from_taffy_style(Style {
+                    flex_shrink: 0.0,
                     size: TaffySize {
-                        width: px(options.label_width),
+                        width: Dimension::auto(),
                         height: Dimension::percent(1.0),
                     },
-                    padding: taffy::prelude::Rect::length(6.0),
+                    min_size: TaffySize {
+                        width: px(options.label_width),
+                        height: Dimension::auto(),
+                    },
+                    padding: taffy::prelude::Rect::length(PROPERTY_CELL_PADDING),
                     ..Default::default()
                 }),
             )
@@ -269,11 +284,11 @@ pub fn property_inspector_grid(
         );
 
         let value_style = if row.editable {
-            options.value_style.clone()
+            single_line_text_style(options.value_style.clone())
         } else {
-            options.read_only_value_style.clone()
+            single_line_text_style(options.read_only_value_style.clone())
         };
-        document.add_child(
+        let value_node = document.add_child(
             row_node,
             UiNode::text(
                 format!("{name}.row.{}.value", row.id),
@@ -281,13 +296,12 @@ pub fn property_inspector_grid(
                 value_style,
                 LayoutStyle::from_taffy_style(Style {
                     flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    flex_basis: Dimension::length(0.0),
+                    flex_shrink: 0.0,
                     size: TaffySize {
                         width: Dimension::auto(),
                         height: Dimension::percent(1.0),
                     },
-                    padding: taffy::prelude::Rect::length(6.0),
+                    padding: taffy::prelude::Rect::length(PROPERTY_CELL_PADDING),
                     ..Default::default()
                 }),
             )
@@ -302,6 +316,11 @@ pub fn property_inspector_grid(
             })
             .with_accessibility(property_value_accessibility(row, selected, focused)),
         );
+        let fixed_items = fixed_intrinsic_items.iter().collect::<Vec<_>>();
+        let mut intrinsic_base =
+            inline_intrinsic_base_size(&row_layout, &fixed_items, fixed_items.len() + 2);
+        intrinsic_base.width += PROPERTY_CELL_PADDING * 4.0;
+        publish_inline_intrinsic_size(document, row_node, [label_node, value_node], intrinsic_base);
     }
 
     root
@@ -502,23 +521,27 @@ fn leading_image_node(
     let node = UiNode::image(
         name,
         image,
-        LayoutStyle::from_taffy_style(Style {
-            size: TaffySize {
-                width: px(size),
-                height: px(size),
-            },
-            margin: taffy::prelude::Rect {
-                right: LengthPercentageAuto::length(6.0),
-                ..taffy::prelude::Rect::length(0.0)
-            },
-            flex_shrink: 0.0,
-            ..Default::default()
-        }),
+        LayoutStyle::from_taffy_style(leading_image_style(size)),
     );
     if let Some(label) = label {
         node.with_accessibility(AccessibilityMeta::new(AccessibilityRole::Image).label(label))
     } else {
         node
+    }
+}
+
+fn leading_image_style(size: f32) -> Style {
+    Style {
+        size: TaffySize {
+            width: px(size),
+            height: px(size),
+        },
+        margin: taffy::prelude::Rect {
+            right: LengthPercentageAuto::length(6.0),
+            ..taffy::prelude::Rect::length(0.0_f32)
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
     }
 }
 
@@ -574,7 +597,7 @@ fn muted_text_style() -> TextStyle {
 
 fn read_only_value_text_style() -> TextStyle {
     TextStyle {
-        wrap: TextWrap::WordOrGlyph,
+        wrap: TextWrap::None,
         ..muted_text_style()
     }
 }

@@ -43,6 +43,10 @@
       import init, { start_showcase } from "./pkg/showcase_web.js";
 
       const status = document.getElementById("operad-showcase-status");
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("operad_uat") || params.has("operad-uat")) {
+        window.__OPERAD_ENABLE_UAT__ = true;
+      }
 
       init()
         .then(() => start_showcase())

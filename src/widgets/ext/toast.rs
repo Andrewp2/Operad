@@ -377,10 +377,10 @@ fn add_toast_node(
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                padding: Rect::length(8.0),
+                padding: Rect::length(8.0_f32),
                 margin: Rect {
                     bottom: LengthPercentageAuto::length(8.0),
-                    ..Rect::length(0.0)
+                    ..Rect::length(0.0_f32)
                 },
                 ..Default::default()
             })
@@ -432,7 +432,7 @@ fn add_toast_node(
                     },
                     margin: Rect {
                         right: LengthPercentageAuto::length(6.0),
-                        ..Rect::length(0.0)
+                        ..Rect::length(0.0_f32)
                     },
                     flex_shrink: 0.0,
                     ..Default::default()
@@ -558,7 +558,7 @@ fn add_toast_node(
                         },
                         margin: Rect {
                             top: LengthPercentageAuto::length(6.0),
-                            ..Rect::length(0.0)
+                            ..Rect::length(0.0_f32)
                         },
                         ..Default::default()
                     })
@@ -583,10 +583,10 @@ fn add_toast_node(
                             width: Dimension::auto(),
                             height: length(28.0),
                         },
-                        padding: Rect::length(8.0),
+                        padding: Rect::length(8.0_f32),
                         margin: Rect {
                             right: LengthPercentageAuto::length(6.0),
-                            ..Rect::length(0.0)
+                            ..Rect::length(0.0_f32)
                         },
                         ..Default::default()
                     })

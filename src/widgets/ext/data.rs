@@ -173,6 +173,59 @@ mod tests {
     }
 
     #[test]
+    fn property_inspector_grid_publishes_text_driven_row_minimums() {
+        let mut doc = test_root();
+        let rows = vec![PropertyGridRow::new(
+            "long",
+            "Very long property label",
+            "Long property value that must remain visible",
+        )
+        .read_only()];
+        let root = doc.root;
+        property_inspector_grid(
+            &mut doc,
+            root,
+            "props",
+            &rows,
+            PropertyInspectorOptions {
+                label_width: 40.0,
+                row_height: 30.0,
+                ..Default::default()
+            },
+        );
+        doc.compute_layout(UiSize::new(640.0, 480.0), &mut ApproxTextMeasurer)
+            .expect("property inspector layout");
+
+        let row = node_named(&doc, "props.row.long");
+        let label = doc.node(node_named(&doc, "props.row.long.label"));
+        let value = doc.node(node_named(&doc, "props.row.long.value"));
+        assert!(doc.node(row).layout_constraint().is_some());
+        assert!(
+            label.layout().rect.width > 40.0,
+            "label should grow beyond the configured fallback width when text requires it: {:?}",
+            label.layout().rect
+        );
+        assert!(
+            matches!(label.content(), UiContent::Text(text) if text.style.wrap == TextWrap::None)
+        );
+        assert!(
+            matches!(value.content(), UiContent::Text(text) if text.style.wrap == TextWrap::None)
+        );
+
+        let intrinsic = doc
+            .intrinsic_size(row, &mut ApproxTextMeasurer)
+            .expect("row intrinsic size");
+        assert!(
+            intrinsic.min.width >= intrinsic.preferred.width - 0.5,
+            "property rows should publish a no-clip minimum, not just a min-content word width: {intrinsic:?}"
+        );
+        assert!(
+            intrinsic.min.width > 300.0,
+            "row minimum should include full label and value text: {intrinsic:?}"
+        );
+    }
+
+    #[test]
     fn property_inspector_grid_exports_accessibility_images_and_shader_state() {
         let mut doc = test_root();
         let rows = vec![

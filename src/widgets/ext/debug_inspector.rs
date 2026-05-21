@@ -540,7 +540,7 @@ pub fn animation_state_graph_panel(
                         width: Dimension::length(options.state_width.max(1.0)),
                         height: Dimension::length(options.state_height.max(1.0)),
                     },
-                    padding: TaffyRect::length(4.0),
+                    padding: TaffyRect::length(4.0_f32),
                     flex_shrink: 0.0,
                     ..Default::default()
                 })
@@ -1027,7 +1027,7 @@ fn animation_control_button(
                     width: Dimension::length(options.button_width.max(1.0)),
                     height: Dimension::length(options.row_height.max(1.0)),
                 },
-                padding: TaffyRect::length(4.0),
+                padding: TaffyRect::length(4.0_f32),
                 flex_shrink: 0.0,
                 ..Default::default()
             })
@@ -1082,7 +1082,7 @@ fn animation_scrub_control(
                     width: Dimension::length(options.scrub_width.max(1.0)),
                     height: Dimension::length(options.row_height.max(1.0)),
                 },
-                padding: TaffyRect::length(4.0),
+                padding: TaffyRect::length(4.0_f32),
                 flex_shrink: 0.0,
                 ..Default::default()
             })

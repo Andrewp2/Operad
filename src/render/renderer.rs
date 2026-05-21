@@ -83,9 +83,9 @@ pub struct ResourceDescriptor {
 }
 
 impl ResourceDescriptor {
-    pub fn new(handle: ResourceHandle, size: PixelSize, format: ResourceFormat) -> Self {
+    pub fn new(handle: impl Into<ResourceHandle>, size: PixelSize, format: ResourceFormat) -> Self {
         Self {
-            handle,
+            handle: handle.into(),
             size,
             format,
             version: 0,
@@ -95,6 +95,37 @@ impl ResourceDescriptor {
     pub fn version(mut self, version: u64) -> Self {
         self.version = version;
         self
+    }
+}
+
+#[cfg(feature = "image-decode")]
+#[derive(Debug)]
+pub enum ImageDecodeError {
+    Decode(image::ImageError),
+}
+
+#[cfg(feature = "image-decode")]
+impl std::fmt::Display for ImageDecodeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Decode(error) => write!(formatter, "failed to decode image bytes: {error}"),
+        }
+    }
+}
+
+#[cfg(feature = "image-decode")]
+impl std::error::Error for ImageDecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Decode(error) => Some(error),
+        }
+    }
+}
+
+#[cfg(feature = "image-decode")]
+impl From<image::ImageError> for ImageDecodeError {
+    fn from(error: image::ImageError) -> Self {
+        Self::Decode(error)
     }
 }
 
@@ -112,6 +143,52 @@ impl ResourceUpdate {
             dirty_rect: None,
             bytes,
         }
+    }
+
+    /// Creates a full RGBA8 image upload from decoded app pixels.
+    pub fn rgba8_image(handle: impl Into<ResourceHandle>, size: PixelSize, bytes: Vec<u8>) -> Self {
+        Self::full(
+            ResourceDescriptor::new(handle, size, ResourceFormat::Rgba8),
+            bytes,
+        )
+    }
+
+    /// Creates a full BGRA8 image upload from decoded app pixels.
+    pub fn bgra8_image(handle: impl Into<ResourceHandle>, size: PixelSize, bytes: Vec<u8>) -> Self {
+        Self::full(
+            ResourceDescriptor::new(handle, size, ResourceFormat::Bgra8),
+            bytes,
+        )
+    }
+
+    /// Creates a full Alpha8 image upload from decoded app pixels.
+    pub fn alpha8_image(
+        handle: impl Into<ResourceHandle>,
+        size: PixelSize,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self::full(
+            ResourceDescriptor::new(handle, size, ResourceFormat::Alpha8),
+            bytes,
+        )
+    }
+
+    /// Decodes common encoded image bytes into a full RGBA8 image upload.
+    ///
+    /// With the `image-decode` feature enabled this supports the formats
+    /// configured on Operad's `image` dependency, currently PNG, JPEG, and BMP.
+    #[cfg(feature = "image-decode")]
+    pub fn from_encoded_image(
+        handle: impl Into<ResourceHandle>,
+        bytes: impl AsRef<[u8]>,
+    ) -> Result<Self, ImageDecodeError> {
+        let decoded = image::load_from_memory(bytes.as_ref())?.to_rgba8();
+        let (width, height) = decoded.dimensions();
+        Ok(Self::rgba8_image(
+            handle,
+            PixelSize::new(width, height),
+            decoded.into_raw(),
+        ))
     }
 
     pub fn partial(descriptor: ResourceDescriptor, dirty_rect: PixelRect, bytes: Vec<u8>) -> Self {
@@ -315,6 +392,11 @@ impl RenderFrameRequest {
 
     pub fn resource_update(mut self, update: ResourceUpdate) -> Self {
         self.resource_updates.push(update);
+        self
+    }
+
+    pub fn resource_updates(mut self, updates: impl IntoIterator<Item = ResourceUpdate>) -> Self {
+        self.resource_updates.extend(updates);
         self
     }
 
@@ -1886,7 +1968,11 @@ impl PaintBatchKey {
             z_index: item.z_index,
             layer_order: item.layer_order,
             clip_rect: item.clip_rect,
-            shader: item.shader.clone(),
+            shader: item
+                .material
+                .as_ref()
+                .and_then(|material| material.shader.clone())
+                .or_else(|| item.shader.clone()),
         }
     }
 }
@@ -2075,6 +2161,7 @@ mod tests {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind,
         }
     }
@@ -2115,6 +2202,79 @@ mod tests {
         let invalid =
             ResourceUpdate::partial(descriptor, PixelRect::new(3, 3, 2, 2), vec![0; 2 * 2 * 4]);
         assert!(!invalid.dirty_rect_is_valid());
+    }
+
+    #[cfg(feature = "image-decode")]
+    #[test]
+    fn resource_updates_decode_common_user_supplied_image_formats() {
+        use image::ImageEncoder;
+
+        fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut bytes)
+                .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
+                .expect("encode png");
+            bytes
+        }
+
+        fn encode_jpeg(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new(&mut bytes)
+                .encode(rgb, width, height, image::ExtendedColorType::Rgb8)
+                .expect("encode jpeg");
+            bytes
+        }
+
+        fn encode_bmp(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            image::codecs::bmp::BmpEncoder::new(&mut bytes)
+                .encode(rgba, width, height, image::ExtendedColorType::Rgba8)
+                .expect("encode bmp");
+            bytes
+        }
+
+        let rgba = vec![
+            255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 255, 255, 255, 64,
+        ];
+        let png = ResourceUpdate::from_encoded_image(
+            ImageHandle::app("photos.sample.png"),
+            encode_png(&rgba, 2, 2),
+        )
+        .expect("decode png");
+        assert_eq!(png.descriptor.handle.id().key, "photos.sample.png");
+        assert_eq!(png.descriptor.size, PixelSize::new(2, 2));
+        assert_eq!(png.descriptor.format, ResourceFormat::Rgba8);
+        assert_eq!(png.bytes, rgba);
+        assert!(png.has_expected_byte_len());
+
+        let jpeg_rgb = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+        let jpeg = ResourceUpdate::from_encoded_image(
+            ImageHandle::app("photos.sample.jpg"),
+            encode_jpeg(&jpeg_rgb, 2, 2),
+        )
+        .expect("decode jpeg");
+        assert_eq!(jpeg.descriptor.size, PixelSize::new(2, 2));
+        assert_eq!(jpeg.descriptor.format, ResourceFormat::Rgba8);
+        assert_eq!(jpeg.bytes.len(), 2 * 2 * 4);
+        assert!(jpeg.has_expected_byte_len());
+
+        let bmp = ResourceUpdate::from_encoded_image(
+            ImageHandle::app("photos.sample.bmp"),
+            encode_bmp(&rgba, 2, 2),
+        )
+        .expect("decode bmp");
+        assert_eq!(bmp.descriptor.size, PixelSize::new(2, 2));
+        assert_eq!(bmp.descriptor.format, ResourceFormat::Rgba8);
+        assert_eq!(bmp.bytes.len(), 2 * 2 * 4);
+        assert!(bmp.has_expected_byte_len());
+
+        let raw = ResourceUpdate::rgba8_image(
+            ImageHandle::app("photos.raw"),
+            PixelSize::new(2, 2),
+            rgba.clone(),
+        );
+        assert_eq!(raw.bytes, rgba);
+        assert!(raw.has_expected_byte_len());
     }
 
     #[test]

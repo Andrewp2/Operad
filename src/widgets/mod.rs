@@ -48,7 +48,7 @@ pub use button::{
     button, icon_button, image_button, reset_button, small_button, toggle_button, ButtonOptions,
 };
 pub use canvas::{canvas, CanvasOptions};
-pub use checkbox::{checkbox, CheckboxOptions};
+pub use checkbox::{checkbox, checkbox_with_state, CheckboxOptions, CheckboxState};
 pub use collapsing::{collapsing_header, CollapsingHeaderNodes, CollapsingHeaderOptions};
 pub use combo_box::{combo_box, ComboBoxOptions};
 pub use container::{

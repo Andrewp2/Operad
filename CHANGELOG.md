@@ -1,5 +1,36 @@
 # Changelog
 
+## 9.0.0 - 2026-05-21
+
+- Added element material and shader-effect support for UI surfaces, including
+  shader-backed canvas, frame, and button previews, paint outsets, clip and hit
+  shape controls, geometry-effect declarations, and renderer-safe fallback
+  reporting for invalid WGSL.
+- Added the Shader Lab showcase for editable WGSL programs, program presets,
+  material contract controls, canvas/frame/button targets, and live validation
+  without crashing the host when shader compilation fails.
+- Hardened popup, dropdown, menu, tooltip, modal, and portal stacking so
+  anchored surfaces are layered relative to their owning window and stay above
+  later siblings without escaping unrelated floating windows.
+- Reworked scroll containers and scrollbars with automatic visibility,
+  reserved scrollbar gutters, hover/active visual states, draggable thumbs,
+  ctrl/shift horizontal scrolling, end-position tests, and range epsilon fixes.
+- Improved text editing and selection ownership, including single active text
+  selection, tighter caret and selection geometry, focus blur behavior,
+  multiline newline handling, and scrollable code/text editor regions.
+- Expanded media and image resources with user-supplied image handles, decoded
+  PNG/JPEG/BMP assets, clearer missing-image rendering, icon image variants,
+  and showcase coverage for image-backed checkbox marks and media grids.
+- Added indeterminate checkbox state, richer radio/toggle customization,
+  editable numeric inputs with unit-specific ranges, date range picking,
+  progress logs, theme switching, panel resizing, timeline scrolling, editable
+  trees, and easing demos.
+- Refined showcase layout and organization behavior so windows start closer to
+  content size, can be packed/minimized when organized, and keep regressions in
+  external tests instead of `examples/showcase.rs`.
+- Cleaned up all-target Cargo warnings and extended visual/layout tests for the
+  v9 widget surfaces.
+
 ## 8.0.1 - 2026-05-18
 
 - Fixed text input selection geometry on the web by using the same non-wrapping

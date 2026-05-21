@@ -259,7 +259,7 @@ pub fn tab_group(
                 width: px(options.min_tab_width),
                 height: Dimension::percent(1.0),
             },
-            padding: taffy::prelude::Rect::length(6.0),
+            padding: taffy::prelude::Rect::length(6.0_f32),
             flex_shrink: 0.0,
             ..Default::default()
         };
@@ -503,7 +503,7 @@ fn leading_image_layout(size: f32) -> Style {
         },
         margin: taffy::prelude::Rect {
             right: LengthPercentageAuto::length(6.0),
-            ..taffy::prelude::Rect::length(0.0)
+            ..taffy::prelude::Rect::length(0.0_f32)
         },
         flex_shrink: 0.0,
         ..Default::default()

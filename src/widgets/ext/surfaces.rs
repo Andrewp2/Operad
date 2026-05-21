@@ -186,6 +186,47 @@ mod tests {
     }
 
     #[test]
+    fn progress_log_panel_builds_scrollable_logs_under_progress() {
+        let mut doc = UiDocument::new(root_style(320.0, 180.0));
+        let root = doc.root;
+        let logs = vec![
+            ProgressLogEntry::info("Loading assets"),
+            ProgressLogEntry::success("Compiled shaders"),
+            ProgressLogEntry::warning("Retrying optional profile"),
+        ];
+
+        let nodes = progress_log_panel(
+            &mut doc,
+            root,
+            "load",
+            ProgressIndicatorValue::percent(62.0),
+            &logs,
+            ProgressLogPanelOptions::default().with_accessibility_label("Load progress"),
+        );
+        doc.compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let root_accessibility = doc.node(nodes.root).accessibility.as_ref().unwrap();
+        assert_eq!(root_accessibility.role, AccessibilityRole::Group);
+        assert_eq!(root_accessibility.label.as_deref(), Some("Load progress"));
+        assert!(doc.node(nodes.progress.root).layout.rect.y < doc.node(nodes.logs).layout.rect.y);
+        assert!(doc.node(nodes.logs).has_auto_scrollbar());
+        assert!(doc.node(nodes.logs).scroll().is_some());
+
+        let first_log = doc
+            .nodes()
+            .iter()
+            .find(|node| node.name() == "load.logs.row.0")
+            .expect("first log row");
+        let first_accessibility = first_log.accessibility.as_ref().unwrap();
+        assert_eq!(first_accessibility.role, AccessibilityRole::ListItem);
+        assert_eq!(
+            first_accessibility.label.as_deref(),
+            Some("info: Loading assets")
+        );
+    }
+
+    #[test]
     fn split_pane_state_clamps_resizes_and_builds_nodes() {
         let mut state = SplitPaneState::new(0.25).with_min_sizes(120.0, 80.0);
         let sizes = state.resolved_sizes(300.0, 10.0);
@@ -204,7 +245,7 @@ mod tests {
             "workspace",
             SplitAxis::Horizontal,
             state,
-            SplitPaneOptions::default(),
+            SplitPaneOptions::default().with_handle_action("workspace.resize"),
             |document, parent| {
                 document.add_child(
                     parent,
@@ -245,7 +286,23 @@ mod tests {
 
         assert!(doc.node(nodes.handle).input.focusable);
         assert!(doc.node(nodes.first).layout.rect.width >= state.min_first);
+        assert_eq!(doc.node(nodes.handle).layout.rect.width, 2.0);
         assert_eq!(doc.node(nodes.root).children.len(), 3);
+        assert_eq!(
+            doc.node(nodes.handle).action.as_ref(),
+            Some(&WidgetActionBinding::action("workspace.resize"))
+        );
+        assert_eq!(
+            doc.node(nodes.handle).action_mode,
+            WidgetActionMode::PointerEditParentRect
+        );
+        let normal = doc.node(nodes.handle).visual;
+        doc.set_focus_state(UiFocusState {
+            hovered: Some(nodes.handle),
+            pressed: None,
+            focused: None,
+        });
+        assert_ne!(doc.node(nodes.handle).visual, normal);
 
         let accessibility = doc.accessibility_tree();
         let splitter = accessibility
@@ -1003,6 +1060,7 @@ mod tests {
         let ruler = timeline_ruler(&mut doc, root, "ruler", spec, options);
         doc.compute_layout(UiSize::new(400.0, 80.0), &mut ApproxTextMeasurer)
             .expect("layout");
+        assert_eq!(doc.node(ruler).layout().rect.width, 400.0);
         assert_eq!(
             doc.node(ruler)
                 .shader

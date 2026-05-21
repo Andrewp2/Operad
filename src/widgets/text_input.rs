@@ -1217,7 +1217,7 @@ impl Default for TextInputOptions {
                     width: length(180.0),
                     height: length(30.0),
                 },
-                padding: taffy::prelude::Rect::length(6.0),
+                padding: taffy::prelude::Rect::length(6.0_f32),
                 ..Default::default()
             }),
             visual: UiVisual::panel(
@@ -1504,6 +1504,11 @@ pub fn text_input(
         root_node = root_node.with_action(action);
     }
     let root = document.add_child(parent, root_node);
+    if options.focused {
+        let mut focus = document.focus_state().clone();
+        focus.focused = Some(root);
+        document.set_focus_state(focus);
+    }
     let focused = options.focused || document.focus.focused == Some(root);
     let visual = if !options.enabled {
         options.disabled_visual.unwrap_or(options.visual)
@@ -1540,7 +1545,7 @@ pub fn text_input(
         paint,
         focused && interaction_policy.can_select(),
     );
-    document.add_child(
+    let text_scene = document.add_child(
         root,
         UiNode::scene(
             format!("{name}.text"),
@@ -1553,6 +1558,12 @@ pub fn text_input(
                 ..Default::default()
             }),
         ),
+    );
+    publish_inline_intrinsic_size(
+        document,
+        root,
+        vec![text_scene],
+        inline_intrinsic_base_size(&options.layout.style, &[], 1),
     );
     root
 }
@@ -2632,6 +2643,33 @@ mod tests {
         assert!(
             selection[0].rect.width < text.rect.width,
             "selection highlight should not fill invisible trailing text rect space"
+        );
+    }
+
+    #[test]
+    fn text_input_publishes_intrinsic_width_for_its_text() {
+        let state = TextInputState::new("999999999999999999");
+        let mut document = UiDocument::new(root_style(360.0, 120.0));
+        let root = document.root;
+
+        let input = text_input(
+            &mut document,
+            root,
+            "wide",
+            &state,
+            TextInputOptions {
+                layout: LayoutStyle::new().with_width(40.0).with_height(30.0),
+                ..Default::default()
+            },
+        );
+        document
+            .compute_layout(UiSize::new(360.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let rect = document.node(input).layout().rect;
+        assert!(
+            rect.width > 40.0,
+            "text input should grow beyond an undersized explicit width when its text requires it: {rect:?}"
         );
     }
 

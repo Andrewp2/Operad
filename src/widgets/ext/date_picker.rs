@@ -79,6 +79,100 @@ impl CalendarDate {
     pub fn accessibility_label(self) -> String {
         format!("{} {}, {}", month_name(self.month), self.day, self.year)
     }
+
+    pub fn days_until(self, other: Self) -> i32 {
+        (days_from_civil(other.year, other.month, other.day)
+            - days_from_civil(self.year, self.month, self.day)) as i32
+    }
+
+    pub fn week_start(self, first_weekday: Weekday) -> Self {
+        self.add_days(-(self.weekday().days_since(first_weekday) as i32))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CalendarDateRange {
+    pub start: CalendarDate,
+    pub end: CalendarDate,
+}
+
+impl CalendarDateRange {
+    pub fn new(start: CalendarDate, end: CalendarDate) -> Self {
+        if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        }
+    }
+
+    pub fn single_day(date: CalendarDate) -> Self {
+        Self {
+            start: date,
+            end: date,
+        }
+    }
+
+    pub fn week(date: CalendarDate, first_weekday: Weekday) -> Self {
+        let start = date.week_start(first_weekday);
+        Self {
+            start,
+            end: start.add_days(6),
+        }
+    }
+
+    pub fn contains(self, date: CalendarDate) -> bool {
+        self.start <= date && date <= self.end
+    }
+
+    pub fn position(self, date: CalendarDate) -> Option<DateRangeCellPosition> {
+        if !self.contains(date) {
+            return None;
+        }
+        Some(if self.start == self.end {
+            DateRangeCellPosition::Single
+        } else if date == self.start {
+            DateRangeCellPosition::Start
+        } else if date == self.end {
+            DateRangeCellPosition::End
+        } else {
+            DateRangeCellPosition::Middle
+        })
+    }
+
+    pub fn day_count(self) -> i32 {
+        self.start.days_until(self.end) + 1
+    }
+
+    pub fn iso_string(self) -> String {
+        if self.start == self.end {
+            self.start.iso_string()
+        } else {
+            format!("{}..{}", self.start.iso_string(), self.end.iso_string())
+        }
+    }
+
+    pub fn accessibility_label(self) -> String {
+        if self.start == self.end {
+            self.start.accessibility_label()
+        } else {
+            format!(
+                "{} through {}",
+                self.start.accessibility_label(),
+                self.end.accessibility_label()
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DateRangeCellPosition {
+    Single,
+    Start,
+    Middle,
+    End,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -408,6 +502,256 @@ impl DatePickerModel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateRangeSelectionMode {
+    Custom,
+    Week,
+}
+
+impl DateRangeSelectionMode {
+    fn accessibility_hint(self) -> &'static str {
+        match self {
+            Self::Custom => "Select a start date, then an end date.",
+            Self::Week => "Selecting any day selects the whole week.",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DateRangePickerModel {
+    pub range: Option<CalendarDateRange>,
+    pub visible_month: CalendarMonth,
+    pub min: Option<CalendarDate>,
+    pub max: Option<CalendarDate>,
+    pub first_weekday: Weekday,
+    pub today: Option<CalendarDate>,
+    pub mode: DateRangeSelectionMode,
+    pub pending_start: Option<CalendarDate>,
+}
+
+impl DateRangePickerModel {
+    pub fn builder() -> DateRangePickerBuilder {
+        DateRangePickerBuilder::default()
+    }
+
+    pub fn new(range: Option<CalendarDateRange>) -> Self {
+        Self::builder().range(range).build()
+    }
+
+    pub fn can_select(&self, date: CalendarDate) -> bool {
+        self.min.is_none_or(|min| date >= min) && self.max.is_none_or(|max| date <= max)
+    }
+
+    pub fn can_select_range(&self, range: CalendarDateRange) -> bool {
+        self.can_select(range.start) && self.can_select(range.end)
+    }
+
+    pub fn clear(&mut self) {
+        self.range = None;
+        self.pending_start = None;
+    }
+
+    pub fn select(&mut self, date: CalendarDate) -> DateRangePickerSelection {
+        let previous = self.range;
+        if !self.can_select(date) {
+            return DateRangePickerSelection {
+                previous,
+                selected: self.range,
+                phase: EditPhase::Preview,
+                changed: false,
+            };
+        }
+
+        let next = match self.mode {
+            DateRangeSelectionMode::Week => CalendarDateRange::week(date, self.first_weekday),
+            DateRangeSelectionMode::Custom => match self.pending_start {
+                Some(start) => {
+                    self.pending_start = None;
+                    CalendarDateRange::new(start, date)
+                }
+                None => {
+                    self.pending_start = Some(date);
+                    CalendarDateRange::single_day(date)
+                }
+            },
+        };
+
+        if !self.can_select_range(next) {
+            return DateRangePickerSelection {
+                previous,
+                selected: self.range,
+                phase: EditPhase::Preview,
+                changed: false,
+            };
+        }
+
+        self.range = Some(next);
+        self.visible_month = date.month();
+        DateRangePickerSelection {
+            previous,
+            selected: self.range,
+            phase: EditPhase::CommitEdit,
+            changed: previous != self.range,
+        }
+    }
+
+    pub fn show_month(&mut self, month: CalendarMonth) {
+        self.visible_month = month;
+    }
+
+    pub fn show_previous_month(&mut self) {
+        self.visible_month = self.visible_month.previous();
+    }
+
+    pub fn show_next_month(&mut self) {
+        self.visible_month = self.visible_month.next();
+    }
+
+    pub fn accessibility_meta(&self) -> AccessibilityMeta {
+        let mut meta = AccessibilityMeta::new(AccessibilityRole::Grid)
+            .label(format_month_label(self.visible_month))
+            .value(self.range.map_or_else(
+                || "No date range selected".to_string(),
+                CalendarDateRange::iso_string,
+            ))
+            .hint(self.range_hint())
+            .focusable();
+        if let Some(range) = self.range {
+            meta = meta.summary(crate::AccessibilitySummary::new(format!(
+                "{} selected, {} days",
+                range.accessibility_label(),
+                range.day_count()
+            )));
+        }
+        meta
+    }
+
+    fn range_hint(&self) -> String {
+        let mut parts = vec![self.mode.accessibility_hint().to_string()];
+        if self.min.is_some() || self.max.is_some() {
+            parts.push(format_date_range_hint(self.min, self.max));
+        }
+        if let Some(start) = self.pending_start {
+            parts.push(format!("Range start is {}", start.iso_string()));
+        }
+        parts.join(" ")
+    }
+
+    fn date_picker_model(&self) -> DatePickerModel {
+        DatePickerModel {
+            selected: self.range.map(|range| range.start),
+            visible_month: self.visible_month,
+            min: self.min,
+            max: self.max,
+            first_weekday: self.first_weekday,
+            today: self.today,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DateRangePickerBuilder {
+    range: Option<CalendarDateRange>,
+    visible_month: Option<CalendarMonth>,
+    min: Option<CalendarDate>,
+    max: Option<CalendarDate>,
+    first_weekday: Weekday,
+    today: Option<CalendarDate>,
+    mode: DateRangeSelectionMode,
+}
+
+impl DateRangePickerBuilder {
+    pub fn range(mut self, range: Option<CalendarDateRange>) -> Self {
+        self.range = range;
+        self
+    }
+
+    pub fn visible_month(mut self, visible_month: CalendarMonth) -> Self {
+        self.visible_month = Some(visible_month);
+        self
+    }
+
+    pub fn min(mut self, min: Option<CalendarDate>) -> Self {
+        self.min = min;
+        self
+    }
+
+    pub fn max(mut self, max: Option<CalendarDate>) -> Self {
+        self.max = max;
+        self
+    }
+
+    pub fn bounds(mut self, min: Option<CalendarDate>, max: Option<CalendarDate>) -> Self {
+        self.min = min;
+        self.max = max;
+        self
+    }
+
+    pub fn first_weekday(mut self, first_weekday: Weekday) -> Self {
+        self.first_weekday = first_weekday;
+        self
+    }
+
+    pub fn today(mut self, today: Option<CalendarDate>) -> Self {
+        self.today = today;
+        self
+    }
+
+    pub fn mode(mut self, mode: DateRangeSelectionMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn build(self) -> DateRangePickerModel {
+        let (min, max) = ordered_bounds(self.min, self.max);
+        let range = self.range.filter(|range| {
+            min.is_none_or(|min| range.start >= min) && max.is_none_or(|max| range.end <= max)
+        });
+        let anchor = range
+            .map(|range| range.start)
+            .or(self.today)
+            .or(min)
+            .unwrap_or(CalendarDate {
+                year: 1970,
+                month: 1,
+                day: 1,
+            });
+
+        DateRangePickerModel {
+            range,
+            visible_month: self.visible_month.unwrap_or_else(|| anchor.month()),
+            min,
+            max,
+            first_weekday: self.first_weekday,
+            today: self.today,
+            mode: self.mode,
+            pending_start: None,
+        }
+    }
+}
+
+impl Default for DateRangePickerBuilder {
+    fn default() -> Self {
+        Self {
+            range: None,
+            visible_month: None,
+            min: None,
+            max: None,
+            first_weekday: Weekday::Sunday,
+            today: None,
+            mode: DateRangeSelectionMode::Custom,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateRangePickerSelection {
+    pub previous: Option<CalendarDateRange>,
+    pub selected: Option<CalendarDateRange>,
+    pub phase: EditPhase,
+    pub changed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatePickerBuilder {
     selected: Option<CalendarDate>,
@@ -671,7 +1015,7 @@ impl Default for DatePickerOptions {
                     width: length(264.0),
                     height: Dimension::auto(),
                 },
-                padding: TaffyRect::length(8.0),
+                padding: TaffyRect::length(8.0_f32),
                 gap: TaffySize {
                     width: taffy::prelude::LengthPercentage::length(8.0),
                     height: taffy::prelude::LengthPercentage::length(8.0),
@@ -702,6 +1046,63 @@ impl DatePickerOptions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DateRangePickerStyle {
+    pub range_middle_day: PickerElementStyle,
+    pub range_endpoint_day: PickerElementStyle,
+}
+
+impl Default for DateRangePickerStyle {
+    fn default() -> Self {
+        Self {
+            range_middle_day: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(232, 240, 252, 255))
+                .with_background(ColorRgba::new(36, 68, 108, 255)),
+            range_endpoint_day: PickerElementStyle::default()
+                .with_foreground(ColorRgba::new(255, 255, 255, 255))
+                .with_background(ColorRgba::new(60, 125, 216, 255))
+                .with_animation(PickerAnimationMeta::new("date.range_endpoint", 0.12)),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DateRangePickerOptions {
+    pub picker: DatePickerOptions,
+    pub range_style: DateRangePickerStyle,
+}
+
+impl Default for DateRangePickerOptions {
+    fn default() -> Self {
+        Self {
+            picker: DatePickerOptions::default(),
+            range_style: DateRangePickerStyle::default(),
+        }
+    }
+}
+
+impl DateRangePickerOptions {
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.picker.layout = layout.into();
+        self
+    }
+
+    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.picker.action_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn with_picker_options(mut self, picker: DatePickerOptions) -> Self {
+        self.picker = picker;
+        self
+    }
+
+    pub fn with_range_style(mut self, range_style: DateRangePickerStyle) -> Self {
+        self.range_style = range_style;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DatePickerNodes {
     pub root: UiNodeId,
@@ -715,6 +1116,53 @@ pub fn date_picker(
     parent: UiNodeId,
     name: impl Into<String>,
     model: &DatePickerModel,
+    options: DatePickerOptions,
+) -> DatePickerNodes {
+    date_picker_impl(
+        document,
+        parent,
+        name,
+        model,
+        None,
+        None,
+        model.accessibility_meta(),
+        options,
+    )
+}
+
+pub fn date_range_picker(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    model: &DateRangePickerModel,
+    options: DateRangePickerOptions,
+) -> DatePickerNodes {
+    let picker_model = model.date_picker_model();
+    let DateRangePickerOptions {
+        picker,
+        range_style,
+    } = options;
+    date_picker_impl(
+        document,
+        parent,
+        name,
+        &picker_model,
+        model.range,
+        Some(&range_style),
+        model.accessibility_meta(),
+        picker,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn date_picker_impl(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    model: &DatePickerModel,
+    selected_range: Option<CalendarDateRange>,
+    range_style: Option<&DateRangePickerStyle>,
+    accessibility: AccessibilityMeta,
     options: DatePickerOptions,
 ) -> DatePickerNodes {
     let name = name.into();
@@ -733,7 +1181,7 @@ pub fn date_picker(
             Some(StrokeStyle::new(ColorRgba::new(48, 58, 72, 255), 1.0)),
             4.0,
         ))
-        .with_accessibility(model.accessibility_meta()),
+        .with_accessibility(accessibility),
     );
 
     let header = document.add_child(
@@ -851,7 +1299,10 @@ pub fn date_picker(
         .with_accessibility(model.accessibility_meta()),
     );
     for cell in model.grid() {
-        let style = options.style.style_for_cell(&cell);
+        let range_position = selected_range
+            .and_then(|range| range.position(cell.date))
+            .filter(|_| !cell.disabled);
+        let style = date_cell_style(&options, range_style, &cell, range_position);
         let mut node = UiNode::container(
             format!("{name}.day.{}", cell.date.iso_string()),
             LayoutStyle::from_taffy_style(Style {
@@ -873,7 +1324,7 @@ pub fn date_picker(
             style.border.map(|color| StrokeStyle::new(color, 1.0)),
             3.0,
         ))
-        .with_accessibility(cell.accessibility_meta());
+        .with_accessibility(date_cell_accessibility(&cell, range_position));
         if !cell.disabled {
             node = node.with_input(InputBehavior::BUTTON);
             if let Some(prefix) = options.action_prefix.as_deref() {
@@ -909,6 +1360,54 @@ pub fn date_picker(
         next_month,
         grid,
     }
+}
+
+fn date_cell_style<'a>(
+    options: &'a DatePickerOptions,
+    range_style: Option<&'a DateRangePickerStyle>,
+    cell: &CalendarDayCell,
+    range_position: Option<DateRangeCellPosition>,
+) -> &'a PickerElementStyle {
+    if cell.disabled {
+        return &options.style.disabled_day;
+    }
+    match range_position {
+        Some(
+            DateRangeCellPosition::Single
+            | DateRangeCellPosition::Start
+            | DateRangeCellPosition::End,
+        ) => range_style.map_or_else(
+            || options.style.style_for_cell(cell),
+            |style| &style.range_endpoint_day,
+        ),
+        Some(DateRangeCellPosition::Middle) => range_style.map_or_else(
+            || options.style.style_for_cell(cell),
+            |style| &style.range_middle_day,
+        ),
+        None => options.style.style_for_cell(cell),
+    }
+}
+
+fn date_cell_accessibility(
+    cell: &CalendarDayCell,
+    range_position: Option<DateRangeCellPosition>,
+) -> AccessibilityMeta {
+    let mut meta = cell.accessibility_meta();
+    let Some(position) = range_position else {
+        return meta;
+    };
+    meta.selected = Some(true);
+    let range_hint = match position {
+        DateRangeCellPosition::Single => "selected range",
+        DateRangeCellPosition::Start => "range start",
+        DateRangeCellPosition::Middle => "inside selected range",
+        DateRangeCellPosition::End => "range end",
+    };
+    meta.hint = Some(match meta.hint.take() {
+        Some(hint) if !hint.is_empty() => format!("{hint}, {range_hint}"),
+        _ => range_hint.to_string(),
+    });
+    meta
 }
 
 #[allow(clippy::too_many_arguments)]

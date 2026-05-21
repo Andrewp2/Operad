@@ -880,24 +880,28 @@ mod tests {
             .set(
                 document_widget.clone(),
                 WidgetStateSlotDescriptor::scroll(),
-                WidgetStateValue::Scroll(ScrollState {
-                    axes: ScrollAxes::VERTICAL,
-                    offset: UiPoint::new(0.0, 24.0),
-                    viewport_size: crate::UiSize::new(100.0, 100.0),
-                    content_size: crate::UiSize::new(100.0, 500.0),
-                }),
+                WidgetStateValue::Scroll(
+                    ScrollState::new(ScrollAxes::VERTICAL)
+                        .with_sizes(
+                            crate::UiSize::new(100.0, 100.0),
+                            crate::UiSize::new(100.0, 500.0),
+                        )
+                        .with_offset(UiPoint::new(0.0, 24.0)),
+                ),
             )
             .unwrap();
         store
             .set(
                 window_widget.clone(),
                 WidgetStateSlotDescriptor::scroll(),
-                WidgetStateValue::Scroll(ScrollState {
-                    axes: ScrollAxes::VERTICAL,
-                    offset: UiPoint::new(0.0, 88.0),
-                    viewport_size: crate::UiSize::new(100.0, 100.0),
-                    content_size: crate::UiSize::new(100.0, 500.0),
-                }),
+                WidgetStateValue::Scroll(
+                    ScrollState::new(ScrollAxes::VERTICAL)
+                        .with_sizes(
+                            crate::UiSize::new(100.0, 100.0),
+                            crate::UiSize::new(100.0, 500.0),
+                        )
+                        .with_offset(UiPoint::new(0.0, 88.0)),
+                ),
             )
             .unwrap();
 

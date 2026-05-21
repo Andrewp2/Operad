@@ -949,7 +949,7 @@ impl Default for ColorPickerOptions {
                     width: length(220.0),
                     height: Dimension::auto(),
                 },
-                padding: TaffyRect::length(8.0),
+                padding: TaffyRect::length(8.0_f32),
                 gap: TaffySize {
                     width: taffy::prelude::LengthPercentage::length(8.0),
                     height: taffy::prelude::LengthPercentage::length(8.0),
@@ -1107,7 +1107,7 @@ impl Default for ColorButtonOptions {
                     width: length(112.0),
                     height: length(30.0),
                 },
-                padding: TaffyRect::length(4.0),
+                padding: TaffyRect::length(4.0_f32),
                 gap: TaffySize {
                     width: taffy::prelude::LengthPercentage::length(6.0),
                     height: taffy::prelude::LengthPercentage::length(6.0),
@@ -1568,9 +1568,17 @@ fn color_button_with_value(
     } else {
         taffy::prelude::JustifyContent::Center
     });
+    if options.show_label {
+        apply_color_button_label_chrome_defaults(&mut layout);
+    }
     if !options.show_label {
-        let compact_width = (options.swatch_size.width + 8.0).max(options.swatch_size.width);
-        if layout.size.width.is_auto() {
+        let width_is_auto = layout.size.width.is_auto();
+        let compact_width = if width_is_auto {
+            (options.swatch_size.width + 8.0).max(options.swatch_size.width)
+        } else {
+            options.swatch_size.width
+        };
+        if width_is_auto {
             layout.size.width = length(compact_width);
         }
         layout.min_size.width = length(compact_width);
@@ -1640,6 +1648,22 @@ fn color_button_with_value(
         root,
         swatch,
         label,
+    }
+}
+
+fn apply_color_button_label_chrome_defaults(layout: &mut Style) {
+    if layout.padding == TaffyRect::length(0.0_f32) {
+        layout.padding = TaffyRect::length(4.0_f32);
+    }
+    let no_gap = TaffySize {
+        width: taffy::prelude::LengthPercentage::length(0.0),
+        height: taffy::prelude::LengthPercentage::length(0.0),
+    };
+    if layout.gap == no_gap {
+        layout.gap = TaffySize {
+            width: taffy::prelude::LengthPercentage::length(6.0),
+            height: taffy::prelude::LengthPercentage::length(6.0),
+        };
     }
 }
 
@@ -2882,6 +2906,38 @@ mod tests {
             .expect("layout");
         let swatch_rect = document.node(swatch.root).layout.rect;
         assert!(swatch_rect.width <= 32.0, "{swatch_rect:?}");
+    }
+
+    #[test]
+    fn color_button_custom_layout_keeps_internal_swatch_label_spacing() {
+        let mut document = UiDocument::new(root_style(360.0, 120.0));
+        let root = document.root;
+        let nodes = color_edit_button(
+            &mut document,
+            root,
+            "brand.color",
+            ColorRgba::new(51, 102, 153, 255),
+            ColorButtonOptions::default().with_layout(
+                LayoutStyle::new()
+                    .with_width(180.0)
+                    .with_height(30.0)
+                    .with_flex_shrink(0.0),
+            ),
+        );
+
+        document
+            .compute_layout(UiSize::new(360.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let root_rect = document.node(nodes.root).layout.rect;
+        let swatch_rect = document.node(nodes.swatch).layout.rect;
+        let label = nodes.label.expect("color value label");
+        let label_rect = document.node(label).layout.rect;
+        assert_eq!(root_rect.width, 180.0);
+        assert!(
+            label_rect.x >= swatch_rect.right() + 5.5,
+            "color value label should keep default spacing from the swatch: swatch={swatch_rect:?} label={label_rect:?}"
+        );
     }
 
     #[test]

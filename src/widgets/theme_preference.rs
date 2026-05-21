@@ -141,7 +141,7 @@ impl Default for ThemePreferenceButtonsOptions {
                         width: length(80.0),
                         height: length(30.0),
                     },
-                    padding: taffy::prelude::Rect::length(6.0),
+                    padding: taffy::prelude::Rect::length(6.0_f32),
                     ..Default::default()
                 }),
                 ..Default::default()

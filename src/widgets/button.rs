@@ -278,7 +278,7 @@ pub fn button(
             },
             margin: taffy::prelude::Rect {
                 right: taffy::prelude::LengthPercentageAuto::length(6.0),
-                ..taffy::prelude::Rect::length(0.0)
+                ..taffy::prelude::Rect::length(0.0_f32)
             },
             ..Default::default()
         };
@@ -404,7 +404,12 @@ pub fn toggle_button(
     selected: bool,
     options: ButtonOptions,
 ) -> UiNodeId {
-    button(document, parent, name, label, options.pressed(selected))
+    let button = button(document, parent, name, label, options.pressed(selected));
+    if let Some(accessibility) = document.node_mut(button).accessibility_mut() {
+        accessibility.role = AccessibilityRole::ToggleButton;
+        accessibility.pressed = Some(selected);
+    }
+    button
 }
 
 pub fn reset_button(

@@ -432,7 +432,9 @@ pub fn dnd_drag_source(
     })
     .with_accessibility(accessibility);
     if let Some(action) = options.action.clone() {
-        node = node.with_action(action);
+        node = node
+            .with_action(action)
+            .with_action_mode(WidgetActionMode::Drag);
     }
 
     let root = document.add_child(parent, node);
@@ -719,6 +721,10 @@ mod tests {
             source_options.clone(),
         );
         document.node_mut(source.root).layout.rect = UiRect::new(10.0, 20.0, 120.0, 40.0);
+        assert_eq!(
+            document.node(source.root).action_mode,
+            WidgetActionMode::Drag
+        );
 
         let drop_options = DropZoneOptions::default()
             .with_kind(DragDropSurfaceKind::ListRow)

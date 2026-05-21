@@ -418,12 +418,10 @@ mod tests {
             UiNode::container("scroll", LayoutStyle::size(100.0, 100.0))
                 .with_scroll(ScrollAxes::BOTH),
         );
-        document.node_mut(scroll).scroll = Some(ScrollState {
-            axes: ScrollAxes::BOTH,
-            offset: UiPoint::new(0.0, 0.0),
-            viewport_size: UiSize::new(100.0, 100.0),
-            content_size: UiSize::new(400.0, 400.0),
-        });
+        document.node_mut(scroll).scroll = Some(
+            ScrollState::new(ScrollAxes::BOTH)
+                .with_sizes(UiSize::new(100.0, 100.0), UiSize::new(400.0, 400.0)),
+        );
         document.node_mut(scroll).layout.rect = UiRect::new(0.0, 0.0, 100.0, 100.0);
 
         let plan = scroll_to_rect_with_options(

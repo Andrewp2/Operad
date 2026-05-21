@@ -1125,7 +1125,7 @@ impl DockDrawerRailOptions {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            padding: Rect::length(4.0),
+            padding: Rect::length(4.0_f32),
             gap: TaffySize {
                 width: LengthPercentage::length(options.gap),
                 height: LengthPercentage::length(options.gap),
@@ -1381,7 +1381,7 @@ fn add_dock_panel(
                             width: Dimension::percent(1.0),
                             height: length(24.0),
                         },
-                        padding: Rect::length(4.0),
+                        padding: Rect::length(4.0_f32),
                         flex_shrink: 0.0,
                         ..Default::default()
                     })
@@ -1403,7 +1403,7 @@ fn add_dock_panel(
                         },
                         margin: Rect {
                             right: LengthPercentageAuto::length(6.0),
-                            ..Rect::length(0.0)
+                            ..Rect::length(0.0_f32)
                         },
                         flex_shrink: 0.0,
                         ..Default::default()
@@ -1526,7 +1526,7 @@ fn add_dock_resize_handle(
     panel: &DockPanelDescriptor,
     options: &DockWorkspaceOptions,
 ) -> UiNodeId {
-    let mut inset = Rect::length(0.0);
+    let mut inset = Rect::length(0.0_f32);
     let size = match panel.side {
         DockSide::Top => {
             inset.top = LengthPercentageAuto::auto();

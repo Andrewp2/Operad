@@ -136,7 +136,7 @@ impl Default for GridCellOptions {
                     width: length(120.0),
                     height: length(28.0),
                 },
-                padding: taffy::prelude::Rect::length(4.0),
+                padding: taffy::prelude::Rect::length(4.0_f32),
                 ..Default::default()
             }),
             visual: UiVisual::TRANSPARENT,

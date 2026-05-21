@@ -6,10 +6,12 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::actions::action_target_enabled;
 use crate::host::process_host_frame_input_with_target_resolver;
 use crate::input::{
-    PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
-    RawPointerEvent, RawTextInputEvent, RawWheelEvent, WheelDeltaUnit, WheelPhase,
+    text_input_for_key_event_text, PointerButton, PointerButtons, PointerEventKind, RawInputEvent,
+    RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent, WheelDeltaUnit,
+    WheelPhase,
 };
 use crate::platform::{
     BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode, CursorRequest,
@@ -26,7 +28,10 @@ use crate::renderer::{
 use crate::testing::EmptyResourceResolver;
 use crate::wgpu_renderer::{WgpuCanvasContext, WgpuSurfaceRenderer};
 use crate::{
-    errors::{classify_render_error, ErrorKind, ErrorReport, FallbackDecision, RuntimeErrorKind},
+    errors::{
+        classify_render_error, ErrorKind, ErrorReport, FallbackAction, FallbackDecision,
+        RuntimeErrorKind,
+    },
     host::{
         process_document_frame, HostDocumentFrameOutput, HostDocumentFrameState, HostFrameOutput,
         HostInteractionState, HostNodeInteraction,
@@ -622,6 +627,10 @@ fn native_renderer_startup_report(title: &str, error: RenderError) -> ErrorRepor
         .fallback(FallbackDecision::abort_frame(
             "native startup cannot continue without a renderer",
         ))
+}
+
+fn render_error_uses_cached_frame(error: &RenderError) -> bool {
+    classify_render_error(error).fallback.action == FallbackAction::UseCachedFrame
 }
 
 pub fn run(
@@ -1296,8 +1305,28 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         }
         let repaint_requested = canvas_report.repaint_requested();
         let surface_started = Instant::now();
-        renderer.render_frame(frame.render_request, &EmptyResourceResolver)?;
+        let render_result = renderer.render_frame(frame.render_request, &EmptyResourceResolver);
         let surface_render = surface_started.elapsed();
+        if let Err(error) = render_result {
+            if render_error_uses_cached_frame(&error) {
+                self.last_frame_report = Some(NativeFrameTimingReport {
+                    viewport,
+                    nodes,
+                    paint_items,
+                    widget_actions: actions_count,
+                    build_document,
+                    host_input,
+                    document_frame,
+                    action_rebuild,
+                    canvas_render,
+                    surface_render,
+                    total: frame_started.elapsed(),
+                });
+                self.request_redraw();
+                return Ok(());
+            }
+            return Err(error.into());
+        }
         self.last_frame_report = Some(NativeFrameTimingReport {
             viewport,
             nodes,
@@ -1339,14 +1368,19 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let mut document = (self.view)(&self.state, viewport);
         document.set_ui_scale(self.options.ui_scale);
         document.set_dpi_scale(self.scale_factor());
+        document.set_pointer_position(self.cursor);
         restore_scroll_offsets(&mut document, &self.scroll_offsets);
         self.restore_animation_states(&mut document);
+        let authored_focus = document.focus.focused;
         let previous_focus = UiFocusState {
             hovered: self.frame_state.interaction.hovered,
             pressed: self.frame_state.interaction.pressed,
             focused: self.frame_state.interaction.focused,
         };
         let mut focus = previous_focus.clone();
+        if authored_focus.is_some() {
+            focus.focused = authored_focus;
+        }
         if let Some(cursor) = self.cursor {
             focus.hovered = document.hit_test(cursor);
             if self.buttons == PointerButtons::NONE {
@@ -1605,9 +1639,13 @@ where
                     && !self.modifiers.ctrl
                     && !self.modifiers.meta
                 {
-                    if let Some(text) = event.text.as_ref().filter(|text| !text.is_empty()) {
+                    if let Some(text) = event
+                        .text
+                        .as_ref()
+                        .and_then(|text| text_input_for_key_event_text(text))
+                    {
                         self.push_input(RawInputEvent::Text(RawTextInputEvent::new(
-                            text.as_str(),
+                            text,
                             self.timestamp_millis(),
                         )));
                     }
@@ -1719,6 +1757,12 @@ fn collect_widget_actions(
     frame: &HostDocumentFrameOutput,
 ) -> Vec<WidgetAction> {
     let mut queue = WidgetActionQueue::new();
+    push_focus_transition_actions(
+        document,
+        &mut queue,
+        frame.previous_focused,
+        frame.host_output.state.focused,
+    );
     for event in &frame.host_output.ui_events {
         if let Some((target, phase, position, selecting)) =
             text_pointer_edit_target(document, frame, event)
@@ -1780,6 +1824,9 @@ fn collect_widget_actions(
     }
     for gesture in &frame.host_output.gestures {
         queue.push_gesture_event_for_document(document, gesture, |id| action_binding(document, id));
+        if let Some(action) = drop_target_drag_action_from_gesture(document, gesture) {
+            queue.push(action);
+        }
     }
     for input in &frame.input_results {
         let Some(target) = input.scrolled else {
@@ -1795,11 +1842,45 @@ fn collect_widget_actions(
     queue.into_vec()
 }
 
+fn push_focus_transition_actions(
+    document: &UiDocument,
+    queue: &mut WidgetActionQueue,
+    previous: Option<UiNodeId>,
+    current: Option<UiNodeId>,
+) {
+    if previous == current {
+        return;
+    }
+    if let Some(previous) = previous {
+        if text_edit_target(document, previous) {
+            if let Some(binding) = action_binding(document, previous) {
+                queue.focus(previous, binding, false);
+            }
+        }
+    }
+    if let Some(current) = current {
+        if text_edit_target(document, current) {
+            if let Some(binding) = action_binding(document, current) {
+                queue.focus(current, binding, true);
+            }
+        }
+    }
+}
+
 fn text_pointer_edit_target(
     document: &UiDocument,
     frame: &HostDocumentFrameOutput,
     event: &UiInputEvent,
 ) -> Option<(UiNodeId, WidgetValueEditPhase, UiPoint, bool)> {
+    let pointer_position = match event {
+        UiInputEvent::PointerDown(point)
+        | UiInputEvent::PointerMove(point)
+        | UiInputEvent::PointerUp(point) => Some(*point),
+        _ => None,
+    };
+    if pointer_position.is_some_and(|point| document.auto_scrollbar_hit_target(point).is_some()) {
+        return None;
+    }
     let (phase, position, selecting) = match event {
         UiInputEvent::PointerDown(point) => (WidgetValueEditPhase::Begin, *point, false),
         UiInputEvent::PointerMove(point) => {
@@ -1856,6 +1937,55 @@ fn action_binding(document: &UiDocument, id: UiNodeId) -> Option<WidgetActionBin
         .nodes()
         .get(id.0)
         .and_then(|node| node.action.clone())
+}
+
+fn drop_target_drag_action_from_gesture(
+    document: &UiDocument,
+    event: &crate::GestureEvent,
+) -> Option<WidgetAction> {
+    let crate::GestureEvent::Drag(gesture) = event else {
+        return None;
+    };
+    drag_source_action_target_for_hit(document, gesture.target)?;
+    let hit = document.hit_test(gesture.current)?;
+    let target = drop_action_target_for_hit(document, hit)?;
+    if target == gesture.target || document.node_is_descendant_or_self(gesture.target, target) {
+        return None;
+    }
+    let binding = action_binding(document, target)?;
+    let mut drag = *gesture;
+    drag.target = target;
+    WidgetAction::drag_from_gesture(&drag, binding)
+}
+
+fn drag_source_action_target_for_hit(document: &UiDocument, hit: UiNodeId) -> Option<UiNodeId> {
+    action_target_for_accessibility_action(document, hit, "drag.start")
+}
+
+fn drop_action_target_for_hit(document: &UiDocument, hit: UiNodeId) -> Option<UiNodeId> {
+    action_target_for_accessibility_action(document, hit, "drop.accept")
+}
+
+fn action_target_for_accessibility_action(
+    document: &UiDocument,
+    hit: UiNodeId,
+    accessibility_action_id: &str,
+) -> Option<UiNodeId> {
+    let mut current = Some(hit);
+    while let Some(id) = current {
+        let node = document.nodes().get(id.0)?;
+        let has_action = node.accessibility.as_ref().is_some_and(|accessibility| {
+            accessibility
+                .actions
+                .iter()
+                .any(|action| action.id == accessibility_action_id)
+        });
+        if has_action && node.action.is_some() && action_target_enabled(document, id) {
+            return Some(id);
+        }
+        current = node.parent();
+    }
+    None
 }
 
 fn resolve_target(
@@ -2312,8 +2442,11 @@ fn restore_scroll_offsets(document: &mut UiDocument, offsets: &HashMap<String, U
             continue;
         };
         let offset = UiPoint::new(offset.x.max(0.0), offset.y.max(0.0));
+        if scroll.offset_is_authored() && scroll.offset != offset {
+            continue;
+        }
         if scroll.offset != offset {
-            scroll.offset = offset;
+            scroll.set_host_offset(offset);
             changed = true;
         }
     }
@@ -2593,6 +2726,50 @@ mod tests {
     }
 
     #[test]
+    fn native_scroll_offsets_do_not_override_authored_scroll_offsets() {
+        let mut document = UiDocument::new(crate::LayoutStyle::column().with_size(100.0, 80.0));
+        let scroll = document.add_child(
+            document.root,
+            crate::UiNode::container(
+                "scroll",
+                crate::LayoutStyle::column().with_size(100.0, 80.0),
+            )
+            .with_scroll(crate::ScrollAxes::VERTICAL),
+        );
+        let child = document.add_child(
+            scroll,
+            crate::UiNode::container(
+                "content",
+                crate::LayoutStyle::size(100.0, 240.0).with_flex_shrink(0.0),
+            ),
+        );
+        let mut measurer = ApproxTextMeasurer;
+        document
+            .compute_layout(UiSize::new(100.0, 80.0), &mut measurer)
+            .unwrap();
+
+        let mut offsets = HashMap::new();
+        offsets.insert(node_path_key(&document, scroll), UiPoint::new(0.0, 120.0));
+        document
+            .node_mut(scroll)
+            .scroll
+            .as_mut()
+            .unwrap()
+            .set_offset(UiPoint::new(0.0, 40.0));
+
+        assert!(!restore_scroll_offsets(&mut document, &offsets));
+        document
+            .compute_layout(UiSize::new(100.0, 80.0), &mut measurer)
+            .unwrap();
+
+        assert_eq!(
+            document.scroll_state(scroll).unwrap().offset,
+            UiPoint::new(0.0, 40.0)
+        );
+        assert_eq!(document.node(child).layout.rect.y, -40.0);
+    }
+
+    #[test]
     fn native_window_error_includes_application_error_and_frame_timing() {
         let error = NativeWindowRunError::new(
             "showcase",
@@ -2650,5 +2827,15 @@ mod tests {
         assert!(error.contains("user_visible_consequence: the native window did not open"));
         assert!(error.contains("next_step: Install a supported GPU driver."));
         assert!(error.contains("fallback: AbortFrame"));
+    }
+
+    #[test]
+    fn native_runtime_keeps_running_when_renderer_can_use_cached_frame() {
+        assert!(render_error_uses_cached_frame(&RenderError::Backend(
+            "surface acquire timed out".to_string()
+        )));
+        assert!(!render_error_uses_cached_frame(
+            &RenderError::UnsupportedTarget(crate::renderer::RenderTargetKind::Snapshot)
+        ));
     }
 }

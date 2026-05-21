@@ -2,6 +2,7 @@ use taffy::prelude::{AlignItems, Dimension, Size as TaffySize, Style};
 
 use crate::core::document::AuditWarning;
 use crate::host::text_input_id_for_node;
+use crate::platform::ImageHandle;
 use crate::scrolling::ScrollbarVisibility;
 use crate::testing::{
     run_ui_state_matrix, UiStateMatrixCase, UiStateMatrixDocument, UiStateMatrixTarget,
@@ -105,6 +106,16 @@ fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
                 true,
                 widgets::CheckboxOptions::default().with_action("checkbox.checked"),
             );
+            let indeterminate = widgets::checkbox_with_state(
+                document,
+                parent,
+                "checkbox.indeterminate",
+                "Mixed",
+                widgets::CheckboxState::Indeterminate,
+                widgets::CheckboxOptions::default()
+                    .with_action("checkbox.indeterminate")
+                    .with_indeterminate_support(true),
+            );
             let disabled = widgets::checkbox(
                 document,
                 parent,
@@ -119,6 +130,7 @@ fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
             vec![
                 UiStateMatrixTarget::pointer_click("unchecked", unchecked),
                 UiStateMatrixTarget::pointer_click("checked", checked),
+                UiStateMatrixTarget::pointer_click("indeterminate", indeterminate),
                 UiStateMatrixTarget::layout("disabled", disabled),
             ]
         }),
@@ -348,12 +360,9 @@ fn widget_state_matrix_cases() -> Vec<UiStateMatrixCase<'static>> {
             ]
         }),
         widget_state_matrix_case("scroll container states", |document, parent| {
-            let scroll = ScrollState {
-                axes: ScrollAxes::BOTH,
-                offset: UiPoint::new(18.0, 20.0),
-                viewport_size: UiSize::new(170.0, 64.0),
-                content_size: UiSize::new(360.0, 180.0),
-            };
+            let scroll = ScrollState::new(ScrollAxes::BOTH)
+                .with_sizes(UiSize::new(170.0, 64.0), UiSize::new(360.0, 180.0))
+                .with_offset(UiPoint::new(18.0, 20.0));
             let nodes = widgets::scroll_container(
                 document,
                 parent,
@@ -906,6 +915,10 @@ fn widget_button_convenience_builders_cover_common_button_modes() {
         widgets::ButtonOptions::default(),
     );
     assert_eq!(
+        doc.node(toggled).accessibility.as_ref().unwrap().role,
+        AccessibilityRole::ToggleButton
+    );
+    assert_eq!(
         doc.node(toggled).accessibility.as_ref().unwrap().pressed,
         Some(true)
     );
@@ -1114,6 +1127,183 @@ fn widget_checkbox_action_helpers_toggle_selection_from_pointer_and_keyboard() {
         })
     );
 }
+
+#[cfg(feature = "widgets")]
+#[test]
+fn widget_checkbox_indeterminate_state_renders_mixed_and_cycles_when_enabled() {
+    let mut doc = UiDocument::new(root_style(260.0, 100.0));
+    let root = doc.root;
+    let options = widgets::CheckboxOptions::default()
+        .with_action(WidgetActionBinding::action("sync"))
+        .with_indeterminate_support(true);
+    let checkbox = widgets::checkbox_with_state(
+        &mut doc,
+        root,
+        "sync",
+        "Sync assets",
+        widgets::CheckboxState::Indeterminate,
+        options.clone(),
+    );
+    doc.focus.focused = Some(checkbox);
+
+    let accessibility = doc.node(checkbox).accessibility.as_ref().unwrap();
+    assert_eq!(accessibility.value.as_deref(), Some("mixed"));
+    assert_eq!(accessibility.checked, Some(AccessibilityChecked::Mixed));
+
+    let box_node = doc.node(checkbox).children[0];
+    let mark = doc.node(box_node).children[0];
+    assert_eq!(doc.node(mark).name, "sync.indeterminate");
+    let UiContent::Scene(primitives) = doc.node(mark).content() else {
+        panic!("indeterminate checkbox should render a scene mark");
+    };
+    assert!(matches!(
+        primitives.as_slice(),
+        [ScenePrimitive::Line { from, to, .. }]
+            if (from.y - to.y).abs() < 0.01 && from.x < to.x
+    ));
+
+    let pointer = widgets::checkbox::checkbox_state_actions_from_input_result(
+        &doc,
+        checkbox,
+        widgets::CheckboxState::Indeterminate,
+        &options,
+        &UiInputResult {
+            clicked: Some(checkbox),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        pointer.as_slice()[0].kind,
+        WidgetActionKind::Selection(WidgetSelection {
+            selected: Some(false)
+        })
+    );
+
+    let keyboard = widgets::checkbox::checkbox_state_actions_from_key_event(
+        &doc,
+        checkbox,
+        widgets::CheckboxState::Checked,
+        &options,
+        &UiInputEvent::Key {
+            key: KeyCode::Character(' '),
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert_eq!(
+        keyboard.as_slice()[0].kind,
+        WidgetActionKind::Selection(WidgetSelection { selected: None })
+    );
+
+    let binary_options =
+        widgets::CheckboxOptions::default().with_action(WidgetActionBinding::action("binary"));
+    let binary_pointer = widgets::checkbox::checkbox_state_actions_from_input_result(
+        &doc,
+        checkbox,
+        widgets::CheckboxState::Indeterminate,
+        &binary_options,
+        &UiInputResult {
+            clicked: Some(checkbox),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        binary_pointer.as_slice()[0].kind,
+        WidgetActionKind::Selection(WidgetSelection {
+            selected: Some(true)
+        })
+    );
+}
+
+#[cfg(feature = "widgets")]
+#[test]
+fn widget_checkbox_options_customize_box_metrics_and_check_image() {
+    let mut doc = UiDocument::new(root_style(260.0, 80.0));
+    let root = doc.root;
+    let checkbox = widgets::checkbox(
+        &mut doc,
+        root,
+        "sync",
+        "Sync assets",
+        true,
+        widgets::CheckboxOptions::default()
+            .with_box_size(UiSize::new(24.0, 20.0))
+            .with_gap(12.0)
+            .with_check_image(ImageContent::from(ImageHandle::app(
+                "checks.user-supplied.png",
+            )))
+            .with_check_color(ColorRgba::new(111, 203, 159, 255))
+            .with_accessibility_label("Sync asset checkbox")
+            .with_accessibility_hint("Toggles asset synchronization"),
+    );
+    doc.compute_layout(UiSize::new(260.0, 80.0), &mut ApproxTextMeasurer)
+        .expect("layout");
+
+    let box_node = doc.node(checkbox).children[0];
+    let label = doc.node(checkbox).children[1];
+    let check = doc.node(box_node).children[0];
+    let box_rect = doc.node(box_node).layout.rect;
+    let check_rect = doc.node(check).layout.rect;
+    let label_rect = doc.node(label).layout.rect;
+
+    assert_eq!(box_rect.width, 24.0);
+    assert_eq!(box_rect.height, 20.0);
+    assert_eq!(check_rect.width, 20.0);
+    assert_eq!(check_rect.height, 16.0);
+    assert!((check_rect.x - box_rect.x - 2.0).abs() < 0.01);
+    assert!((check_rect.y - box_rect.y - 2.0).abs() < 0.01);
+    assert!(
+        ((check_rect.x + check_rect.width * 0.5) - (box_rect.x + box_rect.width * 0.5)).abs()
+            < 0.01
+    );
+    assert!(
+        ((check_rect.y + check_rect.height * 0.5) - (box_rect.y + box_rect.height * 0.5)).abs()
+            < 0.01
+    );
+    assert!((label_rect.x - box_rect.right() - 12.0).abs() < 0.01);
+    assert!(matches!(
+        doc.node(check).content(),
+        UiContent::Image(image) if image.key == "checks.user-supplied.png"
+    ));
+
+    let accessibility = doc.node(checkbox).accessibility.as_ref().unwrap();
+    assert_eq!(accessibility.label.as_deref(), Some("Sync asset checkbox"));
+    assert_eq!(
+        accessibility.hint.as_deref(),
+        Some("Toggles asset synchronization")
+    );
+}
+
+#[cfg(feature = "widgets")]
+#[test]
+fn widget_checkbox_default_hit_rect_tracks_visible_composition() {
+    let mut doc = UiDocument::new(root_style(260.0, 80.0));
+    let root = doc.root;
+    let checkbox = widgets::checkbox(
+        &mut doc,
+        root,
+        "sync",
+        "Sync",
+        false,
+        widgets::CheckboxOptions::default().with_action("sync"),
+    );
+    doc.compute_layout(UiSize::new(260.0, 80.0), &mut ApproxTextMeasurer)
+        .expect("layout");
+
+    let checkbox_rect = doc.node(checkbox).layout.rect;
+    let box_rect = doc.node(doc.node(checkbox).children[0]).layout.rect;
+    let label_rect = doc.node(doc.node(checkbox).children[1]).layout.rect;
+    let visible_height = box_rect.height.max(label_rect.height);
+
+    assert!(
+        (checkbox_rect.height - visible_height).abs() < 0.01,
+        "checkbox hit rect should be sized from visible content, not a hard-coded row: checkbox={checkbox_rect:?} box={box_rect:?} label={label_rect:?}"
+    );
+    assert!(
+        checkbox_rect.height < 28.0,
+        "checkbox default should not reserve invisible vertical hit padding: {checkbox_rect:?}"
+    );
+}
+
 #[cfg(feature = "widgets")]
 #[test]
 fn widget_action_helpers_preserve_order_and_map_drag_value_edits() {
@@ -2524,12 +2714,9 @@ fn widget_table_virtual_list_and_scrollbar_helpers_expose_metadata() {
         node.role == AccessibilityRole::GridCell && node.label.as_deref() == Some("Time")
     }));
 
-    let scroll = ScrollState {
-        axes: ScrollAxes::VERTICAL,
-        offset: UiPoint::new(0.0, 999.0),
-        viewport_size: UiSize::new(10.0, 100.0),
-        content_size: UiSize::new(10.0, 300.0),
-    };
+    let scroll = ScrollState::new(ScrollAxes::VERTICAL)
+        .with_sizes(UiSize::new(10.0, 100.0), UiSize::new(10.0, 300.0))
+        .with_offset(UiPoint::new(0.0, 999.0));
     let thumb = widgets::scrollbar::scrollbar_thumb(
         scroll,
         UiRect::new(0.0, 0.0, 10.0, 100.0),
@@ -2549,12 +2736,8 @@ fn widget_table_virtual_list_and_scrollbar_helpers_expose_metadata() {
 
     let disabled_accessibility = widgets::scrollbar::scrollbar_accessibility(
         "Empty scrollbar",
-        ScrollState {
-            axes: ScrollAxes::VERTICAL,
-            offset: UiPoint::new(0.0, 0.0),
-            viewport_size: UiSize::new(10.0, 100.0),
-            content_size: UiSize::new(10.0, 100.0),
-        },
+        ScrollState::new(ScrollAxes::VERTICAL)
+            .with_sizes(UiSize::new(10.0, 100.0), UiSize::new(10.0, 100.0)),
         widgets::scrollbar::ScrollAxis::Vertical,
     );
     assert!(!disabled_accessibility.enabled);
@@ -2563,12 +2746,9 @@ fn widget_table_virtual_list_and_scrollbar_helpers_expose_metadata() {
 #[cfg(feature = "widgets")]
 #[test]
 fn widget_scrollbar_drag_state_maps_pointer_delta_to_scroll_offsets() {
-    let vertical = ScrollState {
-        axes: ScrollAxes::VERTICAL,
-        offset: UiPoint::new(0.0, 60.0),
-        viewport_size: UiSize::new(10.0, 100.0),
-        content_size: UiSize::new(10.0, 400.0),
-    };
+    let vertical = ScrollState::new(ScrollAxes::VERTICAL)
+        .with_sizes(UiSize::new(10.0, 100.0), UiSize::new(10.0, 400.0))
+        .with_offset(UiPoint::new(0.0, 60.0));
     let track = UiRect::new(0.0, 0.0, 10.0, 100.0);
     let drag = widgets::scrollbar::ScrollbarDragState::new(
         vertical,
@@ -2589,12 +2769,9 @@ fn widget_scrollbar_drag_state_maps_pointer_delta_to_scroll_offsets() {
         UiPoint::new(0.0, 300.0)
     );
 
-    let horizontal = ScrollState {
-        axes: ScrollAxes::HORIZONTAL,
-        offset: UiPoint::new(30.0, 0.0),
-        viewport_size: UiSize::new(50.0, 10.0),
-        content_size: UiSize::new(200.0, 10.0),
-    };
+    let horizontal = ScrollState::new(ScrollAxes::HORIZONTAL)
+        .with_sizes(UiSize::new(50.0, 10.0), UiSize::new(200.0, 10.0))
+        .with_offset(UiPoint::new(30.0, 0.0));
     let drag = widgets::scrollbar::ScrollbarDragState::new(
         horizontal,
         UiRect::new(0.0, 0.0, 100.0, 10.0),
@@ -2607,12 +2784,8 @@ fn widget_scrollbar_drag_state_maps_pointer_delta_to_scroll_offsets() {
     assert_eq!(offset.y, 0.0);
 
     assert!(widgets::scrollbar::ScrollbarDragState::new(
-        ScrollState {
-            axes: ScrollAxes::VERTICAL,
-            offset: UiPoint::new(0.0, 0.0),
-            viewport_size: UiSize::new(10.0, 100.0),
-            content_size: UiSize::new(10.0, 100.0),
-        },
+        ScrollState::new(ScrollAxes::VERTICAL)
+            .with_sizes(UiSize::new(10.0, 100.0), UiSize::new(10.0, 100.0)),
         track,
         widgets::scrollbar::ScrollAxis::Vertical,
         UiPoint::new(0.0, 0.0),

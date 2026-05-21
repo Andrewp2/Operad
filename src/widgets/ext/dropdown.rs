@@ -5,15 +5,18 @@ use taffy::prelude::{
     Size as TaffySize, Style,
 };
 
+use crate::widgets::{
+    inline_intrinsic_base_size, publish_inline_intrinsic_size, single_line_text_style,
+};
 use crate::{
-    length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ClipScope,
-    ColorRgba, ImageContent, InputBehavior, KeyCode, LayoutStyle, ScrollAxes, ShaderEffect,
-    StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle,
-    UiPortalTarget, UiSize, UiVisual,
+    length, AccessibilityAction, AccessibilityMeta, AccessibilityRole, AnimationMachine,
+    ClipBehavior, ClipScope, ColorRgba, ImageContent, InputBehavior, InteractionVisuals, KeyCode,
+    LayoutStyle, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiInputEvent,
+    UiNode, UiNodeId, UiNodeStyle, UiPortalTarget, UiSize, UiVisual,
 };
 
 use super::menu::{
-    button_like, first_typeahead_character, is_typeahead_character, label, leading_image,
+    first_typeahead_character, is_typeahead_character, label, leading_image,
     menu_accessibility_label, next_matching_index, normalize, normalized_character, place_popup,
     pop_last_char, popup_panel, row_style, set_active_descendant, visible_match_range,
     visible_row_count, AnchoredPopup, NavigationDirection, PopupOptions, SearchFieldState,
@@ -1028,6 +1031,71 @@ impl SelectMenuOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
+
+    pub const fn with_width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
+    pub const fn with_row_height(mut self, row_height: f32) -> Self {
+        self.row_height = row_height;
+        self
+    }
+
+    pub const fn with_max_visible_rows(mut self, max_visible_rows: usize) -> Self {
+        self.max_visible_rows = max_visible_rows;
+        self
+    }
+
+    pub fn with_menu_visual(mut self, visual: UiVisual) -> Self {
+        self.menu_visual = visual;
+        self
+    }
+
+    pub fn with_item_visual(mut self, visual: UiVisual) -> Self {
+        self.item_visual = visual;
+        self
+    }
+
+    pub fn with_active_visual(mut self, visual: UiVisual) -> Self {
+        self.active_visual = visual;
+        self
+    }
+
+    pub fn with_selected_visual(mut self, visual: UiVisual) -> Self {
+        self.selected_visual = visual;
+        self
+    }
+
+    pub fn with_disabled_visual(mut self, visual: UiVisual) -> Self {
+        self.disabled_visual = visual;
+        self
+    }
+
+    pub fn with_text_style(mut self, style: TextStyle) -> Self {
+        self.text_style = style;
+        self
+    }
+
+    pub fn with_disabled_text_style(mut self, style: TextStyle) -> Self {
+        self.disabled_text_style = style;
+        self
+    }
+
+    pub const fn with_image_size(mut self, size: UiSize) -> Self {
+        self.image_size = size;
+        self
+    }
+
+    pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn with_portal(mut self, portal: UiPortalTarget) -> Self {
+        self.portal = portal;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1084,10 +1152,7 @@ pub fn select_menu_popup(
         PopupOptions {
             visual: menu_options.menu_visual,
             z_index: menu_options.z_index,
-            clip_scope: match menu_options.portal {
-                UiPortalTarget::Parent => ClipScope::Parent,
-                _ => ClipScope::Viewport,
-            },
+            clip_scope: ClipScope::Viewport,
             portal: menu_options.portal.clone(),
             scroll_axes: if options.len() > menu_options.max_visible_rows {
                 ScrollAxes::VERTICAL
@@ -1120,7 +1185,12 @@ pub fn select_menu_popup(
 pub struct DropdownSelectOptions {
     pub trigger_layout: LayoutStyle,
     pub trigger_visual: UiVisual,
+    pub hovered_trigger_visual: Option<UiVisual>,
+    pub pressed_trigger_visual: Option<UiVisual>,
     pub text_style: TextStyle,
+    pub indicator_text_style: Option<TextStyle>,
+    pub closed_indicator: String,
+    pub open_indicator: String,
     pub placeholder: String,
     pub accessibility_label: Option<String>,
     pub menu: SelectMenuOptions,
@@ -1133,12 +1203,16 @@ impl Default for DropdownSelectOptions {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Row,
                 align_items: Some(AlignItems::Center),
-                justify_content: Some(JustifyContent::Center),
+                justify_content: Some(JustifyContent::FlexStart),
                 size: TaffySize {
                     width: length(180.0),
                     height: length(30.0),
                 },
-                padding: TaffyRect::length(6.0),
+                padding: TaffyRect::length(6.0_f32),
+                gap: TaffySize {
+                    width: taffy::prelude::LengthPercentage::length(6.0),
+                    height: taffy::prelude::LengthPercentage::length(0.0),
+                },
                 ..Default::default()
             }),
             trigger_visual: UiVisual::panel(
@@ -1146,11 +1220,81 @@ impl Default for DropdownSelectOptions {
                 Some(StrokeStyle::new(ColorRgba::new(84, 98, 121, 255), 1.0)),
                 4.0,
             ),
+            hovered_trigger_visual: Some(UiVisual::panel(
+                ColorRgba::new(43, 52, 64, 255),
+                Some(StrokeStyle::new(ColorRgba::new(112, 135, 166, 255), 1.0)),
+                4.0,
+            )),
+            pressed_trigger_visual: Some(UiVisual::panel(
+                ColorRgba::new(28, 36, 48, 255),
+                Some(StrokeStyle::new(ColorRgba::new(120, 170, 230, 255), 1.0)),
+                4.0,
+            )),
             text_style: TextStyle::default(),
+            indicator_text_style: None,
+            closed_indicator: "▼".to_string(),
+            open_indicator: "▲".to_string(),
             placeholder: String::new(),
             accessibility_label: None,
             menu: SelectMenuOptions::default(),
         }
+    }
+}
+
+impl DropdownSelectOptions {
+    pub fn with_trigger_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.trigger_layout = layout.into();
+        self
+    }
+
+    pub fn with_trigger_visual(mut self, visual: UiVisual) -> Self {
+        self.trigger_visual = visual;
+        self
+    }
+
+    pub fn with_hovered_trigger_visual(mut self, visual: UiVisual) -> Self {
+        self.hovered_trigger_visual = Some(visual);
+        self
+    }
+
+    pub fn with_pressed_trigger_visual(mut self, visual: UiVisual) -> Self {
+        self.pressed_trigger_visual = Some(visual);
+        self
+    }
+
+    pub fn with_text_style(mut self, style: TextStyle) -> Self {
+        self.text_style = style;
+        self
+    }
+
+    pub fn with_indicator_text_style(mut self, style: TextStyle) -> Self {
+        self.indicator_text_style = Some(style);
+        self
+    }
+
+    pub fn with_indicator_texts(
+        mut self,
+        closed: impl Into<String>,
+        open: impl Into<String>,
+    ) -> Self {
+        self.closed_indicator = closed.into();
+        self.open_indicator = open.into();
+        self
+    }
+
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn with_menu(mut self, menu: SelectMenuOptions) -> Self {
+        self.menu = menu;
+        self
     }
 }
 
@@ -1173,14 +1317,13 @@ pub fn dropdown_select(
     let label = state
         .selected_label(options)
         .unwrap_or(dropdown_options.placeholder.as_str());
-    let trigger = button_like(
+    let trigger = dropdown_select_trigger(
         document,
         parent,
         name.clone(),
         label,
-        dropdown_options.trigger_layout,
-        dropdown_options.trigger_visual,
-        dropdown_options.text_style,
+        state,
+        &dropdown_options,
     );
     document.node_mut(trigger).accessibility = Some(
         AccessibilityMeta::new(AccessibilityRole::ComboBox)
@@ -1192,6 +1335,11 @@ pub fn dropdown_select(
             )
             .value(label.to_string())
             .expanded(state.open)
+            .action(if state.open {
+                AccessibilityAction::new("close", "Close")
+            } else {
+                AccessibilityAction::new("open", "Open")
+            })
             .focusable(),
     );
     let popup = state.open.then(|| {
@@ -1217,6 +1365,102 @@ pub fn dropdown_select(
     }
 
     DropdownSelectNodes { trigger, popup }
+}
+
+fn dropdown_select_trigger(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: String,
+    label_text: &str,
+    state: &SelectMenuState,
+    options: &DropdownSelectOptions,
+) -> UiNodeId {
+    let mut layout = options.trigger_layout.style.clone();
+    layout.display = Display::Flex;
+    layout.flex_direction = FlexDirection::Row;
+    layout.align_items = Some(AlignItems::Center);
+    layout.justify_content = Some(JustifyContent::FlexStart);
+
+    let normal_visual = if state.open {
+        options
+            .pressed_trigger_visual
+            .unwrap_or(options.trigger_visual)
+    } else {
+        options.trigger_visual
+    };
+    let interaction_visuals = InteractionVisuals::new(normal_visual)
+        .hovered(options.hovered_trigger_visual.unwrap_or(normal_visual))
+        .pressed(options.pressed_trigger_visual.unwrap_or(normal_visual))
+        .pressed_hovered(options.pressed_trigger_visual.unwrap_or(normal_visual));
+    let trigger = document.add_child(
+        parent,
+        UiNode::container(
+            name.clone(),
+            UiNodeStyle {
+                layout: layout.clone(),
+                clip: ClipBehavior::Clip,
+                ..Default::default()
+            },
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(normal_visual)
+        .with_interaction_visuals(interaction_visuals),
+    );
+
+    let label_style = single_line_text_style(options.text_style.clone());
+    let label_node = label(
+        document,
+        trigger,
+        format!("{name}.label"),
+        label_text,
+        label_style,
+        LayoutStyle::from_taffy_style(Style {
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            size: TaffySize {
+                width: Dimension::auto(),
+                height: Dimension::auto(),
+            },
+            min_size: TaffySize {
+                width: length(0.0),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        }),
+    );
+    let indicator_style = single_line_text_style(
+        options
+            .indicator_text_style
+            .clone()
+            .unwrap_or_else(|| options.text_style.clone()),
+    );
+    let indicator_text = if state.open {
+        &options.open_indicator
+    } else {
+        &options.closed_indicator
+    };
+    let indicator_node = label(
+        document,
+        trigger,
+        format!("{name}.indicator"),
+        indicator_text,
+        indicator_style,
+        LayoutStyle::from_taffy_style(Style {
+            flex_shrink: 0.0,
+            size: TaffySize {
+                width: length(14.0),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        }),
+    );
+    publish_inline_intrinsic_size(
+        document,
+        trigger,
+        vec![label_node, indicator_node],
+        inline_intrinsic_base_size(&layout, &[], 2),
+    );
+    trigger
 }
 
 fn menu_container_node(
@@ -1355,14 +1599,23 @@ fn select_row_node(
         accessibility = accessibility.disabled();
     }
 
+    let visual = select_row_visual(index, option, state, options);
     let mut node = UiNode::container(name, row_style(options.row_height))
         .with_input(if option.enabled {
             InputBehavior::BUTTON
         } else {
             InputBehavior::NONE
         })
-        .with_visual(select_row_visual(index, option, state, options))
+        .with_visual(visual)
         .with_accessibility(accessibility);
+    if option.enabled {
+        node = node.with_interaction_visuals(
+            InteractionVisuals::new(visual)
+                .hovered(options.active_visual)
+                .pressed(options.active_visual)
+                .pressed_hovered(options.active_visual),
+        );
+    }
     if active {
         if let Some(shader) = options.active_shader.clone() {
             node = node.with_shader(shader);
@@ -1537,7 +1790,16 @@ fn option_accessibility_label(option: &SelectOption) -> String {
 mod tests {
     use super::*;
     use crate::widgets::ext::PopupPlacement;
-    use crate::{root_style, ApproxTextMeasurer, UiRect};
+    use crate::{root_style, ApproxTextMeasurer, UiContent, UiInputEvent, UiPoint, UiRect};
+
+    fn node_id(document: &UiDocument, name: &str) -> UiNodeId {
+        document
+            .nodes()
+            .iter()
+            .enumerate()
+            .find_map(|(index, node)| (node.name() == name).then_some(UiNodeId::from_index(index)))
+            .unwrap_or_else(|| panic!("missing node {name:?}"))
+    }
 
     #[test]
     fn select_menu_state_selects_enabled_option_ids() {
@@ -1625,5 +1887,174 @@ mod tests {
             assert!((rect.height - 30.0).abs() < 0.01);
             assert!((rect.width - 148.0).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn select_menu_popup_rows_highlight_on_pointer_hover() {
+        let mut document = UiDocument::new(root_style(360.0, 320.0));
+        let options = vec![
+            SelectOption::new("compact", "Compact"),
+            SelectOption::new("comfortable", "Comfortable"),
+            SelectOption::new("disabled", "Disabled").disabled(),
+        ];
+        let state = SelectMenuState {
+            open: true,
+            selected: Some(0),
+            active: Some(0),
+        };
+        let root = document.root;
+        let nodes = select_menu_popup(
+            &mut document,
+            root,
+            "density.popup",
+            AnchoredPopup::new(
+                UiRect::new(12.0, 12.0, 180.0, 30.0),
+                UiRect::new(0.0, 0.0, 360.0, 320.0),
+                PopupPlacement::default(),
+            ),
+            &options,
+            &state,
+            SelectMenuOptions {
+                width: 180.0,
+                max_visible_rows: options.len(),
+                ..Default::default()
+            },
+        );
+        document
+            .compute_layout(UiSize::new(360.0, 320.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let hovered_row = nodes.rows[1];
+        let disabled_row = nodes.rows[2];
+        let row_rect = document.node(hovered_row).layout.rect;
+        let normal_visual = document.node(hovered_row).visual;
+        assert_ne!(normal_visual, SelectMenuOptions::default().active_visual);
+        assert!(
+            document.node(hovered_row).interaction_visuals().is_some(),
+            "enabled dropdown options should publish hover visuals"
+        );
+        assert!(
+            document.node(disabled_row).interaction_visuals().is_none(),
+            "disabled dropdown options should not become hover-highlightable"
+        );
+
+        let result = document.handle_input(UiInputEvent::PointerMove(UiPoint::new(
+            row_rect.x + row_rect.width * 0.5,
+            row_rect.y + row_rect.height * 0.5,
+        )));
+
+        assert_eq!(result.hovered, Some(hovered_row));
+        assert_eq!(
+            document.node(hovered_row).visual,
+            SelectMenuOptions::default().active_visual
+        );
+    }
+
+    #[test]
+    fn select_menu_popup_parent_portal_keeps_viewport_clip_scope() {
+        let mut document = UiDocument::new(root_style(360.0, 320.0));
+        let parent = document.add_child(
+            document.root,
+            UiNode::container(
+                "scroll.parent",
+                LayoutStyle::column().with_width(220.0).with_height(80.0),
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        let options = vec![
+            SelectOption::new("compact", "Compact"),
+            SelectOption::new("comfortable", "Comfortable"),
+            SelectOption::new("spacious", "Spacious"),
+        ];
+        let state = SelectMenuState::new().with_open(&options);
+        let nodes = select_menu_popup(
+            &mut document,
+            parent,
+            "density.popup",
+            AnchoredPopup::new(
+                UiRect::new(8.0, 56.0, 160.0, 30.0),
+                UiRect::new(0.0, 0.0, 360.0, 320.0),
+                PopupPlacement::default(),
+            ),
+            &options,
+            &state,
+            SelectMenuOptions {
+                portal: UiPortalTarget::Parent,
+                width: 160.0,
+                max_visible_rows: options.len(),
+                ..Default::default()
+            },
+        );
+        document
+            .compute_layout(UiSize::new(360.0, 320.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let popup = document.node(nodes.root);
+        assert_eq!(popup.parent, Some(parent));
+        assert_eq!(popup.clip_scope, ClipScope::Viewport);
+        assert!(
+            popup.layout.clip_rect.height >= popup.layout.rect.height,
+            "popup should not inherit the scroll parent's clip: rect={:?} clip={:?}",
+            popup.layout.rect,
+            popup.layout.clip_rect
+        );
+    }
+
+    #[test]
+    fn dropdown_select_trigger_uses_combobox_affordance_by_default() {
+        let mut document = UiDocument::new(root_style(320.0, 160.0));
+        let options = vec![
+            SelectOption::new("en-US", "English"),
+            SelectOption::new("es-MX", "Español"),
+        ];
+        let state = SelectMenuState::with_selected(0);
+        let root = document.root;
+        let nodes = dropdown_select(
+            &mut document,
+            root,
+            "locale",
+            &options,
+            &state,
+            None,
+            DropdownSelectOptions::default().with_trigger_layout(
+                LayoutStyle::row()
+                    .with_width(160.0)
+                    .with_height(30.0)
+                    .padding(6.0),
+            ),
+        );
+        document
+            .compute_layout(UiSize::new(320.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let trigger = document.node(nodes.trigger);
+        assert_eq!(
+            trigger.style.layout.justify_content,
+            Some(JustifyContent::FlexStart)
+        );
+        assert!(
+            trigger.interaction_visuals().is_some(),
+            "dropdown trigger should publish hover and pressed visuals"
+        );
+
+        let label = document
+            .node(node_id(&document, "locale.label"))
+            .layout
+            .rect;
+        let indicator_node = document.node(node_id(&document, "locale.indicator"));
+        let indicator = indicator_node.layout.rect;
+        assert!(
+            label.x < indicator.x,
+            "dropdown label should sit before the right-side indicator: label={label:?} indicator={indicator:?}"
+        );
+        assert!(
+            indicator.right() <= trigger.layout.rect.right() - 5.0,
+            "indicator should stay at the right side within trigger padding: indicator={indicator:?} trigger={:?}",
+            trigger.layout.rect
+        );
+        assert!(matches!(
+            indicator_node.content(),
+            UiContent::Text(text) if text.text == "▼"
+        ));
     }
 }

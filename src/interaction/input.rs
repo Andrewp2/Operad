@@ -284,6 +284,24 @@ impl RawTextInputEvent {
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn text_input_for_key_event_text(text: &str) -> Option<String> {
+    if text.is_empty() {
+        return None;
+    }
+    let mut filtered = String::with_capacity(text.len());
+    for character in text.chars() {
+        if !character.is_control() {
+            filtered.push(character);
+        }
+    }
+    (!filtered.is_empty()).then_some(filtered)
+}
+
+pub(crate) fn text_input_is_keyboard_line_break(text: &str) -> bool {
+    matches!(text, "\n" | "\r" | "\r\n")
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RawInputEvent {
     Pointer(RawPointerEvent),
@@ -313,7 +331,8 @@ impl RawInputEvent {
             Self::Wheel(event) => Some(UiInputEvent::Wheel(
                 UiWheelEvent::pixels(event.position, event.pixel_delta(line_size, page_size))
                     .unit(event.unit)
-                    .phase(event.phase),
+                    .phase(event.phase)
+                    .modifiers(event.modifiers),
             )),
             Self::Keyboard(event) if event.pressed => Some(UiInputEvent::Key {
                 key: event.key,
@@ -716,7 +735,11 @@ mod tests {
     fn raw_input_events_convert_to_document_events_with_wheel_metadata() {
         let wheel = RawInputEvent::Wheel(
             RawWheelEvent::lines(UiPoint::new(10.0, 20.0), UiPoint::new(0.5, -2.0), 5)
-                .phase(WheelPhase::Started),
+                .phase(WheelPhase::Started)
+                .modifiers(KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::NONE
+                }),
         );
         assert_eq!(
             wheel.to_ui_input_event_with_wheel_scale(18.0, UiSize::new(400.0, 300.0)),
@@ -724,6 +747,10 @@ mod tests {
                 UiWheelEvent::pixels(UiPoint::new(10.0, 20.0), UiPoint::new(9.0, -36.0))
                     .unit(WheelDeltaUnit::Line)
                     .phase(WheelPhase::Started)
+                    .modifiers(KeyModifiers {
+                        shift: true,
+                        ..KeyModifiers::NONE
+                    })
             ))
         );
 
@@ -745,6 +772,20 @@ mod tests {
             11,
         ));
         assert_eq!(key_release.to_ui_input_event(), None);
+    }
+
+    #[test]
+    fn key_event_text_filters_control_characters() {
+        assert_eq!(text_input_for_key_event_text("a"), Some("a".to_string()));
+        assert_eq!(text_input_for_key_event_text("é"), Some("é".to_string()));
+        assert_eq!(text_input_for_key_event_text("\r"), None);
+        assert_eq!(text_input_for_key_event_text("\n"), None);
+        assert_eq!(text_input_for_key_event_text("\t"), None);
+        assert_eq!(text_input_for_key_event_text("a\n"), Some("a".to_string()));
+        assert!(text_input_is_keyboard_line_break("\n"));
+        assert!(text_input_is_keyboard_line_break("\r"));
+        assert!(text_input_is_keyboard_line_break("\r\n"));
+        assert!(!text_input_is_keyboard_line_break("\n\n"));
     }
 
     #[test]

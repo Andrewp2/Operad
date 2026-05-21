@@ -4,10 +4,11 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, LengthPercentage, LengthPercentageAuto,
-    Rect as TaffyRect, Size as TaffySize, Style,
+    AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentage,
+    LengthPercentageAuto, Rect as TaffyRect, Size as TaffySize, Style,
 };
 
+use crate::widgets::{button, ButtonOptions};
 use crate::{
     drag_drop::{DragSourceDescriptor, DragSourceId, DropTargetDescriptor, DropTargetId},
     platform::{DragOperation, DragPayload},
@@ -18,7 +19,7 @@ use crate::{
     AccessibilityAction, AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, CommandId,
     DragDropSurfaceKind, DropPayloadFilter, ImageContent, InputBehavior, LayoutStyle, ScrollAxes,
     ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle,
-    UiRect, UiVisual,
+    UiRect, UiSize, UiVisual,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -834,26 +835,7 @@ fn add_tree_row(
     );
     let row = document.add_child(parent, row);
 
-    if item.depth > 0 {
-        document.add_child(
-            row,
-            UiNode::container(
-                format!("{name}.row.{}.indent", item.id),
-                UiNodeStyle {
-                    layout: LayoutStyle::from_taffy_style(Style {
-                        size: TaffySize {
-                            width: px(item.depth as f32 * options.indent_width),
-                            height: Dimension::percent(1.0),
-                        },
-                        flex_shrink: 0.0,
-                        ..Default::default()
-                    })
-                    .style,
-                    ..Default::default()
-                },
-            ),
-        );
-    }
+    add_tree_indent_guides(document, row, name, item, options);
 
     let disclosure = if item.has_children() {
         if item.expanded {
@@ -905,16 +887,129 @@ fn add_tree_row(
             style,
             LayoutStyle::from_taffy_style(Style {
                 flex_grow: 1.0,
+                flex_shrink: 1.0,
                 size: TaffySize {
-                    width: Dimension::percent(1.0),
+                    width: Dimension::auto(),
                     height: Dimension::percent(1.0),
+                },
+                min_size: TaffySize {
+                    width: px(0.0),
+                    height: Dimension::auto(),
                 },
                 ..Default::default()
             }),
         ),
     );
+    add_tree_row_actions(document, row, name, item, options);
 
     row
+}
+
+fn add_tree_indent_guides(
+    document: &mut UiDocument,
+    row: UiNodeId,
+    name: &str,
+    item: &TreeVisibleItem,
+    options: &TreeViewOptions,
+) {
+    for depth in 0..item.depth {
+        let slot = document.add_child(
+            row,
+            UiNode::container(
+                format!("{name}.row.{}.indent.{depth}", item.id),
+                UiNodeStyle {
+                    layout: LayoutStyle::from_taffy_style(Style {
+                        display: Display::Flex,
+                        align_items: Some(AlignItems::Center),
+                        justify_content: Some(JustifyContent::Center),
+                        size: TaffySize {
+                            width: px(options.indent_width),
+                            height: Dimension::percent(1.0),
+                        },
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    })
+                    .style,
+                    ..Default::default()
+                },
+            ),
+        );
+        document.add_child(
+            slot,
+            UiNode::container(
+                format!("{name}.row.{}.indent.{depth}.guide", item.id),
+                LayoutStyle::new()
+                    .with_width(1.0)
+                    .with_height_percent(1.0)
+                    .with_flex_shrink(0.0),
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(63, 70, 82, 180), None, 0.0)),
+        );
+    }
+}
+
+fn add_tree_row_actions(
+    document: &mut UiDocument,
+    row: UiNodeId,
+    name: &str,
+    item: &TreeVisibleItem,
+    options: &TreeViewOptions,
+) {
+    let Some(prefix) = options.row_action_prefix.as_deref() else {
+        return;
+    };
+    for action in item.enabled_row_actions() {
+        let action_name = action.id.as_str();
+        let mut visual = UiVisual::panel(
+            ColorRgba::new(50, 56, 66, 255),
+            Some(StrokeStyle::new(ColorRgba::new(72, 82, 98, 255), 1.0)),
+            4.0,
+        );
+        let text_color = if action.destructive {
+            ColorRgba::new(255, 176, 64, 255)
+        } else {
+            ColorRgba::new(220, 228, 238, 255)
+        };
+        if action.destructive {
+            visual.fill = ColorRgba::new(58, 48, 38, 255);
+        }
+        let mut button_options = ButtonOptions::new(
+            LayoutStyle::new()
+                .with_height((options.row_height - 6.0).max(20.0))
+                .with_flex_shrink(0.0),
+        )
+        .with_action(format!("{prefix}.action.{}.{}", item.id, action_name));
+        button_options.visual = visual;
+        button_options.hovered_visual = Some(UiVisual::panel(
+            ColorRgba::new(70, 78, 92, 255),
+            Some(StrokeStyle::new(ColorRgba::new(96, 112, 132, 255), 1.0)),
+            4.0,
+        ));
+        button_options.pressed_visual = Some(UiVisual::panel(
+            ColorRgba::new(36, 42, 52, 255),
+            Some(StrokeStyle::new(ColorRgba::new(92, 120, 156, 255), 1.0)),
+            4.0,
+        ));
+        button_options.text_style = TextStyle {
+            font_size: 12.0,
+            line_height: 16.0,
+            color: text_color,
+            wrap: TextWrap::None,
+            ..Default::default()
+        };
+        button_options.accessibility_label = Some(format!("{} {}", action.label, item.label));
+        if let Some(image) = action.leading_image.clone() {
+            button_options.leading_image = Some(image);
+            button_options.image_size = UiSize::new(14.0, 14.0);
+        }
+        button(
+            document,
+            row,
+            format!("{name}.row.{}.action.{action_name}", item.id),
+            action.label.clone(),
+            button_options,
+        );
+    }
 }
 
 fn flatten_tree_items(
@@ -1063,7 +1158,7 @@ fn leading_image_node(
             },
             margin: taffy::prelude::Rect {
                 right: LengthPercentageAuto::length(6.0),
-                ..taffy::prelude::Rect::length(0.0)
+                ..taffy::prelude::Rect::length(0.0_f32)
             },
             flex_shrink: 0.0,
             ..Default::default()
@@ -1162,6 +1257,16 @@ fn finite_nonnegative(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{root_style, ApproxTextMeasurer};
+
+    fn node_id(document: &UiDocument, name: &str) -> UiNodeId {
+        document
+            .nodes()
+            .iter()
+            .enumerate()
+            .find_map(|(index, node)| (node.name() == name).then_some(UiNodeId::from_index(index)))
+            .unwrap_or_else(|| panic!("missing node {name:?}"))
+    }
 
     #[test]
     fn tree_view_state_activates_visible_item_by_id() {
@@ -1180,6 +1285,49 @@ mod tests {
 
         assert!(state.activate_visible_item_id(&roots, "target").is_none());
         assert_eq!(state.selected_index(), Some(item.index));
+    }
+
+    #[test]
+    fn tree_view_renders_row_actions_and_indent_guides() {
+        let mut document = UiDocument::new(root_style(360.0, 240.0));
+        let roots = vec![
+            TreeItem::new("root", "root").with_children(vec![TreeItem::new("child", "child #0")
+                .with_row_action(TreeRowAction::new("delete", "delete").destructive())
+                .with_row_action(TreeRowAction::new("add", "+"))]),
+        ];
+        let state = TreeViewState::expanded(["root"]);
+        let root = document.root;
+        tree_view(
+            &mut document,
+            root,
+            "tree",
+            &roots,
+            &state,
+            TreeViewOptions::default().with_row_action_prefix("tree"),
+        );
+        document
+            .compute_layout(UiSize::new(360.0, 240.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let delete = document.node(node_id(&document, "tree.row.child.action.delete"));
+        assert_eq!(
+            delete
+                .action()
+                .and_then(|action| action.action_id())
+                .map(|id| id.as_str()),
+            Some("tree.action.child.delete")
+        );
+        let add = document.node(node_id(&document, "tree.row.child.action.add"));
+        assert_eq!(
+            add.action()
+                .and_then(|action| action.action_id())
+                .map(|id| id.as_str()),
+            Some("tree.action.child.add")
+        );
+        assert!(document
+            .nodes()
+            .iter()
+            .any(|node| node.name() == "tree.row.child.indent.0.guide"));
     }
 
     #[test]

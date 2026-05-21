@@ -14,9 +14,9 @@ use crate::{
     platform::{ClipboardRequest, DragOperation, DragPayload},
     AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
     AccessibilitySortDirection, ClipBehavior, ColorRgba, CommandId, DragDropSurfaceKind,
-    DropPayloadFilter, ImageContent, InputBehavior, LayoutStyle, ScrollAxes, ShaderEffect,
-    StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect,
-    UiVisual, WidgetActionMode,
+    DropPayloadFilter, ImageContent, InputBehavior, InteractionVisuals, LayoutStyle, ScrollAxes,
+    ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle,
+    UiPoint, UiRect, UiVisual, WidgetActionMode,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1535,7 +1535,7 @@ pub fn virtualized_data_table(
     );
 
     if let Some(scroll) = &mut document.node_mut(body).scroll {
-        scroll.offset = scroll_offset;
+        scroll.set_offset(scroll_offset);
     }
     if let Some(action) = options.scroll_action.clone() {
         document.node_mut(body).action = Some(action.into());
@@ -1603,7 +1603,7 @@ pub fn virtualized_data_table(
                             width: px(column.resolved_width()),
                             height: Dimension::percent(1.0),
                         },
-                        padding: taffy::prelude::Rect::length(6.0),
+                        padding: taffy::prelude::Rect::length(6.0_f32),
                         flex_shrink: 0.0,
                         ..Default::default()
                     })
@@ -1833,7 +1833,7 @@ fn data_table_header(
                         width: px(column.resolved_width()),
                         height: Dimension::percent(1.0),
                     },
-                    padding: taffy::prelude::Rect::length(6.0),
+                    padding: taffy::prelude::Rect::length(6.0_f32),
                     flex_shrink: 0.0,
                     ..Default::default()
                 })
@@ -1886,42 +1886,59 @@ fn data_table_header(
         );
         if column.resizable {
             if let Some(command) = &column.resize_command {
-                document.add_child(
-                    cell,
-                    UiNode::container(
-                        format!("{name}.{}.resize", column.id),
-                        UiNodeStyle {
-                            layout: LayoutStyle::from_taffy_style(Style {
-                                position: Position::Absolute,
-                                inset: taffy::prelude::Rect {
-                                    left: LengthPercentageAuto::auto(),
-                                    right: LengthPercentageAuto::length(0.0),
-                                    top: LengthPercentageAuto::length(0.0),
-                                    bottom: LengthPercentageAuto::length(0.0),
-                                },
-                                size: TaffySize {
-                                    width: px(8.0),
-                                    height: Dimension::percent(1.0),
-                                },
+                let resize =
+                    document.add_child(
+                        cell,
+                        UiNode::container(
+                            format!("{name}.{}.resize", column.id),
+                            UiNodeStyle {
+                                layout: LayoutStyle::from_taffy_style(Style {
+                                    position: Position::Absolute,
+                                    display: Display::Flex,
+                                    align_items: Some(AlignItems::Center),
+                                    justify_content: Some(JustifyContent::Center),
+                                    inset: taffy::prelude::Rect {
+                                        left: LengthPercentageAuto::auto(),
+                                        right: LengthPercentageAuto::length(0.0),
+                                        top: LengthPercentageAuto::length(0.0),
+                                        bottom: LengthPercentageAuto::length(0.0),
+                                    },
+                                    size: TaffySize {
+                                        width: px(8.0),
+                                        height: Dimension::percent(1.0),
+                                    },
+                                    ..Default::default()
+                                })
+                                .style,
                                 ..Default::default()
-                            })
-                            .style,
-                            ..Default::default()
-                        },
+                            },
+                        )
+                        .with_input(InputBehavior::BUTTON)
+                        .with_action(command.as_str())
+                        .with_action_mode(WidgetActionMode::PointerEditParentRect)
+                        .with_interaction_visuals(
+                            InteractionVisuals::new(UiVisual::TRANSPARENT).hovered(
+                                UiVisual::panel(ColorRgba::new(108, 122, 144, 42), None, 0.0),
+                            ),
+                        )
+                        .with_accessibility(
+                            AccessibilityMeta::new(AccessibilityRole::Button)
+                                .label(format!("Resize {}", column.label))
+                                .focusable(),
+                        ),
+                    );
+                document.add_child(
+                    resize,
+                    UiNode::container(
+                        format!("{name}.{}.resize.line", column.id),
+                        LayoutStyle::size(2.0, (options.header_height - 12.0).max(8.0))
+                            .with_flex_shrink(0.0),
                     )
-                    .with_input(InputBehavior::BUTTON)
-                    .with_action(command.as_str())
-                    .with_action_mode(WidgetActionMode::PointerEditParentRect)
                     .with_visual(UiVisual::panel(
-                        ColorRgba::new(108, 122, 144, 110),
+                        ColorRgba::new(108, 122, 144, 120),
                         None,
-                        0.0,
-                    ))
-                    .with_accessibility(
-                        AccessibilityMeta::new(AccessibilityRole::Button)
-                            .label(format!("Resize {}", column.label))
-                            .focusable(),
-                    ),
+                        1.0,
+                    )),
                 );
             }
         }
@@ -2144,7 +2161,7 @@ fn leading_image_node(
             },
             margin: taffy::prelude::Rect {
                 right: LengthPercentageAuto::length(6.0),
-                ..taffy::prelude::Rect::length(0.0)
+                ..taffy::prelude::Rect::length(0.0_f32)
             },
             flex_shrink: 0.0,
             ..Default::default()

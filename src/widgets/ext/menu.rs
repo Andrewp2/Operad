@@ -251,6 +251,12 @@ pub fn popup_panel(
         shader,
         animation,
     } = options;
+    let popup_stack_parent = match &portal {
+        UiPortalTarget::Parent | UiPortalTarget::AppOverlay | UiPortalTarget::Named(_) => {
+            Some(document.nearest_stacking_context(parent))
+        }
+        UiPortalTarget::GlobalAppOverlay | UiPortalTarget::GlobalNamed(_) => None,
+    };
     let mut node = UiNode::container(
         name,
         UiNodeStyle {
@@ -262,6 +268,7 @@ pub fn popup_panel(
     )
     .with_clip_scope(clip_scope)
     .with_visual(visual);
+    node.stack_parent = popup_stack_parent;
     if let Some(layer) = layer {
         node = node.with_layer(layer);
     }
@@ -1138,6 +1145,8 @@ fn menu_button_trigger(
     layout.flex_direction = FlexDirection::Row;
     layout.align_items = Some(AlignItems::Center);
     layout.justify_content = layout.justify_content.or(Some(JustifyContent::Center));
+    let mut fixed_intrinsic_items = Vec::<Style>::new();
+    let mut intrinsic_sources = Vec::<UiNodeId>::new();
 
     let visual = if !options.enabled {
         options.disabled_visual.unwrap_or(options.visual)
@@ -1149,7 +1158,7 @@ fn menu_button_trigger(
     let mut node = UiNode::container(
         name.clone(),
         UiNodeStyle {
-            layout,
+            layout: layout.clone(),
             clip: ClipBehavior::Clip,
             z_index: if open { 20 } else { 0 },
             ..Default::default()
@@ -1174,6 +1183,7 @@ fn menu_button_trigger(
         document.node_mut(root).action = Some(action);
     }
     if let Some(image) = &options.leading_image {
+        fixed_intrinsic_items.push(leading_image_style(options.image_size));
         leading_image(
             document,
             root,
@@ -1184,15 +1194,15 @@ fn menu_button_trigger(
         );
     }
     if !label_text.is_empty() {
-        label(
+        let label = label(
             document,
             root,
             format!("{name}.label"),
             label_text,
             if options.enabled {
-                options.text_style.clone()
+                single_line_text_style(options.text_style.clone())
             } else {
-                options.disabled_text_style.clone()
+                single_line_text_style(options.disabled_text_style.clone())
             },
             LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
@@ -1201,6 +1211,17 @@ fn menu_button_trigger(
                 },
                 ..Default::default()
             }),
+        );
+        intrinsic_sources.push(label);
+    }
+    if !intrinsic_sources.is_empty() || !fixed_intrinsic_items.is_empty() {
+        let fixed_items = fixed_intrinsic_items.iter().collect::<Vec<_>>();
+        let inline_items = fixed_items.len() + intrinsic_sources.len();
+        publish_inline_intrinsic_size(
+            document,
+            root,
+            intrinsic_sources,
+            inline_intrinsic_base_size(&layout, &fixed_items, inline_items),
         );
     }
     root
@@ -1833,25 +1854,29 @@ pub(in crate::widgets::ext) fn leading_image(
         UiNode::image(
             name,
             image,
-            LayoutStyle::from_taffy_style(Style {
-                size: TaffySize {
-                    width: length(image_size.width.max(0.0)),
-                    height: length(image_size.height.max(0.0)),
-                },
-                margin: TaffyRect {
-                    left: LengthPercentageAuto::length(0.0),
-                    right: LengthPercentageAuto::length(6.0),
-                    top: LengthPercentageAuto::length(0.0),
-                    bottom: LengthPercentageAuto::length(0.0),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }),
+            LayoutStyle::from_taffy_style(leading_image_style(image_size)),
         )
         .with_accessibility(
             AccessibilityMeta::new(AccessibilityRole::Image).label(accessibility_label),
         ),
     )
+}
+
+pub(in crate::widgets::ext) fn leading_image_style(image_size: UiSize) -> Style {
+    Style {
+        size: TaffySize {
+            width: length(image_size.width.max(0.0)),
+            height: length(image_size.height.max(0.0)),
+        },
+        margin: TaffyRect {
+            left: LengthPercentageAuto::length(0.0),
+            right: LengthPercentageAuto::length(6.0),
+            top: LengthPercentageAuto::length(0.0),
+            bottom: LengthPercentageAuto::length(0.0),
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
+    }
 }
 
 pub(in crate::widgets::ext) fn menu_accessibility_label(
@@ -1883,27 +1908,6 @@ pub(in crate::widgets::ext) fn command_shortcut_label(
         .formatter(formatter.clone())
         .shortcut_for(command, active_scopes)
         .map(|shortcut| formatter.format(shortcut))
-}
-
-pub(in crate::widgets::ext) fn button_like(
-    document: &mut UiDocument,
-    parent: UiNodeId,
-    name: impl Into<String>,
-    label_text: impl Into<String>,
-    layout: LayoutStyle,
-    visual: UiVisual,
-    text_style: TextStyle,
-) -> UiNodeId {
-    button_like_with_input(
-        document,
-        parent,
-        name,
-        label_text,
-        layout,
-        visual,
-        text_style,
-        InputBehavior::BUTTON,
-    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2054,8 +2058,8 @@ mod tests {
         root_style, AccessibilityMeta, AccessibilityRole, AnimatedValues, AnimationMachine,
         AnimationState, AnimationTransition, AnimationTrigger, ApproxTextMeasurer, Command,
         CommandId, CommandMeta, CommandRegistry, CommandScope, KeyModifiers, PointerButton,
-        PointerEventKind, ShaderEffect, Shortcut, UiContent, UiPoint, WidgetActionBinding,
-        APP_OVERLAY_PORTAL,
+        PointerEventKind, ShaderEffect, Shortcut, UiContent, UiPoint, UiPortalTarget,
+        WidgetActionBinding, APP_OVERLAY_PORTAL,
     };
 
     fn test_animation() -> AnimationMachine {
@@ -2167,6 +2171,107 @@ mod tests {
         );
 
         assert_eq!(document.node(popup).parent, Some(parent));
+        assert!(document.portal_host(APP_OVERLAY_PORTAL).is_none());
+    }
+
+    #[test]
+    fn parent_popup_stacks_above_later_siblings_inside_same_window() {
+        let mut document = UiDocument::new(root_style(360.0, 240.0));
+        let window = document.add_child(
+            document.root,
+            UiNode::container(
+                "window",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 260.0, 180.0)).style,
+                    z_index: 40,
+                    ..Default::default()
+                },
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(22, 27, 34, 255), None, 0.0)),
+        );
+        let source = document.add_child(
+            window,
+            UiNode::container("source", LayoutStyle::column().with_width(120.0)),
+        );
+        let anchor = document.add_child(
+            source,
+            UiNode::container("anchor", LayoutStyle::size(80.0, 30.0)),
+        );
+        let popup = popup_panel(
+            &mut document,
+            anchor,
+            "dropdown.popup",
+            UiRect::new(0.0, 30.0, 120.0, 80.0),
+            PopupOptions {
+                portal: UiPortalTarget::Parent,
+                ..Default::default()
+            },
+        );
+        let later = document.add_child(
+            window,
+            UiNode::container(
+                "later.content",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(0.0, 60.0, 220.0, 80.0)).style,
+                    ..Default::default()
+                },
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(70, 82, 100, 255), None, 0.0)),
+        );
+
+        document
+            .compute_layout(UiSize::new(360.0, 240.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert_eq!(document.node(popup).parent, Some(anchor));
+        assert_eq!(document.node(popup).stack_parent, Some(window));
+
+        let paint = document.paint_list();
+        let popup_index = paint
+            .items
+            .iter()
+            .position(|item| item.node == popup)
+            .expect("popup paint");
+        let later_index = paint
+            .items
+            .iter()
+            .position(|item| item.node == later)
+            .expect("later content paint");
+        assert!(
+            popup_index > later_index,
+            "parent popups should paint above later siblings in the same stack context: {:?}",
+            paint
+                .items
+                .iter()
+                .map(|item| (document.node(item.node).name(), item.layer_order))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn menu_list_popup_can_stay_in_parent_tree_for_local_anchors() {
+        let mut document = UiDocument::new(root_style(300.0, 200.0));
+        let root = document.root;
+        let parent = document.add_child(
+            root,
+            UiNode::container("parent", LayoutStyle::column().with_width(200.0)),
+        );
+        let items = vec![MenuItem::command("one", "One")];
+        let nodes = menu_list_popup(
+            &mut document,
+            parent,
+            "popup",
+            AnchoredPopup::new(
+                UiRect::new(16.0, 20.0, 120.0, 28.0),
+                UiRect::new(0.0, 0.0, 260.0, 160.0),
+                PopupPlacement::new(PopupSide::Right, PopupAlign::Start).with_offset(4.0),
+            ),
+            &items,
+            Some(0),
+            MenuListOptions::default().with_portal(UiPortalTarget::Parent),
+        );
+
+        assert_eq!(document.node(nodes.root).parent, Some(parent));
         assert!(document.portal_host(APP_OVERLAY_PORTAL).is_none());
     }
 
@@ -3143,6 +3248,60 @@ mod tests {
     }
 
     #[test]
+    fn menu_button_trigger_publishes_intrinsic_size_for_text_and_image() {
+        let mut document = UiDocument::new(root_style(320.0, 180.0));
+        let root = document.root;
+        let row = document.add_child(root, UiNode::container("row", LayoutStyle::row()));
+        let items = vec![MenuItem::command("copy", "Copy")];
+        let nodes = image_text_menu_button(
+            &mut document,
+            row,
+            "insert-menu",
+            "Image text",
+            ImageContent::new("icons.plus"),
+            &items,
+            &MenuButtonState::new(),
+            None,
+            MenuButtonOptions::default(),
+        );
+
+        document
+            .compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        assert!(document.node(nodes.button).layout_constraint().is_some());
+        let button = document.node(nodes.button).layout().rect;
+        let label = document
+            .node(
+                document
+                    .nodes()
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, node)| {
+                        (node.name() == "insert-menu.label").then_some(UiNodeId::from_index(index))
+                    })
+                    .expect("label node"),
+            )
+            .layout()
+            .rect;
+        let UiContent::Text(text) = document
+            .nodes()
+            .iter()
+            .find(|node| node.name() == "insert-menu.label")
+            .expect("label")
+            .content()
+        else {
+            panic!("label should be text");
+        };
+        assert_eq!(text.style.wrap, crate::TextWrap::None);
+        assert!(
+            button.width >= label.width + 18.0 + 6.0 + 20.0,
+            "button should reserve text, image, gap, and horizontal padding: button={button:?} label={label:?}"
+        );
+        assert!(button.height >= 30.0);
+    }
+
+    #[test]
     fn context_menu_keyboard_outcome_selects_ids_not_commands() {
         let items = vec![
             MenuItem::separator(),
@@ -3629,6 +3788,12 @@ mod tests {
                 .role,
             AccessibilityRole::SearchBox
         );
+        assert!(document.node(nodes.input).children.iter().any(|child| {
+            matches!(
+                &document.node(*child).content,
+                UiContent::Image(image) if image.key == "icons.search"
+            )
+        }));
         assert_eq!(
             document
                 .node(nodes.input)
@@ -3681,6 +3846,63 @@ mod tests {
             &document.node(*child).content,
             UiContent::Image(image) if image.key == "icons.open"
         )));
+    }
+
+    #[test]
+    fn command_palette_popup_stacks_search_and_results_in_one_column() {
+        let mut document = UiDocument::new(root_style(600.0, 400.0));
+        let root = document.root;
+        let items = vec![
+            CommandPaletteItem::new("open", "Open File").subtitle("Recent documents"),
+            CommandPaletteItem::new("save", "Save Project"),
+        ];
+        let state = CommandPaletteState::new().with_first_active_match(&items);
+        let nodes = command_palette(
+            &mut document,
+            root,
+            "palette",
+            &items,
+            &state,
+            Some(AnchoredPopup::new(
+                UiRect::new(40.0, 32.0, 260.0, 0.0),
+                UiRect::new(0.0, 0.0, 600.0, 400.0),
+                PopupPlacement::default(),
+            )),
+            CommandPaletteOptions {
+                width: 260.0,
+                row_height: 40.0,
+                max_visible_rows: 2,
+                ..Default::default()
+            },
+        );
+        document
+            .compute_layout(UiSize::new(600.0, 400.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let root_rect = document.node(nodes.root).layout.rect;
+        let input_rect = document.node(nodes.input).layout.rect;
+        let results = document.node(nodes.root).children[1];
+        let results_rect = document.node(results).layout.rect;
+        let first_row_rect = document.node(nodes.rows[0]).layout.rect;
+
+        assert!(
+            (input_rect.x - results_rect.x).abs() <= 0.5,
+            "popup command palette search and results should share the same left edge: input={input_rect:?} results={results_rect:?}"
+        );
+        assert!(
+            results_rect.y >= input_rect.bottom() - 0.5,
+            "popup command palette results should be below the search field: input={input_rect:?} results={results_rect:?}"
+        );
+        assert!(
+            first_row_rect.x >= results_rect.x - 0.5
+                && first_row_rect.right() <= results_rect.right() + 0.5,
+            "popup command palette rows should stay inside the result list: row={first_row_rect:?} results={results_rect:?}"
+        );
+        assert!(
+            input_rect.right() <= root_rect.right() + 0.5
+                && results_rect.right() <= root_rect.right() + 0.5,
+            "popup command palette children should not overflow horizontally: root={root_rect:?} input={input_rect:?} results={results_rect:?}"
+        );
     }
 
     #[test]

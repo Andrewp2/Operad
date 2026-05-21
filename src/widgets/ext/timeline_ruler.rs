@@ -242,6 +242,7 @@ pub fn timeline_ruler(
     } else {
         0.0
     };
+    layout.as_taffy_style_mut().size.width = length(scene_width);
     layout.as_taffy_style_mut().size.height = length(height);
     let range = spec.range.ordered();
     layout.as_taffy_style_mut().min_size.width = length(scene_width);
@@ -316,7 +317,7 @@ pub fn timeline_ruler(
     );
 
     for tick in ticks.iter().filter(|tick| tick.label.is_some()) {
-        let mut inset = Rect::length(0.0);
+        let mut inset = Rect::length(0.0_f32);
         inset.left = LengthPercentageAuto::length(tick.x + 3.0);
         inset.top = LengthPercentageAuto::length(2.0);
         document.add_child(

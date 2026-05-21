@@ -15,8 +15,8 @@ use crate::host::{
     HostFrameRequest, HostInteractionState,
 };
 use crate::input::{
-    PointerButton, PointerButtons, PointerEventKind, RawInputEvent, RawKeyboardEvent,
-    RawPointerEvent, RawTextInputEvent, RawWheelEvent,
+    text_input_for_key_event_text, PointerButton, PointerButtons, PointerEventKind, RawInputEvent,
+    RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent,
 };
 use crate::platform::{
     BackendAdapterKind, BackendCapabilities, ClipboardRequest, CursorGrabMode, CursorRequest,
@@ -354,7 +354,15 @@ impl EguiInputAdapter {
                 .repeat(*repeat);
                 vec![RawInputEvent::Keyboard(event)]
             }
-            egui::Event::Text(text) | egui::Event::Paste(text) => {
+            egui::Event::Text(text) => text_input_for_key_event_text(text)
+                .map(|text| {
+                    vec![RawInputEvent::Text(RawTextInputEvent::new(
+                        text,
+                        timestamp_millis,
+                    ))]
+                })
+                .unwrap_or_default(),
+            egui::Event::Paste(text) => {
                 vec![RawInputEvent::Text(RawTextInputEvent::new(
                     text.clone(),
                     timestamp_millis,
@@ -1077,6 +1085,7 @@ mod tests {
             Some(UiInputEvent::Wheel(
                 crate::UiWheelEvent::pixels(UiPoint::new(40.0, 50.0), UiPoint::new(12.0, -24.0))
                     .unit(WheelDeltaUnit::Line)
+                    .modifiers(egui_modifiers(modifiers))
             ))
         );
 
@@ -1089,6 +1098,7 @@ mod tests {
             Some(UiInputEvent::Wheel(
                 crate::UiWheelEvent::pixels(UiPoint::new(40.0, 50.0), UiPoint::new(0.0, 80.0))
                     .unit(WheelDeltaUnit::Page)
+                    .modifiers(egui_modifiers(modifiers))
             ))
         );
     }
@@ -1160,7 +1170,9 @@ mod tests {
         let translated = adapter.translate_events(
             [
                 egui::Event::Text("a".to_string()),
+                egui::Event::Text("\n".to_string()),
                 egui::Event::Paste("paste".to_string()),
+                egui::Event::Paste("line\nbreak".to_string()),
                 egui::Event::Ime(egui::ImeEvent::Commit("ime".to_string())),
             ]
             .iter(),
@@ -1172,6 +1184,7 @@ mod tests {
             vec![
                 RawInputEvent::Text(RawTextInputEvent::new("a", 24)),
                 RawInputEvent::Text(RawTextInputEvent::new("paste", 24)),
+                RawInputEvent::Text(RawTextInputEvent::new("line\nbreak", 24)),
                 RawInputEvent::Text(RawTextInputEvent::new("ime", 24)),
             ]
         );

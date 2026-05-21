@@ -12,10 +12,11 @@ use crate::accessibility::{
     AccessibilityAnnouncementQueue, AccessibilityCapabilities, AccessibilityLiveRegionSnapshot,
     AccessibilityPreferences, FocusRestoreTarget,
 };
+use crate::actions::action_target_enabled;
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{
-    GestureEvent, GesturePhase, PointerCapture, PointerEventKind, PointerGestureTracker,
-    RawInputEvent,
+    text_input_is_keyboard_line_break, GestureEvent, GesturePhase, PointerCapture,
+    PointerEventKind, PointerGestureTracker, RawInputEvent,
 };
 use crate::layout_animation::{
     apply_layout_animation_transitions_to_paint_list, layout_animation_transitions,
@@ -390,10 +391,31 @@ pub fn process_host_frame_input_with_wheel_scale_and_target_resolver(
     let mut output = HostFrameOutput::new(state.clone());
     output.platform_responses = platform_responses;
 
+    let mut suppress_next_enter_text = false;
     for event in raw_input {
-        if let Some(ui_event) = event.to_ui_input_event_with_wheel_scale(wheel_line_size, viewport)
-        {
-            output.ui_events.push(ui_event);
+        let suppress_ui_event = matches!(
+            &event,
+            RawInputEvent::Text(text)
+                if suppress_next_enter_text && text_input_is_keyboard_line_break(&text.text)
+        );
+        if !suppress_ui_event {
+            if let Some(ui_event) =
+                event.to_ui_input_event_with_wheel_scale(wheel_line_size, viewport)
+            {
+                output.ui_events.push(ui_event);
+            }
+        }
+
+        suppress_next_enter_text = matches!(
+            &event,
+            RawInputEvent::Keyboard(key)
+                if key.pressed
+                    && key.key == KeyCode::Enter
+                    && !key.modifiers.ctrl
+                    && !key.modifiers.meta
+        );
+        if suppress_ui_event {
+            suppress_next_enter_text = false;
         }
 
         let target = match event {
@@ -684,6 +706,8 @@ impl HostDocumentFrameRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostDocumentFrameOutput {
+    /// Focused node before this document frame's UI events were applied.
+    pub previous_focused: Option<UiNodeId>,
     pub host_output: HostFrameOutput,
     pub input_results: Vec<UiInputResult>,
     pub render_request: RenderFrameRequest,
@@ -996,6 +1020,12 @@ pub fn process_document_frame(
     } = request;
 
     let mut state = host_output.state.clone();
+    let authored_focused = document.focus.focused;
+    if authored_focused.is_some() {
+        state.focused = authored_focused;
+    }
+    let previous_focused_for_actions =
+        authored_focused.or_else(|| previous_focused.unwrap_or(state.focused));
     let mut input_results = Vec::with_capacity(host_output.ui_events.len());
     for event in host_output.ui_events.iter().cloned() {
         let result = document.handle_input(event);
@@ -1005,6 +1035,10 @@ pub fn process_document_frame(
     host_output.state = state.clone();
 
     document.compute_layout(viewport, measurer)?;
+    #[cfg(feature = "widgets")]
+    if crate::widgets::tooltip::add_active_node_tooltip(document, viewport, None).is_some() {
+        document.compute_layout(viewport, measurer)?;
+    }
     let layout_snapshot = document.layout_snapshot();
     let layout_animation_transitions = if accessibility_preferences.should_reduce_motion() {
         Vec::new()
@@ -1079,6 +1113,7 @@ pub fn process_document_frame(
         normalized_host_scale(render_options.scale_factor) * document.dpi_scale();
 
     let render_request = RenderFrameRequest::new(target, viewport, paint)
+        .resource_updates(document.resource_updates().iter().cloned())
         .node_interactions(node_interactions)
         .dirty_flags(dirty_flags)
         .options(render_options);
@@ -1088,6 +1123,7 @@ pub fn process_document_frame(
     host_output.state = state.clone();
 
     Ok(HostDocumentFrameOutput {
+        previous_focused: previous_focused_for_actions,
         host_output,
         input_results,
         render_request,
@@ -1107,6 +1143,12 @@ pub fn collect_document_widget_actions(
     frame: &HostDocumentFrameOutput,
 ) -> Vec<WidgetAction> {
     let mut queue = WidgetActionQueue::new();
+    push_focus_transition_actions(
+        document,
+        &mut queue,
+        frame.previous_focused,
+        frame.host_output.state.focused,
+    );
     for event in &frame.host_output.ui_events {
         if let Some((target, phase, position, selecting)) =
             text_pointer_edit_target(document, frame, event)
@@ -1168,6 +1210,9 @@ pub fn collect_document_widget_actions(
     }
     for gesture in &frame.host_output.gestures {
         queue.push_gesture_event_for_document(document, gesture, |id| action_binding(document, id));
+        if let Some(action) = drop_target_drag_action_from_gesture(document, gesture) {
+            queue.push(action);
+        }
     }
     for input in &frame.input_results {
         let Some(target) = input.scrolled else {
@@ -1183,11 +1228,45 @@ pub fn collect_document_widget_actions(
     queue.into_vec()
 }
 
+fn push_focus_transition_actions(
+    document: &UiDocument,
+    queue: &mut WidgetActionQueue,
+    previous: Option<UiNodeId>,
+    current: Option<UiNodeId>,
+) {
+    if previous == current {
+        return;
+    }
+    if let Some(previous) = previous {
+        if text_edit_target(document, previous) {
+            if let Some(binding) = action_binding(document, previous) {
+                queue.focus(previous, binding, false);
+            }
+        }
+    }
+    if let Some(current) = current {
+        if text_edit_target(document, current) {
+            if let Some(binding) = action_binding(document, current) {
+                queue.focus(current, binding, true);
+            }
+        }
+    }
+}
+
 fn text_pointer_edit_target(
     document: &UiDocument,
     frame: &HostDocumentFrameOutput,
     event: &UiInputEvent,
 ) -> Option<(UiNodeId, WidgetValueEditPhase, UiPoint, bool)> {
+    let pointer_position = match event {
+        UiInputEvent::PointerDown(point)
+        | UiInputEvent::PointerMove(point)
+        | UiInputEvent::PointerUp(point) => Some(*point),
+        _ => None,
+    };
+    if pointer_position.is_some_and(|point| document.auto_scrollbar_hit_target(point).is_some()) {
+        return None;
+    }
     let (phase, position, selecting) = match event {
         UiInputEvent::PointerDown(point) => (WidgetValueEditPhase::Begin, *point, false),
         UiInputEvent::PointerMove(point) => {
@@ -1246,6 +1325,55 @@ fn action_binding(document: &UiDocument, id: UiNodeId) -> Option<WidgetActionBin
         .and_then(|node| node.action.clone())
 }
 
+fn drop_target_drag_action_from_gesture(
+    document: &UiDocument,
+    event: &GestureEvent,
+) -> Option<WidgetAction> {
+    let GestureEvent::Drag(gesture) = event else {
+        return None;
+    };
+    drag_source_action_target_for_hit(document, gesture.target)?;
+    let hit = document.hit_test(gesture.current)?;
+    let target = drop_action_target_for_hit(document, hit)?;
+    if target == gesture.target || document.node_is_descendant_or_self(gesture.target, target) {
+        return None;
+    }
+    let binding = action_binding(document, target)?;
+    let mut drag = *gesture;
+    drag.target = target;
+    WidgetAction::drag_from_gesture(&drag, binding)
+}
+
+fn drag_source_action_target_for_hit(document: &UiDocument, hit: UiNodeId) -> Option<UiNodeId> {
+    action_target_for_accessibility_action(document, hit, "drag.start")
+}
+
+fn drop_action_target_for_hit(document: &UiDocument, hit: UiNodeId) -> Option<UiNodeId> {
+    action_target_for_accessibility_action(document, hit, "drop.accept")
+}
+
+fn action_target_for_accessibility_action(
+    document: &UiDocument,
+    hit: UiNodeId,
+    accessibility_action_id: &str,
+) -> Option<UiNodeId> {
+    let mut current = Some(hit);
+    while let Some(id) = current {
+        let node = document.nodes().get(id.0)?;
+        let has_action = node.accessibility.as_ref().is_some_and(|accessibility| {
+            accessibility
+                .actions
+                .iter()
+                .any(|action| action.id == accessibility_action_id)
+        });
+        if has_action && node.action.is_some() && action_target_enabled(document, id) {
+            return Some(id);
+        }
+        current = node.parent();
+    }
+    None
+}
+
 fn normalized_host_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
         scale
@@ -1275,9 +1403,10 @@ mod tests {
     };
     use crate::shell::{ShellPanelState, ShellRegion};
     use crate::{
-        length, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole, ApproxTextMeasurer,
-        CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ColorRgba, InputBehavior,
-        LayoutStyle, StrokeStyle, UiContent, UiDocument, UiNode, UiNodeStyle, UiPoint, UiVisual,
+        length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
+        ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ColorRgba,
+        InputBehavior, LayoutStyle, StrokeStyle, UiContent, UiDocument, UiNode, UiNodeStyle,
+        UiPoint, UiVisual, WidgetActionKind, WidgetDragPhase,
     };
     use taffy::prelude::{Size as TaffySize, Style};
 
@@ -1666,6 +1795,37 @@ mod tests {
     }
 
     #[test]
+    fn host_frame_deduplicates_enter_key_and_generated_newline_text() {
+        let viewport = UiSize::new(320.0, 180.0);
+        let output = process_host_frame_input(
+            HostFrameRequest::new(viewport, HostInteractionState::default())
+                .raw_event(RawInputEvent::Keyboard(RawKeyboardEvent::press(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    10,
+                )))
+                .raw_event(RawInputEvent::Text(RawTextInputEvent::new("\r", 10))),
+        );
+
+        assert_eq!(
+            output.ui_events,
+            vec![UiInputEvent::Key {
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            }]
+        );
+
+        let text_only = process_host_frame_input(
+            HostFrameRequest::new(viewport, HostInteractionState::default())
+                .raw_event(RawInputEvent::Text(RawTextInputEvent::new("\n", 11))),
+        );
+        assert_eq!(
+            text_only.ui_events,
+            vec![UiInputEvent::TextInput("\n".to_string())]
+        );
+    }
+
+    #[test]
     fn shortcut_routing_records_scopes_focused_target_and_command() {
         let mut registry = CommandRegistry::new();
         registry
@@ -1858,6 +2018,113 @@ mod tests {
     }
 
     #[test]
+    fn document_frame_carries_app_image_resource_updates_to_renderer_request() {
+        let viewport = UiSize::new(80.0, 80.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(80.0, 80.0));
+        let update = crate::renderer::ResourceUpdate::rgba8_image(
+            crate::platform::ImageHandle::app("user.avatar"),
+            crate::platform::PixelSize::new(1, 1),
+            vec![10, 20, 30, 255],
+        );
+        document.add_resource_update(update.clone());
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                HostFrameOutput::new(HostInteractionState::default()),
+            ),
+        )
+        .expect("document frame");
+
+        assert_eq!(frame.render_request.resource_updates, vec![update]);
+    }
+
+    #[test]
+    fn document_widget_actions_route_drag_lifecycle_to_drop_target_under_cursor() {
+        let viewport = UiSize::new(260.0, 120.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(260.0, 120.0));
+        let root = document.root;
+        let source = document.add_child(
+            root,
+            UiNode::container(
+                "drag.source",
+                LayoutStyle::absolute_rect(UiRect::new(8.0, 12.0, 72.0, 28.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_action("drag.source")
+            .with_action_mode(crate::WidgetActionMode::Drag)
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::ListItem)
+                    .label("Drag source")
+                    .action(AccessibilityAction::new("drag.start", "Start drag")),
+            ),
+        );
+        let target = document.add_child(
+            root,
+            UiNode::container(
+                "drop.target",
+                LayoutStyle::absolute_rect(UiRect::new(132.0, 24.0, 96.0, 44.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_action("drop.target")
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Group)
+                    .label("Drop target")
+                    .action(AccessibilityAction::new("drop.accept", "Accept drop")),
+            ),
+        );
+
+        let mut host_output = HostFrameOutput::new(HostInteractionState::default());
+        host_output.gestures.push(GestureEvent::Drag(DragGesture {
+            pointer_id: PointerId::MOUSE,
+            target: source,
+            phase: GesturePhase::Commit,
+            origin: UiPoint::new(12.0, 16.0),
+            current: UiPoint::new(150.0, 40.0),
+            previous: UiPoint::new(88.0, 28.0),
+            delta: UiPoint::new(62.0, 12.0),
+            total_delta: UiPoint::new(138.0, 24.0),
+            button: PointerButton::Primary,
+            modifiers: KeyModifiers::NONE,
+            captured: true,
+            timestamp_millis: 24,
+        }));
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            ),
+        )
+        .expect("document frame");
+
+        let actions = collect_document_widget_actions(&document, &frame);
+        assert_eq!(actions.len(), 2, "{actions:#?}");
+        assert_eq!(actions[0].target, source);
+        assert_eq!(
+            actions[0].binding.action_id().map(|id| id.as_str()),
+            Some("drag.source")
+        );
+        assert_eq!(actions[1].target, target);
+        assert_eq!(
+            actions[1].binding.action_id().map(|id| id.as_str()),
+            Some("drop.target")
+        );
+        assert!(matches!(
+            actions[1].kind,
+            WidgetActionKind::Drag(drag) if drag.phase == WidgetDragPhase::Commit
+        ));
+    }
+
+    #[test]
     fn document_frame_combines_document_dpi_with_render_scale() {
         let viewport = UiSize::new(120.0, 80.0);
         let mut measurer = ApproxTextMeasurer;
@@ -2038,6 +2305,103 @@ mod tests {
         assert_eq!(
             frame.accessibility_state.live_regions.as_ref(),
             Some(&frame.live_regions)
+        );
+    }
+
+    #[test]
+    fn document_widget_actions_publish_focus_loss_when_input_blurs() {
+        let viewport = UiSize::new(220.0, 100.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(220.0, 100.0));
+        let input = document.add_child(
+            document.root,
+            UiNode::container("search", fixed_style(120.0, 28.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_action("search.edit")
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::TextBox)
+                        .label("Search")
+                        .focusable(),
+                ),
+        );
+        document
+            .compute_layout(viewport, &mut measurer)
+            .expect("initial layout");
+
+        let mut host_output = HostFrameOutput::new(HostInteractionState {
+            focused: Some(input),
+            ..HostInteractionState::default()
+        });
+        host_output
+            .ui_events
+            .push(UiInputEvent::PointerDown(UiPoint::new(180.0, 70.0)));
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            )
+            .previous_focused(Some(input)),
+        )
+        .expect("document frame");
+
+        assert_eq!(frame.previous_focused, Some(input));
+        assert_eq!(frame.host_output.state.focused, None);
+        let actions = collect_document_widget_actions(&document, &frame);
+        assert!(
+            actions.iter().any(|action| {
+                action.target == input
+                    && action.binding.action_id().map(|id| id.as_str()) == Some("search.edit")
+                    && matches!(action.kind, WidgetActionKind::Focus(change) if !change.focused)
+            }),
+            "expected focus lost action for blurred text field, got {actions:#?}"
+        );
+    }
+
+    #[test]
+    fn document_widget_actions_do_not_reuse_button_activation_binding_for_focus() {
+        let viewport = UiSize::new(220.0, 100.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(220.0, 100.0));
+        let button = document.add_child(
+            document.root,
+            UiNode::container("close", fixed_style(80.0, 28.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_action("window.close")
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Close")
+                        .focusable(),
+                ),
+        );
+        document
+            .compute_layout(viewport, &mut measurer)
+            .expect("initial layout");
+
+        let host_output = HostFrameOutput::new(HostInteractionState {
+            focused: Some(button),
+            ..HostInteractionState::default()
+        });
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            ),
+        )
+        .expect("document frame");
+
+        let actions = collect_document_widget_actions(&document, &frame);
+
+        assert!(
+            actions
+                .iter()
+                .all(|action| !matches!(action.kind, WidgetActionKind::Focus(_))),
+            "ordinary button focus must not emit focus actions with activation bindings: {actions:#?}"
         );
     }
 

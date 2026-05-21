@@ -252,21 +252,76 @@ pub fn tooltip_rect(
         finite_or(tooltip_size.width, 0.0).max(0.0),
         finite_or(tooltip_size.height, 0.0).max(0.0),
     );
-    let origin = match placement {
-        TooltipPlacement::Above => UiPoint::new(anchor.x, anchor.y - tooltip_size.height - offset),
-        TooltipPlacement::Below => UiPoint::new(anchor.x, anchor.bottom() + offset),
-        TooltipPlacement::Left => UiPoint::new(anchor.x - tooltip_size.width - offset, anchor.y),
-        TooltipPlacement::Right => UiPoint::new(anchor.right() + offset, anchor.y),
-        TooltipPlacement::Cursor => cursor
-            .map(|point| UiPoint::new(point.x + offset, point.y + offset))
-            .unwrap_or_else(|| UiPoint::new(anchor.right() + offset, anchor.bottom() + offset)),
-    };
+    let origin = tooltip_origin(anchor, tooltip_size, viewport, placement, offset, cursor);
     UiRect::new(
         clamp_tooltip_axis(origin.x, tooltip_size.width, viewport.x, viewport.right()),
         clamp_tooltip_axis(origin.y, tooltip_size.height, viewport.y, viewport.bottom()),
         tooltip_size.width,
         tooltip_size.height,
     )
+}
+
+fn tooltip_origin(
+    anchor: UiRect,
+    tooltip_size: UiSize,
+    viewport: UiRect,
+    placement: TooltipPlacement,
+    offset: f32,
+    cursor: Option<UiPoint>,
+) -> UiPoint {
+    match placement {
+        TooltipPlacement::Above => {
+            let above = anchor.y - tooltip_size.height - offset;
+            let below = anchor.bottom() + offset;
+            let above_space = tooltip_side_space(viewport.y, anchor.y, offset);
+            let below_space = tooltip_side_space(anchor.bottom(), viewport.bottom(), offset);
+            if above_space < tooltip_size.height && below_space > above_space {
+                UiPoint::new(anchor.x, below)
+            } else {
+                UiPoint::new(anchor.x, above)
+            }
+        }
+        TooltipPlacement::Below => {
+            let below = anchor.bottom() + offset;
+            let above = anchor.y - tooltip_size.height - offset;
+            let below_space = tooltip_side_space(anchor.bottom(), viewport.bottom(), offset);
+            let above_space = tooltip_side_space(viewport.y, anchor.y, offset);
+            if below_space < tooltip_size.height && above_space > below_space {
+                UiPoint::new(anchor.x, above)
+            } else {
+                UiPoint::new(anchor.x, below)
+            }
+        }
+        TooltipPlacement::Left => {
+            let left = anchor.x - tooltip_size.width - offset;
+            let right = anchor.right() + offset;
+            let left_space = tooltip_side_space(viewport.x, anchor.x, offset);
+            let right_space = tooltip_side_space(anchor.right(), viewport.right(), offset);
+            if left_space < tooltip_size.width && right_space > left_space {
+                UiPoint::new(right, anchor.y)
+            } else {
+                UiPoint::new(left, anchor.y)
+            }
+        }
+        TooltipPlacement::Right => {
+            let right = anchor.right() + offset;
+            let left = anchor.x - tooltip_size.width - offset;
+            let right_space = tooltip_side_space(anchor.right(), viewport.right(), offset);
+            let left_space = tooltip_side_space(viewport.x, anchor.x, offset);
+            if right_space < tooltip_size.width && left_space > right_space {
+                UiPoint::new(left, anchor.y)
+            } else {
+                UiPoint::new(right, anchor.y)
+            }
+        }
+        TooltipPlacement::Cursor => cursor
+            .map(|point| UiPoint::new(point.x + offset, point.y + offset))
+            .unwrap_or_else(|| UiPoint::new(anchor.right() + offset, anchor.bottom() + offset)),
+    }
+}
+
+fn tooltip_side_space(start: f32, end: f32, offset: f32) -> f32 {
+    (end - start - offset).max(0.0)
 }
 
 fn clamp_tooltip_axis(value: f32, extent: f32, min: f32, max: f32) -> f32 {
@@ -391,13 +446,75 @@ pub fn tooltip_box_from_request(
     )
 }
 
+pub(crate) fn add_active_node_tooltip(
+    document: &mut UiDocument,
+    viewport: UiSize,
+    cursor: Option<UiPoint>,
+) -> Option<UiNodeId> {
+    let active = document
+        .focus_state()
+        .hovered
+        .or(document.focus_state().focused)?;
+    let (target, tooltip) = node_tooltip_for(document, active)?;
+    let anchor = TooltipAnchor::new(target, document.node(target).layout.rect);
+    let invocation = if document
+        .focus_state()
+        .hovered
+        .is_some_and(|hovered| document.node_is_descendant_or_self(target, hovered))
+    {
+        TooltipInvocationKind::Hover
+    } else {
+        TooltipInvocationKind::Focus
+    };
+    let request = TooltipRequest::new(anchor, tooltip.content.clone())
+        .placement(tooltip.placement)
+        .invocation(invocation);
+    let rect = tooltip_rect(
+        request.anchor.rect,
+        tooltip.size,
+        UiRect::new(0.0, 0.0, viewport.width, viewport.height),
+        request.placement,
+        tooltip.offset,
+        cursor,
+    );
+    let tooltip_name = format!("{}.tooltip", document.node(target).name());
+    if document
+        .nodes()
+        .iter()
+        .any(|node| node.name() == tooltip_name)
+    {
+        return None;
+    }
+    Some(tooltip_box(
+        document,
+        UiNodeId::root(),
+        tooltip_name,
+        request.content,
+        TooltipBoxOptions::default()
+            .at_rect(rect)
+            .with_portal(UiPortalTarget::AppOverlay),
+    ))
+}
+
+fn node_tooltip_for(
+    document: &UiDocument,
+    mut active: UiNodeId,
+) -> Option<(UiNodeId, crate::core::document::UiNodeTooltip)> {
+    loop {
+        if let Some(tooltip) = document.node(active).tooltip().cloned() {
+            return Some((active, tooltip));
+        }
+        active = document.node(active).parent()?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tooltips::TooltipVisibility;
 
     #[test]
-    fn tooltip_rect_clamps_absolute_overlay_to_viewport() {
+    fn tooltip_rect_falls_back_before_clamping_to_viewport() {
         let anchor = UiRect::new(260.0, 120.0, 40.0, 20.0);
         let rect = tooltip_rect(
             anchor,
@@ -408,8 +525,25 @@ mod tests {
             None,
         );
 
-        assert_eq!(rect.x, 180.0);
+        assert_eq!(rect.x, 132.0);
         assert_eq!(rect.y, 120.0);
+        assert!(rect.right() <= anchor.x);
+    }
+
+    #[test]
+    fn tooltip_rect_clamps_when_neither_side_has_room() {
+        let anchor = UiRect::new(78.0, 44.0, 24.0, 20.0);
+        let rect = tooltip_rect(
+            anchor,
+            UiSize::new(220.0, 60.0),
+            UiRect::new(0.0, 0.0, 160.0, 120.0),
+            TooltipPlacement::Right,
+            8.0,
+            None,
+        );
+
+        assert_eq!(rect.x, 0.0);
+        assert_eq!(rect.y, 44.0);
     }
 
     #[test]

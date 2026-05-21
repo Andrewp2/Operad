@@ -56,7 +56,7 @@ pub fn table_header(
                     width: length(column.width),
                     height: Dimension::percent(1.0),
                 },
-                padding: taffy::prelude::Rect::length(4.0),
+                padding: taffy::prelude::Rect::length(4.0_f32),
                 ..Default::default()
             }),
         );

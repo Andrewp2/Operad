@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
+use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -33,7 +34,7 @@ use crate::testing::EmptyResourceResolver;
 use crate::wgpu_renderer::WgpuSurfaceRenderer;
 use crate::{
     AnimationMachine, CosmicTextMeasurer, KeyCode, KeyModifiers, PointerButton, PointerButtons,
-    PointerEventKind, UiDocument, UiFocusState, UiNodeId, UiPoint, UiSize, WidgetAction,
+    PointerEventKind, UiDocument, UiFocusState, UiNodeId, UiPoint, UiRect, UiSize, WidgetAction,
     WidgetActionBinding,
 };
 
@@ -290,6 +291,7 @@ where
     register_pointer_events(app.borrow().canvas(), app.clone())?;
     register_wheel_events(app.borrow().canvas(), app.clone())?;
     register_keyboard_events(&browser_window()?, app.clone())?;
+    install_uat_hooks(app.clone())?;
     start_animation_loop(app)?;
     Ok(())
 }
@@ -512,14 +514,19 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
         let mut document = (self.view)(&self.state, viewport);
         document.set_ui_scale(self.options.ui_scale);
         document.set_dpi_scale(self.dpi_scale);
+        document.set_pointer_position(self.cursor);
         restore_scroll_offsets(&mut document, &self.scroll_offsets);
         self.restore_animation_states(&mut document);
+        let authored_focus = document.focus.focused;
         let previous_focus = UiFocusState {
             hovered: self.frame_state.interaction.hovered,
             pressed: self.frame_state.interaction.pressed,
             focused: self.frame_state.interaction.focused,
         };
         let mut focus = previous_focus.clone();
+        if authored_focus.is_some() {
+            focus.focused = authored_focus;
+        }
         if let Some(cursor) = self.cursor {
             focus.hovered = document.hit_test(cursor);
             if self.buttons == PointerButtons::NONE {
@@ -549,6 +556,83 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
         }
         document.refresh_interaction_animation_inputs(previous_focus, self.cursor);
         Ok(document)
+    }
+
+    fn uat_snapshot(&mut self) -> Result<JsValue, JsValue>
+    where
+        View: FnMut(&State, UiSize) -> UiDocument,
+    {
+        let (viewport, pixel_size, dpi_scale) = canvas_metrics(&self.canvas)?;
+        let document = self.build_document(viewport).map_err(layout_web_error)?;
+
+        let snapshot = Object::new();
+        set_js_string(&snapshot, "target", &self.options.target_name)?;
+        set_js_number(&snapshot, "nodeCount", document.node_count() as f64)?;
+        set_js_number(&snapshot, "dpiScale", dpi_scale as f64)?;
+        set_js_object(&snapshot, "viewport", size_js_object(viewport)?.as_ref())?;
+        let pixel = Object::new();
+        set_js_number(&pixel, "width", pixel_size.width as f64)?;
+        set_js_number(&pixel, "height", pixel_size.height as f64)?;
+        set_js_object(&snapshot, "pixelSize", pixel.as_ref())?;
+
+        let focus = Object::new();
+        set_optional_node_name(&focus, "hovered", &document, document.focus_state().hovered)?;
+        set_optional_node_name(&focus, "focused", &document, document.focus_state().focused)?;
+        set_optional_node_name(&focus, "pressed", &document, document.focus_state().pressed)?;
+        set_js_object(&snapshot, "focus", focus.as_ref())?;
+
+        let nodes = Array::new();
+        for (index, node) in document.nodes().iter().enumerate() {
+            let item = Object::new();
+            set_js_number(&item, "index", index as f64)?;
+            set_js_string(&item, "name", node.name())?;
+            set_js_bool(&item, "visible", node.layout().visible)?;
+            set_js_object(&item, "rect", rect_js_object(node.layout().rect)?.as_ref())?;
+            set_js_object(
+                &item,
+                "clipRect",
+                rect_js_object(node.layout().clip_rect)?.as_ref(),
+            )?;
+            let input = node.input();
+            set_js_bool(&item, "pointer", input.pointer)?;
+            set_js_bool(&item, "focusable", input.focusable)?;
+            set_js_bool(&item, "keyboard", input.keyboard)?;
+            set_js_bool(&item, "autoScrollbar", node.has_auto_scrollbar())?;
+            if let Some(action) = node.action() {
+                if let Some(id) = action.action_id() {
+                    set_js_string(&item, "action", id.as_str())?;
+                }
+                if let Some(id) = action.command_id() {
+                    set_js_string(&item, "command", id.as_str())?;
+                }
+            }
+            if let Some(scroll) = node.scroll() {
+                set_js_object(&item, "scroll", scroll_js_object(scroll)?.as_ref())?;
+            }
+            if let Some(meta) = node.accessibility() {
+                let accessibility = Object::new();
+                set_js_string(&accessibility, "role", &format!("{:?}", meta.role))?;
+                if let Some(label) = meta.label.as_deref() {
+                    set_js_string(&accessibility, "label", label)?;
+                }
+                if let Some(value) = meta.value.as_deref() {
+                    set_js_string(&accessibility, "value", value)?;
+                }
+                set_js_bool(&accessibility, "enabled", meta.enabled)?;
+                set_js_bool(&accessibility, "focusable", meta.focusable)?;
+                set_js_object(&item, "accessibility", accessibility.as_ref())?;
+            }
+            nodes.push(&item);
+        }
+        set_js_array(&snapshot, "nodes", &nodes)?;
+
+        let warnings = Array::new();
+        for warning in document.audit_layout() {
+            warnings.push(&JsValue::from_str(&format!("{warning:?}")));
+        }
+        set_js_array(&snapshot, "warnings", &warnings)?;
+
+        Ok(snapshot.into())
     }
 
     fn capture_document_runtime_state(&mut self, document: &UiDocument) {
@@ -888,6 +972,170 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
     }
 }
 
+fn install_uat_hooks<State, Update, View>(
+    app: Rc<RefCell<WebRuntimeApp<State, Update, View>>>,
+) -> Result<(), JsValue>
+where
+    State: 'static,
+    Update: 'static,
+    View: FnMut(&State, UiSize) -> UiDocument + 'static,
+{
+    if !web_uat_hooks_enabled() {
+        return Ok(());
+    }
+    let window = browser_window()?;
+    let api = Object::new();
+    let snapshot_app = app.clone();
+    let snapshot = Closure::<dyn FnMut() -> JsValue>::wrap(Box::new(move || {
+        match snapshot_app.try_borrow_mut() {
+            Ok(mut app) => app
+                .uat_snapshot()
+                .unwrap_or_else(|error| uat_error_value("snapshot", error)),
+            Err(error) => uat_error_value(
+                "snapshot",
+                JsValue::from_str(&format!(
+                    "runtime state was already borrowed while collecting UAT snapshot: {error}"
+                )),
+            ),
+        }
+    }));
+    Reflect::set(
+        api.as_ref(),
+        &JsValue::from_str("snapshot"),
+        snapshot.as_ref(),
+    )?;
+    snapshot.forget();
+    Reflect::set(
+        window.as_ref(),
+        &JsValue::from_str("__OPERAD_UAT__"),
+        api.as_ref(),
+    )?;
+    Ok(())
+}
+
+fn web_uat_hooks_enabled() -> bool {
+    let Ok(window) = browser_window() else {
+        return false;
+    };
+    Reflect::get(window.as_ref(), &JsValue::from_str("__OPERAD_ENABLE_UAT__"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn uat_error_value(context: &str, error: JsValue) -> JsValue {
+    let object = Object::new();
+    let _ = set_js_string(&object, "error", context);
+    let _ = set_js_string(&object, "message", &web_message(&error));
+    object.into()
+}
+
+fn set_optional_node_name(
+    object: &Object,
+    name: &str,
+    document: &UiDocument,
+    node: Option<UiNodeId>,
+) -> Result<(), JsValue> {
+    if let Some(node) = node {
+        if node.index() < document.node_count() {
+            set_js_string(object, name, document.node(node).name())?;
+            return Ok(());
+        }
+    }
+    Reflect::set(object.as_ref(), &JsValue::from_str(name), &JsValue::NULL)?;
+    Ok(())
+}
+
+fn rect_js_object(rect: UiRect) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_js_number(&object, "x", rect.x as f64)?;
+    set_js_number(&object, "y", rect.y as f64)?;
+    set_js_number(&object, "width", rect.width as f64)?;
+    set_js_number(&object, "height", rect.height as f64)?;
+    set_js_number(&object, "right", rect.right() as f64)?;
+    set_js_number(&object, "bottom", rect.bottom() as f64)?;
+    Ok(object)
+}
+
+fn size_js_object(size: UiSize) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_js_number(&object, "width", size.width as f64)?;
+    set_js_number(&object, "height", size.height as f64)?;
+    Ok(object)
+}
+
+fn point_js_object(point: UiPoint) -> Result<Object, JsValue> {
+    let object = Object::new();
+    set_js_number(&object, "x", point.x as f64)?;
+    set_js_number(&object, "y", point.y as f64)?;
+    Ok(object)
+}
+
+fn scroll_js_object(scroll: &crate::ScrollState) -> Result<Object, JsValue> {
+    let object = Object::new();
+    let axes = scroll.axes();
+    set_js_bool(&object, "horizontal", axes.horizontal)?;
+    set_js_bool(&object, "vertical", axes.vertical)?;
+    set_js_object(
+        &object,
+        "offset",
+        point_js_object(scroll.offset())?.as_ref(),
+    )?;
+    set_js_object(
+        &object,
+        "maxOffset",
+        point_js_object(scroll.max_offset())?.as_ref(),
+    )?;
+    set_js_object(
+        &object,
+        "viewportSize",
+        size_js_object(scroll.viewport_size())?.as_ref(),
+    )?;
+    set_js_object(
+        &object,
+        "contentSize",
+        size_js_object(scroll.content_size())?.as_ref(),
+    )?;
+    Ok(object)
+}
+
+fn set_js_string(object: &Object, name: &str, value: &str) -> Result<(), JsValue> {
+    Reflect::set(
+        object.as_ref(),
+        &JsValue::from_str(name),
+        &JsValue::from_str(value),
+    )?;
+    Ok(())
+}
+
+fn set_js_number(object: &Object, name: &str, value: f64) -> Result<(), JsValue> {
+    Reflect::set(
+        object.as_ref(),
+        &JsValue::from_str(name),
+        &JsValue::from_f64(value),
+    )?;
+    Ok(())
+}
+
+fn set_js_bool(object: &Object, name: &str, value: bool) -> Result<(), JsValue> {
+    Reflect::set(
+        object.as_ref(),
+        &JsValue::from_str(name),
+        &JsValue::from_bool(value),
+    )?;
+    Ok(())
+}
+
+fn set_js_object(object: &Object, name: &str, value: &JsValue) -> Result<(), JsValue> {
+    Reflect::set(object.as_ref(), &JsValue::from_str(name), value)?;
+    Ok(())
+}
+
+fn set_js_array(object: &Object, name: &str, value: &Array) -> Result<(), JsValue> {
+    Reflect::set(object.as_ref(), &JsValue::from_str(name), value.as_ref())?;
+    Ok(())
+}
+
 fn register_pointer_events<State, Update, View>(
     canvas: &web_sys::HtmlCanvasElement,
     app: Rc<RefCell<WebRuntimeApp<State, Update, View>>>,
@@ -1140,7 +1388,7 @@ fn web_pointer_buttons(bits: u16) -> PointerButtons {
 }
 
 fn wheel_delta(event: &web_sys::WheelEvent) -> (UiPoint, WheelDeltaUnit) {
-    let delta = UiPoint::new(-event.delta_x() as f32, -event.delta_y() as f32);
+    let delta = UiPoint::new(event.delta_x() as f32, event.delta_y() as f32);
     match event.delta_mode() {
         1 => (delta, WheelDeltaUnit::Line),
         2 => (delta, WheelDeltaUnit::Page),
@@ -1249,8 +1497,11 @@ fn restore_scroll_offsets(document: &mut UiDocument, offsets: &HashMap<String, U
             continue;
         };
         let offset = UiPoint::new(offset.x.max(0.0), offset.y.max(0.0));
+        if scroll.offset_is_authored() && scroll.offset != offset {
+            continue;
+        }
         if scroll.offset != offset {
-            scroll.offset = offset;
+            scroll.set_host_offset(offset);
             changed = true;
         }
     }

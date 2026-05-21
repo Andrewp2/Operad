@@ -33,10 +33,10 @@ use crate::renderer::{
     RenderedImage, RendererAdapter, ResourceFormat, ResourceResolver, ResourceUpdate,
 };
 use crate::{
-    BuiltInIcon, ColorRgba, FontFamily, FontStretch, FontStyle, FrameTiming, ImageAlignment,
-    ImageFit, LinearGradient, PaintBrush, PaintCompositorLayer, PaintEffectKind, PaintKind,
-    PaintTransform, StrokeStyle, TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap,
-    UiNodeId, UiPoint, UiRect, UiSize,
+    BuiltInIcon, ColorRgba, CornerRadii, FontFamily, FontStretch, FontStyle, FrameTiming,
+    ImageAlignment, ImageFit, LinearGradient, PaintBrush, PaintCompositorLayer, PaintEffectKind,
+    PaintKind, PaintTransform, ShaderEffect, StrokeStyle, TextHorizontalAlign, TextStyle,
+    TextVerticalAlign, TextWrap, UiNodeId, UiPoint, UiRect, UiSize,
 };
 
 const OFFSCREEN_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
@@ -78,12 +78,14 @@ struct CompositedRectInput {
     @location(5) params: vec4<f32>,
     @location(6) filter_params: vec4<f32>,
     @location(7) texel_size: vec2<f32>,
+    @location(8) shader_params: vec4<f32>,
+    @location(9) shader_color: vec4<f32>,
 };
 
 struct SdfRectInput {
     @location(0) rect: vec4<f32>,
     @location(1) color: vec4<f32>,
-    @location(2) radius: f32,
+    @location(2) radii: vec4<f32>,
 };
 
 struct ShadowRectInput {
@@ -91,6 +93,7 @@ struct ShadowRectInput {
     @location(1) shape_rect: vec4<f32>,
     @location(2) color: vec4<f32>,
     @location(3) params: vec4<f32>,
+    @location(4) radii: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -114,6 +117,8 @@ struct CompositedRectOutput {
     @location(5) params: vec4<f32>,
     @location(6) filter_params: vec4<f32>,
     @location(7) texel_size: vec2<f32>,
+    @location(8) shader_params: vec4<f32>,
+    @location(9) shader_color: vec4<f32>,
 };
 
 struct SdfRectOutput {
@@ -121,7 +126,7 @@ struct SdfRectOutput {
     @location(0) color: vec4<f32>,
     @location(1) local_position: vec2<f32>,
     @location(2) size: vec2<f32>,
-    @location(3) radius: f32,
+    @location(3) radii: vec4<f32>,
 };
 
 struct ShadowRectOutput {
@@ -130,6 +135,7 @@ struct ShadowRectOutput {
     @location(1) shape_rect: vec4<f32>,
     @location(2) color: vec4<f32>,
     @location(3) params: vec4<f32>,
+    @location(4) radii: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -216,6 +222,8 @@ fn vs_composited_rect(@builtin(vertex_index) vertex_index: u32, input: Composite
     output.params = input.params;
     output.filter_params = input.filter_params;
     output.texel_size = input.texel_size;
+    output.shader_params = input.shader_params;
+    output.shader_color = input.shader_color;
     return output;
 }
 
@@ -238,7 +246,7 @@ fn vs_sdf_rect(@builtin(vertex_index) vertex_index: u32, input: SdfRectInput) ->
     output.color = input.color;
     output.local_position = unit * input.rect.zw;
     output.size = input.rect.zw;
-    output.radius = input.radius;
+    output.radii = input.radii;
     return output;
 }
 
@@ -262,6 +270,7 @@ fn vs_shadow_rect(@builtin(vertex_index) vertex_index: u32, input: ShadowRectInp
     output.shape_rect = input.shape_rect;
     output.color = input.color;
     output.params = input.params;
+    output.radii = input.radii;
     return output;
 }
 
@@ -305,26 +314,45 @@ fn fs_textured_srgb(input: TexturedVertexOutput) -> @location(0) vec4<f32> {
 }
 
 fn rounded_rect_alpha(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
-    if point.x < rect.x || point.y < rect.y || point.x > rect.x + rect.z || point.y > rect.y + rect.w {
-        return 0.0;
-    }
-    let clamped_radius = clamp(radius, 0.0, min(rect.z, rect.w) * 0.5);
-    if clamped_radius <= 0.0 {
-        return 1.0;
-    }
-    let half_size = rect.zw * 0.5;
-    let centered = point - rect.xy - half_size;
-    let q = abs(centered) - half_size + vec2<f32>(clamped_radius, clamped_radius);
-    let distance = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - clamped_radius;
-    return 1.0 - smoothstep(-0.75, 0.75, distance);
+    return rounded_rect_alpha_with_radii(point, rect, vec4<f32>(radius, radius, radius, radius));
 }
 
 fn rounded_rect_distance(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
-    let clamped_radius = clamp(radius, 0.0, min(rect.z, rect.w) * 0.5);
+    return rounded_rect_distance_with_radii(point, rect, vec4<f32>(radius, radius, radius, radius));
+}
+
+fn corner_radius_for_point(centered: vec2<f32>, radii: vec4<f32>) -> f32 {
+    var radius = radii.x;
+    if centered.y < 0.0 {
+        if centered.x < 0.0 {
+            radius = radii.x;
+        } else {
+            radius = radii.y;
+        }
+    } else {
+        if centered.x < 0.0 {
+            radius = radii.w;
+        } else {
+            radius = radii.z;
+        }
+    }
+    return radius;
+}
+
+fn rounded_rect_alpha_with_radii(point: vec2<f32>, rect: vec4<f32>, radii: vec4<f32>) -> f32 {
+    if point.x < rect.x || point.y < rect.y || point.x > rect.x + rect.z || point.y > rect.y + rect.w {
+        return 0.0;
+    }
+    let distance = rounded_rect_distance_with_radii(point, rect, radii);
+    return 1.0 - smoothstep(-0.75, 0.75, distance);
+}
+
+fn rounded_rect_distance_with_radii(point: vec2<f32>, rect: vec4<f32>, radii: vec4<f32>) -> f32 {
     let half_size = rect.zw * 0.5;
     let centered = point - rect.xy - half_size;
-    let q = abs(centered) - half_size + vec2<f32>(clamped_radius, clamped_radius);
-    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - clamped_radius;
+    let radius = max(corner_radius_for_point(centered, radii), 0.0);
+    let q = abs(centered) - half_size + vec2<f32>(radius, radius);
+    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 
 fn sample_composited_layer(uv: vec2<f32>, texel_size: vec2<f32>, blur_radius: f32) -> vec4<f32> {
@@ -342,6 +370,80 @@ fn sample_composited_layer(uv: vec2<f32>, texel_size: vec2<f32>, blur_radius: f3
     color = color + textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(offset.x, -offset.y), 0.0);
     color = color + textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(-offset.x, offset.y), 0.0);
     return color / 12.0;
+}
+
+fn shader_neighbor_alpha(uv: vec2<f32>, texel_size: vec2<f32>, radius: f32) -> f32 {
+    let offset = texel_size * clamp(radius, 1.0, 24.0);
+    var alpha = 0.0;
+    alpha = max(alpha, textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(offset.x, 0.0), 0.0).a);
+    alpha = max(alpha, textureSampleLevel(image_texture, image_sampler, uv - vec2<f32>(offset.x, 0.0), 0.0).a);
+    alpha = max(alpha, textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(0.0, offset.y), 0.0).a);
+    alpha = max(alpha, textureSampleLevel(image_texture, image_sampler, uv - vec2<f32>(0.0, offset.y), 0.0).a);
+    alpha = max(alpha, textureSampleLevel(image_texture, image_sampler, uv + offset, 0.0).a);
+    alpha = max(alpha, textureSampleLevel(image_texture, image_sampler, uv - offset, 0.0).a);
+    alpha = max(alpha, textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(offset.x, -offset.y), 0.0).a);
+    alpha = max(alpha, textureSampleLevel(image_texture, image_sampler, uv + vec2<f32>(-offset.x, offset.y), 0.0).a);
+    return alpha;
+}
+
+fn shader_grid_line(value: f32) -> f32 {
+    let cell = abs(fract(value) - 0.5);
+    return 1.0 - smoothstep(0.46, 0.50, cell);
+}
+
+fn apply_element_shader(input: CompositedRectOutput, rgb: vec3<f32>, alpha: f32) -> vec4<f32> {
+    let mode = input.shader_params.x;
+    let amount = max(input.shader_params.y, 0.0);
+    var out_rgb = rgb;
+    var out_alpha = alpha;
+    if mode > 0.5 && mode < 1.5 {
+        out_rgb = mix(out_rgb, input.shader_color.rgb, clamp(amount, 0.0, 1.0));
+    } else if mode > 1.5 && mode < 2.5 {
+        let phase = fract(input.shader_params.z);
+        let width = clamp(input.shader_params.w, 0.02, 0.45);
+        let band_position = fract(input.uv.x * 0.78 + input.uv.y * 0.62);
+        let distance = abs(band_position - phase);
+        let wrapped_distance = min(distance, 1.0 - distance);
+        let highlight = (1.0 - smoothstep(width * 0.35, width, wrapped_distance)) * amount * out_alpha;
+        out_rgb = clamp(out_rgb + input.shader_color.rgb * highlight, vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(1.0, 1.0, 1.0));
+    } else if mode > 2.5 && mode < 3.5 {
+        let radius = max(input.shader_params.z, 1.0);
+        let neighbor_alpha = shader_neighbor_alpha(input.uv, input.texel_size, radius);
+        let glow_alpha = clamp((neighbor_alpha - out_alpha) * amount, 0.0, 1.0);
+        if glow_alpha > out_alpha {
+            out_rgb = input.shader_color.rgb;
+            out_alpha = glow_alpha;
+        } else if glow_alpha > 0.0001 {
+            out_rgb = mix(input.shader_color.rgb, out_rgb, out_alpha);
+            out_alpha = max(out_alpha, glow_alpha);
+        }
+    } else if mode > 3.5 && mode < 4.5 {
+        let phase = input.shader_params.z;
+        let scale = max(input.shader_params.w, 1.0);
+        let p = input.uv * 2.0 - vec2<f32>(1.0, 1.0);
+        let wave = (
+            sin(p.x * scale + phase * 6.28318)
+            + sin(p.y * (scale * 1.17) - phase * 5.49779)
+            + sin(length(p) * (scale * 1.72) - phase * 8.16814)
+        ) / 3.0;
+        let mask = smoothstep(-0.45, 0.85, wave);
+        out_rgb = mix(out_rgb, input.shader_color.rgb, mask * amount * out_alpha);
+    } else if mode > 4.5 && mode < 5.5 {
+        let phase = input.shader_params.z;
+        let scale = max(input.shader_params.w, 1.0);
+        let p = input.uv - vec2<f32>(0.5, 0.5);
+        let ring = 0.5 + 0.5 * cos((length(p) * scale - phase * 2.0) * 6.28318);
+        let fade = 1.0 - smoothstep(0.12, 0.72, length(p));
+        out_rgb = mix(out_rgb, input.shader_color.rgb, ring * fade * amount * out_alpha);
+    } else if mode > 5.5 && mode < 6.5 {
+        let phase = input.shader_params.z;
+        let scale = max(input.shader_params.w, 1.0);
+        let uv = input.uv + vec2<f32>(phase * 0.12, phase * -0.08);
+        let major = max(shader_grid_line(uv.x * scale), shader_grid_line(uv.y * scale));
+        let minor = max(shader_grid_line(uv.x * scale * 3.0), shader_grid_line(uv.y * scale * 3.0)) * 0.32;
+        out_rgb = mix(out_rgb, input.shader_color.rgb, max(major, minor) * amount * out_alpha);
+    }
+    return vec4<f32>(out_rgb, out_alpha);
 }
 
 fn composited_color(input: CompositedRectOutput) -> vec4<f32> {
@@ -376,7 +478,8 @@ fn composited_color(input: CompositedRectOutput) -> vec4<f32> {
     rgb = clamp((rgb * brightness - vec3<f32>(0.5, 0.5, 0.5)) * contrast + vec3<f32>(0.5, 0.5, 0.5), vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(1.0, 1.0, 1.0));
     let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     rgb = mix(vec3<f32>(luma, luma, luma), rgb, saturate);
-    return vec4<f32>(rgb * input.tint.rgb, alpha * input.tint.a * opacity);
+    let shadered = apply_element_shader(input, rgb, alpha);
+    return vec4<f32>(shadered.rgb * input.tint.rgb, shadered.a * input.tint.a * opacity);
 }
 
 @fragment
@@ -390,11 +493,11 @@ fn fs_composited_srgb(input: CompositedRectOutput) -> @location(0) vec4<f32> {
 }
 
 fn sdf_rect_color(input: SdfRectOutput) -> vec4<f32> {
-    let radius = clamp(input.radius, 0.0, min(input.size.x, input.size.y) * 0.5);
-    let half_size = input.size * 0.5;
-    let centered = input.local_position - half_size;
-    let q = abs(centered) - half_size + vec2<f32>(radius, radius);
-    let distance = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    let distance = rounded_rect_distance_with_radii(
+        input.local_position,
+        vec4<f32>(0.0, 0.0, input.size.x, input.size.y),
+        input.radii
+    );
     let alpha = 1.0 - smoothstep(-0.75, 0.75, distance);
     return vec4<f32>(input.color.rgb, input.color.a * alpha);
 }
@@ -410,9 +513,8 @@ fn fs_sdf_rect_srgb(input: SdfRectOutput) -> @location(0) vec4<f32> {
 }
 
 fn shadow_rect_color(input: ShadowRectOutput) -> vec4<f32> {
-    let radius = input.params.x;
     let blur_radius = max(input.params.y, 0.0);
-    let distance = rounded_rect_distance(input.world_position, input.shape_rect, radius);
+    let distance = rounded_rect_distance_with_radii(input.world_position, input.shape_rect, input.radii);
     let outside_distance = max(distance, 0.0);
     var alpha = input.color.a;
     if blur_radius > 0.5 {
@@ -613,73 +715,76 @@ impl<'a> WgpuCanvasContext<'a> {
             constants: descriptor.constants.as_slice(),
             ..Default::default()
         };
-        let pipeline = {
-            let mut cache = self.pipeline_cache.borrow_mut();
-            if !cache.contains_key(&pipeline_key) {
-                let shader = self
-                    .device
-                    .create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label,
-                        source: wgpu::ShaderSource::Wgsl(descriptor.shader.clone()),
-                    });
-                let pipeline_layout = if descriptor.uniforms.is_some() {
-                    self.uniform_pipeline_layout
-                } else {
-                    self.empty_pipeline_layout
-                };
-                let pipeline =
-                    self.device
-                        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                            label,
-                            layout: Some(pipeline_layout),
-                            vertex: wgpu::VertexState {
-                                module: &shader,
-                                entry_point: Some(descriptor.vertex_entry_point),
-                                buffers: &[],
-                                compilation_options: compilation_options.clone(),
-                            },
-                            fragment: Some(wgpu::FragmentState {
-                                module: &shader,
-                                entry_point: Some(descriptor.fragment_entry_point),
-                                targets: &[Some(wgpu::ColorTargetState {
-                                    format: self.format,
-                                    blend: Some(wgpu::BlendState {
-                                        color: wgpu::BlendComponent {
-                                            src_factor: wgpu::BlendFactor::SrcAlpha,
-                                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                            operation: wgpu::BlendOperation::Add,
-                                        },
-                                        alpha: wgpu::BlendComponent {
-                                            src_factor: wgpu::BlendFactor::One,
-                                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                            operation: wgpu::BlendOperation::Add,
-                                        },
-                                    }),
-                                    write_mask: wgpu::ColorWrites::ALL,
-                                })],
-                                compilation_options,
-                            }),
-                            primitive: wgpu::PrimitiveState {
-                                topology: wgpu::PrimitiveTopology::TriangleList,
-                                strip_index_format: None,
-                                front_face: wgpu::FrontFace::Ccw,
-                                cull_mode: None,
-                                unclipped_depth: false,
-                                polygon_mode: wgpu::PolygonMode::Fill,
-                                conservative: false,
-                            },
-                            depth_stencil: None,
-                            multisample: wgpu::MultisampleState::default(),
-                            multiview_mask: None,
-                            cache: None,
-                        });
-                cache.insert(pipeline_key.clone(), pipeline);
-            }
-            let Some(pipeline) = cache.get(&pipeline_key).cloned() else {
-                return Err(RenderError::Backend(
-                    "canvas render pipeline missing from cache".to_string(),
-                ));
+        let cached_pipeline = self.pipeline_cache.borrow().get(&pipeline_key).cloned();
+        let pipeline = if let Some(pipeline) = cached_pipeline {
+            pipeline
+        } else {
+            let error_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let shader = self
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label,
+                    source: wgpu::ShaderSource::Wgsl(descriptor.shader.clone()),
+                });
+            let pipeline_layout = if descriptor.uniforms.is_some() {
+                self.uniform_pipeline_layout
+            } else {
+                self.empty_pipeline_layout
             };
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label,
+                    layout: Some(pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some(descriptor.vertex_entry_point),
+                        buffers: &[],
+                        compilation_options: compilation_options.clone(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(descriptor.fragment_entry_point),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: self.format,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::SrcAlpha,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options,
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        unclipped_depth: false,
+                        polygon_mode: wgpu::PolygonMode::Fill,
+                        conservative: false,
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            if let Some(error) = block_on(error_scope.pop()) {
+                return Err(RenderError::Backend(format!(
+                    "canvas shader validation failed: {error}"
+                )));
+            }
+            self.pipeline_cache
+                .borrow_mut()
+                .insert(pipeline_key.clone(), pipeline.clone());
             pipeline
         };
         let uniform_bind_group = descriptor.uniforms.as_deref().map(|uniforms| {
@@ -2035,11 +2140,13 @@ struct GpuCompositedRectInstance {
     params: [f32; 4],
     filter_params: [f32; 4],
     texel_size: [f32; 2],
+    shader_params: [f32; 4],
+    shader_color: [f32; 4],
     _pad: [f32; 2],
 }
 
 impl GpuCompositedRectInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
         0 => Float32x4,
         1 => Float32x4,
         2 => Float32x4,
@@ -2047,7 +2154,9 @@ impl GpuCompositedRectInstance {
         4 => Float32x4,
         5 => Float32x4,
         6 => Float32x4,
-        7 => Float32x2
+        7 => Float32x2,
+        8 => Float32x4,
+        9 => Float32x4
     ];
 
     fn new(
@@ -2057,6 +2166,7 @@ impl GpuCompositedRectInstance {
         clip: Option<(UiRect, f32)>,
         mask: Option<UiRect>,
         filter_params: LayerFilterParams,
+        shader_params: LayerShaderParams,
         texture_size: PixelSize,
     ) -> Self {
         let (clip_rect, clip_radius, clip_enabled) = match clip {
@@ -2089,6 +2199,8 @@ impl GpuCompositedRectInstance {
                 1.0 / texture_size.width.max(1) as f32,
                 1.0 / texture_size.height.max(1) as f32,
             ],
+            shader_params: shader_params.params,
+            shader_color: shader_params.color,
             _pad: [0.0; 2],
         }
     }
@@ -2107,20 +2219,22 @@ impl GpuCompositedRectInstance {
 struct GpuSdfRectInstance {
     rect: [f32; 4],
     color: [f32; 4],
-    radius: f32,
-    _pad: [f32; 3],
+    radii: [f32; 4],
 }
 
 impl GpuSdfRectInstance {
     const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32];
+        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
 
-    fn new(rect: UiRect, color: [f32; 4], radius: f32) -> Self {
+    fn new(rect: UiRect, color: [f32; 4], radii: CornerRadii) -> Self {
         Self {
             rect: [rect.x, rect.y, rect.width, rect.height],
             color,
-            radius,
-            _pad: [0.0; 3],
+            radii: corner_radii_to_array(normalized_corner_radii_for_rect(
+                radii,
+                rect.width,
+                rect.height,
+            )),
         }
     }
 
@@ -2140,17 +2254,23 @@ struct GpuShadowRectInstance {
     shape_rect: [f32; 4],
     color: [f32; 4],
     params: [f32; 4],
+    radii: [f32; 4],
 }
 
 impl GpuShadowRectInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x4,
+        1 => Float32x4,
+        2 => Float32x4,
+        3 => Float32x4,
+        4 => Float32x4
+    ];
 
     fn new(
         draw_rect: UiRect,
         shape_rect: UiRect,
         color: [f32; 4],
-        radius: f32,
+        radii: CornerRadii,
         blur_radius: f32,
     ) -> Self {
         Self {
@@ -2162,7 +2282,12 @@ impl GpuShadowRectInstance {
                 shape_rect.height,
             ],
             color,
-            params: [radius.max(0.0), blur_radius.max(0.0), 0.0, 0.0],
+            params: [0.0, blur_radius.max(0.0), 0.0, 0.0],
+            radii: corner_radii_to_array(normalized_corner_radii_for_rect(
+                radii,
+                shape_rect.width,
+                shape_rect.height,
+            )),
         }
     }
 
@@ -2519,12 +2644,12 @@ impl RenderGeometry {
         );
     }
 
-    fn push_sdf_rect(&mut self, clip: UiRect, rect: UiRect, color: [f32; 4], radius: f32) {
+    fn push_sdf_rect(&mut self, clip: UiRect, rect: UiRect, color: [f32; 4], radii: CornerRadii) {
         let Ok(start) = u32::try_from(self.sdf_rects.len()) else {
             return;
         };
         self.sdf_rects
-            .push(GpuSdfRectInstance::new(rect, color, radius));
+            .push(GpuSdfRectInstance::new(rect, color, radii));
         self.push_batch(GeometryBatchKind::SdfRect, clip, None, start, 1);
     }
 
@@ -2534,7 +2659,7 @@ impl RenderGeometry {
         draw_rect: UiRect,
         shape_rect: UiRect,
         color: [f32; 4],
-        radius: f32,
+        radii: CornerRadii,
         blur_radius: f32,
     ) {
         let Ok(start) = u32::try_from(self.shadow_rects.len()) else {
@@ -2544,7 +2669,7 @@ impl RenderGeometry {
             draw_rect,
             shape_rect,
             color,
-            radius,
+            radii,
             blur_radius,
         ));
         self.push_batch(GeometryBatchKind::ShadowRect, clip, None, start, 1);
@@ -2709,7 +2834,7 @@ impl WgpuRenderer {
     fn validate_resource_updates(
         &self,
         request: &RenderFrameRequest,
-        resolver: &dyn ResourceResolver,
+        _resolver: &dyn ResourceResolver,
     ) -> Result<(), RenderError> {
         let capabilities = self.capabilities();
         for update in &request.resource_updates {
@@ -2725,10 +2850,6 @@ impl WgpuRenderer {
                 return Err(RenderError::InvalidResourceUpdate(
                     update.descriptor.handle.id().key.clone(),
                 ));
-            }
-            let id = update.descriptor.handle.id();
-            if resolver.resolve_resource(id).is_none() {
-                return Err(RenderError::MissingResource(id.clone()));
             }
         }
         Ok(())
@@ -3157,19 +3278,24 @@ fn render_embedded_canvas_programs(
         };
         let size = canvas_surface_size(canvas_request.rect, request.options.scale_factor);
         let canvas_context = context.canvas_context(&canvas_request.canvas, size)?;
-        canvas_context.render_pass(
-            WgpuCanvasRenderPass::wgsl(Cow::Borrowed(program.wgsl.as_str()))
-                .label(program.label.as_deref())
-                .vertex_entry_point(program.vertex_entry_point.as_str())
-                .fragment_entry_point(program.fragment_entry_point.as_str())
-                .clear_color(program.clear_color)
-                .constants(
-                    program
-                        .constants
-                        .iter()
-                        .map(|constant| (constant.name.as_str(), constant.value)),
-                ),
-        )?;
+        if canvas_context
+            .render_pass(
+                WgpuCanvasRenderPass::wgsl(Cow::Borrowed(program.wgsl.as_str()))
+                    .label(program.label.as_deref())
+                    .vertex_entry_point(program.vertex_entry_point.as_str())
+                    .fragment_entry_point(program.fragment_entry_point.as_str())
+                    .clear_color(program.clear_color)
+                    .constants(
+                        program
+                            .constants
+                            .iter()
+                            .map(|constant| (constant.name.as_str(), constant.value)),
+                    ),
+            )
+            .is_err()
+        {
+            canvas_context.clear(ColorRgba::new(88, 20, 34, 255));
+        }
     }
     Ok(())
 }
@@ -3511,6 +3637,12 @@ fn build_geometry_into(
         }
         let clip = paint_rect_in_target(item.clip_rect, origin, target_scale);
         let transform = paint_transform_in_target(item.transform, origin, target_scale);
+        if let Some(shader) =
+            paint_item_shader(item).filter(|shader| shader_effect_is_supported(shader))
+        {
+            push_shadered_paint_item(geometry, item, shader, transform, clip, context)?;
+            continue;
+        }
         match &item.kind {
             PaintKind::Rect {
                 fill,
@@ -3526,12 +3658,12 @@ fn build_geometry_into(
                     item.opacity,
                     corner_radius * transform.scale.max(0.0),
                 );
-                if let Some(stroke) = stroke {
+                if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
                     push_stroke_rect(
                         geometry,
                         rect,
                         clip,
-                        *stroke,
+                        stroke,
                         item.opacity,
                         corner_radius * transform.scale.max(0.0),
                     );
@@ -3592,8 +3724,8 @@ fn build_geometry_into(
                 let center = transform.transform_point(*center);
                 let radius = radius * transform.scale.max(0.0);
                 push_fill_circle(geometry, center, radius, clip, *fill, item.opacity);
-                if let Some(stroke) = stroke {
-                    push_stroke_circle(geometry, center, radius, clip, *stroke, item.opacity);
+                if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
+                    push_stroke_circle(geometry, center, radius, clip, stroke, item.opacity);
                 }
             }
             PaintKind::Polygon {
@@ -3607,8 +3739,8 @@ fn build_geometry_into(
                     .map(|point| transform.transform_point(point))
                     .collect::<Vec<_>>();
                 push_polygon(geometry, &points, clip, *fill, item.opacity);
-                if let Some(stroke) = stroke {
-                    push_polyline(geometry, &points, clip, *stroke, item.opacity, true);
+                if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
+                    push_polyline(geometry, &points, clip, stroke, item.opacity, true);
                 }
             }
             PaintKind::Image { key, tint } => {
@@ -3626,25 +3758,33 @@ fn build_geometry_into(
                 );
             }
             PaintKind::CompositedLayer(layer) => {
-                push_composited_layer(geometry, item, transform, layer, clip, context)?;
+                push_composited_layer(geometry, item, transform, layer, clip, None, context)?;
             }
             PaintKind::RichRect(rect_primitive) => {
                 let rect = transform.transform_rect(rect_primitive.rect);
-                let radius = rect_primitive.corner_radii.max_radius() * transform.scale.max(0.0);
+                let radii =
+                    scaled_corner_radii(rect_primitive.corner_radii, transform.scale.max(0.0));
                 for effect in &rect_primitive.effects {
-                    push_rich_rect_effect(geometry, rect, clip, *effect, item.opacity, radius);
+                    push_rich_rect_effect(geometry, rect, clip, *effect, item.opacity, radii);
                 }
-                push_fill_brush_rect_with_radius(
+                push_fill_brush_rect_with_radii(
                     geometry,
                     rect,
                     clip,
                     &rect_primitive.fill,
                     item.opacity,
-                    radius,
+                    radii,
                     transform,
                 );
-                if let Some(stroke) = rect_primitive.stroke {
-                    push_stroke_rect(geometry, rect, clip, stroke.style, item.opacity, radius);
+                if let Some(stroke) = rect_primitive.stroke.filter(|stroke| stroke.is_visible()) {
+                    push_stroke_rect_with_radii(
+                        geometry,
+                        rect,
+                        clip,
+                        stroke.style,
+                        item.opacity,
+                        radii,
+                    );
                 }
             }
             PaintKind::Path(path) => {
@@ -3658,7 +3798,7 @@ fn build_geometry_into(
                         item.opacity,
                     );
                 }
-                if let Some(stroke) = path.stroke {
+                if let Some(stroke) = path.stroke.filter(|stroke| stroke.is_visible()) {
                     push_triangle_mesh(
                         geometry,
                         &path.tessellated_stroke(1.0),
@@ -3686,6 +3826,74 @@ fn build_geometry_into(
         }
     }
     Ok(())
+}
+
+fn push_shadered_paint_item(
+    geometry: &mut RenderGeometry,
+    item: &crate::PaintItem,
+    shader: &ShaderEffect,
+    transform: crate::PaintTransform,
+    clip: UiRect,
+    context: &mut WgpuContext,
+) -> Result<(), RenderError> {
+    let material_outset = item
+        .material
+        .as_ref()
+        .map(|material| material.visual_outset_for_rect(item.rect))
+        .unwrap_or(0.0);
+    let bounds = expanded_rect(item.rect, shader_effect_outset(shader).max(material_outset));
+    if bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return Ok(());
+    }
+    let mut child = item.clone();
+    child.opacity = 1.0;
+    child.transform = PaintTransform::default();
+    child.shader = None;
+    child.material = None;
+    let mut layer = PaintCompositorLayer::new(bounds, crate::PaintList { items: vec![child] });
+    if let Some(clip) = material_clip_for_item(item) {
+        layer = layer.clip(clip);
+    }
+    let wrapper = crate::PaintItem {
+        node: item.node,
+        rect: bounds,
+        clip_rect: item.clip_rect,
+        z_index: item.z_index,
+        layer_order: item.layer_order,
+        opacity: item.opacity,
+        transform: item.transform,
+        shader: None,
+        material: None,
+        kind: PaintKind::CompositedLayer(layer.clone()),
+    };
+    push_composited_layer(
+        geometry,
+        &wrapper,
+        transform,
+        &layer,
+        clip,
+        Some(shader),
+        context,
+    )
+}
+
+fn paint_item_shader(item: &crate::PaintItem) -> Option<&ShaderEffect> {
+    item.material
+        .as_ref()
+        .and_then(|material| material.shader.as_ref())
+        .or(item.shader.as_ref())
+}
+
+fn material_clip_for_item(item: &crate::PaintItem) -> Option<CompositorClip> {
+    let material = item.material.as_ref()?;
+    match &material.clip_shape {
+        crate::ElementShape::Rect => None,
+        crate::ElementShape::RoundedRect { radius } => Some(CompositorClip::rounded_rect(
+            item.rect,
+            CornerRadii::uniform((*radius).max(0.0)),
+        )),
+        crate::ElementShape::Circle | crate::ElementShape::NormalizedPolygon(_) => None,
+    }
 }
 
 fn paint_occlusion_mask(paint: &crate::PaintList, origin: UiPoint, target_scale: f32) -> Vec<bool> {
@@ -3772,6 +3980,21 @@ impl Default for LayerFilterParams {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LayerShaderParams {
+    params: [f32; 4],
+    color: [f32; 4],
+}
+
+impl Default for LayerShaderParams {
+    fn default() -> Self {
+        Self {
+            params: [0.0, 0.0, 0.0, 0.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+}
+
 fn paint_transform_in_target(
     mut transform: crate::PaintTransform,
     origin: UiPoint,
@@ -3824,6 +4047,7 @@ fn push_composited_layer(
     transform: crate::PaintTransform,
     layer: &PaintCompositorLayer,
     clip: UiRect,
+    shader: Option<&ShaderEffect>,
     context: &mut WgpuContext,
 ) -> Result<(), RenderError> {
     let opacity = item.opacity * layer.opacity;
@@ -3844,6 +4068,7 @@ fn push_composited_layer(
         layer_clip_for_shader(layer.clip.as_ref(), transform),
         layer_mask_for_shader(layer.mask.as_ref(), transform),
         layer_filter_params(layer),
+        layer_shader_params(shader),
         texture_size,
     );
     geometry.push_composited_rect(batch_clip, &texture_key, instance);
@@ -3948,13 +4173,111 @@ fn layer_filter_params(layer: &PaintCompositorLayer) -> LayerFilterParams {
     params
 }
 
+fn layer_shader_params(shader: Option<&ShaderEffect>) -> LayerShaderParams {
+    let Some(shader) = shader else {
+        return LayerShaderParams::default();
+    };
+    let Some(mode) = shader_effect_mode(shader) else {
+        return LayerShaderParams::default();
+    };
+    match mode {
+        1.0 => LayerShaderParams {
+            params: [
+                mode,
+                shader_uniform(shader, "amount", 1.0).clamp(0.0, 1.0),
+                0.0,
+                0.0,
+            ],
+            color: shader_color(shader, ColorRgba::WHITE),
+        },
+        2.0 => LayerShaderParams {
+            params: [
+                mode,
+                shader_uniform(shader, "amount", 0.35).max(0.0),
+                shader_uniform(shader, "phase", 0.0),
+                shader_uniform(shader, "width", 0.18),
+            ],
+            color: shader_color(shader, ColorRgba::WHITE),
+        },
+        3.0 => LayerShaderParams {
+            params: [
+                mode,
+                shader_uniform(shader, "amount", 0.8).max(0.0),
+                shader_uniform(shader, "radius", 8.0).max(1.0),
+                0.0,
+            ],
+            color: shader_color(shader, ColorRgba::new(118, 183, 255, 255)),
+        },
+        mode if (4.0..=6.0).contains(&mode) => LayerShaderParams {
+            params: [
+                mode,
+                shader_uniform(shader, "amount", 0.65).clamp(0.0, 1.0),
+                shader_uniform(shader, "phase", 0.0),
+                shader_uniform(shader, "scale", 8.0).max(1.0),
+            ],
+            color: shader_color(shader, ColorRgba::WHITE),
+        },
+        _ => LayerShaderParams::default(),
+    }
+}
+
+fn shader_effect_mode(shader: &ShaderEffect) -> Option<f32> {
+    match shader.key.as_str() {
+        ShaderEffect::TINT => Some(1.0),
+        ShaderEffect::SHINE => Some(2.0),
+        ShaderEffect::GLOW => Some(3.0),
+        ShaderEffect::PLASMA => Some(4.0),
+        ShaderEffect::RINGS => Some(5.0),
+        ShaderEffect::GRID => Some(6.0),
+        key if key.ends_with(".tint") => Some(1.0),
+        key if key.ends_with(".shine") => Some(2.0),
+        key if key.ends_with(".glow") => Some(3.0),
+        key if key.ends_with(".plasma") => Some(4.0),
+        key if key.ends_with(".rings") => Some(5.0),
+        key if key.ends_with(".grid") => Some(6.0),
+        _ => None,
+    }
+}
+
+fn shader_effect_is_supported(shader: &ShaderEffect) -> bool {
+    shader_effect_mode(shader).is_some()
+}
+
+fn shader_uniform(shader: &ShaderEffect, name: &str, fallback: f32) -> f32 {
+    shader
+        .uniforms
+        .iter()
+        .rev()
+        .find(|uniform| uniform.name == name)
+        .map(|uniform| finite_or(uniform.value, fallback))
+        .unwrap_or(fallback)
+}
+
+fn shader_color(shader: &ShaderEffect, fallback: ColorRgba) -> [f32; 4] {
+    [
+        shader_uniform(shader, "red", f32::from(fallback.r) / 255.0).clamp(0.0, 1.0),
+        shader_uniform(shader, "green", f32::from(fallback.g) / 255.0).clamp(0.0, 1.0),
+        shader_uniform(shader, "blue", f32::from(fallback.b) / 255.0).clamp(0.0, 1.0),
+        shader_uniform(shader, "alpha", f32::from(fallback.a) / 255.0).clamp(0.0, 1.0),
+    ]
+}
+
+fn shader_effect_outset(shader: &ShaderEffect) -> f32 {
+    match shader_effect_mode(shader) {
+        Some(3.0) => {
+            shader_uniform(shader, "outset", shader_uniform(shader, "radius", 8.0)).clamp(0.0, 64.0)
+        }
+        _ => 0.0,
+    }
+}
+
 fn push_rich_rect_effect(
     geometry: &mut RenderGeometry,
     rect: UiRect,
     clip: UiRect,
     effect: crate::PaintEffect,
     opacity: f32,
-    radius: f32,
+    radii: CornerRadii,
 ) {
     if effect.color.a == 0 || opacity <= 0.0 {
         return;
@@ -3984,19 +4307,19 @@ fn push_rich_rect_effect(
                 draw_rect,
                 shape_rect,
                 color_as_vertex(effect.color, opacity),
-                radius + spread,
+                outset_corner_radii(radii, spread),
                 blur_radius,
             );
         }
         PaintEffectKind::InsetShadow => {
             let width = (effect.spread.max(1.0) + effect.blur_radius.max(0.0) * 0.25).max(1.0);
-            push_stroke_rect(
+            push_stroke_rect_with_radii(
                 geometry,
                 rect,
                 clip,
                 StrokeStyle::new(effect.color, width),
                 opacity,
-                radius,
+                radii,
             );
         }
     }
@@ -4023,46 +4346,58 @@ fn push_fill_rect_with_radius(
     opacity: f32,
     radius: f32,
 ) {
+    push_fill_rect_with_radii(
+        geometry,
+        rect,
+        clip,
+        color,
+        opacity,
+        CornerRadii::uniform(radius),
+    );
+}
+
+fn push_fill_rect_with_radii(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    color: ColorRgba,
+    opacity: f32,
+    radii: CornerRadii,
+) {
     if color.a == 0 || opacity <= 0.0 {
         return;
     }
-    let radius = radius.max(0.0);
-    if radius <= f32::EPSILON {
+    let radii = normalized_corner_radii_for_rect(radii, rect.width, rect.height);
+    if radii.max_radius() <= f32::EPSILON {
         push_fill_rect_with_color(geometry, rect, clip, color_as_vertex(color, opacity));
         return;
     }
     if rect.width <= 0.0 || rect.height <= 0.0 || rect.intersection(clip).is_none() {
         return;
     }
-    geometry.push_sdf_rect(clip, rect, color_as_vertex(color, opacity), radius);
+    geometry.push_sdf_rect(clip, rect, color_as_vertex(color, opacity), radii);
 }
 
-fn push_fill_brush_rect_with_radius(
+fn push_fill_brush_rect_with_radii(
     geometry: &mut RenderGeometry,
     rect: UiRect,
     clip: UiRect,
     brush: &PaintBrush,
     opacity: f32,
-    radius: f32,
+    radii: CornerRadii,
     transform: crate::PaintTransform,
 ) {
+    let radii = normalized_corner_radii_for_rect(radii, rect.width, rect.height);
     match brush {
         PaintBrush::Solid(color) => {
-            push_fill_rect_with_radius(geometry, rect, clip, *color, opacity, radius);
+            push_fill_rect_with_radii(geometry, rect, clip, *color, opacity, radii);
         }
-        PaintBrush::LinearGradient(gradient) if radius <= f32::EPSILON => {
+        PaintBrush::LinearGradient(gradient) if radii.max_radius() <= f32::EPSILON => {
             let gradient = transform_linear_gradient(gradient, transform);
             push_linear_gradient_rect(geometry, rect, clip, &gradient, opacity);
         }
         PaintBrush::LinearGradient(_) => {
-            push_fill_rect_with_radius(
-                geometry,
-                rect,
-                clip,
-                brush.fallback_color(),
-                opacity,
-                radius,
-            );
+            push_fill_rect_with_radii(geometry, rect, clip, brush.fallback_color(), opacity, radii);
         }
     }
 }
@@ -4141,8 +4476,30 @@ fn push_stroke_rect(
     opacity: f32,
     radius: f32,
 ) {
-    if radius > f32::EPSILON {
-        push_rounded_rect_stroke(geometry, rect, clip, stroke, opacity, radius);
+    push_stroke_rect_with_radii(
+        geometry,
+        rect,
+        clip,
+        stroke,
+        opacity,
+        CornerRadii::uniform(radius),
+    );
+}
+
+fn push_stroke_rect_with_radii(
+    geometry: &mut RenderGeometry,
+    rect: UiRect,
+    clip: UiRect,
+    stroke: StrokeStyle,
+    opacity: f32,
+    radii: CornerRadii,
+) {
+    if !stroke.is_visible() || opacity <= 0.0 {
+        return;
+    }
+    let radii = normalized_corner_radii_for_rect(radii, rect.width, rect.height);
+    if radii.max_radius() > f32::EPSILON {
+        push_rounded_rect_stroke_with_radii(geometry, rect, clip, stroke, opacity, radii);
         return;
     }
     let width = stroke.width.max(1.0);
@@ -4176,15 +4533,15 @@ fn push_stroke_rect(
     );
 }
 
-fn push_rounded_rect_stroke(
+fn push_rounded_rect_stroke_with_radii(
     geometry: &mut RenderGeometry,
     rect: UiRect,
     clip: UiRect,
     stroke: StrokeStyle,
     opacity: f32,
-    radius: f32,
+    radii: CornerRadii,
 ) {
-    if stroke.color.a == 0 || opacity <= 0.0 || rect.width <= 0.0 || rect.height <= 0.0 {
+    if !stroke.is_visible() || opacity <= 0.0 || rect.width <= 0.0 || rect.height <= 0.0 {
         return;
     }
     if rect.intersection(clip).is_none() {
@@ -4199,46 +4556,134 @@ fn push_rounded_rect_stroke(
     if x1 <= x0 || y1 <= y0 {
         return;
     }
-    let radius = (radius - half).max(0.0).min((x1 - x0).min(y1 - y0) * 0.5);
-    if radius <= f32::EPSILON {
+    let radii = normalized_corner_radii_for_rect(inset_corner_radii(radii, half), x1 - x0, y1 - y0);
+    if radii.max_radius() <= f32::EPSILON {
         push_stroke_rect(geometry, rect, clip, stroke, opacity, 0.0);
         return;
     }
-    let segments = ((radius * 0.5).ceil() as usize).clamp(4, 16);
+    let segments = ((radii.max_radius() * 0.5).ceil() as usize).clamp(4, 16);
     let mut points = Vec::with_capacity((segments + 1) * 4);
-    push_arc_points(
+    push_corner_points(
         &mut points,
-        UiPoint::new(x1 - radius, y0 + radius),
-        radius,
+        UiPoint::new(x1 - radii.top_right, y0 + radii.top_right),
+        radii.top_right,
         -std::f32::consts::FRAC_PI_2,
         0.0,
         segments,
+        UiPoint::new(x1, y0),
     );
-    push_arc_points(
+    push_corner_points(
         &mut points,
-        UiPoint::new(x1 - radius, y1 - radius),
-        radius,
+        UiPoint::new(x1 - radii.bottom_right, y1 - radii.bottom_right),
+        radii.bottom_right,
         0.0,
         std::f32::consts::FRAC_PI_2,
         segments,
+        UiPoint::new(x1, y1),
     );
-    push_arc_points(
+    push_corner_points(
         &mut points,
-        UiPoint::new(x0 + radius, y1 - radius),
-        radius,
+        UiPoint::new(x0 + radii.bottom_left, y1 - radii.bottom_left),
+        radii.bottom_left,
         std::f32::consts::FRAC_PI_2,
         std::f32::consts::PI,
         segments,
+        UiPoint::new(x0, y1),
     );
-    push_arc_points(
+    push_corner_points(
         &mut points,
-        UiPoint::new(x0 + radius, y0 + radius),
-        radius,
+        UiPoint::new(x0 + radii.top_left, y0 + radii.top_left),
+        radii.top_left,
         std::f32::consts::PI,
         std::f32::consts::PI + std::f32::consts::FRAC_PI_2,
         segments,
+        UiPoint::new(x0, y0),
     );
     push_polyline(geometry, &points, clip, stroke, opacity, true);
+}
+
+fn push_corner_points(
+    points: &mut Vec<UiPoint>,
+    center: UiPoint,
+    radius: f32,
+    start: f32,
+    end: f32,
+    segments: usize,
+    square_corner: UiPoint,
+) {
+    if radius <= f32::EPSILON {
+        points.push(square_corner);
+        return;
+    }
+    push_arc_points(points, center, radius, start, end, segments);
+}
+
+fn scaled_corner_radii(radii: CornerRadii, scale: f32) -> CornerRadii {
+    let scale = scale.max(0.0);
+    CornerRadii::new(
+        radii.top_left * scale,
+        radii.top_right * scale,
+        radii.bottom_right * scale,
+        radii.bottom_left * scale,
+    )
+}
+
+fn outset_corner_radii(radii: CornerRadii, amount: f32) -> CornerRadii {
+    let amount = amount.max(0.0);
+    CornerRadii::new(
+        radii.top_left + amount,
+        radii.top_right + amount,
+        radii.bottom_right + amount,
+        radii.bottom_left + amount,
+    )
+}
+
+fn inset_corner_radii(radii: CornerRadii, amount: f32) -> CornerRadii {
+    let amount = amount.max(0.0);
+    CornerRadii::new(
+        (radii.top_left - amount).max(0.0),
+        (radii.top_right - amount).max(0.0),
+        (radii.bottom_right - amount).max(0.0),
+        (radii.bottom_left - amount).max(0.0),
+    )
+}
+
+fn normalized_corner_radii_for_rect(radii: CornerRadii, width: f32, height: f32) -> CornerRadii {
+    let mut radii = CornerRadii::new(
+        finite_or(radii.top_left, 0.0).max(0.0),
+        finite_or(radii.top_right, 0.0).max(0.0),
+        finite_or(radii.bottom_right, 0.0).max(0.0),
+        finite_or(radii.bottom_left, 0.0).max(0.0),
+    );
+    let width = finite_or(width, 0.0).max(0.0);
+    let height = finite_or(height, 0.0).max(0.0);
+    let mut scale: f32 = 1.0;
+    for (sum, limit) in [
+        (radii.top_left + radii.top_right, width),
+        (radii.bottom_left + radii.bottom_right, width),
+        (radii.top_left + radii.bottom_left, height),
+        (radii.top_right + radii.bottom_right, height),
+    ] {
+        if sum > limit && sum > f32::EPSILON {
+            scale = scale.min(limit / sum);
+        }
+    }
+    if scale < 1.0 {
+        radii.top_left *= scale;
+        radii.top_right *= scale;
+        radii.bottom_right *= scale;
+        radii.bottom_left *= scale;
+    }
+    radii
+}
+
+fn corner_radii_to_array(radii: CornerRadii) -> [f32; 4] {
+    [
+        radii.top_left,
+        radii.top_right,
+        radii.bottom_right,
+        radii.bottom_left,
+    ]
 }
 
 fn push_arc_points(
@@ -4397,7 +4842,7 @@ fn push_built_in_icon_fallback(
                 opacity,
             );
         }
-        if let Some(stroke) = path.stroke {
+        if let Some(stroke) = path.stroke.filter(|stroke| stroke.is_visible()) {
             push_triangle_mesh(
                 geometry,
                 &path.tessellated_stroke(1.0),
@@ -4528,7 +4973,7 @@ fn push_line(
     stroke: StrokeStyle,
     opacity: f32,
 ) {
-    if stroke.color.a == 0 || opacity <= 0.0 {
+    if !stroke.is_visible() || opacity <= 0.0 {
         return;
     }
 
@@ -4604,7 +5049,7 @@ fn push_stroke_circle(
     stroke: StrokeStyle,
     opacity: f32,
 ) {
-    if radius <= 0.0 || stroke.color.a == 0 || opacity <= 0.0 {
+    if radius <= 0.0 || !stroke.is_visible() || opacity <= 0.0 {
         return;
     }
     let half = stroke.width.max(1.0) * 0.5;
@@ -4744,6 +5189,16 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
     } else {
         fallback
     }
+}
+
+fn expanded_rect(rect: UiRect, amount: f32) -> UiRect {
+    let amount = finite_or(amount, 0.0).max(0.0);
+    UiRect::new(
+        rect.x - amount,
+        rect.y - amount,
+        rect.width + amount * 2.0,
+        rect.height + amount * 2.0,
+    )
 }
 
 fn circle_segments(radius: f32) -> usize {
@@ -5418,6 +5873,7 @@ mod tests {
             opacity,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Rect {
                 fill,
                 stroke: None,
@@ -5481,6 +5937,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                             opacity: 1.0,
                             transform: Default::default(),
                             shader: None,
+                            material: None,
                             kind: PaintKind::Canvas(canvas),
                         }],
                     },
@@ -5550,6 +6007,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                             opacity: 1.0,
                             transform: Default::default(),
                             shader: None,
+                            material: None,
                             kind: PaintKind::Canvas(canvas),
                         }],
                     },
@@ -5614,6 +6072,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                             opacity: 1.0,
                             transform: Default::default(),
                             shader: None,
+                            material: None,
                             kind: PaintKind::Canvas(canvas),
                         }],
                     },
@@ -5624,6 +6083,53 @@ fn fs_main() -> @location(0) vec4<f32> {
         let snapshot = output.snapshot.expect("snapshot");
 
         assert_eq!(pixel_rgba(&snapshot.pixels, 4, 2, 2), [25, 153, 229, 255]);
+    }
+
+    #[test]
+    fn embedded_canvas_program_validation_error_keeps_frame_rendering() {
+        let mut renderer = WgpuRenderer::default();
+        let canvas = crate::CanvasContent::new("embedded.canvas.invalid").program(
+            crate::CanvasRenderProgram::wgsl(
+                r#"
+@vertex
+fn vs_main() -> @builtin(position) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return definitely_not_defined();
+}
+"#,
+            )
+            .clear_color(Some(ColorRgba::new(0, 0, 0, 255))),
+        );
+        let output = renderer
+            .render_frame(
+                RenderFrameRequest::new(
+                    RenderTarget::snapshot(PixelSize::new(4, 4)),
+                    UiSize::new(4.0, 4.0),
+                    PaintList {
+                        items: vec![PaintItem {
+                            node: UiNodeId(1),
+                            rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
+                            clip_rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
+                            z_index: 0,
+                            layer_order: LayerOrder::DEFAULT,
+                            opacity: 1.0,
+                            transform: Default::default(),
+                            shader: None,
+                            material: None,
+                            kind: PaintKind::Canvas(canvas),
+                        }],
+                    },
+                ),
+                &EmptyResourceResolver,
+            )
+            .expect("invalid embedded canvas shader should not abort the frame");
+        let snapshot = output.snapshot.expect("snapshot");
+
+        assert_eq!(pixel_rgba(&snapshot.pixels, 4, 2, 2), [88, 20, 34, 255]);
     }
 
     #[test]
@@ -5776,7 +6282,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             &mut geometry,
             rect,
             rect,
-            BuiltInIcon::Play.key(),
+            BuiltInIcon::Operad.key(),
             Some(tint),
             1.0,
         );
@@ -5812,6 +6318,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             opacity: 1.0,
             transform: Default::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Rect {
                 fill: ColorRgba::new(6, 9, 14, 255),
                 stroke: None,
@@ -5833,6 +6340,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                 opacity: 1.0,
                 transform: Default::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::Text(TextContent::new(
                     text,
                     TextStyle {

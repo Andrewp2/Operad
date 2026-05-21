@@ -190,6 +190,10 @@ impl AlignedStroke {
         Self { style, alignment }
     }
 
+    pub const fn is_visible(self) -> bool {
+        self.style.is_visible()
+    }
+
     pub const fn inside(style: StrokeStyle) -> Self {
         Self::new(style, StrokeAlignment::Inside)
     }
@@ -425,7 +429,8 @@ impl PaintRect {
     }
 
     pub fn stroke(mut self, stroke: impl Into<AlignedStroke>) -> Self {
-        self.stroke = Some(stroke.into());
+        let stroke = stroke.into();
+        self.stroke = stroke.is_visible().then_some(stroke);
         self
     }
 
@@ -715,7 +720,8 @@ impl PaintPath {
     }
 
     pub fn stroke(mut self, stroke: impl Into<AlignedStroke>) -> Self {
-        self.stroke = Some(stroke.into());
+        let stroke = stroke.into();
+        self.stroke = stroke.is_visible().then_some(stroke);
         self
     }
 
@@ -1064,7 +1070,7 @@ fn tessellate_polyline_stroke(
     options: PathStrokeOptions,
     closed: bool,
 ) -> Vec<[UiPoint; 3]> {
-    if stroke.color.a == 0 {
+    if !stroke.is_visible() {
         return Vec::new();
     }
     let points = sanitize_polyline(points);
@@ -1502,6 +1508,21 @@ mod tests {
             ]
         );
         assert_eq!(path.stroke.unwrap().style.width, 0.5);
+    }
+
+    #[test]
+    fn zero_width_strokes_are_not_published_as_visible_paint() {
+        let rect = PaintRect::solid(UiRect::new(0.0, 0.0, 10.0, 10.0), ColorRgba::WHITE).stroke(
+            AlignedStroke::inside(StrokeStyle::new(ColorRgba::WHITE, 0.0)),
+        );
+        assert_eq!(rect.stroke, None);
+
+        let path = PaintPath::new()
+            .move_to(UiPoint::new(0.0, 0.0))
+            .line_to(UiPoint::new(10.0, 0.0))
+            .stroke(StrokeStyle::new(ColorRgba::WHITE, 0.0));
+        assert_eq!(path.stroke, None);
+        assert!(path.tessellated_stroke(1.0).is_empty());
     }
 
     #[test]

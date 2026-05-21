@@ -374,7 +374,7 @@ impl ScrollbarDragState {
         mut scroll: ScrollState,
         pointer: UiPoint,
     ) -> ScrollState {
-        scroll.offset = scroll.clamp_offset(self.offset_for_pointer(pointer));
+        scroll.set_offset(self.offset_for_pointer(pointer));
         scroll
     }
 }
@@ -448,12 +448,8 @@ mod tests {
 
     #[test]
     fn scrollbar_controller_tracks_pointer_drag_by_id() {
-        let scroll = ScrollState {
-            axes: ScrollAxes::VERTICAL,
-            offset: UiPoint::new(0.0, 0.0),
-            viewport_size: UiSize::new(8.0, 50.0),
-            content_size: UiSize::new(8.0, 100.0),
-        };
+        let scroll = ScrollState::new(ScrollAxes::VERTICAL)
+            .with_sizes(UiSize::new(8.0, 50.0), UiSize::new(8.0, 100.0));
         let mut controller = ScrollbarControllerState::new();
 
         assert_eq!(
@@ -487,12 +483,9 @@ mod tests {
 
     #[test]
     fn scrollbar_thumb_reaches_end_of_actual_flexed_track() {
-        let scroll = ScrollState {
-            axes: ScrollAxes::VERTICAL,
-            offset: UiPoint::new(0.0, 50.0),
-            viewport_size: UiSize::new(8.0, 50.0),
-            content_size: UiSize::new(8.0, 100.0),
-        };
+        let scroll = ScrollState::new(ScrollAxes::VERTICAL)
+            .with_sizes(UiSize::new(8.0, 50.0), UiSize::new(8.0, 100.0))
+            .with_offset(UiPoint::new(0.0, 50.0));
         let mut document = UiDocument::new(LayoutStyle::size(40.0, 200.0));
         let root = document.root;
         let scrollbar = scrollbar(
@@ -526,12 +519,8 @@ mod tests {
 
     #[test]
     fn scrollbar_hides_when_axis_has_no_scroll_range() {
-        let scroll = ScrollState {
-            axes: ScrollAxes::VERTICAL,
-            offset: UiPoint::new(0.0, 0.0),
-            viewport_size: UiSize::new(8.0, 120.0),
-            content_size: UiSize::new(8.0, 120.0),
-        };
+        let scroll = ScrollState::new(ScrollAxes::VERTICAL)
+            .with_sizes(UiSize::new(8.0, 120.0), UiSize::new(8.0, 120.0));
         let mut document = UiDocument::new(LayoutStyle::size(120.0, 160.0));
         let root = document.root;
         let scrollbar = scrollbar(

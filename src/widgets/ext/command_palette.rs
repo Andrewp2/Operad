@@ -541,6 +541,9 @@ pub struct CommandPaletteOptions {
     pub max_visible_rows: usize,
     pub panel_visual: UiVisual,
     pub input_visual: UiVisual,
+    pub input_image: Option<ImageContent>,
+    pub input_image_size: UiSize,
+    pub input_placeholder: String,
     pub row_visual: UiVisual,
     pub active_row_visual: UiVisual,
     pub text_style: TextStyle,
@@ -567,6 +570,11 @@ impl Default for CommandPaletteOptions {
                 6.0,
             ),
             input_visual: UiVisual::panel(ColorRgba::new(18, 22, 28, 255), None, 4.0),
+            input_image: Some(
+                ImageContent::new("icons.search").tinted(ColorRgba::new(166, 178, 196, 255)),
+            ),
+            input_image_size: UiSize::new(16.0, 16.0),
+            input_placeholder: "Search commands".to_string(),
             row_visual: UiVisual::TRANSPARENT,
             active_row_visual: UiVisual::panel(ColorRgba::new(58, 87, 126, 255), None, 3.0),
             text_style: TextStyle::default(),
@@ -592,6 +600,21 @@ impl Default for CommandPaletteOptions {
 impl CommandPaletteOptions {
     pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.action_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn with_input_image(mut self, image: impl Into<Option<ImageContent>>) -> Self {
+        self.input_image = image.into();
+        self
+    }
+
+    pub const fn with_input_image_size(mut self, size: UiSize) -> Self {
+        self.input_image_size = size;
+        self
+    }
+
+    pub fn with_input_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.input_placeholder = placeholder.into();
         self
     }
 }
@@ -630,7 +653,7 @@ pub fn command_palette(
             popup.viewport,
             popup.placement,
         );
-        popup_panel(
+        let root = popup_panel(
             document,
             parent,
             name.clone(),
@@ -647,7 +670,14 @@ pub fn command_palette(
                 animation: options.panel_animation.clone(),
                 ..Default::default()
             },
-        )
+        );
+        {
+            let layout = &mut document.node_mut(root).style.layout;
+            layout.display = Display::Flex;
+            layout.flex_direction = FlexDirection::Column;
+            layout.padding = TaffyRect::length(4.0_f32);
+        }
+        root
     } else {
         let mut node = UiNode::container(
             name.clone(),
@@ -663,7 +693,7 @@ pub fn command_palette(
                         width: length(options.width.max(0.0)),
                         height: Dimension::auto(),
                     },
-                    padding: TaffyRect::length(4.0),
+                    padding: TaffyRect::length(4.0_f32),
                     ..Default::default()
                 })
                 .style,
@@ -698,7 +728,7 @@ pub fn command_palette(
                         width: Dimension::percent(1.0),
                         height: length(34.0),
                     },
-                    padding: TaffyRect::length(8.0),
+                    padding: TaffyRect::length(8.0_f32),
                     ..Default::default()
                 })
                 .style,
@@ -721,16 +751,31 @@ pub fn command_palette(
                 .unwrap_or_else(|| format!("{name}.search")),
         ),
     );
+    if let Some(image) = &options.input_image {
+        leading_image(
+            document,
+            input,
+            format!("{name}.search_icon"),
+            image.clone(),
+            "Command search",
+            options.input_image_size,
+        );
+    }
+    let query_is_empty = state.query().is_empty();
     label(
         document,
         input,
         format!("{name}.query"),
-        if state.query().is_empty() {
-            ""
+        if query_is_empty {
+            options.input_placeholder.as_str()
         } else {
             state.query()
         },
-        options.text_style.clone(),
+        if query_is_empty {
+            options.muted_text_style.clone()
+        } else {
+            options.text_style.clone()
+        },
         LayoutStyle::from_taffy_style(Style {
             size: TaffySize {
                 width: Dimension::percent(1.0),
@@ -921,7 +966,7 @@ fn command_palette_row_node(
                     width: Dimension::percent(1.0),
                     height: length(options.row_height),
                 },
-                padding: TaffyRect::length(6.0),
+                padding: TaffyRect::length(6.0_f32),
                 flex_shrink: 0.0,
                 ..Default::default()
             })

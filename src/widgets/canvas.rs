@@ -4,6 +4,7 @@ use super::*;
 pub struct CanvasOptions {
     pub layout: LayoutStyle,
     pub aspect_ratio: Option<f32>,
+    pub intrinsic_size: Option<UiSize>,
     pub visual: UiVisual,
     pub input: InputBehavior,
     pub action: Option<WidgetActionBinding>,
@@ -19,6 +20,7 @@ impl Default for CanvasOptions {
                 .with_height_percent(1.0)
                 .with_flex_grow(1.0),
             aspect_ratio: None,
+            intrinsic_size: Some(UiSize::new(320.0, 180.0)),
             visual: UiVisual::TRANSPARENT,
             input: InputBehavior {
                 pointer: true,
@@ -43,6 +45,11 @@ impl CanvasOptions {
         self
     }
 
+    pub const fn with_intrinsic_size(mut self, size: UiSize) -> Self {
+        self.intrinsic_size = Some(size);
+        self
+    }
+
     pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
         self.accessibility_label = Some(label.into());
         self
@@ -58,7 +65,7 @@ pub fn canvas(
     document: &mut UiDocument,
     parent: UiNodeId,
     name: impl Into<String>,
-    content: CanvasContent,
+    mut content: CanvasContent,
     options: CanvasOptions,
 ) -> UiNodeId {
     let name = name.into();
@@ -71,6 +78,9 @@ pub fn canvas(
         if aspect_ratio.is_finite() && aspect_ratio > 0.0 {
             layout.as_taffy_style_mut().aspect_ratio = Some(aspect_ratio);
         }
+    }
+    if let Some(intrinsic_size) = options.intrinsic_size {
+        content = content.intrinsic_size(intrinsic_size);
     }
     let mut node = UiNode::canvas(name, content.key.clone(), layout)
         .with_input(options.input)

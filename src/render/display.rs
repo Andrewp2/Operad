@@ -505,6 +505,7 @@ mod tests {
                     opacity: 1.0,
                     transform: PaintTransform::default(),
                     shader: None,
+                    material: None,
                     kind: PaintKind::Rect {
                         fill: ColorRgba::new(10, 20, 30, 255),
                         stroke: None,

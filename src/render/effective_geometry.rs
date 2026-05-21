@@ -5,7 +5,7 @@
 //! combined with paint transforms, clipping, and layer ordering.
 
 use crate::platform::{LayerOrder, UiLayer};
-use crate::{PaintItem, PaintKind, PaintTransform, UiNodeId, UiPoint, UiRect};
+use crate::{ElementShape, PaintItem, PaintKind, PaintTransform, UiNodeId, UiPoint, UiRect};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EffectiveTransform {
@@ -122,6 +122,7 @@ pub struct EffectiveGeometry {
     pub visible: bool,
     pub hit_testable: bool,
     pub accessibility_rect: Option<UiRect>,
+    pub hit_shape: ElementShape,
 }
 
 impl EffectiveGeometry {
@@ -136,16 +137,23 @@ impl EffectiveGeometry {
             visible: true,
             hit_testable: true,
             accessibility_rect: None,
+            hit_shape: ElementShape::Rect,
         }
     }
 
     pub fn from_paint_item(item: &PaintItem, order: usize) -> Self {
+        let hit_shape = item
+            .material
+            .as_ref()
+            .map(|material| material.hit_shape.clone())
+            .unwrap_or_default();
         Self::new(item.node, item.rect)
             .paint_transform(item.transform)
             .clip(EffectiveClip::new(item.clip_rect))
             .layer_order(item.layer_order)
             .order(order)
             .hit_testable(paint_item_default_hit_testable(item))
+            .hit_shape(hit_shape)
     }
 
     pub const fn transform(mut self, transform: EffectiveTransform) -> Self {
@@ -193,6 +201,11 @@ impl EffectiveGeometry {
 
     pub const fn accessibility_rect(mut self, rect: UiRect) -> Self {
         self.accessibility_rect = Some(rect);
+        self
+    }
+
+    pub fn hit_shape(mut self, hit_shape: ElementShape) -> Self {
+        self.hit_shape = hit_shape;
         self
     }
 
@@ -244,7 +257,7 @@ impl EffectiveGeometry {
         }
         self.transform
             .inverse_transform_point(point)
-            .is_some_and(|local| self.original_rect.contains_point(local))
+            .is_some_and(|local| self.hit_shape.contains_point(self.original_rect, local))
     }
 
     pub fn point_hit_rejections(&self, point: UiPoint) -> Vec<EffectiveHitRejection> {
@@ -262,9 +275,9 @@ impl EffectiveGeometry {
             && !self
                 .transform
                 .inverse_transform_point(point)
-                .is_some_and(|local| self.original_rect.contains_point(local))
+                .is_some_and(|local| self.hit_shape.contains_point(self.original_rect, local))
         {
-            rejections.push(EffectiveHitRejection::OutsideOriginalRect);
+            rejections.push(EffectiveHitRejection::OutsideHitShape);
         }
         rejections
     }
@@ -298,6 +311,7 @@ impl EffectiveGeometry {
             order: self.order,
             hit_testable: self.hit_testable,
             visible: self.visible,
+            hit_shape: self.hit_shape.clone(),
             hit_eligibility,
             test_point: point,
             point_hit,
@@ -346,6 +360,7 @@ pub enum EffectiveHitRejection {
     EmptyVisibleRect,
     OutsideClipChain,
     OutsideOriginalRect,
+    OutsideHitShape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,6 +383,7 @@ pub struct EffectiveGeometryRecord {
     pub order: usize,
     pub hit_testable: bool,
     pub visible: bool,
+    pub hit_shape: ElementShape,
     pub hit_eligibility: EffectiveHitEligibility,
     pub test_point: Option<UiPoint>,
     pub point_hit: Option<bool>,
@@ -497,7 +513,8 @@ mod tests {
     use super::*;
     use crate::platform::UiLayer;
     use crate::{
-        ColorRgba, PaintItem, PaintKind, PaintTransform, StrokeStyle, TextContent, TextStyle,
+        ColorRgba, ElementMaterial, ElementShape, PaintItem, PaintKind, PaintTransform,
+        StrokeStyle, TextContent, TextStyle,
     };
 
     fn assert_rect_near(actual: UiRect, expected: UiRect) {
@@ -521,6 +538,7 @@ mod tests {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind,
         }
     }
@@ -559,6 +577,37 @@ mod tests {
             .clone()
             .clip_rect(UiRect::new(200.0, 200.0, 10.0, 10.0));
         assert_eq!(clipped_out.visible_rect(), None);
+    }
+
+    #[test]
+    fn hit_shape_limits_effective_geometry_without_changing_bounds() {
+        let geometry = EffectiveGeometry::new(UiNodeId(7), UiRect::new(10.0, 10.0, 40.0, 40.0))
+            .hit_shape(ElementShape::circle());
+
+        assert!(geometry.contains_point(UiPoint::new(30.0, 30.0)));
+        assert!(!geometry.contains_point(UiPoint::new(11.0, 11.0)));
+        assert_eq!(
+            geometry.point_hit_rejections(UiPoint::new(11.0, 11.0)),
+            vec![EffectiveHitRejection::OutsideHitShape]
+        );
+        assert_eq!(geometry.original_rect, UiRect::new(10.0, 10.0, 40.0, 40.0));
+    }
+
+    #[test]
+    fn paint_item_material_supplies_effective_hit_shape() {
+        let mut item = paint_item(
+            UiNodeId(8),
+            PaintKind::Rect {
+                fill: ColorRgba::WHITE,
+                stroke: None,
+                corner_radius: 0.0,
+            },
+        );
+        item.material = Some(ElementMaterial::new().with_hit_shape(ElementShape::circle()));
+        let geometry = EffectiveGeometry::from_paint_item(&item, 0);
+
+        assert_eq!(geometry.hit_shape, ElementShape::circle());
+        assert!(!geometry.contains_point(UiPoint::new(1.0, 1.0)));
     }
 
     #[test]

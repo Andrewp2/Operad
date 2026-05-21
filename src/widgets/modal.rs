@@ -32,7 +32,7 @@ impl Default for ModalDialogOptions {
                 align_items: Some(AlignItems::Center),
                 justify_content: Some(JustifyContent::Center),
                 position: taffy::prelude::Position::Absolute,
-                inset: taffy::prelude::Rect::length(0.0),
+                inset: taffy::prelude::Rect::length(0.0_f32),
                 size: TaffySize {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
@@ -66,7 +66,7 @@ impl Default for ModalDialogOptions {
             trap_focus: true,
             focus_restore: FocusRestoreTarget::Previous,
             focus_wrap: true,
-            portal: UiPortalTarget::AppOverlay,
+            portal: UiPortalTarget::GlobalAppOverlay,
             dismissal: DialogDismissal::MODAL,
             show_close_button: true,
             close_action: None,
@@ -169,18 +169,21 @@ pub fn modal_dialog(
         .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Group).hidden()),
     );
 
+    let scrim_z_index = options.z_index.saturating_sub(1);
+    let dialog_z_index = options.z_index;
+
     let mut scrim = UiNode::container(
         format!("{name}.scrim"),
         UiNodeStyle {
             layout: LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 0.0, 0.0)).style,
             clip: ClipBehavior::Clip,
-            z_index: 0,
+            z_index: scrim_z_index,
             ..Default::default()
         },
     )
     .with_visual(options.scrim_visual)
     .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Group).hidden());
-    scrim.style.layout.inset = taffy::prelude::Rect::length(0.0);
+    scrim.style.layout.inset = taffy::prelude::Rect::length(0.0_f32);
     scrim.style.layout.size = TaffySize {
         width: Dimension::percent(1.0),
         height: Dimension::percent(1.0),
@@ -194,7 +197,7 @@ pub fn modal_dialog(
             UiNodeStyle {
                 layout: options.dialog_layout.style.clone(),
                 clip: ClipBehavior::Clip,
-                z_index: 1,
+                z_index: dialog_z_index,
                 ..Default::default()
             },
         )
@@ -439,8 +442,8 @@ mod tests {
         assert_eq!(document.node(nodes.overlay).parent, Some(portal));
         assert_eq!(document.node(nodes.overlay).clip_scope, ClipScope::Viewport);
         assert_eq!(document.node(nodes.overlay).style.z_index, 200);
-        assert_eq!(document.node(nodes.scrim).style.z_index, 0);
-        assert_eq!(document.node(nodes.dialog).style.z_index, 1);
+        assert_eq!(document.node(nodes.scrim).style.z_index, 199);
+        assert_eq!(document.node(nodes.dialog).style.z_index, 200);
         let accessibility = document.node(nodes.dialog).accessibility.as_ref().unwrap();
         assert_eq!(accessibility.role, AccessibilityRole::Dialog);
         assert!(accessibility.modal);
@@ -456,6 +459,30 @@ mod tests {
         assert_eq!(
             modal_dialog_open_event("confirm", "Confirm delete", nodes, &options),
             OverlayFrameEvent::open_dialog_with_focus_trap(descriptor, focus_trap)
+        );
+
+        document
+            .compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+            .expect("modal layout");
+        let paint = document.paint_list();
+        let scrim_paint_index = paint
+            .items
+            .iter()
+            .position(|item| {
+                item.node == nodes.scrim && matches!(item.kind, PaintKind::Rect { .. })
+            })
+            .expect("scrim paint item");
+        let dialog_paint_index = paint
+            .items
+            .iter()
+            .position(|item| {
+                item.node == nodes.dialog && matches!(item.kind, PaintKind::Rect { .. })
+            })
+            .expect("dialog paint item");
+        assert!(
+            scrim_paint_index < dialog_paint_index,
+            "scrim must paint behind the modal dialog: {:#?}",
+            paint.items
         );
     }
 

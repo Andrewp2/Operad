@@ -47,7 +47,7 @@ pub fn image(
     document: &mut UiDocument,
     parent: UiNodeId,
     name: impl Into<String>,
-    content: ImageContent,
+    content: impl Into<ImageContent>,
     options: ImageOptions,
 ) -> UiNodeId {
     let name = name.into();
@@ -60,7 +60,7 @@ pub fn image(
     if let Some(hint) = options.accessibility_hint {
         accessibility = accessibility.hint(hint);
     }
-    let mut node = UiNode::image(name, content, options.layout)
+    let mut node = UiNode::image(name, content.into(), options.layout)
         .with_visual(options.visual)
         .with_accessibility(accessibility);
     if let Some(shader) = options.shader {
@@ -72,6 +72,7 @@ pub fn image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::ImageHandle;
 
     #[test]
     fn image_builder_wraps_image_content_with_accessibility() {
@@ -81,13 +82,13 @@ mod tests {
             &mut document,
             root,
             "logo",
-            ImageContent::new("assets.logo"),
+            ImageHandle::app("assets.logo.png"),
             ImageOptions::default().with_accessibility_label("Logo"),
         );
 
         assert!(matches!(
             &document.node(node).content,
-            UiContent::Image(image) if image.key == "assets.logo"
+            UiContent::Image(image) if image.key == "assets.logo.png"
         ));
         let accessibility = document.node(node).accessibility.as_ref().unwrap();
         assert_eq!(accessibility.role, AccessibilityRole::Image);

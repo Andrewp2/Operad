@@ -318,6 +318,13 @@ impl FormState {
             field.validating = false;
         }
         field.messages.clear();
+        if self.pending_generation.is_some() {
+            self.validation_generation = self.validation_generation.next();
+            self.pending_generation = None;
+            self.validating = false;
+        }
+        self.form_messages.clear();
+        self.submitted = false;
         self.phase = FormPhase::Idle;
         self.refresh_flags();
         self.fields.get(&id)
@@ -411,6 +418,7 @@ impl FormState {
         }
 
         field.messages = result.messages;
+        field.pending = false;
         field.pending_generation = None;
         field.validating = false;
         self.refresh_flags();
@@ -451,6 +459,7 @@ impl FormState {
 
         for field in self.fields.values_mut() {
             field.messages.clear();
+            field.pending = false;
         }
         for (field_id, messages) in result.field_messages {
             let Some(field) = self.fields.get_mut(&field_id) else {
@@ -570,6 +579,60 @@ mod tests {
         let field = &form.fields[&FieldId::from("email")];
         assert!(!field.validating);
         assert_eq!(field.messages.len(), 1);
+    }
+
+    #[test]
+    fn form_validation_clears_pending_while_preserving_dirty_changes() {
+        let mut form = FormState::new("profile").with_field("email", "a@example.com");
+        form.update_field("email", "b@example.com").unwrap();
+        assert!(form.dirty);
+        assert!(form.pending);
+
+        let request = form.begin_form_validation();
+        let applied = form.apply_form_validation(FormValidationResult::new(request.generation));
+
+        assert!(applied.applied());
+        assert!(form.dirty);
+        assert!(!form.pending);
+        assert!(!form.fields[&FieldId::from("email")].pending);
+    }
+
+    #[test]
+    fn field_validation_clears_pending_while_preserving_dirty_changes() {
+        let mut form = FormState::new("profile").with_field("email", "a@example.com");
+        form.update_field("email", "b@example.com").unwrap();
+        assert!(form.pending);
+
+        let request = form.begin_field_validation("email").unwrap();
+        let applied = form.apply_field_validation(FieldValidationResult::new(
+            "email",
+            request.generation,
+            Vec::new(),
+        ));
+
+        assert!(applied.applied());
+        assert!(form.dirty);
+        assert!(!form.pending);
+        assert!(!form.fields[&FieldId::from("email")].pending);
+    }
+
+    #[test]
+    fn updating_field_invalidates_in_flight_form_validation() {
+        let mut form = FormState::new("profile").with_field("email", "a@example.com");
+        let request = form.begin_form_validation();
+        form.update_field("email", "b@example.com").unwrap();
+
+        let stale = form.apply_form_validation(FormValidationResult::new(request.generation));
+
+        assert_eq!(
+            stale,
+            ValidationApplyDisposition::Stale {
+                expected: None,
+                received: request.generation
+            }
+        );
+        assert!(form.form_messages.is_empty());
+        assert!(form.fields[&FieldId::from("email")].messages.is_empty());
     }
 
     #[test]

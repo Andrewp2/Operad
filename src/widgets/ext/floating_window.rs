@@ -12,10 +12,10 @@ use taffy::prelude::{
 };
 
 use crate::{
-    layout, length, AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, EditPhase,
-    InputBehavior, InteractionVisuals, LayoutStyle, ScenePrimitive, StrokeStyle, TextStyle,
-    UiDocument, UiNode, UiNodeId, UiNodeLayoutConstraint, UiNodeStyle, UiPoint, UiRect, UiSize,
-    UiVisual, WidgetActionBinding, WidgetActionMode, WidgetPointerEdit,
+    layout, length, AccessibilityAction, AccessibilityMeta, AccessibilityRole, ClipBehavior,
+    ColorRgba, EditPhase, InputBehavior, InteractionVisuals, LayoutStyle, ScenePrimitive,
+    StrokeStyle, TextStyle, UiDocument, UiNode, UiNodeId, UiNodeLayoutConstraint, UiNodeStyle,
+    UiPoint, UiRect, UiSize, UiVisual, WidgetActionBinding, WidgetActionMode, WidgetPointerEdit,
 };
 
 use super::surfaces::{DEFAULT_SURFACE_BG, DEFAULT_SURFACE_STROKE};
@@ -202,7 +202,7 @@ pub enum FloatingWindowOrganizeMode {
     Preferred,
     /// At least one window was reduced to its minimum size so the layout could fit.
     Minimum,
-    /// Windows were collapsed to their title bars so the layout could fit.
+    /// One or more trailing windows were collapsed to their title bars so the layout could fit.
     Collapsed,
 }
 
@@ -329,6 +329,8 @@ impl FloatingDesktopState {
         self.drag.remove(id);
         self.resize.remove(id);
         self.collapsed.remove(id);
+        self.sizes.remove(id);
+        self.user_sized.remove(id);
     }
 
     pub fn bring_to_front(&mut self, id: &str) {
@@ -437,33 +439,35 @@ impl FloatingDesktopState {
         for spec in windows.into_iter() {
             let id = spec.id;
             let defaults = spec.defaults;
-            let mut size = self.size(id, defaults.size);
-            let mut min_size = defaults.min_size;
+            let size = if self.is_collapsed(id) {
+                defaults.size
+            } else {
+                let stored = self.size(id, defaults.size);
+                UiSize::new(
+                    stored.width.max(defaults.size.width),
+                    stored.height.max(defaults.size.height),
+                )
+            };
+            let min_size = defaults.min_size;
             let collapsed_size = normalize_organize_collapsed_size(
                 spec.collapsed_size.unwrap_or_else(|| {
                     UiSize::new(defaults.min_size.width, options.title_bar_height)
                 }),
                 options.title_bar_height,
             );
-            if self.is_collapsed(id) {
-                size = collapsed_size;
-                min_size = collapsed_size;
-            }
             items.push(OrganizeWindowItem {
                 id: id.to_string(),
                 size,
                 min_size,
                 collapsed_size,
-                collapsed: self.is_collapsed(id),
             });
         }
 
-        let Some((rects, mode)) =
-            organize_window_rects(&items, inner_bounds, gap, options.title_bar_height)
+        let Some(plan) = organize_window_rects(&items, inner_bounds, gap, options.title_bar_height)
         else {
             return FloatingWindowOrganizeOutcome::NoFit;
         };
-        for (index, (item, rect)) in items.iter().zip(rects.into_iter()).enumerate() {
+        for (index, (item, rect)) in items.iter().zip(plan.rects.into_iter()).enumerate() {
             self.ensure_window(
                 &item.id,
                 FloatingWindowDefaults::new(
@@ -474,6 +478,7 @@ impl FloatingDesktopState {
             );
             self.drag.remove(&item.id);
             self.resize.remove(&item.id);
+            let collapsed = plan.collapsed.get(index).copied().unwrap_or(false);
             self.positions
                 .insert(item.id.clone(), UiPoint::new(rect.x, rect.y));
             self.sizes
@@ -486,12 +491,14 @@ impl FloatingDesktopState {
                 .min(max_before_stride);
             self.z_order.insert(item.id.clone(), z);
             last_z = z;
-            if mode == FloatingWindowOrganizeMode::Collapsed {
+            if collapsed {
                 self.collapsed.insert(item.id.clone());
+            } else {
+                self.collapsed.remove(&item.id);
             }
         }
         self.next_z_index = last_z;
-        FloatingWindowOrganizeOutcome::Organized { mode }
+        FloatingWindowOrganizeOutcome::Organized { mode: plan.mode }
     }
 
     pub fn apply_drag(&mut self, id: &str, edit: WidgetPointerEdit, fallback_position: UiPoint) {
@@ -569,6 +576,10 @@ impl FloatingDesktopState {
             EditPhase::Preview => {}
             EditPhase::BeginEdit => {
                 self.bring_to_front(id);
+                self.positions.insert(
+                    id.to_string(),
+                    UiPoint::new(edit.target_rect.x, edit.target_rect.y),
+                );
                 self.resize.insert(
                     id.to_string(),
                     FloatingWindowResizeState {
@@ -802,7 +813,13 @@ struct OrganizeWindowItem {
     size: UiSize,
     min_size: UiSize,
     collapsed_size: UiSize,
-    collapsed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct OrganizeWindowPlan {
+    rects: Vec<UiRect>,
+    mode: FloatingWindowOrganizeMode,
+    collapsed: Vec<bool>,
 }
 
 pub fn floating_window_layout(
@@ -877,56 +894,57 @@ fn organize_window_rects(
     bounds: UiRect,
     gap: f32,
     title_bar_height: f32,
-) -> Option<(Vec<UiRect>, FloatingWindowOrganizeMode)> {
-    let (preferred, preferred_fits) = organize_window_rects_for_mode(
-        items,
-        bounds,
-        gap,
-        title_bar_height,
-        FloatingWindowOrganizeMode::Preferred,
-    );
-    if preferred_fits {
-        return Some((preferred, FloatingWindowOrganizeMode::Preferred));
+) -> Option<OrganizeWindowPlan> {
+    for expanded_count in (0..=items.len()).rev() {
+        let collapsed = items
+            .iter()
+            .enumerate()
+            .map(|(index, _)| index >= expanded_count)
+            .collect::<Vec<_>>();
+        for size_mode in [
+            FloatingWindowOrganizeMode::Preferred,
+            FloatingWindowOrganizeMode::Minimum,
+        ] {
+            let (rects, fits) = organize_window_rects_for_mode(
+                items,
+                &collapsed,
+                bounds,
+                gap,
+                title_bar_height,
+                size_mode,
+            );
+            if fits {
+                let mode = if expanded_count == items.len() {
+                    size_mode
+                } else {
+                    FloatingWindowOrganizeMode::Collapsed
+                };
+                return Some(OrganizeWindowPlan {
+                    rects,
+                    mode,
+                    collapsed,
+                });
+            }
+        }
     }
-
-    let (minimum, minimum_fits) = organize_window_rects_for_mode(
-        items,
-        bounds,
-        gap,
-        title_bar_height,
-        FloatingWindowOrganizeMode::Minimum,
-    );
-    if minimum_fits {
-        return Some((minimum, FloatingWindowOrganizeMode::Minimum));
-    }
-
-    let (collapsed, collapsed_fits) = organize_window_rects_for_mode(
-        items,
-        bounds,
-        gap,
-        title_bar_height,
-        FloatingWindowOrganizeMode::Collapsed,
-    );
-    if collapsed_fits {
-        return Some((collapsed, FloatingWindowOrganizeMode::Collapsed));
-    }
-
     None
 }
 
 fn organize_window_rects_for_mode(
     items: &[OrganizeWindowItem],
+    collapsed: &[bool],
     bounds: UiRect,
     gap: f32,
     title_bar_height: f32,
     mode: FloatingWindowOrganizeMode,
 ) -> (Vec<UiRect>, bool) {
-    pack_organize_window_rects(items, bounds, gap, title_bar_height, mode)
+    pack_organize_window_rects(items, collapsed, bounds, gap, title_bar_height, mode)
         .map_or_else(|| (Vec::new(), false), |rects| (rects, true))
 }
 
 fn pack_organize_window_rects(
     items: &[OrganizeWindowItem],
+    collapsed: &[bool],
     bounds: UiRect,
     gap: f32,
     title_bar_height: f32,
@@ -937,7 +955,15 @@ fn pack_organize_window_rects(
     let pack_gap = finite_or(gap, 0.0).max(0.0);
     let sizes = items
         .iter()
-        .map(|item| organize_window_item_size(item, title_bar_height, mode))
+        .enumerate()
+        .map(|(index, item)| {
+            organize_window_item_size(
+                item,
+                collapsed.get(index).copied().unwrap_or(false),
+                title_bar_height,
+                mode,
+            )
+        })
         .collect::<Vec<_>>();
     let dimensions = sizes
         .iter()
@@ -979,10 +1005,11 @@ fn pack_organize_window_rects(
 
 fn organize_window_item_size(
     item: &OrganizeWindowItem,
+    collapsed: bool,
     title_bar_height: f32,
     mode: FloatingWindowOrganizeMode,
 ) -> UiSize {
-    if item.collapsed || mode == FloatingWindowOrganizeMode::Collapsed {
+    if collapsed || mode == FloatingWindowOrganizeMode::Collapsed {
         return normalize_organize_collapsed_size(item.collapsed_size, title_bar_height);
     }
     let min_width = finite_or(item.min_size.width, 1.0).max(1.0);
@@ -1132,6 +1159,7 @@ fn add_floating_window(
             .with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::Button)
                     .label(format!("Move {}", descriptor.title))
+                    .action(AccessibilityAction::new("move", "Move"))
                     .focusable(),
             );
     } else if let Some(action) = descriptor.title_action.clone() {
@@ -1141,6 +1169,7 @@ fn add_floating_window(
             .with_accessibility(
                 AccessibilityMeta::new(AccessibilityRole::Button)
                     .label(format!("Activate {}", descriptor.title))
+                    .action(AccessibilityAction::new("activate", "Activate"))
                     .focusable(),
             );
     }
@@ -1319,6 +1348,18 @@ fn add_collapse_button(
                 } else {
                     format!("Collapse {}", descriptor.title)
                 })
+                .action(AccessibilityAction::new(
+                    if descriptor.collapsed {
+                        "expand"
+                    } else {
+                        "collapse"
+                    },
+                    if descriptor.collapsed {
+                        "Expand"
+                    } else {
+                        "Collapse"
+                    },
+                ))
                 .focusable(),
         ),
     );
@@ -1388,6 +1429,7 @@ fn add_close_button(
         .with_accessibility(
             AccessibilityMeta::new(AccessibilityRole::Button)
                 .label(format!("Close {}", descriptor.title))
+                .action(AccessibilityAction::new("close", "Close"))
                 .focusable(),
         ),
     );
@@ -1450,6 +1492,7 @@ fn add_resize_handle(
         .with_accessibility(
             AccessibilityMeta::new(AccessibilityRole::Button)
                 .label(format!("Resize {}", descriptor.title))
+                .action(AccessibilityAction::new("resize", "Resize"))
                 .focusable(),
         ),
     );
@@ -1808,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn floating_desktop_state_collapses_windows_when_only_title_bars_fit() {
+    fn floating_desktop_state_collapses_tail_windows_until_prefix_fits() {
         let defaults = FloatingWindowDefaults::new(
             UiPoint::new(24.0, 30.0),
             UiSize::new(180.0, 100.0),
@@ -1836,12 +1879,135 @@ mod tests {
                 mode: FloatingWindowOrganizeMode::Collapsed,
             }
         );
+        for id in ["a", "b"] {
+            assert!(!state.is_collapsed(id), "{id} should remain expanded");
+            assert_eq!(
+                state.size(id, UiSize::ZERO).height,
+                defaults.min_size.height
+            );
+        }
+        for id in ["c", "d"] {
+            assert!(state.is_collapsed(id), "{id} should be collapsed");
+            assert_eq!(
+                state.size(id, UiSize::ZERO).height,
+                options.title_bar_height
+            );
+        }
+    }
+
+    #[test]
+    fn floating_desktop_state_collapses_all_windows_when_no_prefix_fits() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(24.0, 30.0),
+            UiSize::new(180.0, 100.0),
+            UiSize::new(120.0, 70.0),
+        );
+        let options = FloatingDesktopOptions::new(UiSize::new(340.0, 100.0))
+            .with_margin(10.0)
+            .with_gap(8.0);
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+
+        let outcome = state.organize_windows(
+            [
+                ("a", defaults),
+                ("b", defaults),
+                ("c", defaults),
+                ("d", defaults),
+            ],
+            options.bounds,
+            &options,
+        );
+
+        assert_eq!(
+            outcome,
+            FloatingWindowOrganizeOutcome::Organized {
+                mode: FloatingWindowOrganizeMode::Collapsed,
+            }
+        );
         for id in ["a", "b", "c", "d"] {
             assert!(state.is_collapsed(id), "{id} should be collapsed");
             assert_eq!(
                 state.size(id, UiSize::ZERO).height,
                 options.title_bar_height
             );
+        }
+    }
+
+    #[test]
+    fn floating_desktop_state_organize_remeasures_collapsed_windows_as_expanded_candidates() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(24.0, 30.0),
+            UiSize::new(180.0, 100.0),
+            UiSize::new(120.0, 70.0),
+        );
+        let options = FloatingDesktopOptions::new(UiSize::new(440.0, 190.0))
+            .with_margin(10.0)
+            .with_gap(8.0);
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        state.collapsed.insert("a".to_string());
+        state.sizes.insert(
+            "a".to_string(),
+            UiSize::new(120.0, options.title_bar_height),
+        );
+
+        let outcome =
+            state.organize_windows([("a", defaults), ("b", defaults)], options.bounds, &options);
+
+        assert_eq!(
+            outcome,
+            FloatingWindowOrganizeOutcome::Organized {
+                mode: FloatingWindowOrganizeMode::Preferred,
+            }
+        );
+        assert!(!state.is_collapsed("a"));
+        assert_eq!(state.size("a", UiSize::ZERO), defaults.size);
+    }
+
+    #[test]
+    fn floating_desktop_state_organize_reexpands_previous_minimum_arrangement_when_space_returns() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(24.0, 30.0),
+            UiSize::new(180.0, 100.0),
+            UiSize::new(120.0, 70.0),
+        );
+        let compact_options = FloatingDesktopOptions::new(UiSize::new(340.0, 160.0))
+            .with_margin(10.0)
+            .with_gap(8.0);
+        let roomy_options = FloatingDesktopOptions::new(UiSize::new(760.0, 240.0))
+            .with_margin(10.0)
+            .with_gap(8.0);
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let windows = [
+            ("a", defaults),
+            ("b", defaults),
+            ("c", defaults),
+            ("d", defaults),
+        ];
+
+        let compact = state.organize_windows(windows, compact_options.bounds, &compact_options);
+        assert_eq!(
+            compact,
+            FloatingWindowOrganizeOutcome::Organized {
+                mode: FloatingWindowOrganizeMode::Collapsed,
+            }
+        );
+        assert_eq!(
+            state.size("a", UiSize::ZERO).height,
+            defaults.min_size.height
+        );
+        assert!(state.is_collapsed("c"));
+
+        let roomy = state.organize_windows(windows, roomy_options.bounds, &roomy_options);
+
+        assert_eq!(
+            roomy,
+            FloatingWindowOrganizeOutcome::Organized {
+                mode: FloatingWindowOrganizeMode::Preferred,
+            }
+        );
+        for id in ["a", "b", "c", "d"] {
+            assert!(!state.is_collapsed(id), "{id} should be expanded again");
+            assert_eq!(state.size(id, UiSize::ZERO), defaults.size);
         }
     }
 
@@ -2260,6 +2426,50 @@ mod tests {
     }
 
     #[test]
+    fn floating_window_controls_publish_accessibility_actions() {
+        let windows =
+            vec![
+                FloatingWindowDescriptor::new("tools", "Tools", UiSize::new(220.0, 140.0))
+                    .with_position(UiPoint::new(20.0, 20.0))
+                    .with_drag_action("tools.move")
+                    .with_collapse_action("tools.collapse")
+                    .with_close_action("tools.close")
+                    .with_resize_action("tools.resize"),
+            ];
+        let mut document = UiDocument::new(root_style(420.0, 260.0));
+        let root = document.root;
+        let nodes = floating_desktop(
+            &mut document,
+            root,
+            "desk",
+            &windows,
+            FloatingDesktopOptions::new(UiSize::new(420.0, 260.0)),
+            |_document, _parent, _window| {},
+        );
+
+        let window = &nodes.windows[0];
+        for node in [
+            Some(window.title_bar),
+            window.collapse_button,
+            window.close_button,
+            window.resize_handle,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let accessibility = document
+                .node(node)
+                .accessibility()
+                .expect("interactive window control should be accessible");
+            assert!(
+                !accessibility.actions.is_empty(),
+                "{} should publish at least one action",
+                document.node(node).name()
+            );
+        }
+    }
+
+    #[test]
     fn floating_desktop_applies_published_content_minimum_to_window_constraint() {
         let windows = vec![FloatingWindowDescriptor::new(
             "published_min",
@@ -2575,6 +2785,54 @@ mod tests {
     }
 
     #[test]
+    fn floating_desktop_resize_anchors_to_rendered_rect() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(420.0, 20.0),
+            UiSize::new(604.0, 220.0),
+            UiSize::new(160.0, 96.0),
+        );
+        let mut state = FloatingDesktopState::default();
+        state.ensure_window("buttons", defaults);
+        let rendered = UiRect::new(76.0, 62.0, 506.0, 203.0);
+
+        state.apply_resize(
+            "buttons",
+            WidgetPointerEdit::new(
+                crate::WidgetValueEditPhase::Begin,
+                UiPoint::new(rendered.right(), rendered.bottom()),
+                UiPoint::new(rendered.width, rendered.height),
+                rendered,
+            ),
+            defaults,
+        );
+
+        assert_eq!(
+            state.position("buttons", defaults.position),
+            UiPoint::new(rendered.x, rendered.y)
+        );
+
+        state.apply_resize(
+            "buttons",
+            WidgetPointerEdit::new(
+                crate::WidgetValueEditPhase::Commit,
+                UiPoint::new(rendered.right(), rendered.y + 150.0),
+                UiPoint::new(rendered.width, 150.0),
+                rendered,
+            ),
+            defaults,
+        );
+
+        assert_eq!(
+            state.position("buttons", defaults.position),
+            UiPoint::new(rendered.x, rendered.y)
+        );
+        assert_eq!(
+            state.size("buttons", defaults.size),
+            UiSize::new(506.0, 150.0)
+        );
+    }
+
+    #[test]
     fn floating_desktop_state_disables_auto_size_for_known_window_sizes() {
         let defaults = FloatingWindowDefaults::new(
             UiPoint::new(20.0, 20.0),
@@ -2594,6 +2852,31 @@ mod tests {
 
         assert!(!descriptor.auto_size_to_content);
         assert_eq!(descriptor.preferred_size, UiSize::new(260.0, 150.0));
+    }
+
+    #[test]
+    fn floating_desktop_state_close_discards_user_size_for_next_spawn() {
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(20.0, 20.0),
+            UiSize::new(240.0, 140.0),
+            UiSize::new(80.0, 70.0),
+        );
+        let mut state = FloatingDesktopState::default();
+        state.ensure_window("compact", defaults);
+        state
+            .sizes
+            .insert("compact".to_string(), UiSize::new(520.0, 360.0));
+        state.user_sized.insert("compact".to_string());
+
+        state.close("compact");
+
+        let mut descriptor =
+            FloatingWindowDescriptor::new("compact", "Compact", UiSize::new(1.0, 1.0))
+                .with_auto_size_to_content(true);
+        state.apply_to_descriptor(&mut descriptor, defaults);
+
+        assert!(descriptor.auto_size_to_content);
+        assert_eq!(descriptor.preferred_size, defaults.size);
     }
 
     #[test]

@@ -3,11 +3,12 @@
 use taffy::prelude::{Dimension, Display, FlexDirection, Size as TaffySize, Style};
 
 use crate::{
-    length, AccessibilityMeta, AccessibilityRole, ClipBehavior, InputBehavior, LayoutStyle,
-    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiVisual,
+    length, AccessibilityMeta, AccessibilityRole, ClipBehavior, InputBehavior, InteractionVisuals,
+    LayoutStyle, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiVisual, WidgetActionBinding,
+    WidgetActionMode,
 };
 
-use super::surfaces::DEFAULT_SURFACE_STROKE;
+use super::surfaces::{DEFAULT_ACCENT, DEFAULT_SURFACE_STROKE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitAxis {
@@ -131,6 +132,8 @@ pub struct SplitPaneOptions {
     pub root_visual: UiVisual,
     pub pane_visual: UiVisual,
     pub handle_visual: UiVisual,
+    pub handle_hover_visual: Option<UiVisual>,
+    pub handle_action: Option<WidgetActionBinding>,
 }
 
 impl Default for SplitPaneOptions {
@@ -144,11 +147,25 @@ impl Default for SplitPaneOptions {
                 },
                 ..Default::default()
             }),
-            handle_thickness: 6.0,
+            handle_thickness: 2.0,
             root_visual: UiVisual::TRANSPARENT,
             pane_visual: UiVisual::TRANSPARENT,
             handle_visual: UiVisual::panel(DEFAULT_SURFACE_STROKE, None, 2.0),
+            handle_hover_visual: Some(UiVisual::panel(DEFAULT_ACCENT, None, 2.0)),
+            handle_action: None,
         }
+    }
+}
+
+impl SplitPaneOptions {
+    pub fn with_handle_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.handle_action = Some(action.into());
+        self
+    }
+
+    pub fn with_handle_hover_visual(mut self, visual: UiVisual) -> Self {
+        self.handle_hover_visual = Some(visual);
+        self
     }
 }
 
@@ -206,25 +223,32 @@ pub fn split_pane(
     );
     build_first(document, first);
 
-    let handle = document.add_child(
-        root,
-        UiNode::container(
-            format!("{name}.handle"),
-            split_pane_handle_style(axis, options.handle_thickness),
-        )
-        .with_input(InputBehavior::BUTTON)
-        .with_visual(options.handle_visual)
-        .with_accessibility(
-            AccessibilityMeta::new(AccessibilityRole::Slider)
-                .label(format!("{name} splitter"))
-                .value(format!("{:.0}%", state.fraction.clamp(0.0, 1.0) * 100.0))
-                .hint(match axis {
-                    SplitAxis::Horizontal => "Resize the left and right panes",
-                    SplitAxis::Vertical => "Resize the upper and lower panes",
-                })
-                .focusable(),
-        ),
+    let handle_visuals = InteractionVisuals::new(options.handle_visual)
+        .hovered(options.handle_hover_visual.unwrap_or(options.handle_visual))
+        .pressed(options.handle_hover_visual.unwrap_or(options.handle_visual))
+        .pressed_hovered(options.handle_hover_visual.unwrap_or(options.handle_visual));
+    let mut handle_node = UiNode::container(
+        format!("{name}.handle"),
+        split_pane_handle_style(axis, options.handle_thickness),
+    )
+    .with_input(InputBehavior::BUTTON)
+    .with_interaction_visuals(handle_visuals)
+    .with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::Slider)
+            .label(format!("{name} splitter"))
+            .value(format!("{:.0}%", state.fraction.clamp(0.0, 1.0) * 100.0))
+            .hint(match axis {
+                SplitAxis::Horizontal => "Resize the left and right panes",
+                SplitAxis::Vertical => "Resize the upper and lower panes",
+            })
+            .focusable(),
     );
+    if let Some(action) = options.handle_action {
+        handle_node = handle_node
+            .with_action(action)
+            .with_action_mode(WidgetActionMode::PointerEditParentRect);
+    }
+    let handle = document.add_child(root, handle_node);
 
     let second = document.add_child(
         root,

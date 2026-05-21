@@ -245,6 +245,7 @@ mod tests {
                         scale: 1.0,
                     },
                     shader: None,
+                    material: None,
                     kind: PaintKind::Rect {
                         fill: ColorRgba::new(24, 30, 36, 255),
                         stroke: Some(StrokeStyle::new(ColorRgba::new(90, 100, 120, 255), 1.0)),
@@ -260,6 +261,7 @@ mod tests {
                     opacity: 1.0,
                     transform: PaintTransform::default(),
                     shader: None,
+                    material: None,
                     kind: PaintKind::Rect {
                         fill: ColorRgba::new(24, 30, 36, 255),
                         stroke: None,

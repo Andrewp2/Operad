@@ -265,4 +265,56 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn v9_api_stability_doc_covers_release_gate_families() {
+        let docs = include_str!("../../docs/v9_0_api_stability.md");
+        for required in [
+            "Stable Product APIs",
+            "Experimental Diagnostics And Devtools",
+            "Testing And Replay Helpers",
+            "Backend-Specific APIs",
+            "Migration-Only Surfaces",
+            "Unified popup stacking",
+            "Scroll Containers",
+            "Text Input And Selection",
+            "Image And Media Resources",
+            "Shader Lab And Element Materials",
+            "Element material",
+            "CommandRegistry",
+            "AnimationMachine",
+            "CanvasHostCaptureDiagnosticReport",
+            "ScenarioHarness",
+            "VirtualizationDiagnostics",
+        ] {
+            assert!(
+                docs.contains(required),
+                "v9 API stability guide should document `{required}`"
+            );
+        }
+    }
+
+    #[test]
+    fn v9_completion_audit_tracks_release_gates() {
+        let docs = include_str!("../../docs/v9_0_completion_audit.md");
+        for required in [
+            "Roadmap Themes",
+            "Release Gates",
+            "Shader lab and element materials",
+            "Popup and overlay stacking",
+            "Scroll containers",
+            "Text input and selection",
+            "Image and media resources",
+            "Showcase examples for each major feature",
+            "No tests embedded in showcase source",
+            "Package docs distinguish stable APIs from diagnostics",
+            "Next Work",
+            "Done",
+        ] {
+            assert!(
+                docs.contains(required),
+                "v9 completion audit should document `{required}`"
+            );
+        }
+    }
 }

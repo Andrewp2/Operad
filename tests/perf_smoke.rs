@@ -951,6 +951,7 @@ fn wgpu_text_cache_perf_request(frame: usize) -> RenderFrameRequest {
         opacity: 1.0,
         transform: PaintTransform::default(),
         shader: None,
+        material: None,
         kind: PaintKind::Rect {
             fill: ColorRgba::new(9, 12, 16, 255),
             stroke: None,
@@ -972,6 +973,7 @@ fn wgpu_text_cache_perf_request(frame: usize) -> RenderFrameRequest {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Text(TextContent::new(
                 text,
                 TextStyle {
@@ -1008,6 +1010,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
         opacity: 1.0,
         transform: PaintTransform::default(),
         shader: None,
+        material: None,
         kind: PaintKind::Rect {
             fill: ColorRgba::new(8, 11, 16, 255),
             stroke: None,
@@ -1027,6 +1030,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Rect {
                 fill: if selected {
                     ColorRgba::new(48, 84, 105, 255)
@@ -1053,6 +1057,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             opacity: 0.9,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Rect {
                 fill: ColorRgba::new(84, 153, 188, 255),
                 stroke: None,
@@ -1074,6 +1079,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Circle {
                 center: UiPoint::new(x + 2.0, y),
                 radius: 2.0,
@@ -1090,6 +1096,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Line {
                 from: UiPoint::new(450.0, y + phase * 0.08 - 2.0),
                 to: UiPoint::new(486.0, y - phase * 0.05 + 2.0),
@@ -1105,6 +1112,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Line {
                 from: UiPoint::new(486.0, y - phase * 0.05 + 2.0),
                 to: UiPoint::new(522.0, y + phase * 0.07 - 1.0),
@@ -1128,6 +1136,7 @@ fn wgpu_mixed_ui_perf_request(frame: usize) -> RenderFrameRequest {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Text(TextContent::new(
                 text,
                 TextStyle {
@@ -1169,6 +1178,7 @@ fn wgpu_large_resource_perf_request(frame: usize) -> RenderFrameRequest {
         opacity: 1.0,
         transform: PaintTransform::default(),
         shader: None,
+        material: None,
         kind: PaintKind::Rect {
             fill: ColorRgba::new(7, 10, 14, 255),
             stroke: None,
@@ -1203,6 +1213,7 @@ fn wgpu_large_resource_perf_request(frame: usize) -> RenderFrameRequest {
                 opacity: 0.95,
                 transform: PaintTransform::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::Image {
                     key: key.clone(),
                     tint: if tile % 7 == frame % 7 {
@@ -1252,6 +1263,7 @@ fn retained_panel_paint(item_count: usize) -> PaintList {
                 opacity: 1.0,
                 transform: PaintTransform::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::Rect {
                     fill: ColorRgba::new(20, 28, 36, 255),
                     stroke: None,

@@ -46,10 +46,11 @@ pub enum BuiltInIcon {
     Close,
     Warning,
     Info,
+    Operad,
 }
 
 impl BuiltInIcon {
-    pub const COMMON: [Self; 31] = [
+    pub const COMMON: [Self; 32] = [
         Self::Play,
         Self::Pause,
         Self::Stop,
@@ -81,6 +82,7 @@ impl BuiltInIcon {
         Self::Close,
         Self::Warning,
         Self::Info,
+        Self::Operad,
     ];
 
     pub const fn key(self) -> &'static str {
@@ -116,6 +118,7 @@ impl BuiltInIcon {
             Self::Close => "icons.close",
             Self::Warning => "icons.warning",
             Self::Info => "icons.info",
+            Self::Operad => "icons.operad",
         }
     }
 
@@ -152,6 +155,7 @@ impl BuiltInIcon {
             Self::Close => "Close",
             Self::Warning => "Warning",
             Self::Info => "Info",
+            Self::Operad => "Operad",
         }
     }
 
@@ -188,6 +192,7 @@ impl BuiltInIcon {
             Self::Close => &["dismiss", "remove"],
             Self::Warning => &["alert"],
             Self::Info => &["help"],
+            Self::Operad => &["logo", "brand"],
         }
     }
 
@@ -224,6 +229,7 @@ impl BuiltInIcon {
             "icons.close" => Some(Self::Close),
             "icons.warning" => Some(Self::Warning),
             "icons.info" => Some(Self::Info),
+            "icons.operad" => Some(Self::Operad),
             _ => None,
         }
     }
@@ -458,6 +464,7 @@ impl BuiltInIcon {
                 icon.line((12.0, 10.0), (12.0, 17.0)),
                 icon.circle(12.0, 7.5, 1.0, true),
             ],
+            Self::Operad => icon.operad_logo(),
         }
     }
 
@@ -588,6 +595,19 @@ impl IconPathBuilder {
             ..self
         }
         .circle(12.0, 17.0, 1.0, true)
+    }
+
+    fn operad_logo(self) -> Vec<PaintPath> {
+        vec![
+            self.filled_rect(4.0, 4.0, 16.0, 2.0),
+            self.filled_rect(4.0, 4.0, 2.0, 16.0),
+            self.filled_rect(4.0, 18.0, 16.0, 2.0),
+            self.filled_rect(18.0, 4.0, 2.0, 16.0),
+            self.filled_rect(10.0, 4.0, 2.0, 8.0),
+            self.filled_rect(10.0, 10.0, 8.0, 2.0),
+            self.filled_rect(12.0, 14.0, 2.0, 6.0),
+            self.filled_rect(6.0, 12.0, 6.0, 2.0),
+        ]
     }
 }
 

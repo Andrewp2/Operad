@@ -15,8 +15,8 @@ use operad::{root_style, ApproxTextMeasurer, TextStyle};
 use operad::{
     AlignedStroke, ColorRgba, CornerRadii, LinearGradient, PaintBrush, PaintCompositorLayer,
     PaintEffect, PaintItem, PaintKind, PaintList, PaintPath, PaintRect, PaintTransform,
-    PathFillRule, StrokeLineCap, StrokeLineJoin, StrokeStyle, TextContent, UiDocument, UiNode,
-    UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
+    PathFillRule, ShaderEffect, StrokeLineCap, StrokeLineJoin, StrokeStyle, TextContent,
+    UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint, UiRect, UiSize, UiVisual,
 };
 
 fn scene_document() -> UiDocument {
@@ -119,6 +119,7 @@ fn wgpu_image_snapshot_uses_uploaded_texture_resource() {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Image {
                 key: "cover.texture".to_string(),
                 tint: None,
@@ -165,6 +166,7 @@ fn wgpu_rounded_rect_uses_sdf_edges() {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Rect {
                 fill: ColorRgba::new(32, 180, 220, 255),
                 stroke: None,
@@ -207,6 +209,7 @@ fn wgpu_text_snapshot_uses_glyphon_rendering() {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Text(TextContent::new(
                 "Glyphon",
                 TextStyle {
@@ -271,6 +274,7 @@ fn wgpu_paint_order_allows_geometry_to_cover_prior_text() {
                 opacity: 1.0,
                 transform: PaintTransform::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::Text(TextContent::new(
                     "Covered",
                     TextStyle {
@@ -290,6 +294,7 @@ fn wgpu_paint_order_allows_geometry_to_cover_prior_text() {
                 opacity: 1.0,
                 transform: PaintTransform::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::Rect {
                     fill: ColorRgba::new(0, 96, 64, 255),
                     stroke: None,
@@ -358,6 +363,7 @@ fn wgpu_rich_rect_gradient_and_effects_render_on_gpu() {
                 opacity: 1.0,
                 transform: PaintTransform::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::RichRect(rich_rect),
             }],
         },
@@ -381,6 +387,149 @@ fn wgpu_rich_rect_gradient_and_effects_render_on_gpu() {
         pixel_rgba(&wgpu.pixels, 72, 60, 36),
         [18, 20, 24, 255],
         "shadow/effect fallback should affect pixels outside the filled rect"
+    );
+}
+
+#[test]
+fn wgpu_rich_rect_zero_width_stroke_does_not_render_hairline() {
+    let rect = UiRect::new(8.0, 8.0, 20.0, 20.0);
+    let image = wgpu_snapshot_for_item(
+        PixelSize::new(36, 36),
+        PaintItem {
+            node: UiNodeId::root(),
+            rect,
+            clip_rect: UiRect::new(0.0, 0.0, 36.0, 36.0),
+            z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            material: None,
+            kind: PaintKind::RichRect(PaintRect {
+                rect,
+                fill: PaintBrush::Solid(ColorRgba::TRANSPARENT),
+                stroke: Some(AlignedStroke::inside(StrokeStyle::new(
+                    ColorRgba::WHITE,
+                    0.0,
+                ))),
+                corner_radii: CornerRadii::ZERO,
+                effects: Vec::new(),
+            }),
+        },
+    );
+
+    assert_eq!(
+        lit_pixel_count(&image),
+        0,
+        "zero-width rich-rect strokes should not be clamped into visible hairlines"
+    );
+}
+
+#[test]
+fn wgpu_rich_rect_preserves_individual_corner_radii() {
+    let rect = UiRect::new(8.0, 8.0, 24.0, 24.0);
+    let image = wgpu_snapshot_for_item(
+        PixelSize::new(40, 40),
+        PaintItem {
+            node: UiNodeId::root(),
+            rect,
+            clip_rect: UiRect::new(0.0, 0.0, 40.0, 40.0),
+            z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            material: None,
+            kind: PaintKind::RichRect(
+                PaintRect::solid(rect, ColorRgba::WHITE)
+                    .corner_radii(CornerRadii::new(0.0, 10.0, 0.0, 10.0)),
+            ),
+        },
+    );
+
+    let square_top_left = pixel_rgba(&image.pixels, 40, 8, 8);
+    let rounded_top_right = pixel_rgba(&image.pixels, 40, 31, 8);
+    let square_bottom_right = pixel_rgba(&image.pixels, 40, 31, 31);
+    let rounded_bottom_left = pixel_rgba(&image.pixels, 40, 8, 31);
+    assert!(
+        square_top_left[0] > 180,
+        "top-left radius is zero, so the corner should be filled: {square_top_left:?}"
+    );
+    assert!(
+        rounded_top_right[0] < 40,
+        "top-right radius is rounded, so the corner should remain clear: {rounded_top_right:?}"
+    );
+    assert!(
+        square_bottom_right[0] > 180,
+        "bottom-right radius is zero, so the corner should be filled: {square_bottom_right:?}"
+    );
+    assert!(
+        rounded_bottom_left[0] < 40,
+        "bottom-left radius is rounded, so the corner should remain clear: {rounded_bottom_left:?}"
+    );
+}
+
+#[test]
+fn wgpu_shadered_paint_item_tint_changes_rendered_pixels() {
+    let rect = UiRect::new(8.0, 8.0, 20.0, 20.0);
+    let image = wgpu_snapshot_for_item(
+        PixelSize::new(40, 40),
+        PaintItem {
+            node: UiNodeId::root(),
+            rect,
+            clip_rect: UiRect::new(0.0, 0.0, 40.0, 40.0),
+            z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: Some(ShaderEffect::tint(ColorRgba::new(255, 0, 0, 255), 1.0)),
+            material: None,
+            kind: PaintKind::Rect {
+                fill: ColorRgba::WHITE,
+                stroke: None,
+                corner_radius: 0.0,
+            },
+        },
+    );
+
+    let center = pixel_rgba(&image.pixels, 40, 18, 18);
+    assert!(
+        center[0] > 180 && center[1] < 50 && center[2] < 50,
+        "tint shader should turn the white source rect red: {center:?}"
+    );
+}
+
+#[test]
+fn wgpu_shadered_paint_item_glow_can_render_outside_item_bounds() {
+    let rect = UiRect::new(16.0, 16.0, 8.0, 8.0);
+    let image = wgpu_snapshot_for_item(
+        PixelSize::new(40, 40),
+        PaintItem {
+            node: UiNodeId::root(),
+            rect,
+            clip_rect: UiRect::new(0.0, 0.0, 40.0, 40.0),
+            z_index: 0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: Some(ShaderEffect::glow(
+                ColorRgba::new(40, 120, 255, 255),
+                1.0,
+                4.0,
+            )),
+            material: None,
+            kind: PaintKind::Rect {
+                fill: ColorRgba::WHITE,
+                stroke: None,
+                corner_radius: 0.0,
+            },
+        },
+    );
+
+    let outside_left_edge = pixel_rgba(&image.pixels, 40, 13, 20);
+    assert!(
+        outside_left_edge[2] > outside_left_edge[0] + 40,
+        "glow shader should add blue pixels outside the original rect: {outside_left_edge:?}"
     );
 }
 
@@ -409,6 +558,7 @@ fn wgpu_rich_rect_shadow_has_soft_falloff() {
                 opacity: 1.0,
                 transform: PaintTransform::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::RichRect(rich_rect),
             }],
         },
@@ -452,6 +602,7 @@ fn wgpu_path_stroke_flattens_quadratic_curve() {
                 opacity: 1.0,
                 transform: PaintTransform::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::Path(path),
             }],
         },
@@ -589,6 +740,7 @@ fn wgpu_composited_layer_rounded_clip_masks_child_content() {
         opacity: 1.0,
         transform: PaintTransform::default(),
         shader: None,
+        material: None,
         kind: PaintKind::Rect {
             fill: ColorRgba::new(220, 32, 48, 255),
             stroke: None,
@@ -624,6 +776,7 @@ fn wgpu_composited_layer_mask_and_filter_apply_on_gpu() {
         opacity: 1.0,
         transform: PaintTransform::default(),
         shader: None,
+        material: None,
         kind: PaintKind::Rect {
             fill: child_color,
             stroke: None,
@@ -667,6 +820,7 @@ fn wgpu_composited_layer_blur_runs_on_gpu_texture() {
         opacity: 1.0,
         transform: PaintTransform::default(),
         shader: None,
+        material: None,
         kind: PaintKind::Rect {
             fill: ColorRgba::WHITE,
             stroke: None,
@@ -703,6 +857,7 @@ fn wgpu_composited_layer_renders_glyphon_text_child() {
         opacity: 1.0,
         transform: PaintTransform::default(),
         shader: None,
+        material: None,
         kind: PaintKind::Text(TextContent::new(
             "Layer",
             TextStyle {
@@ -753,6 +908,7 @@ fn composited_layer_request(
                 opacity: 1.0,
                 transform: PaintTransform::default(),
                 shader: None,
+                material: None,
                 kind: PaintKind::CompositedLayer(layer),
             }],
         },
@@ -775,6 +931,7 @@ fn text_snapshot_at(position: UiPoint) -> RenderedImage {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Text(TextContent::new(
                 "Glyphon",
                 TextStyle {
@@ -809,6 +966,7 @@ fn path_snapshot(path: PaintPath, size: PixelSize) -> RenderedImage {
             opacity: 1.0,
             transform: PaintTransform::default(),
             shader: None,
+            material: None,
             kind: PaintKind::Path(path),
         },
     )
