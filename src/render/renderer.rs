@@ -231,6 +231,15 @@ pub trait ResourceResolver {
     fn resolve_resource(&self, id: &ResourceId) -> Option<ResourceDescriptor>;
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmptyResourceResolver;
+
+impl ResourceResolver for EmptyResourceResolver {
+    fn resolve_resource(&self, _id: &ResourceId) -> Option<ResourceDescriptor> {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RenderTargetKind {
     Window,

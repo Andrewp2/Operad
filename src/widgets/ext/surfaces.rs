@@ -286,7 +286,11 @@ mod tests {
 
         assert!(doc.node(nodes.handle).input.focusable);
         assert!(doc.node(nodes.first).layout.rect.width >= state.min_first);
-        assert_eq!(doc.node(nodes.handle).layout.rect.width, 2.0);
+        let root_rect = doc.node(nodes.root).layout.rect;
+        let handle_rect = doc.node(nodes.handle).layout.rect;
+        assert_eq!(handle_rect.width, 2.0);
+        assert!((handle_rect.y - root_rect.y - 4.0).abs() < 0.01);
+        assert!((handle_rect.height - (root_rect.height - 8.0)).abs() < 0.01);
         assert_eq!(doc.node(nodes.root).children.len(), 3);
         assert_eq!(
             doc.node(nodes.handle).action.as_ref(),
@@ -313,6 +317,26 @@ mod tests {
         assert_eq!(splitter.label.as_deref(), Some("workspace splitter"));
         assert_eq!(splitter.value.as_deref(), Some("69%"));
         assert!(splitter.focusable);
+
+        let mut doc = UiDocument::new(root_style(400.0, 200.0));
+        let root = doc.root;
+        let nodes = split_pane(
+            &mut doc,
+            root,
+            "stack",
+            SplitAxis::Vertical,
+            SplitPaneState::new(0.5),
+            SplitPaneOptions::default(),
+            |_, _| {},
+            |_, _| {},
+        );
+        doc.compute_layout(UiSize::new(400.0, 200.0), &mut ApproxTextMeasurer)
+            .expect("vertical split layout");
+        let root_rect = doc.node(nodes.root).layout.rect;
+        let handle_rect = doc.node(nodes.handle).layout.rect;
+        assert_eq!(handle_rect.height, 2.0);
+        assert!((handle_rect.x - root_rect.x - 4.0).abs() < 0.01);
+        assert!((handle_rect.width - (root_rect.width - 8.0)).abs() < 0.01);
     }
 
     #[test]

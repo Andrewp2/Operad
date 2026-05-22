@@ -75,6 +75,11 @@ operad::run_app_with_canvas_renderers(options, state, update, view, canvases)?;
 The renderer callback gets the canvas texture context, so it can record normal
 WGPU command buffers and render passes before Operad composites the UI.
 
+Apps that already own a WGPU swapchain or render graph can render Operad into an
+existing `TextureView` with `WgpuRenderer::render_frame_into_view_with_encoder`
+and `WgpuRenderTargetView::load()`. See
+[docs/app_owned_wgpu_compositor.md](docs/app_owned_wgpu_compositor.md).
+
 ## Install
 
 ```bash

@@ -24,6 +24,7 @@ use wgpu::{
 
 use crate::accessibility::AccessibilityCapabilities;
 use crate::compositor::{CompositorClip, CompositorFilterKind, CompositorMask, MaskMode};
+use crate::fonts::FontLibrary;
 use crate::platform::{
     BackendAdapterKind, BackendCapabilities, LayerCapabilities, PixelSize,
     PlatformServiceCapabilities, RenderingCapabilities, ResourceCapabilities,
@@ -540,6 +541,7 @@ fn fs_shadow_rect_srgb(input: ShadowRectOutput) -> @location(0) vec4<f32> {
 pub struct WgpuRenderer {
     context: Option<WgpuContext>,
     geometry: RenderGeometry,
+    font_library: FontLibrary,
 }
 
 #[derive(Debug)]
@@ -565,6 +567,69 @@ pub struct WgpuCanvasRenderPass<'a> {
     pub clear_color: Option<ColorRgba>,
     pub constants: Vec<(&'a str, f64)>,
     pub uniforms: Option<Cow<'a, [u8]>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WgpuRenderLoadOp {
+    /// Clear the caller-owned attachment before drawing Operad UI.
+    Clear(ColorRgba),
+    /// Preserve the caller-owned attachment contents and draw Operad UI over it.
+    Load,
+}
+
+/// A caller-owned WGPU render target for app-composed Operad UI.
+///
+/// The texture view should match the pixel size implied by the
+/// `RenderFrameRequest` target and scale factor.
+#[derive(Debug, Clone, Copy)]
+pub struct WgpuRenderTargetView<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub format: TextureFormat,
+    pub load_op: Option<WgpuRenderLoadOp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WgpuGpuTimingToken {
+    id: u64,
+}
+
+impl WgpuGpuTimingToken {
+    pub const fn id(self) -> u64 {
+        self.id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WgpuRenderFrameIntoViewOutput {
+    pub frame: RenderFrameOutput,
+    pub gpu_timing_token: Option<WgpuGpuTimingToken>,
+}
+
+impl<'a> WgpuRenderTargetView<'a> {
+    pub const fn new(view: &'a wgpu::TextureView, format: TextureFormat) -> Self {
+        Self {
+            view,
+            format,
+            load_op: None,
+        }
+    }
+
+    /// Override the request clear color for this render pass.
+    pub const fn clear(mut self, color: ColorRgba) -> Self {
+        self.load_op = Some(WgpuRenderLoadOp::Clear(color));
+        self
+    }
+
+    /// Draw Operad UI over the existing attachment contents.
+    pub const fn load(mut self) -> Self {
+        self.load_op = Some(WgpuRenderLoadOp::Load);
+        self
+    }
+
+    fn resolved_load_op(self, default_clear: ColorRgba) -> WgpuRenderLoadOp {
+        self.load_op
+            .unwrap_or(WgpuRenderLoadOp::Clear(default_clear))
+    }
 }
 
 impl<'a> WgpuCanvasRenderPass<'a> {
@@ -922,7 +987,11 @@ impl std::fmt::Debug for WgpuContext {
 }
 
 impl WgpuContext {
-    fn new(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self, RenderError> {
+    fn new(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        font_library: &FontLibrary,
+    ) -> Result<Self, RenderError> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("operad-wgpu-ui-shader"),
             source: wgpu::ShaderSource::Wgsl(WGPU_UI_SHADER.into()),
@@ -1064,7 +1133,7 @@ impl WgpuContext {
             shadow_rect_buffer: None,
             shadow_rect_capacity: 0,
             textures,
-            font_system: default_glyph_font_system(),
+            font_system: glyph_font_system(font_library),
             swash_cache: GlyphSwashCache::new(),
             glyph_cache,
             glyph_viewport,
@@ -1942,6 +2011,20 @@ impl WgpuContext {
         self.glyph_chunks_active = false;
     }
 
+    fn set_fonts(&mut self, fonts: &FontLibrary) {
+        self.font_system = glyph_font_system(fonts);
+        self.swash_cache = GlyphSwashCache::new();
+        self.glyph_buffer_cache.clear();
+        self.glyph_scratch_buffer_cache.clear();
+        self.glyph_scene_renderer = None;
+        self.glyph_scene_key.clear();
+        self.glyph_scene_active = false;
+        self.glyph_chunk_cache.clear();
+        self.glyph_chunk_order.clear();
+        self.glyph_chunks_active = false;
+        self.glyph_generation = self.glyph_generation.wrapping_add(1);
+    }
+
     fn prune_glyphon_text_cache(&mut self) {
         const MAX_RETAINED_UNUSED_FRAMES: u64 = 120;
         let generation = self.glyph_generation;
@@ -1988,6 +2071,27 @@ impl WgpuContext {
         Ok(Some(Duration::from_nanos(
             nanos.round().clamp(0.0, u64::MAX as f64) as u64,
         )))
+    }
+
+    fn has_pending_gpu_timing(&self) -> bool {
+        self.gpu_timer
+            .as_ref()
+            .is_some_and(GpuTimer::has_pending_token)
+    }
+
+    fn mark_pending_gpu_timing(&mut self) -> Option<WgpuGpuTimingToken> {
+        self.gpu_timer.as_mut().map(GpuTimer::mark_pending)
+    }
+
+    fn read_pending_gpu_render_duration(
+        &mut self,
+        token: WgpuGpuTimingToken,
+    ) -> Result<Option<Duration>, RenderError> {
+        let duration = self.read_gpu_render_duration()?;
+        if let Some(timer) = &mut self.gpu_timer {
+            timer.clear_pending(token)?;
+        }
+        Ok(duration)
     }
 
     fn discard_view(
@@ -2373,6 +2477,8 @@ struct GpuTimer {
     query_set: wgpu::QuerySet,
     resolve_buffer: wgpu::Buffer,
     readback_buffer: wgpu::Buffer,
+    pending_token: Option<WgpuGpuTimingToken>,
+    next_token_id: u64,
 }
 
 impl GpuTimer {
@@ -2401,7 +2507,38 @@ impl GpuTimer {
             query_set,
             resolve_buffer,
             readback_buffer,
+            pending_token: None,
+            next_token_id: 1,
         })
+    }
+
+    fn has_pending_token(&self) -> bool {
+        self.pending_token.is_some()
+    }
+
+    fn mark_pending(&mut self) -> WgpuGpuTimingToken {
+        let token = WgpuGpuTimingToken {
+            id: self.next_token_id,
+        };
+        self.next_token_id = self.next_token_id.wrapping_add(1).max(1);
+        self.pending_token = Some(token);
+        token
+    }
+
+    fn clear_pending(&mut self, token: WgpuGpuTimingToken) -> Result<(), RenderError> {
+        match self.pending_token {
+            Some(pending) if pending == token => {
+                self.pending_token = None;
+                Ok(())
+            }
+            Some(pending) => Err(RenderError::Backend(format!(
+                "wgpu GPU timing token mismatch: pending {}, got {}",
+                pending.id, token.id
+            ))),
+            None => Err(RenderError::Backend(
+                "wgpu GPU timing token has already been resolved".to_string(),
+            )),
+        }
     }
 }
 
@@ -2696,6 +2833,7 @@ impl WgpuRenderer {
         Self {
             context: None,
             geometry: RenderGeometry::default(),
+            font_library: FontLibrary::default(),
         }
     }
 
@@ -2703,10 +2841,35 @@ impl WgpuRenderer {
         device: wgpu::Device,
         queue: wgpu::Queue,
     ) -> Result<Self, RenderError> {
+        Self::with_device_queue_and_fonts(device, queue, FontLibrary::default())
+    }
+
+    pub fn with_device_queue_and_fonts(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        fonts: FontLibrary,
+    ) -> Result<Self, RenderError> {
         Ok(Self {
-            context: Some(WgpuContext::new(device, queue)?),
+            context: Some(WgpuContext::new(device, queue, &fonts)?),
             geometry: RenderGeometry::default(),
+            font_library: fonts,
         })
+    }
+
+    pub fn font_library(&self) -> &FontLibrary {
+        &self.font_library
+    }
+
+    pub fn set_fonts(&mut self, fonts: FontLibrary) -> &mut Self {
+        self.font_library = fonts;
+        if let Some(context) = &mut self.context {
+            context.set_fonts(&self.font_library);
+        }
+        self
+    }
+
+    pub fn supports_app_owned_view_rendering(&self) -> bool {
+        self.capabilities().rendering.app_owned_view_rendering
     }
 
     pub fn canvas_context(
@@ -2769,6 +2932,12 @@ impl WgpuRenderer {
         Ok(())
     }
 
+    /// Record a frame through a caller-owned encoder without presenting it.
+    ///
+    /// This legacy path renders `Window` and `AppOwned` targets into an
+    /// internal discard texture. Use
+    /// [`WgpuRenderer::render_frame_into_view_with_encoder`] when composing
+    /// Operad UI into a caller-owned swapchain or texture view.
     pub fn render_frame_with_encoder(
         &mut self,
         request: RenderFrameRequest,
@@ -2790,7 +2959,7 @@ impl WgpuRenderer {
         )?;
         let target_kind = request.target.kind();
         let clear_color = clear_color_for_request(&request);
-        let mut context = WgpuContext::new(device.clone(), queue.clone())?;
+        let mut context = WgpuContext::new(device.clone(), queue.clone(), &self.font_library)?;
         context.upload_resource_updates(&request.resource_updates)?;
         context.begin_frame();
         self.geometry.clear();
@@ -2829,6 +2998,144 @@ impl WgpuRenderer {
             .section("batch", batch_duration)
             .section("render", render_started.elapsed());
         Ok(output)
+    }
+
+    /// Record an app-owned or window render request into a caller-owned texture
+    /// view using a caller-owned command encoder.
+    ///
+    /// Construct this renderer with [`WgpuRenderer::with_device_queue`] using
+    /// the same `wgpu::Device` and `wgpu::Queue` that created `encoder` and
+    /// `target.view`. This method records commands only; the caller remains
+    /// responsible for submitting the encoder and presenting the target. This
+    /// method does not record GPU timing; use
+    /// [`WgpuRenderer::render_frame_into_view_with_encoder_timed`] when the
+    /// caller will resolve timing after queue submission.
+    pub fn render_frame_into_view_with_encoder(
+        &mut self,
+        request: RenderFrameRequest,
+        resolver: &dyn ResourceResolver,
+        encoder: &mut wgpu::CommandEncoder,
+        target: WgpuRenderTargetView<'_>,
+    ) -> Result<RenderFrameOutput, RenderError> {
+        Ok(self
+            .render_frame_into_view_with_encoder_impl(request, resolver, encoder, target, false)?
+            .frame)
+    }
+
+    /// Record into a caller-owned texture view and optionally return a GPU
+    /// timing token.
+    ///
+    /// If `request.options.collect_gpu_timing` is true and the device supports
+    /// timestamp queries, the returned token can be passed to
+    /// [`WgpuRenderer::resolve_gpu_timing`] after the caller submits the
+    /// encoder. A renderer can have only one unresolved timing token at a time.
+    pub fn render_frame_into_view_with_encoder_timed(
+        &mut self,
+        request: RenderFrameRequest,
+        resolver: &dyn ResourceResolver,
+        encoder: &mut wgpu::CommandEncoder,
+        target: WgpuRenderTargetView<'_>,
+    ) -> Result<WgpuRenderFrameIntoViewOutput, RenderError> {
+        let collect_gpu_timing = request.options.collect_gpu_timing;
+        self.render_frame_into_view_with_encoder_impl(
+            request,
+            resolver,
+            encoder,
+            target,
+            collect_gpu_timing,
+        )
+    }
+
+    pub fn resolve_gpu_timing(
+        &mut self,
+        token: WgpuGpuTimingToken,
+    ) -> Result<Option<Duration>, RenderError> {
+        self.ensure_context()?
+            .read_pending_gpu_render_duration(token)
+    }
+
+    fn render_frame_into_view_with_encoder_impl(
+        &mut self,
+        request: RenderFrameRequest,
+        resolver: &dyn ResourceResolver,
+        encoder: &mut wgpu::CommandEncoder,
+        target: WgpuRenderTargetView<'_>,
+        collect_gpu_timing: bool,
+    ) -> Result<WgpuRenderFrameIntoViewOutput, RenderError> {
+        let target_kind = request.target.kind();
+        if !matches!(
+            target_kind,
+            RenderTargetKind::Window | RenderTargetKind::AppOwned
+        ) {
+            return Err(RenderError::UnsupportedTarget(target_kind));
+        }
+
+        let batch_started = Instant::now();
+        let batches = request.batches();
+        let batch_duration = batch_started.elapsed();
+
+        self.validate_resource_updates(&request, resolver)?;
+
+        let size = render_target_pixel_size(
+            &request.target,
+            request.viewport,
+            request.options.scale_factor,
+        )?;
+        let clear_color = clear_color_for_request(&request);
+        let load_op = target.resolved_load_op(clear_color);
+        {
+            let context = self.ensure_context()?;
+            context.upload_resource_updates(&request.resource_updates)?;
+            context.begin_frame();
+        }
+        let mut geometry = mem::take(&mut self.geometry);
+        geometry.clear();
+        let render_started = Instant::now();
+        let gpu_timer_used;
+        {
+            let context = self.context.as_mut().ok_or_else(|| {
+                RenderError::Backend("wgpu backend failed to initialize".to_string())
+            })?;
+            render_embedded_canvas_programs(context, &request)?;
+            build_geometry_into(
+                &mut geometry,
+                &request.paint,
+                context,
+                UiPoint::new(0.0, 0.0),
+                request.options.scale_factor,
+            )?;
+            gpu_timer_used = record_render_pass(
+                context,
+                encoder,
+                target.view,
+                target.format,
+                size,
+                &geometry,
+                load_op,
+                true,
+                collect_gpu_timing,
+            )?;
+        }
+        let gpu_timing_token = if gpu_timer_used {
+            self.context
+                .as_mut()
+                .and_then(WgpuContext::mark_pending_gpu_timing)
+        } else {
+            None
+        };
+        self.geometry = geometry;
+
+        let mut output = RenderFrameOutput::new(request.target);
+        output.painted_items = request.paint.items.len();
+        output.batches = batches;
+        output.dirty_regions = request.dirty_regions;
+        output.timings = FrameTiming::new()
+            .section("batch", batch_duration)
+            .section("render", render_started.elapsed());
+        Ok(WgpuRenderFrameIntoViewOutput {
+            frame: output,
+            gpu_timing_token,
+        })
     }
 
     fn validate_resource_updates(
@@ -2882,7 +3189,7 @@ impl WgpuRenderer {
             }))
             .map_err(|error| RenderError::Backend(error.to_string()))?;
 
-            self.context = Some(WgpuContext::new(device, queue)?);
+            self.context = Some(WgpuContext::new(device, queue, &self.font_library)?);
         }
 
         self.context
@@ -2963,12 +3270,28 @@ impl<'window> WgpuSurfaceRenderer<'window> {
         surface: wgpu::Surface<'window>,
         device: wgpu::Device,
         queue: wgpu::Queue,
+        surface_config: wgpu::SurfaceConfiguration,
+    ) -> Result<Self, RenderError> {
+        Self::new_with_fonts(
+            surface,
+            device,
+            queue,
+            surface_config,
+            FontLibrary::default(),
+        )
+    }
+
+    pub fn new_with_fonts(
+        surface: wgpu::Surface<'window>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         mut surface_config: wgpu::SurfaceConfiguration,
+        fonts: FontLibrary,
     ) -> Result<Self, RenderError> {
         surface_config
             .usage
             .insert(wgpu::TextureUsages::RENDER_ATTACHMENT);
-        let renderer = WgpuRenderer::with_device_queue(device, queue)?;
+        let renderer = WgpuRenderer::with_device_queue_and_fonts(device, queue, fonts)?;
         if surface_config.width > 0 && surface_config.height > 0 {
             let context = renderer.context.as_ref().ok_or_else(|| {
                 RenderError::Backend("wgpu surface renderer failed to initialize".to_string())
@@ -2980,6 +3303,19 @@ impl<'window> WgpuSurfaceRenderer<'window> {
             surface,
             surface_config,
         })
+    }
+
+    pub fn font_library(&self) -> &FontLibrary {
+        self.renderer.font_library()
+    }
+
+    pub fn set_fonts(&mut self, fonts: FontLibrary) -> &mut Self {
+        self.renderer.set_fonts(fonts);
+        self
+    }
+
+    pub fn supports_app_owned_view_rendering(&self) -> bool {
+        self.renderer.supports_app_owned_view_rendering()
     }
 
     pub fn canvas_context(
@@ -3063,7 +3399,7 @@ impl<'window> WgpuSurfaceRenderer<'window> {
             self.surface_config.format,
             size,
             &self.renderer.geometry,
-            clear_color,
+            WgpuRenderLoadOp::Clear(clear_color),
             true,
             collect_gpu_timing,
         )?;
@@ -3194,6 +3530,7 @@ impl RendererAdapter for WgpuRenderer {
                 deterministic_snapshots: true,
                 partial_updates: true,
                 webgpu_surface: true,
+                app_owned_view_rendering: true,
                 native_child_windows: false,
                 platform_overlays: false,
             })
@@ -3333,7 +3670,7 @@ fn record_discard_frame(
         OFFSCREEN_FORMAT,
         size,
         geometry,
-        clear_color,
+        WgpuRenderLoadOp::Clear(clear_color),
         true,
         collect_gpu_timing,
     )
@@ -3377,7 +3714,7 @@ fn render_snapshot_with_context(
         OFFSCREEN_FORMAT,
         size,
         geometry,
-        clear_color,
+        WgpuRenderLoadOp::Clear(clear_color),
         true,
         false,
     )?;
@@ -3468,7 +3805,7 @@ fn record_render_pass(
     format: TextureFormat,
     size: PixelSize,
     geometry: &RenderGeometry,
-    clear_color: ColorRgba,
+    load_op: WgpuRenderLoadOp,
     render_text: bool,
     collect_gpu_timing: bool,
 ) -> Result<bool, RenderError> {
@@ -3501,13 +3838,22 @@ fn record_render_pass(
         })
         .collect::<HashMap<_, _>>();
 
-    let clear = wgpu_color_for_format(clear_color, format);
+    let load = match load_op {
+        WgpuRenderLoadOp::Clear(color) => wgpu::LoadOp::Clear(wgpu_color_for_format(color, format)),
+        WgpuRenderLoadOp::Load => wgpu::LoadOp::Load,
+    };
     let rect_pipeline = context.rect_pipeline(format).clone();
     let triangle_pipeline = context.triangle_pipeline(format).clone();
     let textured_rect_pipeline = context.textured_rect_pipeline(format).clone();
     let composited_rect_pipeline = context.composited_rect_pipeline(format).clone();
     let sdf_rect_pipeline = context.sdf_rect_pipeline(format).clone();
     let shadow_rect_pipeline = context.shadow_rect_pipeline(format).clone();
+    if collect_gpu_timing && context.has_pending_gpu_timing() {
+        return Err(RenderError::Backend(
+            "resolve the previous WGPU GPU timing token before recording another timed pass"
+                .to_string(),
+        ));
+    }
     let gpu_timer = if collect_gpu_timing {
         context.gpu_timer.as_ref()
     } else {
@@ -3525,7 +3871,7 @@ fn record_render_pass(
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(clear),
+                load,
                 store: wgpu::StoreOp::Store,
             },
         })],
@@ -4111,7 +4457,7 @@ fn render_composited_layer_to_texture(
         OFFSCREEN_FORMAT,
         size,
         &geometry,
-        ColorRgba::TRANSPARENT,
+        WgpuRenderLoadOp::Clear(ColorRgba::TRANSPARENT),
         true,
         false,
     )?;
@@ -5277,23 +5623,38 @@ fn lerp_color(left: ColorRgba, right: ColorRgba, t: f32) -> ColorRgba {
     )
 }
 
+#[cfg(test)]
 fn default_glyph_font_system() -> GlyphFontSystem {
+    glyph_font_system(&FontLibrary::default())
+}
+
+fn glyph_font_system(fonts: &FontLibrary) -> GlyphFontSystem {
     let mut font_system = GlyphFontSystem::new_with_fonts([
         embedded_glyph_font(epaint_default_fonts::UBUNTU_LIGHT),
         embedded_glyph_font(epaint_default_fonts::HACK_REGULAR),
         embedded_glyph_font(epaint_default_fonts::NOTO_EMOJI_REGULAR),
     ]);
+    for font in fonts.fonts() {
+        font_system
+            .db_mut()
+            .load_font_source(glyph_font_bytes_source(font));
+    }
     {
         let db = font_system.db_mut();
-        db.set_sans_serif_family("Ubuntu");
-        db.set_serif_family("Ubuntu");
-        db.set_monospace_family("Hack");
+        db.set_sans_serif_family(fonts.sans_serif_family().unwrap_or("Ubuntu"));
+        db.set_serif_family(fonts.serif_family().unwrap_or("Ubuntu"));
+        db.set_monospace_family(fonts.monospace_family().unwrap_or("Hack"));
     }
     font_system
 }
 
 fn embedded_glyph_font(bytes: &'static [u8]) -> glyphon::cosmic_text::fontdb::Source {
     let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
+    glyphon::cosmic_text::fontdb::Source::Binary(data)
+}
+
+fn glyph_font_bytes_source(font: &crate::fonts::FontBytes) -> glyphon::cosmic_text::fontdb::Source {
+    let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(font.bytes().to_vec());
     glyphon::cosmic_text::fontdb::Source::Binary(data)
 }
 
@@ -5719,6 +6080,35 @@ mod tests {
     }
 
     #[test]
+    fn glyph_font_system_uses_injected_font_library_family_defaults() {
+        let fonts = FontLibrary::new()
+            .with_memory_font("hack-copy", epaint_default_fonts::HACK_REGULAR)
+            .with_sans_serif_family("Hack")
+            .with_serif_family("Hack")
+            .with_monospace_family("Ubuntu");
+        let font_system = glyph_font_system(&fonts);
+
+        assert_eq!(
+            font_system
+                .db()
+                .family_name(&glyphon::cosmic_text::fontdb::Family::SansSerif),
+            "Hack"
+        );
+        assert_eq!(
+            font_system
+                .db()
+                .family_name(&glyphon::cosmic_text::fontdb::Family::Serif),
+            "Hack"
+        );
+        assert_eq!(
+            font_system
+                .db()
+                .family_name(&glyphon::cosmic_text::fontdb::Family::Monospace),
+            "Ubuntu"
+        );
+    }
+
+    #[test]
     fn glyphon_text_chunks_reuse_unchanged_prepared_renderers() {
         let mut renderer = WgpuRenderer::default();
         renderer.warm_up().expect("wgpu renderer warm-up");
@@ -5855,6 +6245,166 @@ mod tests {
         let _ = context.composited_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
         let _ = context.sdf_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
         let _ = context.shadow_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
+    }
+
+    #[test]
+    fn app_owned_view_encoder_path_loads_existing_attachment() {
+        let mut renderer = WgpuRenderer::default();
+        renderer.warm_up().expect("wgpu renderer warm-up");
+        let context = renderer.context.as_ref().expect("wgpu context");
+        let device = context.device.clone();
+        let queue = context.queue.clone();
+        let size = PixelSize::new(4, 4);
+        let format = TextureFormat::Rgba8Unorm;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("operad-wgpu-app-owned-test-texture"),
+            size: Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let padded_row_stride = upload_row_stride(size.width).expect("row stride");
+        let readback_size = u64::from(padded_row_stride) * u64::from(size.height);
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("operad-wgpu-app-owned-test-readback"),
+            size: readback_size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("operad-wgpu-app-owned-test-encoder"),
+        });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("operad-wgpu-app-owned-test-background"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+        }
+
+        let request = RenderFrameRequest::new(
+            RenderTarget::app_owned("app-owned-test", UiSize::new(4.0, 4.0)),
+            UiSize::new(4.0, 4.0),
+            PaintList {
+                items: vec![test_rect_item(
+                    UiNodeId(9),
+                    UiRect::new(1.0, 1.0, 2.0, 2.0),
+                    ColorRgba::new(240, 20, 40, 255),
+                    0.0,
+                    1.0,
+                )],
+            },
+        )
+        .options(RenderOptions {
+            collect_gpu_timing: true,
+            ..RenderOptions::default()
+        });
+        let timed_output = renderer
+            .render_frame_into_view_with_encoder_timed(
+                request,
+                &EmptyResourceResolver,
+                &mut encoder,
+                WgpuRenderTargetView::new(&view, format).load(),
+            )
+            .expect("render into app-owned view");
+        let gpu_timing_token = timed_output.gpu_timing_token;
+        let output = timed_output.frame;
+        assert_eq!(output.target.kind(), RenderTargetKind::AppOwned);
+        assert_eq!(output.painted_items, 1);
+        assert!(output.snapshot.is_none());
+
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row_stride),
+                    rows_per_image: Some(size.height),
+                },
+            },
+            Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+        if let Some(token) = gpu_timing_token {
+            assert!(
+                renderer
+                    .resolve_gpu_timing(token)
+                    .expect("resolve caller-owned GPU timing")
+                    .is_some(),
+                "timestamp-capable devices should resolve app-owned pass timing"
+            );
+        } else {
+            assert!(
+                renderer
+                    .context
+                    .as_ref()
+                    .expect("wgpu context")
+                    .gpu_timer
+                    .is_none(),
+                "timestamp-capable devices should return a timing token"
+            );
+        }
+        let _ = device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("wgpu poll");
+        let readback_slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback_slice.map_async(wgpu::MapMode::Read, move |status| {
+            tx.send(status).ok();
+        });
+        let _ = device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("wgpu poll");
+        rx.recv().expect("map callback").expect("map readback");
+        let mapped = readback_slice.get_mapped_range();
+        let mut pixels = vec![0_u8; render_byte_len(size).expect("render byte len")];
+        for y in 0..usize::try_from(size.height).expect("height") {
+            let source = y * usize::try_from(padded_row_stride).expect("stride");
+            let destination = y * usize::try_from(size.width).expect("width") * 4;
+            pixels[destination..destination + usize::try_from(size.width).expect("width") * 4]
+                .copy_from_slice(
+                    &mapped[source..source + usize::try_from(size.width).expect("width") * 4],
+                );
+        }
+        drop(mapped);
+        readback.unmap();
+
+        assert_eq!(pixel_rgba(&pixels, 4, 0, 0), [0, 0, 255, 255]);
+        assert_eq!(pixel_rgba(&pixels, 4, 2, 2), [240, 20, 40, 255]);
     }
 
     fn test_rect_item(

@@ -26,13 +26,13 @@ use operad::{
     ComponentRole, ComponentState, CornerRadii, DragDropSurfaceKind, DropPayloadFilter,
     DynamicLabelMeta, EditPhase, ElementMaterial, ElementShape, FocusRestoreTarget, FontFamily,
     FontWeight, FormState, GeometryEffect, ImageContent, InputBehavior, Layout, LayoutAlignment,
-    LayoutDimension, LayoutFlexWrap, LayoutGap, LayoutGridTrack, LayoutInsets, LayoutSize,
-    LayoutStyle, LocaleId, LocalizationPolicy, PaintEffect, PaintRect, PaintText, ScenePrimitive,
-    ScrollAxes, ShaderEffect, Shortcut, StrokeStyle, TextHorizontalAlign, TextStyle,
-    TextVerticalAlign, TextWrap, Theme, UiDocument, UiNode, UiNodeId, UiNodeStyle, UiPoint,
-    UiPortalTarget, UiRect, UiSize, UiVisual, ValidationMessage, WidgetAction, WidgetActionBinding,
-    WidgetActionKind, WidgetDrag, WidgetDragPhase, WidgetPointerEdit, WidgetTextEdit,
-    ANIMATION_INPUT_POINTER_NORM_X,
+    LayoutDimension, LayoutFlexWrap, LayoutGap, LayoutGridTrack, LayoutInsets, LayoutLength,
+    LayoutSize, LayoutSpacing, LayoutStyle, LocaleId, LocalizationPolicy, PaintEffect, PaintRect,
+    PaintText, ScenePrimitive, ScrollAxes, ShaderEffect, Shortcut, StrokeStyle,
+    TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, Theme, UiDocument, UiNode,
+    UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual, ValidationMessage,
+    WidgetAction, WidgetActionBinding, WidgetActionKind, WidgetActionMode, WidgetDrag,
+    WidgetDragPhase, WidgetPointerEdit, WidgetTextEdit, ANIMATION_INPUT_POINTER_NORM_X,
 };
 const RIGHT_PANEL_WIDTH: f32 = 300.0;
 const SHOWCASE_WINDOW_Z_BASE: i16 = 64;
@@ -11150,14 +11150,16 @@ fn shader_lab_preview_column(
     );
     shader_lab_preview(ui, preview, state, source_valid);
 
-    widgets::label(
-        ui,
-        preview_column,
-        "shader_lab.preview.status",
-        shader_lab_status_label(state, source_error),
-        text(11.0, color(166, 176, 190)),
-        LayoutStyle::new().with_width_percent(1.0),
-    );
+    if let Some(status) = shader_lab_status_label(state, source_error) {
+        widgets::label(
+            ui,
+            preview_column,
+            "shader_lab.preview.status",
+            status,
+            text(11.0, color(166, 176, 190)),
+            LayoutStyle::new().with_width_percent(1.0),
+        );
+    }
     shader_lab_material_contract_demo(ui, preview_column, state);
 }
 
@@ -11177,14 +11179,14 @@ fn shader_lab_preview_controls(ui: &mut UiDocument, parent: UiNodeId, state: &Sh
         ui,
         text_row,
         "shader_lab.frame_text.toggle",
-        "Frame text",
+        "Frame",
         state.shader_lab_show_frame_text,
     );
     shader_lab_option_checkbox(
         ui,
         text_row,
         "shader_lab.button_text.toggle",
-        "Button text",
+        "Button",
         state.shader_lab_show_button_text,
     );
 
@@ -11224,7 +11226,7 @@ fn shader_lab_material_contract_demo(ui: &mut UiDocument, parent: UiNodeId, stat
         ui,
         panel,
         "shader_lab.material.title",
-        "Material contract",
+        "Material",
         text(12.0, color(186, 198, 216)),
         LayoutStyle::new().with_width_percent(1.0),
     );
@@ -11266,12 +11268,29 @@ fn shader_lab_material_contract_demo(ui: &mut UiDocument, parent: UiNodeId, stat
         0,
     );
 
-    let row = wrapping_row(ui, panel, "shader_lab.material.contracts", 8.0);
+    let contracts_layout = Layout::column()
+        .size(LayoutSize::new(
+            LayoutDimension::percent(1.0),
+            LayoutDimension::Auto,
+        ))
+        .padding(LayoutSpacing::new(
+            LayoutLength::points(4.0),
+            LayoutLength::points(4.0),
+            LayoutLength::points(SHADER_LAB_MATERIAL_OUTSET_MAX),
+            LayoutLength::points(8.0),
+        ))
+        .flex(0.0, 0.0, LayoutDimension::Auto)
+        .to_layout_style();
+    let contracts_shell = ui.add_child(
+        panel,
+        UiNode::container("shader_lab.material.contracts.shell", contracts_layout),
+    );
+    let row = wrapping_row(ui, contracts_shell, "shader_lab.material.contracts", 8.0);
     shader_lab_material_chip(
         ui,
         row,
         "shader_lab.material.current",
-        "Selected material",
+        "Selected",
         shader_lab_selected_material(state),
         shader_lab_material_visual(state.shader_lab_material_shape),
     );
@@ -11279,7 +11298,7 @@ fn shader_lab_material_contract_demo(ui: &mut UiDocument, parent: UiNodeId, stat
         ui,
         row,
         "shader_lab.material.outset",
-        "Declared glow",
+        "Glow",
         ElementMaterial::shader(ShaderEffect::glow(
             color(100, 180, 255),
             0.95,
@@ -11296,7 +11315,7 @@ fn shader_lab_material_contract_demo(ui: &mut UiDocument, parent: UiNodeId, stat
         ui,
         row,
         "shader_lab.material.circle_hit",
-        "Circle hit",
+        "Circle",
         ElementMaterial::new()
             .with_clip_shape(ElementShape::circle())
             .with_hit_shape(ElementShape::circle()),
@@ -11310,7 +11329,7 @@ fn shader_lab_material_contract_demo(ui: &mut UiDocument, parent: UiNodeId, stat
         ui,
         row,
         "shader_lab.material.geometry_chip",
-        "Declared warp",
+        "Warp",
         ElementMaterial::new()
             .with_paint_outset(LayoutInsets::points(8.0))
             .with_geometry_effect(GeometryEffect::wave(8.0)),
@@ -11853,17 +11872,14 @@ fn shader_lab_canvas_layer_fill(
     canvas
 }
 
-fn shader_lab_status_label(state: &ShowcaseState, source_error: Option<&str>) -> String {
+fn shader_lab_status_label(state: &ShowcaseState, source_error: Option<&str>) -> Option<String> {
     if source_error.is_some() {
-        format!(
-            "{} preview is showing the error fallback until the WGSL validates",
+        Some(format!(
+            "{} fallback until WGSL validates",
             state.shader_lab_target.label()
-        )
+        ))
     } else {
-        format!(
-            "{} preview uses the WGSL editor source",
-            state.shader_lab_target.label()
-        )
+        None
     }
 }
 
@@ -11874,10 +11890,7 @@ fn shader_lab_validation_label(source_error: Option<&str>) -> (String, ColorRgba
             color(255, 139, 128),
         )
     } else {
-        (
-            "WGSL valid: Canvas, Frame, and Button all use this source".to_string(),
-            color(112, 221, 160),
-        )
+        ("WGSL valid".to_string(), color(112, 221, 160))
     }
 }
 
@@ -13501,6 +13514,7 @@ fn canvas(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         .with_accessibility_label("Shader canvas")
         .with_action("canvas.rotate")
         .with_intrinsic_size(canvas_intrinsic);
+    options.action_mode = WidgetActionMode::Drag;
     if state.canvas_keep_aspect_ratio {
         options = options.with_aspect_ratio(16.0 / 9.0);
     }

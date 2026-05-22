@@ -5,6 +5,7 @@
 //! missing or failed faces, account for loaded bytes, and plan LRU evictions.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::{FontStretch, FontStyle, FontWeight};
 
@@ -108,6 +109,126 @@ impl FontSourceDescriptor {
 
     pub fn memory(key: impl Into<String>) -> Self {
         Self::Memory { key: key.into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontBytes {
+    key: String,
+    bytes: Arc<[u8]>,
+}
+
+impl FontBytes {
+    pub fn new(key: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            key: key.into(),
+            bytes: Arc::from(bytes.into().into_boxed_slice()),
+        }
+    }
+
+    pub fn from_static(key: impl Into<String>, bytes: &'static [u8]) -> Self {
+        Self {
+            key: key.into(),
+            bytes: Arc::from(bytes),
+        }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FontLibrary {
+    fonts: Vec<FontBytes>,
+    sans_serif_family: Option<String>,
+    serif_family: Option<String>,
+    monospace_family: Option<String>,
+}
+
+impl FontLibrary {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_font(mut self, font: FontBytes) -> Self {
+        self.add_font(font);
+        self
+    }
+
+    pub fn with_memory_font(mut self, key: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        self.add_memory_font(key, bytes);
+        self
+    }
+
+    pub fn add_font(&mut self, font: FontBytes) -> &mut Self {
+        self.fonts.push(font);
+        self
+    }
+
+    pub fn add_memory_font(
+        &mut self,
+        key: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> &mut Self {
+        self.add_font(FontBytes::new(key, bytes))
+    }
+
+    pub fn fonts(&self) -> &[FontBytes] {
+        &self.fonts
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fonts.is_empty()
+            && self.sans_serif_family.is_none()
+            && self.serif_family.is_none()
+            && self.monospace_family.is_none()
+    }
+
+    pub fn with_sans_serif_family(mut self, family: impl Into<String>) -> Self {
+        self.set_sans_serif_family(family);
+        self
+    }
+
+    pub fn with_serif_family(mut self, family: impl Into<String>) -> Self {
+        self.set_serif_family(family);
+        self
+    }
+
+    pub fn with_monospace_family(mut self, family: impl Into<String>) -> Self {
+        self.set_monospace_family(family);
+        self
+    }
+
+    pub fn set_sans_serif_family(&mut self, family: impl Into<String>) -> &mut Self {
+        self.sans_serif_family = Some(family.into());
+        self
+    }
+
+    pub fn set_serif_family(&mut self, family: impl Into<String>) -> &mut Self {
+        self.serif_family = Some(family.into());
+        self
+    }
+
+    pub fn set_monospace_family(&mut self, family: impl Into<String>) -> &mut Self {
+        self.monospace_family = Some(family.into());
+        self
+    }
+
+    pub fn sans_serif_family(&self) -> Option<&str> {
+        self.sans_serif_family.as_deref()
+    }
+
+    pub fn serif_family(&self) -> Option<&str> {
+        self.serif_family.as_deref()
+    }
+
+    pub fn monospace_family(&self) -> Option<&str> {
+        self.monospace_family.as_deref()
     }
 }
 

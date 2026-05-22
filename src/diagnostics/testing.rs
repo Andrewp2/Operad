@@ -29,13 +29,14 @@ use crate::platform::{
     OpenUrlResponse, PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse,
     PlatformServiceCapabilities, PlatformServiceError, PlatformServiceKind, PlatformServiceRequest,
     PlatformServiceResponse, RenderingCapabilities, RepaintResponse, ResourceCapabilities,
-    ResourceId, ScreenshotResponse, TextImeResponse,
+    ScreenshotResponse, TextImeResponse,
 };
+pub use crate::renderer::EmptyResourceResolver;
 use crate::renderer::{
     CanvasHitCollection, CanvasHitTarget, CanvasHostCaptureDiagnosticReport, CanvasRenderRegistry,
     CanvasRenderReport, CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest, RenderError,
     RenderFrameOutput, RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage,
-    RendererAdapter, ResourceDescriptor, ResourceFormat, ResourceResolver,
+    RendererAdapter, ResourceFormat, ResourceResolver,
 };
 use crate::{
     AccessibilityLiveRegion, AccessibilityNode, AccessibilityRelationKind, AccessibilityRole,
@@ -69,15 +70,6 @@ pub type TestResult<T = ()> = Result<T, TestFailure>;
 
 pub fn test_host_capabilities() -> BackendCapabilities {
     BackendCapabilities::test_host()
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EmptyResourceResolver;
-
-impl ResourceResolver for EmptyResourceResolver {
-    fn resolve_resource(&self, _id: &ResourceId) -> Option<ResourceDescriptor> {
-        None
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -3156,6 +3156,7 @@ mod showcase_app {
         #[test]
         fn showcase_shader_lab_edits_canvas_source_and_targets_widgets() {
             let mut state = state_with_window("shader_lab");
+            state.shader_lab_material_outset = SHADER_LAB_MATERIAL_OUTSET_MAX;
             let viewport = UiSize::new(1000.0, 760.0);
             let mut document = state.view(viewport);
             document
@@ -3164,6 +3165,26 @@ mod showcase_app {
 
             assert!(maybe_node_id(&document, "shader_lab.preview.canvas").is_some());
             assert!(maybe_node_id(&document, "shader_lab.editor").is_some());
+            assert!(
+                maybe_node_id(&document, "shader_lab.preview.status").is_none(),
+                "the valid canvas preview should not repeat that it uses the editor source"
+            );
+            for (name, expected) in [
+                ("shader_lab.frame_text.toggle.label", "Frame"),
+                ("shader_lab.button_text.toggle.label", "Button"),
+                ("shader_lab.material.title", "Material"),
+                ("shader_lab.material.current.text", "Selected"),
+                ("shader_lab.material.outset.text", "Glow"),
+                ("shader_lab.material.circle_hit.text", "Circle"),
+                ("shader_lab.material.geometry_chip.text", "Warp"),
+                ("shader_lab.validation", "WGSL valid"),
+            ] {
+                assert_eq!(
+                    text_content(&document, name),
+                    expected,
+                    "{name} should keep the shader lab copy terse"
+                );
+            }
             assert_eq!(
                 document
                     .node(node_id(&document, "shader_lab.target"))
@@ -3195,6 +3216,22 @@ mod showcase_app {
                 outset_material.visual_outset_for_rect(UiRect::new(0.0, 0.0, 40.0, 40.0))
                     >= SHADER_LAB_MATERIAL_OUTSET
             );
+            let material_controls = document
+                .node(node_id(&document, "shader_lab.material.controls"))
+                .layout()
+                .rect;
+            for name in ["shader_lab.material.current", "shader_lab.material.outset"] {
+                let node = document.node(node_id(&document, name));
+                let rect = node.layout().rect;
+                let material = node
+                    .material()
+                    .unwrap_or_else(|| panic!("{name:?} should have a material"));
+                let paint_top = rect.y - material.visual_outset_for_rect(rect);
+                assert!(
+                    paint_top >= material_controls.bottom() + 5.5,
+                    "{name} paint should clear the material controls: controls={material_controls:?} rect={rect:?} paint_top={paint_top}"
+                );
+            }
             let circle_material = document
                 .node(node_id(&document, "shader_lab.material.circle_hit"))
                 .material()
@@ -3812,6 +3849,64 @@ mod showcase_app {
             assert!(
                 window.height <= canvas.height + 112.0,
                 "window should be fit to canvas content instead of old excess height: window={window:?} content={content:?} body={body:?} controls={controls:?} canvas={canvas:?}"
+            );
+        }
+
+        #[test]
+        fn showcase_canvas_drag_rotates_cube() {
+            let mut state = state_with_window("canvas");
+            let viewport = UiSize::new(1180.0, 820.0);
+            let mut frame_state = HostDocumentFrameState::default();
+            let mut document = state.view(viewport);
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .expect("showcase layout");
+
+            let canvas = node_id(&document, "canvas.shader");
+            assert_eq!(
+                document.node(canvas).action_mode(),
+                operad::WidgetActionMode::Drag,
+                "the canvas demo should emit drag actions for cube rotation"
+            );
+            assert_eq!(
+                document
+                    .node(canvas)
+                    .action()
+                    .and_then(|action| action.action_id())
+                    .map(|id| id.as_str()),
+                Some("canvas.rotate")
+            );
+
+            let rect = document.node(canvas).layout().rect;
+            let start = rect_center(rect);
+            let end = UiPoint::new(start.x + 72.0, start.y + 24.0);
+            let initial_yaw = state.cube.yaw;
+            let initial_pitch = state.cube.pitch;
+
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(PointerEventKind::Down(PointerButton::Primary), start, 1),
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(PointerEventKind::Move, end, 16),
+            );
+            apply_showcase_pointer_frame(
+                &mut state,
+                &mut frame_state,
+                viewport,
+                raw_pointer(PointerEventKind::Up(PointerButton::Primary), end, 32),
+            );
+
+            assert!(
+                state.cube.yaw > initial_yaw && state.cube.pitch > initial_pitch,
+                "dragging inside the canvas should rotate the cube: initial=({initial_yaw}, {initial_pitch}) current=({}, {})",
+                state.cube.yaw,
+                state.cube.pitch
             );
         }
 

@@ -1,6 +1,6 @@
 [package]
 name = "operad"
-version = "9.0.0"
+version = "9.0.1"
 edition = "2021"
 license = "MIT"
 description = "A cross-platform GUI library for Rust."
@@ -26,6 +26,7 @@ include = [
     "docs/v8_0_roadmap.md",
     "docs/v9_0_api_stability.md",
     "docs/v9_0_completion_audit.md",
+    "docs/app_owned_wgpu_compositor.md",
     "docs/widget_inventory.md",
     "examples/**",
     "scripts/**",

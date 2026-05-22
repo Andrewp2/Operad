@@ -1638,6 +1638,7 @@ pub enum RenderingCapabilityKind {
     DeterministicSnapshots,
     PartialUpdates,
     WebGpuSurface,
+    AppOwnedViewRendering,
     NativeChildWindows,
     PlatformOverlays,
 }
@@ -1650,6 +1651,7 @@ impl RenderingCapabilityKind {
             Self::DeterministicSnapshots => "deterministic snapshots",
             Self::PartialUpdates => "partial render updates",
             Self::WebGpuSurface => "WebGPU surface rendering",
+            Self::AppOwnedViewRendering => "app-owned texture-view rendering",
             Self::NativeChildWindows => "native child windows",
             Self::PlatformOverlays => "platform overlays",
         }
@@ -1663,6 +1665,7 @@ pub struct RenderingCapabilities {
     pub deterministic_snapshots: bool,
     pub partial_updates: bool,
     pub webgpu_surface: bool,
+    pub app_owned_view_rendering: bool,
     pub native_child_windows: bool,
     pub platform_overlays: bool,
 }
@@ -1674,6 +1677,7 @@ impl RenderingCapabilities {
         deterministic_snapshots: false,
         partial_updates: false,
         webgpu_surface: false,
+        app_owned_view_rendering: false,
         native_child_windows: false,
         platform_overlays: false,
     };
@@ -1684,6 +1688,7 @@ impl RenderingCapabilities {
         deterministic_snapshots: false,
         partial_updates: true,
         webgpu_surface: false,
+        app_owned_view_rendering: false,
         native_child_windows: false,
         platform_overlays: false,
     };
@@ -1695,6 +1700,7 @@ impl RenderingCapabilities {
             RenderingCapabilityKind::DeterministicSnapshots => self.deterministic_snapshots,
             RenderingCapabilityKind::PartialUpdates => self.partial_updates,
             RenderingCapabilityKind::WebGpuSurface => self.webgpu_surface,
+            RenderingCapabilityKind::AppOwnedViewRendering => self.app_owned_view_rendering,
             RenderingCapabilityKind::NativeChildWindows => self.native_child_windows,
             RenderingCapabilityKind::PlatformOverlays => self.platform_overlays,
         }
@@ -1986,6 +1992,7 @@ impl BackendCapabilities {
                 deterministic_snapshots: false,
                 partial_updates: true,
                 webgpu_surface: true,
+                app_owned_view_rendering: true,
                 native_child_windows: false,
                 platform_overlays: false,
             })
@@ -2035,6 +2042,7 @@ impl BackendCapabilities {
                 deterministic_snapshots: false,
                 partial_updates: true,
                 webgpu_surface: true,
+                app_owned_view_rendering: true,
                 native_child_windows: false,
                 platform_overlays: false,
             })
@@ -2063,6 +2071,7 @@ impl BackendCapabilities {
                 deterministic_snapshots: true,
                 partial_updates: true,
                 webgpu_surface: false,
+                app_owned_view_rendering: false,
                 native_child_windows: false,
                 platform_overlays: false,
             })

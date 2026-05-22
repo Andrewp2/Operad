@@ -1,5 +1,20 @@
 # Changelog
 
+## 9.0.1 - 2026-05-22
+
+- Added direct app-owned WGPU view composition with explicit load/clear
+  behavior, capability reporting, caller-owned GPU timing tokens, and
+  discard-path documentation for legacy encoder rendering.
+- Added shared font injection for the WGPU renderer and `CosmicTextMeasurer`
+  through a backend-neutral font library so layout and rendered glyphs can use
+  the same app fonts.
+- Added a public empty resource resolver for rect/text-only render paths and
+  documented resolver/update requirements for images, textures, thumbnails, and
+  canvas resources.
+- Fixed Shader Lab material-effect layout so painted outsets do not overlap
+  controls, shortened visible showcase copy, restored canvas demo dragging, and
+  added default split-pane drag-handle cross-axis margins.
+
 ## 9.0.0 - 2026-05-21
 
 - Added element material and shader-effect support for UI surfaces, including

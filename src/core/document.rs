@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 #[cfg(feature = "text-cosmic")]
+use crate::fonts::FontLibrary;
+#[cfg(feature = "text-cosmic")]
 use cosmic_text::{
     fontdb, Attrs, Buffer, Family as CosmicFamily, FontSystem, Metrics, Shaping,
     Stretch as CosmicStretch, Style as CosmicFontStyle, Weight as CosmicWeight, Wrap as CosmicWrap,
@@ -3032,6 +3034,7 @@ const COSMIC_TEXT_MEASURE_CACHE_LIMIT: usize = 32_768;
 #[cfg(feature = "text-cosmic")]
 pub struct CosmicTextMeasurer {
     font_system: FontSystem,
+    font_library: FontLibrary,
     cache: HashMap<u64, Vec<(TextMeasureKey, UiSize)>>,
     cache_len: usize,
 }
@@ -3039,11 +3042,28 @@ pub struct CosmicTextMeasurer {
 #[cfg(feature = "text-cosmic")]
 impl CosmicTextMeasurer {
     pub fn new() -> Self {
+        Self::with_fonts(FontLibrary::default())
+    }
+
+    pub fn with_fonts(fonts: FontLibrary) -> Self {
         Self {
-            font_system: default_cosmic_font_system(),
+            font_system: cosmic_font_system(&fonts),
+            font_library: fonts,
             cache: HashMap::new(),
             cache_len: 0,
         }
+    }
+
+    pub fn font_library(&self) -> &FontLibrary {
+        &self.font_library
+    }
+
+    pub fn set_fonts(&mut self, fonts: FontLibrary) -> &mut Self {
+        self.font_system = cosmic_font_system(&fonts);
+        self.font_library = fonts;
+        self.cache.clear();
+        self.cache_len = 0;
+        self
     }
 }
 
@@ -3118,17 +3138,22 @@ impl TextMeasurer for CosmicTextMeasurer {
 }
 
 #[cfg(feature = "text-cosmic")]
-fn default_cosmic_font_system() -> FontSystem {
+fn cosmic_font_system(fonts: &FontLibrary) -> FontSystem {
     let mut font_system = FontSystem::new_with_fonts([
         embedded_cosmic_font(epaint_default_fonts::UBUNTU_LIGHT),
         embedded_cosmic_font(epaint_default_fonts::HACK_REGULAR),
         embedded_cosmic_font(epaint_default_fonts::NOTO_EMOJI_REGULAR),
     ]);
+    for font in fonts.fonts() {
+        font_system
+            .db_mut()
+            .load_font_source(font_bytes_source(font));
+    }
     {
         let db = font_system.db_mut();
-        db.set_sans_serif_family("Ubuntu");
-        db.set_serif_family("Ubuntu");
-        db.set_monospace_family("Hack");
+        db.set_sans_serif_family(fonts.sans_serif_family().unwrap_or("Ubuntu"));
+        db.set_serif_family(fonts.serif_family().unwrap_or("Ubuntu"));
+        db.set_monospace_family(fonts.monospace_family().unwrap_or("Hack"));
     }
     font_system
 }
@@ -3136,6 +3161,12 @@ fn default_cosmic_font_system() -> FontSystem {
 #[cfg(feature = "text-cosmic")]
 fn embedded_cosmic_font(bytes: &'static [u8]) -> fontdb::Source {
     let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
+    fontdb::Source::Binary(data)
+}
+
+#[cfg(feature = "text-cosmic")]
+fn font_bytes_source(font: &crate::fonts::FontBytes) -> fontdb::Source {
+    let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(font.bytes().to_vec());
     fontdb::Source::Binary(data)
 }
 
@@ -10794,6 +10825,40 @@ mod tests {
         assert!(
             families.iter().any(|name| *name == "Hack"),
             "embedded monospace font was not loaded: {families:?}"
+        );
+    }
+
+    #[cfg(feature = "text-cosmic")]
+    #[test]
+    fn cosmic_text_measurer_uses_injected_font_library_family_defaults() {
+        let fonts = crate::fonts::FontLibrary::new()
+            .with_memory_font("hack-copy", epaint_default_fonts::HACK_REGULAR)
+            .with_sans_serif_family("Hack")
+            .with_serif_family("Hack")
+            .with_monospace_family("Ubuntu");
+        let measurer = CosmicTextMeasurer::with_fonts(fonts.clone());
+
+        assert_eq!(measurer.font_library(), &fonts);
+        assert_eq!(
+            measurer
+                .font_system
+                .db()
+                .family_name(&fontdb::Family::SansSerif),
+            "Hack"
+        );
+        assert_eq!(
+            measurer
+                .font_system
+                .db()
+                .family_name(&fontdb::Family::Serif),
+            "Hack"
+        );
+        assert_eq!(
+            measurer
+                .font_system
+                .db()
+                .family_name(&fontdb::Family::Monospace),
+            "Ubuntu"
         );
     }
 

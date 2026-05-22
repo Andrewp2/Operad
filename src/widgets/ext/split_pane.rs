@@ -1,6 +1,9 @@
 //! Split pane widget.
 
-use taffy::prelude::{Dimension, Display, FlexDirection, Size as TaffySize, Style};
+use taffy::prelude::{
+    AlignItems, Dimension, Display, FlexDirection, LengthPercentageAuto, Rect, Size as TaffySize,
+    Style,
+};
 
 use crate::{
     length, AccessibilityMeta, AccessibilityRole, ClipBehavior, InputBehavior, InteractionVisuals,
@@ -9,6 +12,8 @@ use crate::{
 };
 
 use super::surfaces::{DEFAULT_ACCENT, DEFAULT_SURFACE_STROKE};
+
+const DEFAULT_HANDLE_CROSS_AXIS_MARGIN: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitAxis {
@@ -129,6 +134,7 @@ impl Default for SplitPaneState {
 pub struct SplitPaneOptions {
     pub layout: LayoutStyle,
     pub handle_thickness: f32,
+    pub handle_cross_axis_margin: f32,
     pub root_visual: UiVisual,
     pub pane_visual: UiVisual,
     pub handle_visual: UiVisual,
@@ -148,6 +154,7 @@ impl Default for SplitPaneOptions {
                 ..Default::default()
             }),
             handle_thickness: 2.0,
+            handle_cross_axis_margin: DEFAULT_HANDLE_CROSS_AXIS_MARGIN,
             root_visual: UiVisual::TRANSPARENT,
             pane_visual: UiVisual::TRANSPARENT,
             handle_visual: UiVisual::panel(DEFAULT_SURFACE_STROKE, None, 2.0),
@@ -165,6 +172,11 @@ impl SplitPaneOptions {
 
     pub fn with_handle_hover_visual(mut self, visual: UiVisual) -> Self {
         self.handle_hover_visual = Some(visual);
+        self
+    }
+
+    pub fn with_handle_cross_axis_margin(mut self, margin: f32) -> Self {
+        self.handle_cross_axis_margin = margin.max(0.0);
         self
     }
 }
@@ -229,7 +241,11 @@ pub fn split_pane(
         .pressed_hovered(options.handle_hover_visual.unwrap_or(options.handle_visual));
     let mut handle_node = UiNode::container(
         format!("{name}.handle"),
-        split_pane_handle_style(axis, options.handle_thickness),
+        split_pane_handle_style(
+            axis,
+            options.handle_thickness,
+            options.handle_cross_axis_margin,
+        ),
     )
     .with_input(InputBehavior::BUTTON)
     .with_interaction_visuals(handle_visuals)
@@ -291,23 +307,31 @@ fn split_pane_child_style(axis: SplitAxis, grow: f32, min_extent: f32) -> UiNode
     }
 }
 
-fn split_pane_handle_style(axis: SplitAxis, thickness: f32) -> UiNodeStyle {
+fn split_pane_handle_style(axis: SplitAxis, thickness: f32, cross_axis_margin: f32) -> UiNodeStyle {
     let thickness = thickness.max(0.0);
+    let cross_axis_margin = cross_axis_margin.max(0.0);
+    let mut margin = Rect::length(0.0_f32);
     let size = if axis.is_horizontal() {
+        margin.top = LengthPercentageAuto::length(cross_axis_margin);
+        margin.bottom = LengthPercentageAuto::length(cross_axis_margin);
         TaffySize {
             width: length(thickness),
-            height: Dimension::percent(1.0),
+            height: Dimension::auto(),
         }
     } else {
+        margin.left = LengthPercentageAuto::length(cross_axis_margin);
+        margin.right = LengthPercentageAuto::length(cross_axis_margin);
         TaffySize {
-            width: Dimension::percent(1.0),
+            width: Dimension::auto(),
             height: length(thickness),
         }
     };
     UiNodeStyle {
         layout: LayoutStyle::from_taffy_style(Style {
             flex_shrink: 0.0,
+            align_self: Some(AlignItems::Stretch),
             size,
+            margin,
             ..Default::default()
         })
         .style,

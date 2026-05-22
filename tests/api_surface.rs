@@ -865,6 +865,42 @@ fn font_weight_keeps_numeric_storage_behind_value_api() {
 }
 
 #[test]
+fn font_library_carries_shared_renderer_and_measurer_inputs() {
+    let fonts = operad::fonts::FontLibrary::new()
+        .with_memory_font("ui", vec![1_u8, 2, 3])
+        .with_sans_serif_family("Inter")
+        .with_serif_family("Source Serif")
+        .with_monospace_family("JetBrains Mono");
+
+    assert_eq!(fonts.fonts()[0].key(), "ui");
+    assert_eq!(fonts.fonts()[0].bytes(), &[1, 2, 3]);
+    assert_eq!(fonts.sans_serif_family(), Some("Inter"));
+    assert_eq!(fonts.serif_family(), Some("Source Serif"));
+    assert_eq!(fonts.monospace_family(), Some("JetBrains Mono"));
+}
+
+#[test]
+fn renderer_contract_exposes_empty_resource_resolver() {
+    use operad::renderer::ResourceResolver;
+
+    let resolver = operad::renderer::EmptyResourceResolver;
+    assert_eq!(
+        resolver.resolve_resource(&operad::platform::ResourceId::app("missing")),
+        None
+    );
+}
+
+#[test]
+fn rendering_capabilities_include_app_owned_view_composition() {
+    assert!(operad::platform::BackendCapabilities::native_window()
+        .rendering
+        .supports(operad::platform::RenderingCapabilityKind::AppOwnedViewRendering));
+    assert!(!operad::platform::BackendCapabilities::test_host()
+        .rendering
+        .supports(operad::platform::RenderingCapabilityKind::AppOwnedViewRendering));
+}
+
+#[test]
 fn flat_widgets_keep_legacy_color_helpers_out_of_the_fast_path() {
     let ext_mod = include_str!("../src/widgets/ext/mod.rs");
     let pickers = include_str!("../src/widgets/ext/pickers.rs");
