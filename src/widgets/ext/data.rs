@@ -138,6 +138,36 @@ mod tests {
     }
 
     #[test]
+    fn segmented_control_builds_radio_like_choice_buttons() {
+        let mut doc = test_root();
+        let root = doc.root;
+        let nodes = segmented_control(
+            &mut doc,
+            root,
+            "density",
+            &[
+                SegmentedControlItem::new("compact", "Compact"),
+                SegmentedControlItem::new("comfortable", "Comfortable"),
+            ],
+            Some("comfortable"),
+            SegmentedControlOptions::default().with_action_prefix("density"),
+        );
+
+        assert_eq!(nodes.items.len(), 2);
+        let compact = doc.node(nodes.items[0]);
+        assert_eq!(
+            compact
+                .action()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("density.compact")
+        );
+        let selected = doc.node(nodes.items[1]).accessibility.as_ref().unwrap();
+        assert_eq!(selected.role, AccessibilityRole::RadioButton);
+        assert_eq!(selected.selected, Some(true));
+    }
+
+    #[test]
     fn property_inspector_grid_builds_selectable_rows() {
         let mut doc = test_root();
         let rows = vec![
@@ -1207,6 +1237,7 @@ mod tests {
             &state,
             TreeViewOptions {
                 selected_row_shader: Some(ShaderEffect::new("ui.tree_selected")),
+                scroll_action: Some(WidgetActionBinding::action("tree.scroll")),
                 ..Default::default()
             },
         );
@@ -1267,6 +1298,7 @@ mod tests {
                 .overscan_rows(1),
             TreeViewOptions {
                 selected_row_shader: Some(ShaderEffect::new("ui.tree_selected")),
+                scroll_action: Some(WidgetActionBinding::action("tree.scroll")),
                 ..Default::default()
             },
         );
@@ -1304,6 +1336,13 @@ mod tests {
         let scroll = doc.scroll_state(nodes.body).expect("tree scroll state");
         assert_eq!(scroll.offset.y, 100.0);
         assert_eq!(scroll.content_size.height, 420.0);
+        assert_eq!(
+            doc.node(nodes.body)
+                .action()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("tree.scroll")
+        );
     }
 
     #[test]

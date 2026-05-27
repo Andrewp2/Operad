@@ -26,6 +26,7 @@ pub use crate::{
     UiNode, UiNodeId, UiNodeStyle, UiPoint, UiPortalId, UiPortalTarget, UiRect, UiSize, UiVisual,
     UiWheelEvent, ValidationMessage, ValidationSeverity, WidgetAction, WidgetActionBinding,
     WidgetActionId, WidgetActionKind, WidgetActionMode, WidgetActionQueue, WidgetActionTrigger,
+    WidgetActivation, WidgetActivationSource, WidgetKeyboardActivation, WidgetPointerActivation,
     ANIMATION_INPUT_ACTIVATED, ANIMATION_INPUT_ACTIVE, ANIMATION_INPUT_FOCUSED,
     ANIMATION_INPUT_HOVER, ANIMATION_INPUT_POINTER_NORM_X, ANIMATION_INPUT_POINTER_NORM_Y,
     ANIMATION_INPUT_POINTER_X, ANIMATION_INPUT_POINTER_Y, ANIMATION_INPUT_PRESSED,

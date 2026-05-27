@@ -12,7 +12,7 @@ use crate::{
     length, AccessibilityAction, AccessibilityMeta, AccessibilityRole, AnimationMachine,
     ClipBehavior, ClipScope, ColorRgba, ImageContent, InputBehavior, InteractionVisuals, KeyCode,
     LayoutStyle, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiInputEvent,
-    UiNode, UiNodeId, UiNodeStyle, UiPortalTarget, UiSize, UiVisual,
+    UiNode, UiNodeId, UiNodeStyle, UiPortalTarget, UiSize, UiVisual, WidgetActionBinding,
 };
 
 use super::menu::{
@@ -1193,6 +1193,7 @@ pub struct DropdownSelectOptions {
     pub open_indicator: String,
     pub placeholder: String,
     pub accessibility_label: Option<String>,
+    pub trigger_action: Option<WidgetActionBinding>,
     pub menu: SelectMenuOptions,
 }
 
@@ -1236,6 +1237,7 @@ impl Default for DropdownSelectOptions {
             open_indicator: "▲".to_string(),
             placeholder: String::new(),
             accessibility_label: None,
+            trigger_action: None,
             menu: SelectMenuOptions::default(),
         }
     }
@@ -1292,6 +1294,18 @@ impl DropdownSelectOptions {
         self
     }
 
+    pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.trigger_action = Some(action.into());
+        self
+    }
+
+    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
+        let prefix = prefix.into();
+        self.trigger_action = Some(WidgetActionBinding::action(format!("{prefix}.toggle")));
+        self.menu.action_prefix = Some(prefix);
+        self
+    }
+
     pub fn with_menu(mut self, menu: SelectMenuOptions) -> Self {
         self.menu = menu;
         self
@@ -1342,6 +1356,9 @@ pub fn dropdown_select(
             })
             .focusable(),
     );
+    if let Some(action) = dropdown_options.trigger_action.clone() {
+        document.node_mut(trigger).set_action(action);
+    }
     let popup = state.open.then(|| {
         popup.map(|popup| {
             select_menu_popup(
@@ -2056,5 +2073,47 @@ mod tests {
             indicator_node.content(),
             UiContent::Text(text) if text.text == "▼"
         ));
+    }
+
+    #[test]
+    fn dropdown_select_action_prefix_wires_trigger_and_rows() {
+        let mut document = UiDocument::new(root_style(320.0, 160.0));
+        let options = vec![
+            SelectOption::new("en-US", "English"),
+            SelectOption::new("es-MX", "Español"),
+        ];
+        let state = SelectMenuState::with_selected(0).with_open(&options);
+        let root = document.root;
+        let nodes = dropdown_select(
+            &mut document,
+            root,
+            "locale",
+            &options,
+            &state,
+            Some(AnchoredPopup::new(
+                UiRect::new(0.0, 0.0, 160.0, 30.0),
+                UiRect::new(0.0, 0.0, 320.0, 160.0),
+                PopupPlacement::default(),
+            )),
+            DropdownSelectOptions::default().with_action_prefix("locale"),
+        );
+
+        assert_eq!(
+            document
+                .node(nodes.trigger)
+                .action()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("locale.toggle")
+        );
+        let first_row = node_id(&document, "locale.popup.option.0");
+        assert_eq!(
+            document
+                .node(first_row)
+                .action()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("locale.option.en-US")
+        );
     }
 }

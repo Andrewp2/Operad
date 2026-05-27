@@ -91,7 +91,8 @@ pub use panel::{
 };
 pub use radio::{radio_button, radio_group, RadioButtonOptions, RadioGroupOptions, RadioOption};
 pub use scroll_area::{
-    scroll_area, scroll_container, ScrollContainerNodes, ScrollContainerOptions,
+    scroll_area, scroll_area_with_options, scroll_container, ScrollAreaOptions,
+    ScrollContainerNodes, ScrollContainerOptions,
 };
 pub use separator::{separator, spacer, SeparatorOptions, SeparatorOrientation};
 pub use slider::{slider, SliderClamping, SliderOptions, SliderThumbShape, SliderValueSpec};

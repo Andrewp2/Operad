@@ -103,6 +103,10 @@ name = "animation_state_machine"
 required-features = ["native-window", "widgets"]
 
 [[example]]
+name = "game_ui"
+required-features = ["native-window", "widgets"]
+
+[[example]]
 name = "showcase"
 required-features = ["native-window", "widgets", "image-decode"]
 

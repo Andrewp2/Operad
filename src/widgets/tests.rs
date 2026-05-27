@@ -2,6 +2,7 @@ use taffy::prelude::{AlignItems, Dimension, Size as TaffySize, Style};
 
 use crate::core::document::AuditWarning;
 use crate::host::text_input_id_for_node;
+use crate::input::RawWheelEvent;
 use crate::platform::ImageHandle;
 use crate::scrolling::ScrollbarVisibility;
 use crate::testing::{
@@ -1003,6 +1004,46 @@ fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
         WidgetActionKind::Activate(WidgetActivation::pointer(2))
     );
 
+    let secondary_actions = widgets::button::button_actions_from_gesture_event(
+        &doc,
+        button,
+        &options,
+        &GestureEvent::Click(PointerClick {
+            pointer_id: PointerId::MOUSE,
+            target: label,
+            position: label_point,
+            button: PointerButton::Secondary,
+            count: 1,
+            modifiers: KeyModifiers::NONE,
+            timestamp_millis: 18,
+        }),
+    );
+    assert_eq!(secondary_actions.len(), 1);
+    assert_eq!(
+        secondary_actions.as_slice()[0].kind,
+        WidgetActionKind::Activate(WidgetActivation::pointer_click(
+            PointerButton::Secondary,
+            1,
+            KeyModifiers::NONE,
+        ))
+    );
+
+    let wheel = RawWheelEvent::pixels(label_point, UiPoint::new(0.0, -16.0), 19);
+    let wheel_actions = widgets::button::button_actions_from_gesture_event(
+        &doc,
+        button,
+        &options,
+        &GestureEvent::WheelTargeted {
+            target: Some(label),
+            event: wheel,
+        },
+    );
+    assert_eq!(wheel_actions.len(), 1);
+    assert_eq!(
+        wheel_actions.as_slice()[0].kind,
+        WidgetActionKind::Activate(WidgetActivation::wheel(wheel))
+    );
+
     let key_actions = widgets::button::button_actions_from_key_event(
         &doc,
         button,
@@ -1016,7 +1057,10 @@ fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
     assert_eq!(key_actions.len(), 1);
     assert_eq!(
         key_actions.as_slice()[0].kind,
-        WidgetActionKind::Activate(WidgetActivation::keyboard())
+        WidgetActionKind::Activate(WidgetActivation::keyboard_key(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))
     );
 }
 #[cfg(feature = "widgets")]

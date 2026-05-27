@@ -29,12 +29,19 @@ use operad::widgets::*;
 use operad::*;
 
 const PERF_VIEWPORT: UiSize = UiSize::new(960.0, 540.0);
+const GAME_UI_HOT_PATH_FRAMES: usize = 240;
+const GAME_UI_HOT_PATH_P95_BUDGET: Duration = Duration::from_micros(1_000);
 #[cfg(feature = "wgpu")]
 const FRAME_PERCENTILE: f64 = 95.0;
 #[cfg(all(feature = "wgpu", debug_assertions))]
 const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis(4);
 #[cfg(all(feature = "wgpu", not(debug_assertions)))]
 const NO_READBACK_TEXT_RENDER_FRAME_P95_BUDGET: Duration = Duration::from_millis(1);
+
+mod game_ui_example {
+    #![allow(dead_code)]
+    include!("../examples/game_ui.rs");
+}
 
 fn paint_list_fingerprint(paint: &PaintList) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
@@ -580,6 +587,126 @@ fn editor_geometry_scene_build_and_paint_smoke_stays_under_budget() {
     budget
         .require_average_within(Duration::from_millis(500))
         .expect("average budget");
+}
+
+#[test]
+fn game_ui_overlay_hot_path_p95_stays_under_one_millisecond() {
+    let _perf_guard = perf_test_lock();
+    let mut measurer = ApproxTextMeasurer;
+    let viewport = game_ui_example::GAME_UI_VIEWPORT;
+    let mut combined_hash = 0_u64;
+
+    for frame in 0..32 {
+        let mut document = game_ui_example::game_ui_document(
+            viewport,
+            game_ui_example::GameUiState::for_frame(frame),
+        );
+        document
+            .compute_layout(viewport, &mut measurer)
+            .expect("layout");
+        black_box(document.paint_list().items.len());
+    }
+
+    let mut samples = PerformanceSamples::new("game UI overlay build/layout/paint");
+    let mut max_nodes = 0_usize;
+    let mut max_paint_items = 0_usize;
+    for frame in 0..GAME_UI_HOT_PATH_FRAMES {
+        let started = Instant::now();
+        let mut document = game_ui_example::game_ui_document(
+            viewport,
+            game_ui_example::GameUiState::for_frame(frame),
+        );
+        document
+            .compute_layout(viewport, &mut measurer)
+            .expect("layout");
+        let paint = document.paint_list();
+        let elapsed = started.elapsed();
+
+        combined_hash ^= paint_list_fingerprint(&paint).rotate_left((frame % 64) as u32)
+            ^ (frame as u64).wrapping_mul(0x9E3779B97F4A7C15_u64);
+        max_nodes = max_nodes.max(document.node_count());
+        max_paint_items = max_paint_items.max(paint.items.len());
+        black_box(document.node_count());
+        black_box(paint.items.len());
+        samples.push(elapsed);
+    }
+
+    assert_ne!(combined_hash, 0);
+    assert!(
+        max_nodes >= 8,
+        "game UI workload should cover multiple overlay regions"
+    );
+    assert!(
+        max_paint_items >= 100,
+        "game UI workload should include enough HUD paint to be meaningful"
+    );
+    let assertions = PerformanceAssertions::new(&samples);
+    assertions
+        .require_sample_count(GAME_UI_HOT_PATH_FRAMES)
+        .expect("sample count");
+    let p95 = assertions
+        .require_percentile_within(95.0, GAME_UI_HOT_PATH_P95_BUDGET)
+        .expect("game UI p95 budget");
+    eprintln!(
+        "game UI hot path p95 {:?}, max_nodes={}, max_paint_items={}",
+        p95, max_nodes, max_paint_items
+    );
+}
+
+#[cfg(all(feature = "wgpu", not(debug_assertions)))]
+#[test]
+fn wgpu_game_ui_overlay_window_render_p95_stays_under_one_millisecond_without_readback() {
+    let _perf_guard = perf_test_lock();
+    let mut renderer = WgpuRenderer::default();
+    renderer.warm_up().expect("wgpu renderer warm-up");
+    for frame in 0..8 {
+        renderer
+            .render_frame(wgpu_game_ui_perf_request(frame), &EmptyResourceResolver)
+            .expect("wgpu game UI warm-up frame");
+    }
+
+    let mut samples = PerformanceSamples::new("wgpu game UI window no-readback render");
+    let mut combined_hash = 0_u64;
+    for frame in 0..96 {
+        let output = renderer
+            .render_frame(wgpu_game_ui_perf_request(frame), &EmptyResourceResolver)
+            .expect("wgpu game UI frame");
+        assert!(
+            output.snapshot.is_none(),
+            "window-target perf test must not use snapshot readback"
+        );
+        let render_duration = output
+            .timings
+            .duration("render")
+            .expect("renderer timing includes render section");
+        samples.push(render_duration);
+        combined_hash ^= (output.painted_items as u64)
+            .wrapping_mul(0xD6E8FEB86659FD93_u64)
+            .rotate_left((frame % 64) as u32);
+    }
+
+    assert_ne!(combined_hash, 0);
+    let assertions = PerformanceAssertions::new(&samples);
+    assertions.require_sample_count(96).expect("sample count");
+    let p95 = assertions
+        .require_percentile_within(FRAME_PERCENTILE, Duration::from_micros(1_000))
+        .expect("game UI WGPU render percentile budget");
+    eprintln!("wgpu game UI render p95 {:?}", p95);
+}
+
+#[cfg(all(feature = "wgpu", not(debug_assertions)))]
+fn wgpu_game_ui_perf_request(frame: usize) -> RenderFrameRequest {
+    let viewport = game_ui_example::GAME_UI_VIEWPORT;
+    let mut document =
+        game_ui_example::game_ui_document(viewport, game_ui_example::GameUiState::for_frame(frame));
+    document
+        .compute_layout(viewport, &mut ApproxTextMeasurer)
+        .expect("layout");
+    RenderFrameRequest::new(
+        RenderTarget::window("perf.game-ui", viewport),
+        viewport,
+        document.paint_list(),
+    )
 }
 
 #[cfg(feature = "wgpu")]

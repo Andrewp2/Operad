@@ -136,6 +136,184 @@ impl FramePipelineTiming {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameTimingStageExplanation {
+    pub stage: FramePipelineStage,
+    pub label: String,
+    pub source_labels: Vec<String>,
+    pub section_count: usize,
+    pub duration: Duration,
+    pub percent_of_total: f32,
+    pub dominant: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameTimingSectionExplanation {
+    pub index: usize,
+    pub stage: FramePipelineStage,
+    pub label: String,
+    pub start: Duration,
+    pub end: Duration,
+    pub duration: Duration,
+    pub percent_of_total: f32,
+    pub percent_of_budget: Option<f32>,
+    pub crosses_budget: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameTimingExplanation {
+    pub total: Duration,
+    pub budget: Option<Duration>,
+    pub over_budget: Option<bool>,
+    pub slowest_stage: Option<FramePipelineStage>,
+    pub stages: Vec<FrameTimingStageExplanation>,
+    pub sections: Vec<FrameTimingSectionExplanation>,
+    pub missing_required_stages: Vec<FramePipelineStage>,
+}
+
+impl FrameTimingExplanation {
+    pub fn from_frame_timing(timing: &FrameTiming, budget: Option<Duration>) -> Self {
+        let mut stages = Vec::<FrameTimingStageExplanation>::new();
+        let mut sections = Vec::<FrameTimingSectionExplanation>::new();
+        for (index, section) in timing.sections.iter().enumerate() {
+            let stage = FramePipelineStage::from_label(section.name.clone());
+            push_timing_stage(
+                &mut stages,
+                stage.clone(),
+                section.name.clone(),
+                section.duration,
+            );
+            sections.push(FrameTimingSectionExplanation {
+                index,
+                stage,
+                label: section.name.clone(),
+                start: Duration::default(),
+                end: Duration::default(),
+                duration: section.duration,
+                percent_of_total: 0.0,
+                percent_of_budget: None,
+                crosses_budget: false,
+            });
+        }
+        Self::from_stage_and_section_explanations(stages, sections, budget)
+    }
+
+    pub fn from_pipeline(pipeline: &FramePipelineTiming, budget: Option<Duration>) -> Self {
+        let mut stages = Vec::<FrameTimingStageExplanation>::new();
+        let mut sections = Vec::<FrameTimingSectionExplanation>::new();
+        for (index, section) in pipeline.sections.iter().enumerate() {
+            push_timing_stage(
+                &mut stages,
+                section.stage.clone(),
+                section.stage.label().to_owned(),
+                section.duration,
+            );
+            sections.push(FrameTimingSectionExplanation {
+                index,
+                stage: section.stage.clone(),
+                label: section.stage.label().to_owned(),
+                start: Duration::default(),
+                end: Duration::default(),
+                duration: section.duration,
+                percent_of_total: 0.0,
+                percent_of_budget: None,
+                crosses_budget: false,
+            });
+        }
+        Self::from_stage_and_section_explanations(stages, sections, budget)
+    }
+
+    pub fn within_budget(&self) -> Option<bool> {
+        self.over_budget.map(|over_budget| !over_budget)
+    }
+
+    pub fn slowest_stage_explanation(&self) -> Option<&FrameTimingStageExplanation> {
+        let slowest = self.slowest_stage.as_ref()?;
+        self.stages.iter().find(|stage| &stage.stage == slowest)
+    }
+
+    fn from_stage_and_section_explanations(
+        mut stages: Vec<FrameTimingStageExplanation>,
+        mut sections: Vec<FrameTimingSectionExplanation>,
+        budget: Option<Duration>,
+    ) -> Self {
+        let total = stages.iter().map(|stage| stage.duration).sum::<Duration>();
+        let slowest_stage = stages
+            .iter()
+            .max_by_key(|stage| stage.duration)
+            .map(|stage| stage.stage.clone());
+        for stage in &mut stages {
+            stage.percent_of_total = if total.is_zero() {
+                0.0
+            } else {
+                (stage.duration.as_secs_f64() / total.as_secs_f64() * 100.0) as f32
+            };
+            stage.dominant = slowest_stage.as_ref() == Some(&stage.stage);
+        }
+        let mut offset = Duration::default();
+        for section in &mut sections {
+            section.start = offset;
+            offset += section.duration;
+            section.end = offset;
+            section.percent_of_total = if total.is_zero() {
+                0.0
+            } else {
+                (section.duration.as_secs_f64() / total.as_secs_f64() * 100.0) as f32
+            };
+            section.percent_of_budget = budget.and_then(|budget| {
+                (!budget.is_zero())
+                    .then(|| (section.duration.as_secs_f64() / budget.as_secs_f64() * 100.0) as f32)
+            });
+            section.crosses_budget =
+                budget.is_some_and(|budget| section.start < budget && section.end > budget);
+        }
+        stages.sort_by(|left, right| {
+            right
+                .duration
+                .cmp(&left.duration)
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        let missing_required_stages = required_pipeline_stages()
+            .into_iter()
+            .filter(|required| !stages.iter().any(|stage| &stage.stage == required))
+            .collect();
+        Self {
+            total,
+            budget,
+            over_budget: budget.map(|budget| total > budget),
+            slowest_stage,
+            stages,
+            sections,
+            missing_required_stages,
+        }
+    }
+}
+
+fn push_timing_stage(
+    stages: &mut Vec<FrameTimingStageExplanation>,
+    stage: FramePipelineStage,
+    source_label: String,
+    duration: Duration,
+) {
+    if let Some(existing) = stages.iter_mut().find(|existing| existing.stage == stage) {
+        existing.duration += duration;
+        existing.section_count += 1;
+        if !existing.source_labels.contains(&source_label) {
+            existing.source_labels.push(source_label);
+        }
+        return;
+    }
+    stages.push(FrameTimingStageExplanation {
+        label: stage.label().to_owned(),
+        stage,
+        source_labels: vec![source_label],
+        section_count: 1,
+        duration,
+        percent_of_total: 0.0,
+        dominant: false,
+    });
+}
+
 pub fn required_pipeline_stages() -> Vec<FramePipelineStage> {
     vec![
         FramePipelineStage::TreeBuild,
@@ -357,6 +535,35 @@ mod tests {
         );
         assert!(pipeline
             .missing_required_stages()
+            .contains(&FramePipelineStage::TreeBuild));
+    }
+
+    #[test]
+    fn frame_timing_explanation_groups_sections_and_identifies_slowest_stage() {
+        let timing = FrameTiming::new()
+            .section("layout", Duration::from_millis(3))
+            .section("paint", Duration::from_millis(2))
+            .section("render", Duration::from_millis(8))
+            .section("gpu-render", Duration::from_millis(5));
+
+        let explanation =
+            FrameTimingExplanation::from_frame_timing(&timing, Some(Duration::from_millis(16)));
+        let slowest = explanation
+            .slowest_stage_explanation()
+            .expect("slowest stage");
+
+        assert_eq!(explanation.total, Duration::from_millis(18));
+        assert_eq!(explanation.over_budget, Some(true));
+        assert_eq!(slowest.stage, FramePipelineStage::BackendDraw);
+        assert_eq!(slowest.duration, Duration::from_millis(13));
+        assert_eq!(slowest.section_count, 2);
+        assert!(slowest.source_labels.contains(&"render".to_owned()));
+        assert!(slowest.source_labels.contains(&"gpu-render".to_owned()));
+        assert!(slowest.dominant);
+        assert!(slowest.percent_of_total > 70.0);
+        assert!(explanation.within_budget() == Some(false));
+        assert!(explanation
+            .missing_required_stages
             .contains(&FramePipelineStage::TreeBuild));
     }
 

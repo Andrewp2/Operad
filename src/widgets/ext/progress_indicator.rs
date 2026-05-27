@@ -2,10 +2,11 @@
 
 use taffy::prelude::{Dimension, Size as TaffySize, Style};
 
+use crate::widgets::{button, ButtonOptions};
 use crate::{
     length, AccessibilityMeta, AccessibilityRole, AccessibilityValueRange, ClipBehavior, ColorRgba,
-    LayoutStyle, ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiNode, UiNodeId,
-    UiNodeStyle, UiRect, UiVisual,
+    LayoutStyle, ScrollAxes, ScrollState, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiNode,
+    UiNodeId, UiNodeStyle, UiRect, UiVisual, WidgetActionBinding,
 };
 
 use super::surfaces::{DEFAULT_ACCENT, DEFAULT_SURFACE_BG, DEFAULT_SURFACE_STROKE};
@@ -289,8 +290,11 @@ pub struct ProgressLogPanelOptions {
     pub layout: LayoutStyle,
     pub visual: UiVisual,
     pub progress_options: ProgressIndicatorOptions,
+    pub trailing_action: Option<ProgressLogPanelAction>,
     pub log_viewport_layout: LayoutStyle,
     pub log_visual: UiVisual,
+    pub log_scroll: Option<ScrollState>,
+    pub log_scroll_action: Option<WidgetActionBinding>,
     pub log_row_height: f32,
     pub log_text_style: TextStyle,
     pub empty_text_style: TextStyle,
@@ -313,6 +317,7 @@ impl Default for ProgressLogPanelOptions {
                 4.0,
             ),
             progress_options,
+            trailing_action: None,
             log_viewport_layout: LayoutStyle::column()
                 .with_width_percent(1.0)
                 .with_height(96.0),
@@ -321,6 +326,8 @@ impl Default for ProgressLogPanelOptions {
                 Some(StrokeStyle::new(ColorRgba::new(45, 57, 73, 255), 1.0)),
                 3.0,
             ),
+            log_scroll: None,
+            log_scroll_action: None,
             log_row_height: 26.0,
             log_text_style: TextStyle {
                 font_size: 12.0,
@@ -340,6 +347,35 @@ impl Default for ProgressLogPanelOptions {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ProgressLogPanelAction {
+    pub label: String,
+    pub options: ButtonOptions,
+}
+
+impl ProgressLogPanelAction {
+    pub fn new(label: impl Into<String>, action: impl Into<WidgetActionBinding>) -> Self {
+        Self {
+            label: label.into(),
+            options: ButtonOptions::new(
+                LayoutStyle::new()
+                    .with_width(76.0)
+                    .with_height(30.0)
+                    .with_flex_shrink(0.0),
+            )
+            .with_action(action),
+        }
+    }
+
+    pub fn with_options(mut self, mut options: ButtonOptions) -> Self {
+        if options.action.is_none() {
+            options.action = self.options.action.clone();
+        }
+        self.options = options;
+        self
+    }
+}
+
 impl ProgressLogPanelOptions {
     pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
         self.layout = layout.into();
@@ -354,6 +390,21 @@ impl ProgressLogPanelOptions {
 
     pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
         self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn with_trailing_action(mut self, action: ProgressLogPanelAction) -> Self {
+        self.trailing_action = Some(action);
+        self
+    }
+
+    pub const fn with_log_scroll(mut self, scroll: ScrollState) -> Self {
+        self.log_scroll = Some(scroll);
+        self
+    }
+
+    pub fn with_log_scroll_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.log_scroll_action = Some(action.into());
         self
     }
 }
@@ -388,13 +439,53 @@ pub fn progress_log_panel(
     if options.progress_options.accessibility_label.is_none() {
         options.progress_options.accessibility_label = Some(format!("{name} progress"));
     }
-    let progress = progress_indicator(
-        document,
-        root,
-        format!("{name}.progress"),
-        value,
-        options.progress_options,
-    );
+    let progress = if let Some(action) = options.trailing_action {
+        let row = document.add_child(
+            root,
+            UiNode::container(
+                format!("{name}.progress_row"),
+                LayoutStyle::row()
+                    .with_width_percent(1.0)
+                    .with_height(30.0)
+                    .with_gap(8.0)
+                    .with_align_items(taffy::prelude::AlignItems::Center),
+            ),
+        );
+        let progress_slot = document.add_child(
+            row,
+            UiNode::container(
+                format!("{name}.progress_slot"),
+                LayoutStyle::new()
+                    .with_width(0.0)
+                    .with_height(30.0)
+                    .with_flex_grow(1.0)
+                    .with_flex_shrink(1.0),
+            ),
+        );
+        let progress = progress_indicator(
+            document,
+            progress_slot,
+            format!("{name}.progress"),
+            value,
+            options.progress_options,
+        );
+        button(
+            document,
+            row,
+            format!("{name}.trailing_action"),
+            action.label,
+            action.options,
+        );
+        progress
+    } else {
+        progress_indicator(
+            document,
+            root,
+            format!("{name}.progress"),
+            value,
+            options.progress_options,
+        )
+    };
 
     let logs_node = crate::widgets::scroll_area(
         document,
@@ -406,6 +497,12 @@ pub fn progress_log_panel(
     {
         let node = document.node_mut(logs_node);
         node.set_visual(options.log_visual);
+        if let Some(scroll) = options.log_scroll {
+            node.set_scroll(scroll);
+        }
+        if let Some(action) = options.log_scroll_action {
+            node.set_action(action);
+        }
         node.accessibility = Some(
             AccessibilityMeta::new(AccessibilityRole::List)
                 .label(format!("{name} logs"))

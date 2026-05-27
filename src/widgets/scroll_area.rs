@@ -3,6 +3,76 @@ use crate::scrolling::ScrollbarVisibility;
 use crate::widgets::scrollbar::{scrollbar, ScrollAxis, ScrollbarOptions};
 
 #[derive(Debug, Clone)]
+pub struct ScrollAreaOptions {
+    pub layout: LayoutStyle,
+    pub axes: ScrollAxes,
+    pub scroll: Option<ScrollState>,
+    pub action: Option<WidgetActionBinding>,
+    pub visual: Option<UiVisual>,
+    pub auto_scrollbar: bool,
+    pub accessibility_label: Option<String>,
+}
+
+impl ScrollAreaOptions {
+    pub fn new(axes: ScrollAxes, layout: impl Into<LayoutStyle>) -> Self {
+        Self {
+            axes,
+            layout: layout.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+
+    pub const fn with_axes(mut self, axes: ScrollAxes) -> Self {
+        self.axes = axes;
+        self
+    }
+
+    pub const fn with_scroll(mut self, scroll: ScrollState) -> Self {
+        self.scroll = Some(scroll);
+        self
+    }
+
+    pub fn with_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub const fn with_visual(mut self, visual: UiVisual) -> Self {
+        self.visual = Some(visual);
+        self
+    }
+
+    pub const fn without_auto_scrollbar(mut self) -> Self {
+        self.auto_scrollbar = false;
+        self
+    }
+
+    pub fn with_accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+}
+
+impl Default for ScrollAreaOptions {
+    fn default() -> Self {
+        Self {
+            layout: LayoutStyle::new().with_width(240.0).with_height(160.0),
+            axes: ScrollAxes::VERTICAL,
+            scroll: None,
+            action: None,
+            visual: None,
+            auto_scrollbar: true,
+            accessibility_label: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ScrollContainerOptions {
     pub layout: LayoutStyle,
     pub viewport_layout: LayoutStyle,
@@ -137,7 +207,39 @@ pub fn scroll_area(
     axes: ScrollAxes,
     layout: impl Into<LayoutStyle>,
 ) -> UiNodeId {
-    scroll_viewport(document, parent, name, axes, layout, true)
+    scroll_area_with_options(document, parent, name, ScrollAreaOptions::new(axes, layout))
+}
+
+pub fn scroll_area_with_options(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    options: ScrollAreaOptions,
+) -> UiNodeId {
+    let id = scroll_viewport(
+        document,
+        parent,
+        name,
+        options.axes,
+        options.layout,
+        options.auto_scrollbar,
+        options.accessibility_label,
+    );
+    {
+        let node = document.node_mut(id);
+        if let Some(scroll) = options.scroll {
+            node.scroll = Some(scroll);
+            node.auto_scrollbar = options.auto_scrollbar;
+            node.style.clip = ClipBehavior::Clip;
+        }
+        if let Some(action) = options.action {
+            node.set_action(action);
+        }
+        if let Some(visual) = options.visual {
+            node.set_visual(visual);
+        }
+    }
+    id
 }
 
 fn raw_scroll_area(
@@ -147,7 +249,7 @@ fn raw_scroll_area(
     axes: ScrollAxes,
     layout: impl Into<LayoutStyle>,
 ) -> UiNodeId {
-    scroll_viewport(document, parent, name, axes, layout, false)
+    scroll_viewport(document, parent, name, axes, layout, false, None)
 }
 
 fn scroll_viewport(
@@ -157,9 +259,11 @@ fn scroll_viewport(
     axes: ScrollAxes,
     layout: impl Into<LayoutStyle>,
     auto_scrollbar: bool,
+    accessibility_label: Option<String>,
 ) -> UiNodeId {
     let name = name.into();
     let layout = layout.into();
+    let label = accessibility_label.unwrap_or_else(|| name.clone());
     let mut node = UiNode::container(
         name.clone(),
         UiNodeStyle {
@@ -171,7 +275,7 @@ fn scroll_viewport(
     .with_scroll(axes)
     .with_accessibility(
         AccessibilityMeta::new(AccessibilityRole::List)
-            .label(name)
+            .label(label)
             .value(scroll_axes_value(axes)),
     );
     if !auto_scrollbar {
@@ -522,6 +626,45 @@ mod tests {
         let node = document.node(viewport);
         assert!(node.scroll.is_some());
         assert!(node.auto_scrollbar);
+    }
+
+    #[test]
+    fn scroll_area_options_apply_state_action_visual_and_label() {
+        let mut document = UiDocument::new(root_style(320.0, 220.0));
+        let root = document.root;
+        let scroll = ScrollState::new(ScrollAxes::VERTICAL)
+            .with_offset(UiPoint::new(0.0, 24.0))
+            .with_sizes(UiSize::new(120.0, 80.0), UiSize::new(120.0, 240.0));
+        let visual = UiVisual::panel(ColorRgba::new(12, 16, 24, 255), None, 4.0);
+        let viewport = scroll_area_with_options(
+            &mut document,
+            root,
+            "content",
+            ScrollAreaOptions::new(ScrollAxes::VERTICAL, LayoutStyle::size(120.0, 80.0))
+                .with_scroll(scroll)
+                .with_action("content.scroll")
+                .with_visual(visual)
+                .with_accessibility_label("Scrollable content"),
+        );
+
+        let node = document.node(viewport);
+        assert_eq!(
+            node.scroll().map(|state| state.offset()),
+            Some(scroll.offset())
+        );
+        assert_eq!(
+            node.action()
+                .and_then(WidgetActionBinding::action_id)
+                .map(|id| id.as_str()),
+            Some("content.scroll")
+        );
+        assert_eq!(*node.visual(), visual);
+        assert_eq!(
+            node.accessibility
+                .as_ref()
+                .and_then(|meta| meta.label.as_deref()),
+            Some("Scrollable content")
+        );
     }
 
     #[test]

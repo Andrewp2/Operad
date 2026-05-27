@@ -20,10 +20,11 @@ use crate::overlays::OverlayHitTestDecision;
 use crate::platform::{
     BackendCapabilities, BackendCapabilityDiagnostic, CapabilityDecision, CapabilityFallback,
 };
+use crate::runtime::{RuntimeInvalidation, RuntimeInvalidationReason};
 use crate::{
     DirtyFlags, FocusRestoreTarget, FocusTrap, FrameTiming, OverlayEntry, OverlayId, OverlayStack,
     UiDocument, UiInputResult, UiNodeId, WidgetAction, WidgetActionBinding, WidgetActionKind,
-    WidgetActionTrigger, WidgetDragPhase, WidgetValueEditPhase,
+    WidgetActivationSource, WidgetDragPhase, WidgetValueEditPhase,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -383,6 +384,7 @@ impl From<&PerformanceSnapshot> for PerformanceSnapshotDiagnostic {
 pub struct DirtyFlagsDiagnostic {
     pub flags: DirtyFlags,
     pub active: Vec<String>,
+    pub explanation: DirtyStateExplanation,
 }
 
 impl From<DirtyFlags> for DirtyFlagsDiagnostic {
@@ -393,7 +395,235 @@ impl From<DirtyFlags> for DirtyFlagsDiagnostic {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            explanation: DirtyStateExplanation::from_flags(flags),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DirtyStateSubsystem {
+    TextMeasurement,
+    Theme,
+    Layout,
+    Input,
+    Paint,
+}
+
+impl DirtyStateSubsystem {
+    pub const ALL: [Self; 5] = [
+        Self::TextMeasurement,
+        Self::Theme,
+        Self::Layout,
+        Self::Input,
+        Self::Paint,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::TextMeasurement => "text_measurement",
+            Self::Theme => "theme",
+            Self::Layout => "layout",
+            Self::Input => "input",
+            Self::Paint => "paint",
+        }
+    }
+
+    pub const fn display_label(self) -> &'static str {
+        match self {
+            Self::TextMeasurement => "Text measure",
+            Self::Theme => "Theme",
+            Self::Layout => "Layout",
+            Self::Input => "Input",
+            Self::Paint => "Paint",
+        }
+    }
+
+    pub const fn is_dirty(self, flags: DirtyFlags) -> bool {
+        match self {
+            Self::TextMeasurement => flags.text_measurement,
+            Self::Theme => flags.theme,
+            Self::Layout => flags.layout,
+            Self::Input => flags.input,
+            Self::Paint => flags.paint,
+        }
+    }
+
+    pub fn recomputes(self) -> Vec<String> {
+        match self {
+            Self::TextMeasurement => vec![
+                "shape and measure text runs".to_owned(),
+                "update text intrinsic sizes".to_owned(),
+            ],
+            Self::Theme => vec![
+                "resolve theme-dependent styles".to_owned(),
+                "refresh visual tokens".to_owned(),
+            ],
+            Self::Layout => vec![
+                "solve node layout".to_owned(),
+                "refresh clips and hitboxes".to_owned(),
+            ],
+            Self::Input => vec![
+                "refresh focus and pointer routing".to_owned(),
+                "update hover/pressed state".to_owned(),
+            ],
+            Self::Paint => vec![
+                "rebuild paint commands".to_owned(),
+                "rebatch renderer primitives".to_owned(),
+            ],
+        }
+    }
+
+    pub fn downstream(self) -> Vec<String> {
+        match self {
+            Self::TextMeasurement => vec!["layout".to_owned(), "paint".to_owned()],
+            Self::Theme => vec!["layout if metrics changed".to_owned(), "paint".to_owned()],
+            Self::Layout => vec![
+                "paint".to_owned(),
+                "hit testing".to_owned(),
+                "accessibility geometry".to_owned(),
+            ],
+            Self::Input => vec![
+                "interactive visuals".to_owned(),
+                "accessibility focus".to_owned(),
+            ],
+            Self::Paint => vec!["renderer uploads".to_owned()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtySubsystemExplanation {
+    pub subsystem: DirtyStateSubsystem,
+    pub label: String,
+    pub active: bool,
+    pub reason: String,
+    pub recomputes: Vec<String>,
+    pub downstream: Vec<String>,
+}
+
+impl DirtySubsystemExplanation {
+    pub fn for_subsystem(subsystem: DirtyStateSubsystem, flags: DirtyFlags) -> Self {
+        let active = subsystem.is_dirty(flags);
+        Self {
+            subsystem,
+            label: subsystem.display_label().to_owned(),
+            active,
+            reason: dirty_subsystem_reason(subsystem, active).to_owned(),
+            recomputes: subsystem.recomputes(),
+            downstream: subsystem.downstream(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtyInvalidationExplanation {
+    pub reason: RuntimeInvalidationReason,
+    pub detail: Option<String>,
+    pub label: String,
+    pub flags: DirtyFlags,
+    pub subsystems: Vec<DirtyStateSubsystem>,
+    pub summary: String,
+}
+
+impl From<&RuntimeInvalidation> for DirtyInvalidationExplanation {
+    fn from(invalidation: &RuntimeInvalidation) -> Self {
+        let flags = invalidation.reason.dirty_flags();
+        let label = invalidation_reason_label(invalidation.reason).to_owned();
+        let summary = if let Some(detail) = &invalidation.detail {
+            format!("{label}: {detail}")
+        } else {
+            label.clone()
+        };
+        Self {
+            reason: invalidation.reason,
+            detail: invalidation.detail.clone(),
+            label,
+            flags,
+            subsystems: active_dirty_subsystems(flags),
+            summary,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtyStateExplanation {
+    pub flags: DirtyFlags,
+    pub clean: bool,
+    pub summary: String,
+    pub subsystems: Vec<DirtySubsystemExplanation>,
+    pub recompute_order: Vec<DirtyStateSubsystem>,
+    pub invalidations: Vec<DirtyInvalidationExplanation>,
+}
+
+impl DirtyStateExplanation {
+    pub fn from_flags(flags: DirtyFlags) -> Self {
+        let subsystems = DirtyStateSubsystem::ALL
+            .into_iter()
+            .map(|subsystem| DirtySubsystemExplanation::for_subsystem(subsystem, flags))
+            .collect::<Vec<_>>();
+        let recompute_order = subsystems
+            .iter()
+            .filter(|subsystem| subsystem.active)
+            .map(|subsystem| subsystem.subsystem)
+            .collect::<Vec<_>>();
+        Self {
+            flags,
+            clean: !flags.any(),
+            summary: dirty_flags_summary(flags),
+            subsystems,
+            recompute_order,
+            invalidations: Vec::new(),
+        }
+    }
+
+    pub fn from_invalidations<'a>(
+        invalidations: impl IntoIterator<Item = &'a RuntimeInvalidation>,
+    ) -> Self {
+        let invalidations = invalidations
+            .into_iter()
+            .map(DirtyInvalidationExplanation::from)
+            .collect::<Vec<_>>();
+        let flags = invalidations
+            .iter()
+            .fold(DirtyFlags::NONE, |flags, invalidation| {
+                flags.union(invalidation.flags)
+            });
+        Self::from_flags(flags).with_invalidation_explanations(invalidations)
+    }
+
+    pub fn from_flags_and_invalidations<'a>(
+        flags: DirtyFlags,
+        invalidations: impl IntoIterator<Item = &'a RuntimeInvalidation>,
+    ) -> Self {
+        Self::from_flags(flags).with_invalidations(invalidations)
+    }
+
+    pub fn with_invalidations<'a>(
+        self,
+        invalidations: impl IntoIterator<Item = &'a RuntimeInvalidation>,
+    ) -> Self {
+        self.with_invalidation_explanations(
+            invalidations
+                .into_iter()
+                .map(DirtyInvalidationExplanation::from)
+                .collect(),
+        )
+    }
+
+    pub fn active_subsystems(&self) -> impl Iterator<Item = &DirtySubsystemExplanation> {
+        self.subsystems.iter().filter(|subsystem| subsystem.active)
+    }
+
+    pub fn primary_cause(&self) -> Option<&DirtyInvalidationExplanation> {
+        self.invalidations.first()
+    }
+
+    fn with_invalidation_explanations(
+        mut self,
+        invalidations: Vec<DirtyInvalidationExplanation>,
+    ) -> Self {
+        self.invalidations = invalidations;
+        self
     }
 }
 
@@ -626,23 +856,23 @@ impl DiagnosticReport {
         self
     }
 
-    pub fn just_work_warning(&mut self, warning: &AuditWarning) -> &mut Self {
+    pub fn audit_warning(&mut self, warning: &AuditWarning) -> &mut Self {
         self.push(DiagnosticRecord::JustWorkIssue(warning.into()))
     }
 
-    pub fn just_work_warnings<'a>(
+    pub fn audit_warnings<'a>(
         &mut self,
         warnings: impl IntoIterator<Item = &'a AuditWarning>,
     ) -> &mut Self {
         for warning in warnings {
-            self.just_work_warning(warning);
+            self.audit_warning(warning);
         }
         self
     }
 
-    pub fn just_work_document(&mut self, document: &UiDocument) -> &mut Self {
+    pub fn audit_document(&mut self, document: &UiDocument) -> &mut Self {
         let warnings = document.audit_layout();
-        self.just_work_warnings(&warnings)
+        self.audit_warnings(&warnings)
     }
 
     pub fn input_routing(&mut self, result: &UiInputResult) -> &mut Self {
@@ -1123,12 +1353,7 @@ fn widget_binding_label(binding: &WidgetActionBinding) -> String {
 
 fn widget_action_kind_label(kind: &WidgetActionKind) -> &'static str {
     match kind {
-        WidgetActionKind::Activate(activation) => match activation.trigger {
-            WidgetActionTrigger::Pointer => "activate.pointer",
-            WidgetActionTrigger::Keyboard => "activate.keyboard",
-            WidgetActionTrigger::Accessibility => "activate.accessibility",
-            WidgetActionTrigger::Programmatic => "activate.programmatic",
-        },
+        WidgetActionKind::Activate(activation) => widget_activation_source_label(activation.source),
         WidgetActionKind::Selection(_) => "selection",
         WidgetActionKind::ValueEdit(phase) => match phase {
             WidgetValueEditPhase::Preview => "value.preview",
@@ -1156,6 +1381,23 @@ fn widget_action_kind_label(kind: &WidgetActionKind) -> &'static str {
         WidgetActionKind::Scroll(_) => "scroll",
         WidgetActionKind::Focus(focus) if focus.focused => "focus.gained",
         WidgetActionKind::Focus(_) => "focus.lost",
+    }
+}
+
+fn widget_activation_source_label(source: WidgetActivationSource) -> &'static str {
+    match source {
+        WidgetActivationSource::PointerClick(pointer) => match pointer.button {
+            crate::PointerButton::Primary => "activate.pointer.primary",
+            crate::PointerButton::Secondary => "activate.pointer.secondary",
+            crate::PointerButton::Auxiliary => "activate.pointer.auxiliary",
+            crate::PointerButton::Back => "activate.pointer.back",
+            crate::PointerButton::Forward => "activate.pointer.forward",
+            crate::PointerButton::Other(_) => "activate.pointer.other",
+        },
+        WidgetActivationSource::PointerWheel(_) => "activate.pointer.wheel",
+        WidgetActivationSource::Keyboard(_) => "activate.keyboard",
+        WidgetActivationSource::Accessibility => "activate.accessibility",
+        WidgetActivationSource::Programmatic => "activate.programmatic",
     }
 }
 
@@ -1353,6 +1595,40 @@ fn dirty_flag_labels(flags: DirtyFlags) -> Vec<&'static str> {
     labels
 }
 
+fn active_dirty_subsystems(flags: DirtyFlags) -> Vec<DirtyStateSubsystem> {
+    DirtyStateSubsystem::ALL
+        .into_iter()
+        .filter(|subsystem| subsystem.is_dirty(flags))
+        .collect()
+}
+
+fn dirty_subsystem_reason(subsystem: DirtyStateSubsystem, active: bool) -> &'static str {
+    if !active {
+        return "clean this frame";
+    }
+    match subsystem {
+        DirtyStateSubsystem::TextMeasurement => "text metrics may be stale",
+        DirtyStateSubsystem::Theme => "theme-dependent style may be stale",
+        DirtyStateSubsystem::Layout => "node geometry may be stale",
+        DirtyStateSubsystem::Input => "input routing or interaction state changed",
+        DirtyStateSubsystem::Paint => "visual output must be rebuilt",
+    }
+}
+
+fn invalidation_reason_label(reason: RuntimeInvalidationReason) -> &'static str {
+    match reason {
+        RuntimeInvalidationReason::Input => "Input event",
+        RuntimeInvalidationReason::Resize => "Window resize",
+        RuntimeInvalidationReason::ScaleFactor => "Scale factor",
+        RuntimeInvalidationReason::Animation => "Animation",
+        RuntimeInvalidationReason::AsyncTask => "Async task",
+        RuntimeInvalidationReason::PlatformResponse => "Platform response",
+        RuntimeInvalidationReason::Accessibility => "Accessibility",
+        RuntimeInvalidationReason::Resource => "Resource",
+        RuntimeInvalidationReason::Explicit => "Explicit invalidation",
+    }
+}
+
 fn duration_label(duration: Duration) -> String {
     format!("{:.3}ms", duration.as_secs_f64() * 1000.0)
 }
@@ -1428,7 +1704,7 @@ mod tests {
         }));
         assert!(report.summaries.iter().any(|summary| {
             summary.category == DiagnosticCategory::WidgetAction
-                && summary.label == "action:toolbar.run:activate.pointer"
+                && summary.label == "action:toolbar.run:activate.pointer.primary"
         }));
     }
 
@@ -1537,6 +1813,62 @@ mod tests {
     }
 
     #[test]
+    fn dirty_state_explanation_describes_recompute_work_and_invalidations() {
+        let invalidations = [
+            RuntimeInvalidation::new(RuntimeInvalidationReason::Resize).detail("viewport"),
+            RuntimeInvalidation::new(RuntimeInvalidationReason::Resource).detail("atlas"),
+        ];
+
+        let explanation = DirtyStateExplanation::from_invalidations(&invalidations);
+
+        assert!(!explanation.clean);
+        assert_eq!(explanation.summary, "dirty layout, paint, text_measurement");
+        assert_eq!(
+            explanation.recompute_order,
+            vec![
+                DirtyStateSubsystem::TextMeasurement,
+                DirtyStateSubsystem::Layout,
+                DirtyStateSubsystem::Paint,
+            ]
+        );
+        assert_eq!(
+            explanation.invalidations[0].summary,
+            "Window resize: viewport"
+        );
+        assert_eq!(explanation.invalidations[1].summary, "Resource: atlas");
+
+        let layout = explanation
+            .active_subsystems()
+            .find(|subsystem| subsystem.subsystem == DirtyStateSubsystem::Layout)
+            .expect("layout explanation");
+        assert!(layout
+            .downstream
+            .iter()
+            .any(|target| target == "hit testing"));
+        assert!(layout
+            .recomputes
+            .iter()
+            .any(|step| step == "solve node layout"));
+    }
+
+    #[test]
+    fn dirty_flags_diagnostic_embeds_dirty_state_explanation() {
+        let dirty = DirtyFlags {
+            input: true,
+            paint: true,
+            ..DirtyFlags::NONE
+        };
+
+        let diagnostic = DirtyFlagsDiagnostic::from(dirty);
+
+        assert_eq!(diagnostic.active, vec!["paint", "input"]);
+        assert_eq!(
+            diagnostic.explanation.recompute_order,
+            vec![DirtyStateSubsystem::Input, DirtyStateSubsystem::Paint]
+        );
+    }
+
+    #[test]
     fn summarizes_performance_snapshot_diagnostics() {
         let pipeline = required_pipeline_stages()
             .into_iter()
@@ -1599,7 +1931,7 @@ mod tests {
     }
 
     #[test]
-    fn summarizes_just_work_audit_warnings() {
+    fn summarizes_document_audit_warnings() {
         let mut document = UiDocument::new(root_style(200.0, 120.0));
         let scroll = document.add_child(
             document.root,
@@ -1625,7 +1957,7 @@ mod tests {
             .expect("layout");
 
         let mut report = DiagnosticReport::new();
-        report.just_work_document(&document);
+        report.audit_document(&document);
 
         assert_eq!(report.highest_severity(), Some(DiagnosticSeverity::Error));
         assert!(report.summaries.iter().any(|summary| {

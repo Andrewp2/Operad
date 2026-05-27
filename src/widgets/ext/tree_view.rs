@@ -19,7 +19,7 @@ use crate::{
     AccessibilityAction, AccessibilityMeta, AccessibilityRole, ClipBehavior, ColorRgba, CommandId,
     DragDropSurfaceKind, DropPayloadFilter, ImageContent, InputBehavior, LayoutStyle, ScrollAxes,
     ShaderEffect, StrokeStyle, TextStyle, TextWrap, UiDocument, UiNode, UiNodeId, UiNodeStyle,
-    UiRect, UiSize, UiVisual,
+    UiRect, UiSize, UiVisual, WidgetActionBinding,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +456,7 @@ pub struct TreeViewOptions {
     pub leading_image_size: f32,
     pub accessibility_label: Option<String>,
     pub row_action_prefix: Option<String>,
+    pub scroll_action: Option<WidgetActionBinding>,
 }
 
 impl Default for TreeViewOptions {
@@ -488,6 +489,7 @@ impl Default for TreeViewOptions {
             leading_image_size: 16.0,
             accessibility_label: None,
             row_action_prefix: None,
+            scroll_action: None,
         }
     }
 }
@@ -495,6 +497,11 @@ impl Default for TreeViewOptions {
 impl TreeViewOptions {
     pub fn with_row_action_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.row_action_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn with_scroll_action(mut self, action: impl Into<WidgetActionBinding>) -> Self {
+        self.scroll_action = Some(action.into());
         self
     }
 }
@@ -708,6 +715,9 @@ pub fn virtualized_tree_view(
     );
     if let Some(scroll) = &mut document.node_mut(body).scroll {
         scroll.offset.y = scroll_offset;
+    }
+    if let Some(action) = options.scroll_action.clone() {
+        document.node_mut(body).set_action(action);
     }
 
     let mut top_spacer = None;

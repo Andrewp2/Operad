@@ -1,17 +1,65 @@
 use web_time::{Duration, Instant};
 
-use operad::debug::{DebugAnimationGraphEdgeKind, DebugInspectorSnapshot, DebugThemeSnapshot};
+use operad::debug::{
+    DebugAccessibilityTimelineTrace, DebugAccessibilityTreeTrace, DebugActionDispatchTrace,
+    DebugActionMapTimelineTrace, DebugActionMapTrace, DebugAnimationActivityTimelineTrace,
+    DebugAnimationActivityTrace, DebugAnimationGraphEdgeKind, DebugBoundsAutopsyTrace,
+    DebugCacheReuseTrace, DebugCaptureReport, DebugClipChainTimelineTrace, DebugClipChainTrace,
+    DebugClipScrollTrace, DebugConstraintReport, DebugConstraintTimelineTrace, DebugContractReport,
+    DebugDiagnosticsCoverageTrace, DebugDragAffordanceTrace, DebugEventRouteTrace,
+    DebugFindingInboxTrace, DebugFixVerificationTrace, DebugFocusNavigationTimelineTrace,
+    DebugFocusNavigationTrace, DebugFrameAutopsyTrace, DebugFrameBottleneckTrace,
+    DebugFrameBudgetTrace, DebugFrameDiff, DebugFrameRecorder, DebugFrameRegressionTrace,
+    DebugFrameTimelineTrace, DebugFrameTimingWaterfallTrace, DebugFrameTrace,
+    DebugFrameTraceContext, DebugHealthScoreTrace, DebugHitTargetTrace, DebugHitboxMapTrace,
+    DebugHitboxOcclusionTimelineTrace, DebugHitboxOcclusionTrace, DebugHitboxTimelineTrace,
+    DebugInspectNodeTrace, DebugInspectPointTrace, DebugInspectorSnapshot,
+    DebugInteractionAffordanceTimelineTrace, DebugInteractionAffordanceTrace,
+    DebugInteractionStateTimelineTrace, DebugInteractionStateTrace, DebugInvalidationBlameTrace,
+    DebugInvalidationBlastTrace, DebugInvalidationTimelineTrace, DebugInvariantTimelineTrace,
+    DebugInvariantTrace, DebugInvestigationPlanTrace, DebugIssueReport, DebugIssueTimelineTrace,
+    DebugLayoutAutopsyTrace, DebugLayoutCauseTrace, DebugLayoutCostAutopsyTrace,
+    DebugLayoutCostTimelineTrace, DebugLayoutCostTrace, DebugLayoutJankTimelineTrace,
+    DebugLayoutMovementTrace, DebugLayoutPressureTimelineTrace, DebugLayoutPressureTrace,
+    DebugLayoutTree, DebugNodeChangeTrace, DebugNodeExplanation, DebugNodeFrameHistoryTrace,
+    DebugNodeHotspotTrace, DebugNodeProvenanceTrace, DebugNodeRecommendationTrace,
+    DebugNodeSearchTrace, DebugNodeStyleCompareTrace, DebugOverlapAutopsyTrace, DebugOverlapReport,
+    DebugOverlapTimelineTrace, DebugOverlayContext, DebugOverlayOptions,
+    DebugOverlayRecommendationTrace, DebugPaintBatchTimelineTrace, DebugPaintBatchTrace,
+    DebugPaintHitMismatchTimelineTrace, DebugPaintHitMismatchTrace, DebugPaintOrderTrace,
+    DebugPaintOverdrawTimelineTrace, DebugPaintOverdrawTrace, DebugPanelRecommendationTrace,
+    DebugPerformanceTimelineTrace, DebugPointAutopsyTrace, DebugPointerAutopsyTrace,
+    DebugPointerProbe, DebugPointerRouteKind, DebugPointerSessionTrace, DebugQuestionGuideTrace,
+    DebugRenderLayerTimelineTrace, DebugRenderLayerTrace, DebugResourceReport,
+    DebugResourceTimelineTrace, DebugResponsiveLayoutTrace, DebugRootCauseClusterTrace,
+    DebugRootCauseTimelineTrace, DebugScrollRangeTrace, DebugScrollTimelineTrace,
+    DebugSessionNarrativeTrace, DebugShortcutRouteTrace, DebugSlowFrameTrace,
+    DebugSlowNodeTimelineTrace, DebugSlowNodeTrace, DebugStackingOrderTimelineTrace,
+    DebugStackingOrderTrace, DebugTextContrastTrace, DebugTextFitTimelineTrace, DebugTextFitTrace,
+    DebugTextInputEventTrace, DebugTextInputStateTrace, DebugTextLayoutTrace,
+    DebugTextLocalizationTrace, DebugTextStyleTrace, DebugThemeSnapshot,
+    DebugVisibilityTimelineTrace, DebugVisibilityTrace, DebugVisualEffectTimelineTrace,
+    DebugVisualEffectTrace, DebugWheelRouteTrace, DebugWhyTimelineTrace, DebugWhyTrace,
+    DebugWidgetStateRetentionTrace,
+};
+use operad::diagnostics::{CacheDiagnostic, DirtyStateExplanation, PerformanceSnapshot};
+use operad::display::{
+    DisplayListInvalidation, DisplayListKey, DisplayListKind, DisplayListReuseOutcome,
+    DisplayListReuseReport, DisplayListScope,
+};
 use operad::forms::FormValidationResult;
+use operad::host::{HostInteractionState, HostShortcutRoute};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
 use operad::native::{
     NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowOptions, NativeWindowResult,
 };
 use operad::platform::{
     ClipboardResponse, CursorRequest, CursorShape, DragBytes, DragOperation, DragPayload,
-    ImageHandle, PlatformRequest, PlatformResponse, PlatformServiceResponse,
+    ImageHandle, PixelSize, PlatformRequest, PlatformResponse, PlatformServiceResponse,
+    ResourceHandle,
 };
 use operad::renderer::ResourceUpdate;
-use operad::runtime::PlatformServiceClient;
+use operad::runtime::{PlatformServiceClient, RuntimeInvalidation, RuntimeInvalidationReason};
 use operad::tooltips::{ShortcutFormatter, TooltipContent, TooltipPlacement};
 use operad::widgets::ext::{self as ext_widgets, CalendarDate};
 use operad::widgets::{scroll_area as scroll_area_widgets, scrollbar as scrollbar_widgets};
@@ -19,20 +67,23 @@ use operad::widgets::{TextInputOptions, TextInputState};
 #[cfg(feature = "text-cosmic")]
 use operad::CosmicTextMeasurer;
 use operad::{
-    root_style, widgets, AccessibilityMeta, AccessibilityRole, AlignedStroke, AnimatedValues,
-    AnimationBlendBinding, AnimationCondition, AnimationMachine, AnimationState,
-    AnimationTransition, ApproxTextMeasurer, BuiltInIcon, CanvasContent, CanvasRenderProgram,
-    ClipBehavior, ColorRgba, ColorTokens, CommandId, CommandMeta, CommandRegistry, CommandScope,
-    ComponentRole, ComponentState, CornerRadii, DragDropSurfaceKind, DropPayloadFilter,
-    DynamicLabelMeta, EditPhase, ElementMaterial, ElementShape, FocusRestoreTarget, FontFamily,
-    FontWeight, FormState, GeometryEffect, ImageContent, InputBehavior, Layout, LayoutAlignment,
+    root_style, widgets, AccessibilityAction, AccessibilityMeta, AccessibilityRole, AlignedStroke,
+    AnimatedValues, AnimationBlendBinding, AnimationCondition, AnimationMachine, AnimationState,
+    AnimationTransition, ApproxTextMeasurer, BidiPolicy, BuiltInIcon, CanvasContent,
+    CanvasRenderProgram, ClipBehavior, ColorRgba, ColorTokens, CommandId, CommandMeta,
+    CommandRegistry, CommandScope, ComponentRole, ComponentState, CornerRadii, DirtyFlags,
+    DragDropSurfaceKind, DropPayloadFilter, DynamicLabelMeta, EditPhase, ElementMaterial,
+    ElementShape, FocusRestoreTarget, FontFamily, FontWeight, FormState, FrameTiming,
+    GeometryEffect, GestureEvent, ImageContent, InputBehavior, Layout, LayoutAlignment,
     LayoutDimension, LayoutFlexWrap, LayoutGap, LayoutGridTrack, LayoutInsets, LayoutLength,
-    LayoutSize, LayoutSpacing, LayoutStyle, LocaleId, LocalizationPolicy, PaintEffect, PaintRect,
-    PaintText, ScenePrimitive, ScrollAxes, ShaderEffect, Shortcut, StrokeStyle,
-    TextHorizontalAlign, TextStyle, TextVerticalAlign, TextWrap, Theme, UiDocument, UiNode,
-    UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual, ValidationMessage,
-    WidgetAction, WidgetActionBinding, WidgetActionKind, WidgetActionMode, WidgetDrag,
-    WidgetDragPhase, WidgetPointerEdit, WidgetTextEdit, ANIMATION_INPUT_POINTER_NORM_X,
+    LayoutSize, LayoutSpacing, LayoutStyle, LocaleId, LocalizationPolicy, PaintEffect, PaintItem,
+    PaintKind, PaintList, PaintRect, PaintText, PaintTransform, PointerButton, PointerId,
+    ScenePrimitive, ScrollAxes, ShaderEffect, Shortcut, StrokeStyle, TextHorizontalAlign,
+    TextStyle, TextVerticalAlign, TextWrap, Theme, UiDocument, UiFocusState, UiInputEvent, UiNode,
+    UiNodeId, UiNodeStyle, UiPoint, UiPortalTarget, UiRect, UiSize, UiVisual, UiWheelEvent,
+    ValidationMessage, WidgetAction, WidgetActionBinding, WidgetActionKind, WidgetActionMode,
+    WidgetActionQueue, WidgetDrag, WidgetDragPhase, WidgetPointerEdit, WidgetTextEdit,
+    ANIMATION_INPUT_POINTER_NORM_X,
 };
 const RIGHT_PANEL_WIDTH: f32 = 300.0;
 const SHOWCASE_WINDOW_Z_BASE: i16 = 64;
@@ -362,6 +413,7 @@ struct ShowcaseState {
     diagnostics_animation_active: bool,
     diagnostics_animation_hover: f32,
     diagnostics_animation_pulse_count: u32,
+    diagnostics_page: DiagnosticsPage,
     diagnostics_snapshot: DebugInspectorSnapshot,
     containers_scroll: operad::ScrollState,
     controls_scroll: operad::ScrollState,
@@ -1092,6 +1144,84 @@ enum DateDemoMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiagnosticsPage {
+    Overview,
+    Frame,
+    Layout,
+    Hit,
+    Input,
+    Paint,
+    Text,
+    State,
+    Accessibility,
+    LegacyAll,
+}
+
+impl DiagnosticsPage {
+    const VISIBLE: [Self; 9] = [
+        Self::Overview,
+        Self::Frame,
+        Self::Layout,
+        Self::Hit,
+        Self::Input,
+        Self::Paint,
+        Self::Text,
+        Self::State,
+        Self::Accessibility,
+    ];
+
+    fn visible() -> &'static [Self] {
+        &Self::VISIBLE
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Frame => "Frame",
+            Self::Layout => "Layout",
+            Self::Hit => "Hit",
+            Self::Input => "Input",
+            Self::Paint => "Paint",
+            Self::Text => "Text",
+            Self::State => "State",
+            Self::Accessibility => "A11y",
+            Self::LegacyAll => "All",
+        }
+    }
+
+    const fn action_suffix(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Frame => "frame",
+            Self::Layout => "layout",
+            Self::Hit => "hit",
+            Self::Input => "input",
+            Self::Paint => "paint",
+            Self::Text => "text",
+            Self::State => "state",
+            Self::Accessibility => "a11y",
+            Self::LegacyAll => "all",
+        }
+    }
+
+    fn from_action_suffix(suffix: &str) -> Option<Self> {
+        match suffix {
+            "overview" => Some(Self::Overview),
+            "frame" => Some(Self::Frame),
+            "layout" => Some(Self::Layout),
+            "hit" => Some(Self::Hit),
+            "input" => Some(Self::Input),
+            "paint" => Some(Self::Paint),
+            "text" => Some(Self::Text),
+            "state" => Some(Self::State),
+            "a11y" => Some(Self::Accessibility),
+            "all" => Some(Self::LegacyAll),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShowcaseThemeChoice {
     Light,
     Dark,
@@ -1409,6 +1539,7 @@ impl Default for ShowcaseState {
             diagnostics_animation_active: true,
             diagnostics_animation_hover: 0.35,
             diagnostics_animation_pulse_count: 0,
+            diagnostics_page: DiagnosticsPage::Overview,
             diagnostics_snapshot: diagnostics_sample_snapshot_for(0.35, true),
             containers_scroll: operad::ScrollState::new(ScrollAxes::VERTICAL)
                 .with_sizes(UiSize::new(260.0, 82.0), UiSize::new(260.0, 180.0))
@@ -2122,6 +2253,13 @@ impl ShowcaseState {
             return;
         }
         if matches!(kind, WidgetActionKind::Focus(_)) {
+            return;
+        }
+        if let Some(page) = action_id
+            .strip_prefix("diagnostics.page.")
+            .and_then(DiagnosticsPage::from_action_suffix)
+        {
+            self.diagnostics_page = page;
             return;
         }
 
@@ -4035,17 +4173,13 @@ impl ShowcaseState {
 }
 
 fn organize_windows_button(ui: &mut UiDocument, desktop: UiNodeId, theme: &Theme) {
-    let mut options =
-        widgets::ButtonOptions::new(operad::layout::absolute(12.0, 12.0, 104.0, 28.0))
-            .with_action("window.organize_open")
-            .with_accessibility_label("Organize open windows");
-    options.visual = theme.resolve_visual(ComponentRole::Button, ComponentState::NORMAL);
-    options.hovered_visual =
-        Some(theme.resolve_visual(ComponentRole::Button, ComponentState::HOVERED));
-    options.pressed_visual =
-        Some(theme.resolve_visual(ComponentRole::Button, ComponentState::PRESSED));
-    options.pressed_hovered_visual =
-        Some(theme.resolve_visual(ComponentRole::Button, ComponentState::PRESSED));
+    let mut options = widgets::ButtonOptions::themed(
+        theme,
+        ComponentState::NORMAL,
+        operad::layout::absolute(12.0, 12.0, 104.0, 28.0),
+    )
+    .with_action("window.organize_open")
+    .with_accessibility_label("Organize open windows");
     options.text_style = themed_text(theme, 12.0);
     let button = widgets::button(
         ui,
@@ -5097,14 +5231,14 @@ fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         .padding(6.0);
     locale_options.text_style = text(13.0, color(226, 232, 242));
     locale_options.accessibility_label = Some("Locale".to_string());
-    locale_options.menu =
-        ext_widgets::SelectMenuOptions::default().with_action_prefix("labels.locale");
+    locale_options.menu = ext_widgets::SelectMenuOptions::default();
     locale_options.menu.width = locale_dropdown_width;
     locale_options.menu.row_height = 30.0;
     locale_options.menu.max_visible_rows = locale_items.len();
     locale_options.menu.text_style = text(13.0, color(226, 232, 242));
     locale_options.menu.portal = UiPortalTarget::Parent;
-    let locale_nodes = ext_widgets::dropdown_select(
+    locale_options = locale_options.with_action_prefix("labels.locale");
+    ext_widgets::dropdown_select(
         ui,
         locale_row,
         "labels.locale",
@@ -5124,8 +5258,6 @@ fn labels(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         )),
         locale_options,
     );
-    ui.node_mut(locale_nodes.trigger)
-        .set_action("labels.locale.toggle");
     widgets::label(
         ui,
         body,
@@ -6047,26 +6179,21 @@ fn slider(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         text(12.0, color(166, 176, 190)),
         LayoutStyle::new().with_width(64.0),
     );
-    choice_button(
+    ext_widgets::segmented_control(
         ui,
         thumb_row,
-        "slider.thumb.circle",
-        "Circle",
-        state.slider_thumb_shape == SliderThumbChoice::Circle,
-    );
-    choice_button(
-        ui,
-        thumb_row,
-        "slider.thumb.square",
-        "Square",
-        state.slider_thumb_shape == SliderThumbChoice::Square,
-    );
-    choice_button(
-        ui,
-        thumb_row,
-        "slider.thumb.rectangle",
-        "Rectangle",
-        state.slider_thumb_shape == SliderThumbChoice::Rectangle,
+        "slider.thumb",
+        &[
+            ext_widgets::SegmentedControlItem::new("circle", "Circle"),
+            ext_widgets::SegmentedControlItem::new("square", "Square"),
+            ext_widgets::SegmentedControlItem::new("rectangle", "Rectangle"),
+        ],
+        Some(match state.slider_thumb_shape {
+            SliderThumbChoice::Circle => "circle",
+            SliderThumbChoice::Square => "square",
+            SliderThumbChoice::Rectangle => "rectangle",
+        }),
+        segmented_options("slider.thumb"),
     );
     slider_checkbox(
         ui,
@@ -6109,26 +6236,21 @@ fn slider(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         text(12.0, color(166, 176, 190)),
         LayoutStyle::new().with_width(74.0),
     );
-    choice_button(
+    ext_widgets::segmented_control(
         ui,
         clamp_row,
-        "slider.clamping.never",
-        "Never",
-        state.slider_clamping == widgets::SliderClamping::Never,
-    );
-    choice_button(
-        ui,
-        clamp_row,
-        "slider.clamping.edits",
-        "Edits",
-        state.slider_clamping == widgets::SliderClamping::Edits,
-    );
-    choice_button(
-        ui,
-        clamp_row,
-        "slider.clamping.always",
-        "Always",
-        state.slider_clamping == widgets::SliderClamping::Always,
+        "slider.clamping",
+        &[
+            ext_widgets::SegmentedControlItem::new("never", "Never"),
+            ext_widgets::SegmentedControlItem::new("edits", "Edits"),
+            ext_widgets::SegmentedControlItem::new("always", "Always"),
+        ],
+        Some(match state.slider_clamping {
+            widgets::SliderClamping::Never => "never",
+            widgets::SliderClamping::Edits => "edits",
+            widgets::SliderClamping::Always => "always",
+        }),
+        segmented_options("slider.clamping"),
     );
     slider_checkbox(
         ui,
@@ -6172,7 +6294,7 @@ fn numeric_inputs(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) 
         ),
     );
     let unit_options = numeric_unit_options();
-    let unit_nodes = ext_widgets::dropdown_select(
+    ext_widgets::dropdown_select(
         ui,
         unit_anchor,
         "numeric.unit",
@@ -6184,8 +6306,6 @@ fn numeric_inputs(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) 
         )),
         dropdown_select_options(unit_width, "numeric.unit", "Unit", "Numeric unit"),
     );
-    ui.node_mut(unit_nodes.trigger)
-        .set_action("numeric.unit.toggle");
 
     divider(ui, body, "numeric.range.divider");
     numeric_slider_row(
@@ -6400,7 +6520,7 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
                 .with_height(30.0),
         ),
     );
-    let dropdown_nodes = ext_widgets::dropdown_select(
+    ext_widgets::dropdown_select(
         ui,
         dropdown_anchor,
         "selection.dropdown",
@@ -6417,8 +6537,6 @@ fn selection_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseStat
             "Dropdown select",
         ),
     );
-    ui.node_mut(dropdown_nodes.trigger)
-        .set_action("selection.dropdown.toggle");
 
     widgets::label(
         ui,
@@ -6499,7 +6617,8 @@ fn dropdown_select_options(
         .with_text_style(text(13.0, color(226, 232, 242)))
         .with_placeholder(placeholder)
         .with_accessibility_label(accessibility_label)
-        .with_menu(select_menu_options(width).with_action_prefix(action_prefix))
+        .with_menu(select_menu_options(width))
+        .with_action_prefix(action_prefix)
 }
 
 fn select_popup(anchor: UiRect, viewport: UiRect) -> ext_widgets::AnchoredPopup {
@@ -6599,43 +6718,44 @@ fn text_input(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
 fn date_picker(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body =
         section_with_min_viewport(ui, parent, "date", "Date picker", UiSize::new(284.0, 0.0));
-    let mode = wrapping_row(ui, body, "date.mode", 8.0);
-    choice_button(
+    let mode = wrapping_row(ui, body, "date.mode_row", 8.0);
+    ext_widgets::segmented_control(
         ui,
         mode,
-        "date.mode.single",
-        "Single",
-        state.date_mode == DateDemoMode::Single,
-    );
-    choice_button(
-        ui,
-        mode,
-        "date.mode.range",
-        "Range",
-        state.date_mode == DateDemoMode::Range,
-    );
-    choice_button(
-        ui,
-        mode,
-        "date.mode.week",
-        "Week",
-        state.date_mode == DateDemoMode::Week,
+        "date.mode",
+        &[
+            ext_widgets::SegmentedControlItem::new("single", "Single"),
+            ext_widgets::SegmentedControlItem::new("range", "Range"),
+            ext_widgets::SegmentedControlItem::new("week", "Week"),
+        ],
+        Some(match state.date_mode {
+            DateDemoMode::Single => "single",
+            DateDemoMode::Range => "range",
+            DateDemoMode::Week => "week",
+        }),
+        segmented_options("date.mode"),
     );
 
     let controls = wrapping_row(ui, body, "date.options", 8.0);
-    choice_button(
+    ext_widgets::segmented_control(
         ui,
         controls,
-        "date.week.sunday",
-        "Sun first",
-        state.date.first_weekday == ext_widgets::Weekday::Sunday,
-    );
-    choice_button(
-        ui,
-        controls,
-        "date.week.monday",
-        "Mon first",
-        state.date.first_weekday == ext_widgets::Weekday::Monday,
+        "date.week",
+        &[
+            ext_widgets::SegmentedControlItem::new("sunday", "Sun first"),
+            ext_widgets::SegmentedControlItem::new("monday", "Mon first"),
+        ],
+        Some(match state.date.first_weekday {
+            ext_widgets::Weekday::Sunday => "sunday",
+            ext_widgets::Weekday::Monday => "monday",
+            _ => "sunday",
+        }),
+        segmented_options("date.week").with_item_layout(
+            LayoutStyle::new()
+                .with_width(92.0)
+                .with_height(28.0)
+                .with_flex_shrink(0.0),
+        ),
     );
     let bounds = row(ui, body, "date.bounds_options", 8.0);
     let mut bounds_button =
@@ -7161,38 +7281,6 @@ fn progress_loading_panel(
     logs: &[ext_widgets::ProgressLogEntry],
     state: &ShowcaseState,
 ) {
-    let panel = ui.add_child(
-        parent,
-        UiNode::container(
-            name,
-            LayoutStyle::column()
-                .with_width_percent(1.0)
-                .with_padding(10.0)
-                .with_gap(8.0)
-                .with_flex_shrink(0.0),
-        )
-        .with_visual(UiVisual::panel(
-            color(17, 21, 27),
-            Some(StrokeStyle::new(color(70, 82, 101), 1.0)),
-            4.0,
-        ))
-        .with_accessibility(
-            AccessibilityMeta::new(AccessibilityRole::Group).label("Loading progress with logs"),
-        ),
-    );
-
-    let progress_row = row(ui, panel, "progress.logged.progress_row", 8.0);
-    let progress_slot = ui.add_child(
-        progress_row,
-        UiNode::container(
-            "progress.logged.progress_slot",
-            LayoutStyle::new()
-                .with_width(0.0)
-                .with_height(30.0)
-                .with_flex_grow(1.0)
-                .with_flex_shrink(1.0),
-        ),
-    );
     let mut progress = ext_widgets::ProgressIndicatorOptions::default();
     progress.layout = LayoutStyle::new()
         .with_width_percent(1.0)
@@ -7201,13 +7289,6 @@ fn progress_loading_panel(
         .with_flex_shrink(1.0);
     progress.fill_visual = UiVisual::panel(color(111, 203, 159), None, 3.0);
     progress.accessibility_label = Some("Logged loading progress".to_string());
-    ext_widgets::progress_indicator(
-        ui,
-        progress_slot,
-        "progress.logged.progress",
-        ext_widgets::ProgressIndicatorValue::percent(progress_value),
-        progress,
-    );
     let mut reset = widgets::ButtonOptions::new(
         LayoutStyle::new()
             .with_width(76.0)
@@ -7219,81 +7300,53 @@ fn progress_loading_panel(
     reset.hovered_visual = Some(button_visual(65, 86, 106));
     reset.pressed_visual = Some(button_visual(34, 54, 84));
     reset.text_style = text(12.0, color(238, 244, 252));
-    widgets::button(ui, progress_row, "progress.logged.reset", "Reset", reset);
 
     let log_scroll = progress_log_scroll_state(
         state.progress_logs_scroll.offset().y,
         logs.len(),
         state.progress_logs_follow_tail,
     );
-    let logs_node = ui.add_child(
-        panel,
-        UiNode::container(
-            "progress.logged.logs",
-            LayoutStyle::column()
-                .with_width_percent(1.0)
-                .with_height(PROGRESS_LOG_VIEWPORT_HEIGHT)
-                .with_flex_shrink(0.0),
-        )
-        .with_visual(UiVisual::panel(
-            color(11, 15, 21),
-            Some(StrokeStyle::new(color(45, 57, 73), 1.0)),
-            3.0,
-        ))
-        .with_scroll(ScrollAxes::VERTICAL)
-        .with_accessibility(
-            AccessibilityMeta::new(AccessibilityRole::List)
-                .label("Loading logs")
-                .value(format!("{} entries", logs.len())),
-        ),
-    );
-    {
-        let node = ui.node_mut(logs_node);
-        node.set_action("progress.logged.logs.scroll");
-        node.set_scroll(log_scroll);
-    }
-
-    if logs.is_empty() {
-        ui.add_child(
-            logs_node,
-            UiNode::text(
-                "progress.logged.logs.empty",
-                "Waiting for log output...",
-                text(12.0, color(154, 166, 184)),
-                LayoutStyle::new()
-                    .with_width_percent(1.0)
-                    .with_height(PROGRESS_LOG_ROW_HEIGHT)
-                    .with_padding(4.0)
-                    .with_flex_shrink(0.0),
-            )
-            .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Status).label("No logs")),
+    let mut panel_options = ext_widgets::ProgressLogPanelOptions::default()
+        .with_accessibility_label("Loading progress with logs")
+        .with_log_scroll(log_scroll)
+        .with_log_scroll_action("progress.logged.logs.scroll")
+        .with_trailing_action(
+            ext_widgets::ProgressLogPanelAction::new("Reset", "progress.logged.reset")
+                .with_options(reset),
         );
-    } else {
-        for (index, entry) in logs.iter().enumerate() {
-            let mut text_style = text(12.0, entry.level.color());
-            text_style.line_height = 18.0;
-            ui.add_child(
-                logs_node,
-                UiNode::text(
-                    format!("{name}.logs.row.{index}"),
-                    format!("[{}] {}", entry.level.as_str(), entry.message),
-                    text_style,
-                    LayoutStyle::new()
-                        .with_width_percent(1.0)
-                        .with_height(PROGRESS_LOG_ROW_HEIGHT)
-                        .with_padding(4.0)
-                        .with_flex_shrink(0.0),
-                )
-                .with_accessibility(
-                    AccessibilityMeta::new(AccessibilityRole::ListItem).label(format!(
-                        "{}: {}",
-                        entry.level.as_str(),
-                        entry.message
-                    )),
-                ),
-            );
-        }
-    }
+    panel_options.layout = LayoutStyle::column()
+        .with_width_percent(1.0)
+        .with_padding(10.0)
+        .with_gap(8.0)
+        .with_flex_shrink(0.0);
+    panel_options.visual = UiVisual::panel(
+        color(17, 21, 27),
+        Some(StrokeStyle::new(color(70, 82, 101), 1.0)),
+        4.0,
+    );
+    panel_options.progress_options = progress;
+    panel_options.log_viewport_layout = LayoutStyle::column()
+        .with_width_percent(1.0)
+        .with_height(PROGRESS_LOG_VIEWPORT_HEIGHT)
+        .with_flex_shrink(0.0);
+    panel_options.log_visual = UiVisual::panel(
+        color(11, 15, 21),
+        Some(StrokeStyle::new(color(45, 57, 73), 1.0)),
+        3.0,
+    );
+    panel_options.log_row_height = PROGRESS_LOG_ROW_HEIGHT;
+    panel_options.empty_text_style = text(12.0, color(154, 166, 184));
+    panel_options.log_text_style = text(12.0, color(196, 210, 230));
+    panel_options.log_text_style.line_height = 18.0;
+
+    ext_widgets::progress_log_panel(
+        ui,
+        parent,
+        name,
+        ext_widgets::ProgressIndicatorValue::percent(progress_value),
+        logs,
+        panel_options,
+    );
 }
 
 fn progress_log_scroll_state(
@@ -7752,7 +7805,7 @@ fn easing_curve_demo(
                 .with_flex_shrink(0.0),
         ),
     );
-    let dropdown_nodes = ext_widgets::dropdown_select(
+    ext_widgets::dropdown_select(
         ui,
         dropdown_anchor,
         dropdown_name.clone(),
@@ -7769,8 +7822,6 @@ fn easing_curve_demo(
             title,
         ),
     );
-    ui.node_mut(dropdown_nodes.trigger)
-        .set_action(format!("{name}.dropdown.toggle"));
     widgets::label(
         ui,
         controls,
@@ -8202,20 +8253,22 @@ fn list_and_table_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &Showcas
         text(12.0, color(166, 176, 190)),
         LayoutStyle::new().with_width_percent(1.0),
     );
-    let nested_scroll = widgets::scroll_area(
+    let nested_scroll = widgets::scroll_area_with_options(
         ui,
         scroll_column,
         "lists_tables.scroll_area",
-        ScrollAxes::VERTICAL,
-        LayoutStyle::column()
-            .with_width_percent(1.0)
-            .with_height(104.0),
+        widgets::ScrollAreaOptions::new(
+            ScrollAxes::VERTICAL,
+            LayoutStyle::column()
+                .with_width_percent(1.0)
+                .with_height(104.0),
+        )
+        .with_scroll(
+            operad::ScrollState::new(ScrollAxes::VERTICAL)
+                .with_offset(UiPoint::new(0.0, state.list_scroll)),
+        )
+        .with_action("lists_tables.scroll_area.scroll"),
     );
-    ui.node_mut(nested_scroll)
-        .set_action("lists_tables.scroll_area.scroll");
-    if let Some(scroll) = ui.node_mut(nested_scroll).scroll_mut() {
-        scroll.set_offset(UiPoint::new(0.0, state.list_scroll));
-    }
     for index in 0..6 {
         widgets::label(
             ui,
@@ -8428,9 +8481,462 @@ fn property_inspector(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSta
 
 fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let body = section(ui, parent, "diagnostics", "Diagnostics");
+    diagnostics_page_picker(ui, body, state.diagnostics_page);
+
+    match state.diagnostics_page {
+        DiagnosticsPage::Overview => diagnostics_overview_widgets(ui, body, state),
+        DiagnosticsPage::Frame => diagnostics_frame_page(ui, body, state),
+        DiagnosticsPage::Layout => diagnostics_layout_page(ui, body, state),
+        DiagnosticsPage::Hit => diagnostics_hit_page(ui, body, state),
+        DiagnosticsPage::Input => diagnostics_input_page(ui, body, state),
+        DiagnosticsPage::Paint => diagnostics_paint_page(ui, body, state),
+        DiagnosticsPage::Text => diagnostics_text_page(ui, body, state),
+        DiagnosticsPage::State => diagnostics_state_page(ui, body, state),
+        DiagnosticsPage::Accessibility => diagnostics_accessibility_page(ui, body, state),
+        DiagnosticsPage::LegacyAll => diagnostics_all_widgets(ui, body, state),
+    }
+}
+
+fn diagnostics_page_picker(ui: &mut UiDocument, parent: UiNodeId, selected_page: DiagnosticsPage) {
+    let page_row = wrapping_row(ui, parent, "diagnostics.pages", 8.0);
+    for page in DiagnosticsPage::visible() {
+        let action = format!("diagnostics.page.{}", page.action_suffix());
+        diagnostic_button(ui, page_row, action, page.label(), *page == selected_page);
+    }
+}
+
+struct DiagnosticsFrameBundle {
+    frame_trace: DebugFrameTrace,
+    frame_samples: Vec<DebugFrameTrace>,
+    frame_recorder: DebugFrameRecorder,
+}
+
+fn diagnostics_frame_bundle(
+    state: &ShowcaseState,
+    debug_snapshot: &DebugInspectorSnapshot,
+) -> DiagnosticsFrameBundle {
+    let resource_report = diagnostics_resource_report_sample(debug_snapshot);
+    let frame_trace = diagnostics_frame_trace_sample(state, &resource_report);
+    let frame_samples = diagnostics_frame_trace_samples(state, &resource_report);
+    let mut frame_recorder = DebugFrameRecorder::new(8);
+    for trace in frame_samples.iter().cloned() {
+        frame_recorder.record_frame(trace);
+    }
+    DiagnosticsFrameBundle {
+        frame_trace,
+        frame_samples,
+        frame_recorder,
+    }
+}
+
+fn diagnostics_overview_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let debug_snapshot = &state.diagnostics_snapshot;
+    let resource_report = diagnostics_resource_report_sample(debug_snapshot);
+    let frame_trace = diagnostics_frame_trace_sample(state, &resource_report);
+    let health_score = DebugHealthScoreTrace::from_frame_trace(&frame_trace);
+
+    diagnostics_health_score_panel(ui, parent, &health_score);
+    diagnostics_issue_panel(ui, parent, &frame_trace);
+    diagnostics_finding_inbox_panel(ui, parent, &frame_trace);
+    diagnostics_frame_trace_panel(ui, parent, &frame_trace);
+    diagnostics_selected_node_panel(ui, parent, debug_snapshot);
+    diagnostics_panel_recommendation_panel(ui, parent, &frame_trace);
+}
+
+fn diagnostics_frame_page(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let debug_snapshot = &state.diagnostics_snapshot;
+    let bundle = diagnostics_frame_bundle(state, debug_snapshot);
+    let frame_timeline = bundle.frame_recorder.timeline();
+    let frame_regression = bundle.frame_recorder.latest_frame_regression_trace();
+    let fix_verification = bundle.frame_recorder.latest_fix_verification_trace();
+    let performance_timeline = bundle.frame_recorder.performance_timeline();
+    let issue_timeline = bundle.frame_recorder.issue_timeline();
+    let why_trace = DebugWhyTrace::from_frame_trace(&bundle.frame_trace);
+    let why_timeline = bundle.frame_recorder.why_timeline();
+    let root_causes = DebugRootCauseClusterTrace::from_frame_trace(&bundle.frame_trace);
+    let root_cause_timeline = bundle.frame_recorder.root_cause_timeline();
+
+    diagnostics_frame_trace_panel(ui, parent, &bundle.frame_trace);
+    diagnostics_issue_panel(ui, parent, &bundle.frame_trace);
+    diagnostics_root_cause_cluster_panel(ui, parent, &root_causes);
+    diagnostics_root_cause_timeline_panel(ui, parent, &root_cause_timeline);
+    diagnostics_issue_timeline_panel(ui, parent, &issue_timeline);
+    diagnostics_question_guide_panel(ui, parent, &bundle.frame_trace);
+    diagnostics_coverage_panel(ui, parent, &bundle.frame_trace);
+    diagnostics_investigation_plan_panel(ui, parent, &bundle.frame_trace);
+    diagnostics_capture_report_panel(ui, parent, &bundle.frame_trace, &frame_timeline);
+    diagnostics_slow_frame_panel(ui, parent, &bundle.frame_trace, state);
+    diagnostics_frame_budget_panel(ui, parent);
+    diagnostics_frame_timing_waterfall_panel(ui, parent, &bundle.frame_trace);
+    diagnostics_frame_bottleneck_panel(ui, parent, &bundle.frame_trace, state);
+    diagnostics_frame_autopsy_panel(ui, parent, &bundle.frame_trace);
+    diagnostics_frame_recorder_panel(ui, parent, &bundle.frame_recorder);
+    diagnostics_frame_timeline_panel(ui, parent, &frame_timeline);
+    if let Some(frame_regression) = &frame_regression {
+        diagnostics_frame_regression_panel(ui, parent, frame_regression);
+    }
+    if let Some(fix_verification) = &fix_verification {
+        diagnostics_fix_verification_panel(ui, parent, fix_verification);
+    }
+    diagnostics_performance_timeline_panel(ui, parent, &performance_timeline);
+    diagnostics_why_trace_panel(ui, parent, &why_trace);
+    diagnostics_why_timeline_panel(ui, parent, &why_timeline);
+    diagnostics_node_frame_history_panel(ui, parent, &bundle.frame_samples);
+    diagnostics_node_change_panel(ui, parent, &bundle.frame_samples);
+}
+
+fn diagnostics_layout_page(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let debug_snapshot = &state.diagnostics_snapshot;
+    let bundle = diagnostics_frame_bundle(state, debug_snapshot);
+    let slow_nodes = diagnostics_slow_node_trace_sample(state);
+    let layout_jank_timeline = bundle.frame_recorder.layout_jank_timeline();
+    let layout_cost_timeline = bundle.frame_recorder.layout_cost_timeline();
+    let layout_pressure_timeline = bundle.frame_recorder.layout_pressure_timeline();
+
+    diagnostics_node_recommendation_panel(ui, parent, &bundle.frame_trace, Some(&slow_nodes));
+    diagnostics_slow_nodes_panel(ui, parent, &slow_nodes);
+    diagnostics_slow_node_timeline_panel(ui, parent, &bundle.frame_recorder.slow_node_timeline());
+    diagnostics_layout_movement_panel(ui, parent, state, debug_snapshot);
+    diagnostics_layout_jank_timeline_panel(ui, parent, &layout_jank_timeline);
+    diagnostics_layout_cost_panel(ui, parent, debug_snapshot);
+    diagnostics_layout_cost_timeline_panel(ui, parent, &layout_cost_timeline);
+    diagnostics_layout_pressure_panel(ui, parent, debug_snapshot);
+    diagnostics_layout_pressure_timeline_panel(ui, parent, &layout_pressure_timeline);
+    diagnostics_layout_cost_autopsy_panel(ui, parent, debug_snapshot);
+    diagnostics_layout_tree_panel(ui, parent, debug_snapshot);
+    diagnostics_node_search_panel(ui, parent, debug_snapshot);
+    diagnostics_layout_cause_panel(ui, parent, debug_snapshot);
+    diagnostics_layout_autopsy_panel(ui, parent, debug_snapshot);
+    diagnostics_style_compare_panel(ui, parent, debug_snapshot);
+    diagnostics_responsive_layout_panel(ui, parent, state);
+    diagnostics_frame_diff_panel(ui, parent, state, debug_snapshot);
+    diagnostics_constraint_panel(ui, parent, debug_snapshot);
+}
+
+fn diagnostics_hit_page(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let debug_snapshot = &state.diagnostics_snapshot;
+    let bundle = diagnostics_frame_bundle(state, debug_snapshot);
+    let overlap_timeline = bundle.frame_recorder.overlap_timeline();
+    let hitbox_timeline = bundle.frame_recorder.hitbox_timeline();
+    let hitbox_occlusion_timeline = diagnostics_hitbox_occlusion_timeline_sample();
+    let pointer_session = bundle.frame_recorder.pointer_session();
+
+    diagnostics_geometry_preview(ui, parent, state, debug_snapshot);
+    diagnostics_visibility_panel(ui, parent);
+    diagnostics_visibility_timeline_panel(ui, parent);
+    diagnostics_hitbox_map_panel(ui, parent);
+    diagnostics_hitbox_timeline_panel(ui, parent, &hitbox_timeline);
+    diagnostics_hit_targets_panel(ui, parent);
+    diagnostics_hitbox_occlusion_panel(ui, parent);
+    diagnostics_hitbox_occlusion_timeline_panel(ui, parent, &hitbox_occlusion_timeline);
+    diagnostics_paint_hit_mismatch_panel(ui, parent);
+    diagnostics_paint_hit_mismatch_timeline_panel(ui, parent);
+    diagnostics_overlap_report_panel(ui, parent, state);
+    diagnostics_overlap_timeline_panel(ui, parent, &overlap_timeline);
+    diagnostics_overlap_autopsy_panel(ui, parent, state);
+    diagnostics_pointer_probe_panel(ui, parent, state);
+    diagnostics_pointer_session_panel(ui, parent, &pointer_session);
+    diagnostics_pointer_autopsy_panel(ui, parent, state);
+    diagnostics_point_autopsy_panel(ui, parent, state);
+    diagnostics_inspect_point_panel(ui, parent, state);
+}
+
+fn diagnostics_input_page(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let debug_snapshot = &state.diagnostics_snapshot;
+    let bundle = diagnostics_frame_bundle(state, debug_snapshot);
+    let focus_timeline = diagnostics_focus_navigation_timeline_sample(state);
+    let action_map_timeline = bundle.frame_recorder.action_map_timeline();
+    let interaction_affordance_timeline = bundle.frame_recorder.interaction_affordance_timeline();
+    let interaction_state_timeline = diagnostics_interaction_state_timeline_sample(state);
+
+    diagnostics_focus_panel(ui, parent, state);
+    diagnostics_focus_timeline_panel(ui, parent, &focus_timeline);
+    diagnostics_clip_scroll_panel(ui, parent);
+    diagnostics_clip_chain_panel(ui, parent);
+    diagnostics_clip_chain_timeline_panel(ui, parent);
+    diagnostics_scroll_range_panel(ui, parent);
+    diagnostics_wheel_route_panel(ui, parent);
+    diagnostics_scroll_timeline_panel(ui, parent);
+    diagnostics_interaction_state_panel(ui, parent, state);
+    diagnostics_interaction_state_timeline_panel(ui, parent, &interaction_state_timeline);
+    diagnostics_shortcut_route_panel(ui, parent);
+    diagnostics_action_map_panel(ui, parent, state);
+    diagnostics_action_dispatch_panel(ui, parent);
+    diagnostics_action_map_timeline_panel(ui, parent, &action_map_timeline);
+    diagnostics_drag_affordance_panel(ui, parent);
+    diagnostics_interaction_affordance_panel(ui, parent);
+    diagnostics_interaction_affordance_timeline_panel(ui, parent, &interaction_affordance_timeline);
+}
+
+fn diagnostics_paint_page(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let debug_snapshot = &state.diagnostics_snapshot;
+    let resource_report = diagnostics_resource_report_sample(debug_snapshot);
+
+    diagnostics_paint_order_panel(ui, parent, state);
+    diagnostics_stacking_order_panel(ui, parent, state);
+    diagnostics_stacking_order_timeline_panel(ui, parent);
+    diagnostics_render_layers_panel(ui, parent, state);
+    diagnostics_render_layer_timeline_panel(ui, parent);
+    diagnostics_paint_overdraw_panel(ui, parent, state);
+    diagnostics_paint_overdraw_timeline_panel(ui, parent, state);
+    diagnostics_paint_batches_panel(ui, parent, state);
+    diagnostics_paint_batch_timeline_panel(ui, parent);
+    diagnostics_visual_effects_panel(ui, parent);
+    diagnostics_visual_effect_timeline_panel(ui, parent);
+    diagnostics_bounds_autopsy_panel(ui, parent);
+    diagnostics_resource_panel(ui, parent, &resource_report);
+    diagnostics_resource_timeline_panel(ui, parent);
+}
+
+fn diagnostics_text_page(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    diagnostics_text_fit_panel(ui, parent);
+    diagnostics_text_fit_timeline_panel(ui, parent);
+    diagnostics_text_layout_panel(ui, parent, state);
+    diagnostics_text_style_panel(ui, parent, state);
+    diagnostics_text_input_state_panel(ui, parent);
+    diagnostics_text_input_event_panel(ui, parent);
+    diagnostics_text_localization_panel(ui, parent);
+    diagnostics_text_contrast_panel(ui, parent);
+}
+
+fn diagnostics_state_page(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let debug_snapshot = &state.diagnostics_snapshot;
+    let resource_report = diagnostics_resource_report_sample(debug_snapshot);
+    let frame_trace = diagnostics_frame_trace_sample(state, &resource_report);
+    let bundle = diagnostics_frame_bundle(state, debug_snapshot);
+    let session_narrative = bundle.frame_recorder.session_narrative();
+    let invariant_timeline = bundle.frame_recorder.invariant_timeline();
+    let constraint_timeline = bundle.frame_recorder.constraint_timeline();
+    let registry = diagnostics_command_registry();
+    let theme_snapshot = DebugThemeSnapshot::from_theme(&Theme::dark());
+
+    diagnostics_session_narrative_panel(ui, parent, &session_narrative);
+    diagnostics_contract_panel(ui, parent, &frame_trace);
+    diagnostics_invariant_panel(ui, parent);
+    diagnostics_invariant_timeline_panel(ui, parent, &invariant_timeline);
+    diagnostics_constraint_timeline_panel(ui, parent, &constraint_timeline);
+    diagnostics_commands_panel(ui, parent, &registry);
+    diagnostics_theme_panel(ui, parent, &theme_snapshot);
+    diagnostics_cache_reuse_panel(ui, parent);
+    diagnostics_timing_panel(ui, parent);
+    diagnostics_dirty_state_panel(ui, parent);
+    diagnostics_widget_state_retention_panel(ui, parent);
+    diagnostics_invalidation_blame_panel(ui, parent);
+    diagnostics_invalidation_blast_panel(ui, parent);
+    diagnostics_invalidation_timeline_panel(ui, parent);
+    diagnostics_node_explanation_panel(ui, parent, state, debug_snapshot, &resource_report);
+    diagnostics_inspect_node_panel(ui, parent, state, debug_snapshot, &resource_report);
+    diagnostics_node_provenance_panel(ui, parent, debug_snapshot, &resource_report);
+}
+
+fn diagnostics_accessibility_page(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
     let debug_snapshot = &state.diagnostics_snapshot;
 
+    widgets::label(
+        ui,
+        parent,
+        "diagnostics.a11y.title",
+        "Accessibility",
+        text(14.0, color(222, 230, 240)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let mut overlay_preview_style = UiNodeStyle::from(
+        LayoutStyle::new()
+            .with_width(320.0)
+            .with_height(140.0)
+            .with_flex_shrink(0.0),
+    );
+    overlay_preview_style.set_clip(ClipBehavior::Clip);
+    let overlay_preview = ui.add_child(
+        parent,
+        UiNode::container("diagnostics.a11y.preview", overlay_preview_style).with_visual(
+            UiVisual::panel(
+                color(12, 17, 24),
+                Some(StrokeStyle::new(color(47, 62, 82), 1.0)),
+                4.0,
+            ),
+        ),
+    );
+    let mut overlay_options = ext_widgets::AccessibilityDebugOverlayOptions {
+        action_prefix: Some("diagnostics.a11y.visual".to_owned()),
+        ..Default::default()
+    };
+    overlay_options.show_labels = false;
+    ext_widgets::accessibility_debug_overlay(
+        ui,
+        overlay_preview,
+        "diagnostics.a11y.visual",
+        debug_snapshot,
+        overlay_options,
+    );
+    diagnostics_accessibility_tree_panel(ui, parent, debug_snapshot);
+    diagnostics_accessibility_timeline_panel(ui, parent);
+    diagnostics_accessibility_details(ui, parent, debug_snapshot);
+}
+
+fn diagnostics_all_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let body = parent;
+    let debug_snapshot = &state.diagnostics_snapshot;
+    let resource_report = diagnostics_resource_report_sample(debug_snapshot);
+    let frame_trace = diagnostics_frame_trace_sample(state, &resource_report);
+    let frame_samples = diagnostics_frame_trace_samples(state, &resource_report);
+    let mut frame_recorder = DebugFrameRecorder::new(8);
+    for trace in frame_samples.iter().cloned() {
+        frame_recorder.record_frame(trace);
+    }
+    let frame_timeline = frame_recorder.timeline();
+    let frame_regression = frame_recorder.latest_frame_regression_trace();
+    let fix_verification = frame_recorder.latest_fix_verification_trace();
+    let performance_timeline = frame_recorder.performance_timeline();
+    let issue_timeline = frame_recorder.issue_timeline();
+    let why_trace = DebugWhyTrace::from_frame_trace(&frame_trace);
+    let why_timeline = frame_recorder.why_timeline();
+    let health_score = DebugHealthScoreTrace::from_frame_trace(&frame_trace);
+    let root_causes = DebugRootCauseClusterTrace::from_frame_trace(&frame_trace);
+    let root_cause_timeline = frame_recorder.root_cause_timeline();
+    let overlap_timeline = frame_recorder.overlap_timeline();
+    let hitbox_timeline = frame_recorder.hitbox_timeline();
+    let hitbox_occlusion_timeline = diagnostics_hitbox_occlusion_timeline_sample();
+    let invariant_timeline = frame_recorder.invariant_timeline();
+    let constraint_timeline = frame_recorder.constraint_timeline();
+    let layout_jank_timeline = frame_recorder.layout_jank_timeline();
+    let layout_cost_timeline = frame_recorder.layout_cost_timeline();
+    let layout_pressure_timeline = frame_recorder.layout_pressure_timeline();
+    let focus_timeline = diagnostics_focus_navigation_timeline_sample(state);
+    let action_map_timeline = frame_recorder.action_map_timeline();
+    let interaction_affordance_timeline = frame_recorder.interaction_affordance_timeline();
+    let interaction_state_timeline = diagnostics_interaction_state_timeline_sample(state);
+    let animation_activity_timeline = diagnostics_animation_activity_timeline_sample();
+    let session_narrative = frame_recorder.session_narrative();
+    let pointer_session = frame_recorder.pointer_session();
+    let slow_nodes = diagnostics_slow_node_trace_sample(state);
+
+    diagnostics_frame_trace_panel(ui, body, &frame_trace);
+    diagnostics_issue_panel(ui, body, &frame_trace);
+    diagnostics_finding_inbox_panel(ui, body, &frame_trace);
+    diagnostics_health_score_panel(ui, body, &health_score);
+    diagnostics_root_cause_cluster_panel(ui, body, &root_causes);
+    diagnostics_root_cause_timeline_panel(ui, body, &root_cause_timeline);
+    diagnostics_issue_timeline_panel(ui, body, &issue_timeline);
+    diagnostics_question_guide_panel(ui, body, &frame_trace);
+    diagnostics_panel_recommendation_panel(ui, body, &frame_trace);
+    diagnostics_overlay_recommendation_panel(ui, body, &frame_trace);
+    diagnostics_coverage_panel(ui, body, &frame_trace);
+    diagnostics_investigation_plan_panel(ui, body, &frame_trace);
+    diagnostics_session_narrative_panel(ui, body, &session_narrative);
+    diagnostics_contract_panel(ui, body, &frame_trace);
+    diagnostics_invariant_panel(ui, body);
+    diagnostics_invariant_timeline_panel(ui, body, &invariant_timeline);
+    diagnostics_constraint_timeline_panel(ui, body, &constraint_timeline);
+    diagnostics_capture_report_panel(ui, body, &frame_trace, &frame_timeline);
+    diagnostics_hotspots_panel(ui, body, debug_snapshot);
+    diagnostics_node_recommendation_panel(ui, body, &frame_trace, Some(&slow_nodes));
+    diagnostics_slow_nodes_panel(ui, body, &slow_nodes);
+    diagnostics_slow_node_timeline_panel(ui, body, &frame_recorder.slow_node_timeline());
+    diagnostics_slow_frame_panel(ui, body, &frame_trace, state);
+    diagnostics_frame_budget_panel(ui, body);
+    diagnostics_frame_timing_waterfall_panel(ui, body, &frame_trace);
+    diagnostics_frame_bottleneck_panel(ui, body, &frame_trace, state);
+    diagnostics_frame_autopsy_panel(ui, body, &frame_trace);
+    diagnostics_frame_recorder_panel(ui, body, &frame_recorder);
+    diagnostics_frame_timeline_panel(ui, body, &frame_timeline);
+    if let Some(frame_regression) = &frame_regression {
+        diagnostics_frame_regression_panel(ui, body, frame_regression);
+    }
+    if let Some(fix_verification) = &fix_verification {
+        diagnostics_fix_verification_panel(ui, body, fix_verification);
+    }
+    diagnostics_performance_timeline_panel(ui, body, &performance_timeline);
+    diagnostics_why_trace_panel(ui, body, &why_trace);
+    diagnostics_why_timeline_panel(ui, body, &why_timeline);
+    diagnostics_node_frame_history_panel(ui, body, &frame_samples);
+    diagnostics_node_change_panel(ui, body, &frame_samples);
+    diagnostics_cache_reuse_panel(ui, body);
+    diagnostics_layout_movement_panel(ui, body, state, debug_snapshot);
+    diagnostics_layout_jank_timeline_panel(ui, body, &layout_jank_timeline);
+    diagnostics_layout_cost_panel(ui, body, debug_snapshot);
+    diagnostics_layout_cost_timeline_panel(ui, body, &layout_cost_timeline);
+    diagnostics_layout_pressure_panel(ui, body, debug_snapshot);
+    diagnostics_layout_pressure_timeline_panel(ui, body, &layout_pressure_timeline);
+    diagnostics_layout_cost_autopsy_panel(ui, body, debug_snapshot);
+    diagnostics_layout_tree_panel(ui, body, debug_snapshot);
+    diagnostics_node_search_panel(ui, body, debug_snapshot);
+    diagnostics_focus_panel(ui, body, state);
+    diagnostics_focus_timeline_panel(ui, body, &focus_timeline);
     diagnostics_selected_node_panel(ui, body, debug_snapshot);
+    diagnostics_layout_cause_panel(ui, body, debug_snapshot);
+    diagnostics_layout_autopsy_panel(ui, body, debug_snapshot);
+    diagnostics_style_compare_panel(ui, body, debug_snapshot);
+    diagnostics_clip_scroll_panel(ui, body);
+    diagnostics_clip_chain_panel(ui, body);
+    diagnostics_clip_chain_timeline_panel(ui, body);
+    diagnostics_scroll_range_panel(ui, body);
+    diagnostics_wheel_route_panel(ui, body);
+    diagnostics_scroll_timeline_panel(ui, body);
+    diagnostics_responsive_layout_panel(ui, body, state);
+    diagnostics_node_explanation_panel(ui, body, state, debug_snapshot, &resource_report);
+    diagnostics_inspect_node_panel(ui, body, state, debug_snapshot, &resource_report);
+    diagnostics_node_provenance_panel(ui, body, debug_snapshot, &resource_report);
+    diagnostics_geometry_preview(ui, body, state, debug_snapshot);
+    diagnostics_visibility_panel(ui, body);
+    diagnostics_visibility_timeline_panel(ui, body);
+    diagnostics_hitbox_map_panel(ui, body);
+    diagnostics_hitbox_timeline_panel(ui, body, &hitbox_timeline);
+    diagnostics_hit_targets_panel(ui, body);
+    diagnostics_hitbox_occlusion_panel(ui, body);
+    diagnostics_hitbox_occlusion_timeline_panel(ui, body, &hitbox_occlusion_timeline);
+    diagnostics_paint_hit_mismatch_panel(ui, body);
+    diagnostics_paint_hit_mismatch_timeline_panel(ui, body);
+    diagnostics_overlap_report_panel(ui, body, state);
+    diagnostics_overlap_timeline_panel(ui, body, &overlap_timeline);
+    diagnostics_overlap_autopsy_panel(ui, body, state);
+    diagnostics_pointer_probe_panel(ui, body, state);
+    diagnostics_pointer_session_panel(ui, body, &pointer_session);
+    diagnostics_pointer_autopsy_panel(ui, body, state);
+    diagnostics_point_autopsy_panel(ui, body, state);
+    diagnostics_inspect_point_panel(ui, body, state);
+    diagnostics_interaction_state_panel(ui, body, state);
+    diagnostics_interaction_state_timeline_panel(ui, body, &interaction_state_timeline);
+    diagnostics_shortcut_route_panel(ui, body);
+    diagnostics_action_map_panel(ui, body, state);
+    diagnostics_action_dispatch_panel(ui, body);
+    diagnostics_action_map_timeline_panel(ui, body, &action_map_timeline);
+    diagnostics_drag_affordance_panel(ui, body);
+    diagnostics_interaction_affordance_panel(ui, body);
+    diagnostics_interaction_affordance_timeline_panel(ui, body, &interaction_affordance_timeline);
+    diagnostics_paint_order_panel(ui, body, state);
+    diagnostics_stacking_order_panel(ui, body, state);
+    diagnostics_stacking_order_timeline_panel(ui, body);
+    diagnostics_render_layers_panel(ui, body, state);
+    diagnostics_render_layer_timeline_panel(ui, body);
+    diagnostics_paint_overdraw_panel(ui, body, state);
+    diagnostics_paint_overdraw_timeline_panel(ui, body, state);
+    diagnostics_paint_batches_panel(ui, body, state);
+    diagnostics_paint_batch_timeline_panel(ui, body);
+    diagnostics_visual_effects_panel(ui, body);
+    diagnostics_visual_effect_timeline_panel(ui, body);
+    diagnostics_bounds_autopsy_panel(ui, body);
+    diagnostics_text_fit_panel(ui, body);
+    diagnostics_text_fit_timeline_panel(ui, body);
+    diagnostics_text_layout_panel(ui, body, state);
+    diagnostics_text_style_panel(ui, body, state);
+    diagnostics_text_input_state_panel(ui, body);
+    diagnostics_text_input_event_panel(ui, body);
+    diagnostics_text_localization_panel(ui, body);
+    diagnostics_text_contrast_panel(ui, body);
+    diagnostics_event_route_panel(ui, body, state);
+    diagnostics_frame_diff_panel(ui, body, state, debug_snapshot);
+    diagnostics_constraint_panel(ui, body, debug_snapshot);
+    diagnostics_resource_panel(ui, body, &resource_report);
+    diagnostics_resource_timeline_panel(ui, body);
+    diagnostics_timing_panel(ui, body);
+    diagnostics_dirty_state_panel(ui, body);
+    diagnostics_widget_state_retention_panel(ui, body);
+    diagnostics_invalidation_blame_panel(ui, body);
+    diagnostics_invalidation_blast_panel(ui, body);
+    diagnostics_invalidation_timeline_panel(ui, body);
+    diagnostics_animation_activity_panel(ui, body, debug_snapshot);
+    diagnostics_animation_activity_timeline_panel(ui, body, &animation_activity_timeline);
     diagnostics_animation_panel(ui, body, state, debug_snapshot);
 
     widgets::label(
@@ -8470,6 +8976,8 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
         &debug_snapshot,
         overlay_options,
     );
+    diagnostics_accessibility_tree_panel(ui, body, debug_snapshot);
+    diagnostics_accessibility_timeline_panel(ui, body);
     diagnostics_accessibility_details(ui, body, debug_snapshot);
 
     let diagnostic_columns = ui.add_child(
@@ -8508,6 +9016,4409 @@ fn diagnostics_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseSt
 
     let theme_snapshot = DebugThemeSnapshot::from_theme(&Theme::dark());
     diagnostics_theme_panel(ui, theme_column, &theme_snapshot);
+}
+
+fn diagnostics_frame_trace_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugFrameTrace) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.trace.panel", "Frame trace");
+    ext_widgets::frame_trace_panel(
+        ui,
+        panel,
+        "diagnostics.trace",
+        trace,
+        ext_widgets::FrameTracePanelOptions {
+            action_prefix: Some("diagnostics.trace".to_owned()),
+            max_route_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_issue_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugFrameTrace) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.issues.panel", "Issue triage");
+    let report = DebugIssueReport::from_frame_trace(trace);
+    ext_widgets::debug_issue_panel(
+        ui,
+        panel,
+        "diagnostics.issues",
+        &report,
+        ext_widgets::DebugIssuePanelOptions {
+            action_prefix: Some("diagnostics.issues".to_owned()),
+            max_issue_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_finding_inbox_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugFrameTrace) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.findings.panel", "Finding inbox");
+    let inbox = DebugFindingInboxTrace::from_frame_trace(trace);
+    ext_widgets::debug_finding_inbox_panel(
+        ui,
+        panel,
+        "diagnostics.findings",
+        &inbox,
+        ext_widgets::DebugFindingInboxPanelOptions {
+            action_prefix: Some("diagnostics.findings".to_owned()),
+            max_finding_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_health_score_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugHealthScoreTrace,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.health.panel", "Health score");
+    ext_widgets::debug_health_score_panel(
+        ui,
+        panel,
+        "diagnostics.health",
+        trace,
+        ext_widgets::DebugHealthScorePanelOptions {
+            action_prefix: Some("diagnostics.health".to_owned()),
+            max_area_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_root_cause_cluster_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugRootCauseClusterTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.root_causes.panel",
+        "Root-cause clusters",
+    );
+    ext_widgets::root_cause_cluster_panel(
+        ui,
+        panel,
+        "diagnostics.root_causes",
+        trace,
+        ext_widgets::RootCauseClusterPanelOptions {
+            action_prefix: Some("diagnostics.root_causes".to_owned()),
+            max_cluster_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_root_cause_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugRootCauseTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.root_cause_timeline.panel",
+        "Root-cause timeline",
+    );
+    ext_widgets::root_cause_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.root_cause_timeline",
+        trace,
+        ext_widgets::RootCauseTimelinePanelOptions {
+            action_prefix: Some("diagnostics.root_cause_timeline".to_owned()),
+            max_cluster_rows: 8,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_issue_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugIssueTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.issue_timeline.panel",
+        "Issue timeline",
+    );
+    ext_widgets::issue_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.issue_timeline",
+        trace,
+        ext_widgets::IssueTimelinePanelOptions {
+            action_prefix: Some("diagnostics.issue_timeline".to_owned()),
+            max_source_rows: 8,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_question_guide_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFrameTrace,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.questions.panel", "Question guide");
+    let guide = DebugQuestionGuideTrace::from_frame_trace(trace);
+    ext_widgets::question_guide_panel(
+        ui,
+        panel,
+        "diagnostics.questions",
+        &guide,
+        ext_widgets::QuestionGuidePanelOptions {
+            action_prefix: Some("diagnostics.questions".to_owned()),
+            max_question_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_panel_recommendation_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFrameTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.panel_recommendations.panel",
+        "Panel recommendations",
+    );
+    let recommendations = DebugPanelRecommendationTrace::from_frame_trace(trace);
+    ext_widgets::debug_panel_recommendation_panel(
+        ui,
+        panel,
+        "diagnostics.panel_recommendations",
+        &recommendations,
+        ext_widgets::DebugPanelRecommendationPanelOptions {
+            action_prefix: Some("diagnostics.panel_recommendations".to_owned()),
+            max_recommendation_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_overlay_recommendation_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFrameTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.overlay_recommendations.panel",
+        "Overlay recommendations",
+    );
+    let recommendations = DebugOverlayRecommendationTrace::from_frame_trace(trace);
+    ext_widgets::overlay_recommendation_panel(
+        ui,
+        panel,
+        "diagnostics.overlay_recommendations",
+        &recommendations,
+        ext_widgets::OverlayRecommendationPanelOptions {
+            action_prefix: Some("diagnostics.overlay_recommendations".to_owned()),
+            max_overlay_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_coverage_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugFrameTrace) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.coverage.panel",
+        "Diagnostics coverage",
+    );
+    let coverage = DebugDiagnosticsCoverageTrace::from_frame_trace(trace);
+    ext_widgets::diagnostics_coverage_panel(
+        ui,
+        panel,
+        "diagnostics.coverage",
+        &coverage,
+        ext_widgets::DiagnosticsCoveragePanelOptions {
+            action_prefix: Some("diagnostics.coverage".to_owned()),
+            max_area_rows: 10,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_investigation_plan_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFrameTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.investigation.panel",
+        "Investigation plan",
+    );
+    let plan = DebugInvestigationPlanTrace::from_frame_trace(trace);
+    ext_widgets::investigation_plan_panel(
+        ui,
+        panel,
+        "diagnostics.investigation",
+        &plan,
+        ext_widgets::InvestigationPlanPanelOptions {
+            action_prefix: Some("diagnostics.investigation".to_owned()),
+            max_step_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_session_narrative_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugSessionNarrativeTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.session_narrative.panel",
+        "Session narrative",
+    );
+    ext_widgets::debug_session_narrative_panel(
+        ui,
+        panel,
+        "diagnostics.session_narrative",
+        trace,
+        ext_widgets::DebugSessionNarrativePanelOptions {
+            action_prefix: Some("diagnostics.session_narrative".to_owned()),
+            max_event_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_contract_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugFrameTrace) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.contract.panel", "Debug contract");
+    let mut text_sample = diagnostics_text_fit_sample_document();
+    text_sample
+        .compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics contract text fit layout");
+    let text_fit = DebugTextFitTrace::from_document(&text_sample, &mut ApproxTextMeasurer);
+    let cache = diagnostics_cache_reuse_sample();
+    let report =
+        DebugContractReport::from_frame_trace_with_context(trace, Some(&text_fit), Some(&cache));
+    ext_widgets::debug_contract_panel(
+        ui,
+        panel,
+        "diagnostics.contract",
+        &report,
+        ext_widgets::DebugContractPanelOptions {
+            action_prefix: Some("diagnostics.contract".to_owned()),
+            max_check_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_invariant_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.invariants.panel", "UI invariants");
+    let mut sample = diagnostics_invariant_sample_document();
+    sample
+        .compute_layout(UiSize::new(260.0, 150.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics invariant sample layout");
+    let trace = DebugInvariantTrace::from_document(&sample, &mut ApproxTextMeasurer);
+    ext_widgets::debug_invariant_panel(
+        ui,
+        panel,
+        "diagnostics.invariants",
+        &trace,
+        ext_widgets::DebugInvariantPanelOptions {
+            action_prefix: Some("diagnostics.invariants".to_owned()),
+            max_invariant_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_invariant_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugInvariantTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.invariant_timeline.panel",
+        "Invariant timeline",
+    );
+    ext_widgets::invariant_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.invariant_timeline",
+        trace,
+        ext_widgets::InvariantTimelinePanelOptions {
+            action_prefix: Some("diagnostics.invariant_timeline".to_owned()),
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_constraint_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugConstraintTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.constraint_timeline.panel",
+        "Constraint timeline",
+    );
+    ext_widgets::constraint_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.constraint_timeline",
+        trace,
+        ext_widgets::ConstraintTimelinePanelOptions {
+            action_prefix: Some("diagnostics.constraint_timeline".to_owned()),
+            max_frame_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_invariant_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(260.0, 150.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.invariants.back",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 92.0, 30.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.invariants.back.activate")
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.invariants.front",
+            UiNodeStyle::new(operad::layout::absolute(44.0, 8.0, 92.0, 30.0)).with_z_index(8),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.invariants.front.activate")
+        .with_visual(UiVisual::panel(
+            color(168, 94, 52),
+            Some(StrokeStyle::new(color(255, 203, 96), 1.0)),
+            5.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.invariants.blank",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 48.0, 72.0, 28.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.invariants.blank.activate"),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.invariants.zero",
+            UiNodeStyle::new(operad::layout::absolute(84.0, 48.0, 0.0, 24.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.invariants.zero.activate"),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.invariants.passive_action",
+            UiNodeStyle::new(operad::layout::absolute(112.0, 48.0, 72.0, 28.0)),
+        )
+        .with_action("diagnostics.invariants.passive.activate")
+        .with_visual(UiVisual::panel(
+            color(46, 112, 84),
+            Some(StrokeStyle::new(color(111, 202, 142), 1.0)),
+            5.0,
+        )),
+    );
+    let mut style = text(13.0, color(222, 230, 240));
+    style.wrap = TextWrap::None;
+    sample.add_child(
+        sample.root(),
+        UiNode::text(
+            "diagnostics.invariants.label",
+            "Very long localized toolbar label",
+            style,
+            operad::layout::absolute(0.0, 92.0, 64.0, 18.0),
+        ),
+    );
+    sample
+}
+
+fn diagnostics_capture_report_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFrameTrace,
+    timeline: &DebugFrameTimelineTrace,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.capture.panel", "Capture report");
+    let report = DebugCaptureReport::from_frame_trace_and_timeline(trace, Some(timeline));
+    ext_widgets::debug_capture_report_panel(
+        ui,
+        panel,
+        "diagnostics.capture",
+        &report,
+        ext_widgets::DebugCaptureReportPanelOptions {
+            action_prefix: Some("diagnostics.capture".to_owned()),
+            max_section_rows: 5,
+            max_issue_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_hotspots_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.hotspots.panel", "Node hotspots");
+    let trace = DebugNodeHotspotTrace::from_snapshot(snapshot);
+    ext_widgets::node_hotspots_panel(
+        ui,
+        panel,
+        "diagnostics.hotspots",
+        &trace,
+        ext_widgets::NodeHotspotsPanelOptions {
+            action_prefix: Some("diagnostics.hotspots".to_owned()),
+            max_hotspot_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_node_recommendation_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFrameTrace,
+    slow_nodes: Option<&DebugSlowNodeTrace>,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.node_recommendations.panel",
+        "Node recommendations",
+    );
+    let recommendations =
+        DebugNodeRecommendationTrace::from_frame_trace_with_slow_nodes(trace, slow_nodes);
+    ext_widgets::node_recommendation_panel(
+        ui,
+        panel,
+        "diagnostics.node_recommendations",
+        &recommendations,
+        ext_widgets::NodeRecommendationPanelOptions {
+            action_prefix: Some("diagnostics.node_recommendations".to_owned()),
+            max_node_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_slow_nodes_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugSlowNodeTrace) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.slow_nodes.panel", "Slow nodes");
+    ext_widgets::slow_nodes_panel(
+        ui,
+        panel,
+        "diagnostics.slow_nodes",
+        trace,
+        ext_widgets::SlowNodesPanelOptions {
+            action_prefix: Some("diagnostics.slow_nodes".to_owned()),
+            max_node_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_slow_node_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugSlowNodeTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.slow_node_timeline.panel",
+        "Slow node timeline",
+    );
+    ext_widgets::slow_node_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.slow_node_timeline",
+        trace,
+        ext_widgets::SlowNodeTimelinePanelOptions {
+            action_prefix: Some("diagnostics.slow_node_timeline".to_owned()),
+            max_node_rows: 5,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_slow_node_trace_sample(state: &ShowcaseState) -> DebugSlowNodeTrace {
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    DebugSlowNodeTrace::from_document(&sample, &mut ApproxTextMeasurer)
+}
+
+fn diagnostics_layout_tree_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.tree.panel", "Layout tree");
+    let tree = DebugLayoutTree::from_snapshot(snapshot);
+    ext_widgets::debug_layout_tree_panel(
+        ui,
+        panel,
+        "diagnostics.tree",
+        &tree,
+        ext_widgets::DebugLayoutTreePanelOptions {
+            action_prefix: Some("diagnostics.tree".to_owned()),
+            max_node_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_node_search_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.node_search.panel", "Node search");
+    let trace = DebugNodeSearchTrace::from_snapshot(snapshot, "preview");
+    ext_widgets::node_search_panel(
+        ui,
+        panel,
+        "diagnostics.node_search",
+        &trace,
+        ext_widgets::NodeSearchPanelOptions {
+            action_prefix: Some("diagnostics.node_search".to_owned()),
+            max_match_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_focus_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.focus.panel", "Focus navigation");
+    let mut sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let focused = sample.nodes().iter().enumerate().find_map(|(index, node)| {
+        (node.name() == "diagnostics.sample.preview").then_some(UiNodeId::from_index(index))
+    });
+    sample.set_focus_state(UiFocusState {
+        focused,
+        ..Default::default()
+    });
+    let trace = DebugFocusNavigationTrace::from_document(&sample, &mut ApproxTextMeasurer);
+    ext_widgets::focus_navigation_panel(
+        ui,
+        panel,
+        "diagnostics.focus",
+        &trace,
+        ext_widgets::FocusNavigationPanelOptions {
+            action_prefix: Some("diagnostics.focus".to_owned()),
+            max_candidate_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_focus_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFocusNavigationTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.focus_timeline.panel",
+        "Focus timeline",
+    );
+    ext_widgets::focus_navigation_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.focus_timeline",
+        trace,
+        ext_widgets::FocusNavigationTimelinePanelOptions {
+            action_prefix: Some("diagnostics.focus_timeline".to_owned()),
+            max_candidate_rows: 6,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_focus_navigation_timeline_sample(
+    state: &ShowcaseState,
+) -> DebugFocusNavigationTimelineTrace {
+    fn frame(state: &ShowcaseState, focused_name: &str, frame_index: u64) -> DebugFrameTrace {
+        let mut sample = diagnostics_sample_document_for(
+            state.diagnostics_animation_hover,
+            state.diagnostics_animation_active,
+        );
+        let focused = sample.nodes().iter().enumerate().find_map(|(index, node)| {
+            (node.name() == focused_name).then_some(UiNodeId::from_index(index))
+        });
+        sample.set_focus_state(UiFocusState {
+            focused,
+            ..Default::default()
+        });
+        DebugFrameTrace::from_document(
+            &sample,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("focus", UiSize::new(320.0, 180.0))
+                .frame_index(frame_index),
+        )
+    }
+
+    DebugFocusNavigationTimelineTrace::from_traces(
+        [
+            frame(state, "diagnostics.sample.preview", 1),
+            frame(state, "diagnostics.sample.hotspot", 2),
+            frame(state, "diagnostics.sample.preview", 3),
+        ]
+        .iter(),
+    )
+}
+
+fn diagnostics_layout_cost_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.layout_cost.panel", "Layout cost");
+    let trace = DebugLayoutCostTrace::from_snapshot(snapshot);
+    ext_widgets::layout_cost_panel(
+        ui,
+        panel,
+        "diagnostics.layout_cost",
+        &trace,
+        ext_widgets::LayoutCostPanelOptions {
+            action_prefix: Some("diagnostics.layout_cost".to_owned()),
+            max_cost_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_layout_cost_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugLayoutCostTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.layout_cost_timeline.panel",
+        "Layout cost timeline",
+    );
+    ext_widgets::layout_cost_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.layout_cost_timeline",
+        trace,
+        ext_widgets::LayoutCostTimelinePanelOptions {
+            action_prefix: Some("diagnostics.layout_cost_timeline".to_owned()),
+            max_cost_rows: 5,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_layout_pressure_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.layout_pressure.panel",
+        "Layout pressure",
+    );
+    let trace = DebugLayoutPressureTrace::from_snapshot(snapshot);
+    ext_widgets::layout_pressure_panel(
+        ui,
+        panel,
+        "diagnostics.layout_pressure",
+        &trace,
+        ext_widgets::LayoutPressurePanelOptions {
+            action_prefix: Some("diagnostics.layout_pressure".to_owned()),
+            max_pressure_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_layout_pressure_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugLayoutPressureTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.layout_pressure_timeline.panel",
+        "Layout pressure timeline",
+    );
+    ext_widgets::layout_pressure_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.layout_pressure_timeline",
+        trace,
+        ext_widgets::LayoutPressureTimelinePanelOptions {
+            action_prefix: Some("diagnostics.layout_pressure_timeline".to_owned()),
+            max_pressure_rows: 5,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_layout_cost_autopsy_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let trace = DebugLayoutCostTrace::from_snapshot(snapshot);
+    let Some(autopsy) = DebugLayoutCostAutopsyTrace::from_layout_cost_trace(&trace, None) else {
+        return;
+    };
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.layout_cost_autopsy.panel",
+        "Layout cost autopsy",
+    );
+    ext_widgets::layout_cost_autopsy_panel(
+        ui,
+        panel,
+        "diagnostics.layout_cost_autopsy",
+        &autopsy,
+        ext_widgets::LayoutCostAutopsyPanelOptions {
+            action_prefix: Some("diagnostics.layout_cost_autopsy".to_owned()),
+            max_source_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_trace_sample(
+    state: &ShowcaseState,
+    resource_report: &DebugResourceReport,
+) -> DebugFrameTrace {
+    let mut sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    sample
+        .compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics trace sample layout");
+    let route = DebugEventRouteTrace::from_pointer_event(
+        &sample,
+        DebugPointerRouteKind::Down,
+        UiPoint::new(58.0, 44.0),
+    );
+    DebugFrameTrace::from_document(
+        &sample,
+        &mut ApproxTextMeasurer,
+        DebugFrameTraceContext::new("diagnostics", UiSize::new(320.0, 180.0))
+            .frame_index(42)
+            .timing(diagnostics_frame_timing_sample())
+            .timing_budget(std::time::Duration::from_millis(16))
+            .dirty_flags(DirtyFlags {
+                layout: true,
+                input: true,
+                paint: true,
+                text_measurement: true,
+                ..DirtyFlags::NONE
+            })
+            .route(route)
+            .resources(resource_report.clone())
+            .selected_node("diagnostics.sample.preview"),
+    )
+}
+
+fn diagnostics_layout_cause_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.layout.panel", "Layout cause");
+    if let Some(trace) =
+        DebugLayoutCauseTrace::from_snapshot(snapshot, Some("diagnostics.sample.preview"))
+    {
+        ext_widgets::layout_cause_panel(
+            ui,
+            panel,
+            "diagnostics.layout",
+            &trace,
+            ext_widgets::LayoutCausePanelOptions {
+                action_prefix: Some("diagnostics.layout".to_owned()),
+                max_chain_rows: 4,
+                max_sibling_rows: 3,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn diagnostics_layout_autopsy_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.layout_autopsy.panel",
+        "Layout autopsy",
+    );
+    if let Some(trace) =
+        DebugLayoutAutopsyTrace::from_snapshot(snapshot, Some("diagnostics.sample.preview"))
+    {
+        ext_widgets::layout_autopsy_panel(
+            ui,
+            panel,
+            "diagnostics.layout_autopsy",
+            &trace,
+            ext_widgets::LayoutAutopsyPanelOptions {
+                action_prefix: Some("diagnostics.layout_autopsy".to_owned()),
+                max_source_rows: 8,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn diagnostics_style_compare_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let Some(trace) = DebugNodeStyleCompareTrace::from_snapshot(
+        snapshot,
+        "diagnostics.sample.preview",
+        "diagnostics.sample.hotspot",
+    ) else {
+        return;
+    };
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.style_compare.panel",
+        "Node style compare",
+    );
+    ext_widgets::node_style_compare_panel(
+        ui,
+        panel,
+        "diagnostics.style_compare",
+        &trace,
+        ext_widgets::NodeStyleComparePanelOptions {
+            action_prefix: Some("diagnostics.style_compare".to_owned()),
+            max_difference_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_clip_scroll_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.clip.panel", "Clip and scroll");
+    let mut sample = diagnostics_clip_scroll_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics clip sample layout");
+    let snapshot = DebugInspectorSnapshot::from_document(&sample, &mut ApproxTextMeasurer);
+    if let Some(trace) =
+        DebugClipScrollTrace::from_snapshot(&snapshot, Some("diagnostics.clip.item"))
+    {
+        ext_widgets::clip_scroll_panel(
+            ui,
+            panel,
+            "diagnostics.clip",
+            &trace,
+            ext_widgets::ClipScrollPanelOptions {
+                action_prefix: Some("diagnostics.clip".to_owned()),
+                max_chain_rows: 5,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn diagnostics_clip_chain_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.clip_chain.panel", "Clip chain");
+    let mut sample = diagnostics_clip_scroll_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics clip chain sample layout");
+    let trace = DebugClipChainTrace::from_document(&sample);
+    ext_widgets::clip_chain_panel(
+        ui,
+        panel,
+        "diagnostics.clip_chain",
+        &trace,
+        ext_widgets::ClipChainPanelOptions {
+            action_prefix: Some("diagnostics.clip_chain".to_owned()),
+            max_clip_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_clip_chain_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.clip_chain_timeline.panel",
+        "Clip chain timeline",
+    );
+    let trace = diagnostics_clip_chain_timeline_sample();
+    ext_widgets::clip_chain_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.clip_chain_timeline",
+        &trace,
+        ext_widgets::ClipChainTimelinePanelOptions {
+            action_prefix: Some("diagnostics.clip_chain_timeline".to_owned()),
+            max_clip_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_clip_chain_timeline_sample() -> DebugClipChainTimelineTrace {
+    fn frame(item_y: f32, frame_index: u64) -> DebugFrameTrace {
+        let mut sample = diagnostics_clip_scroll_timeline_sample_document(20.0, item_y);
+        sample
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics clip chain timeline layout");
+        DebugFrameTrace::from_document(
+            &sample,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("clip", UiSize::new(220.0, 120.0)).frame_index(frame_index),
+        )
+    }
+
+    let first = frame(8.0, 30);
+    let second = frame(30.0, 31);
+    let third = frame(8.0, 32);
+    DebugClipChainTimelineTrace::from_traces([&first, &second, &third])
+}
+
+fn diagnostics_scroll_range_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.scroll.panel", "Scroll ranges");
+    let mut sample = diagnostics_clip_scroll_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics scroll sample layout");
+    let snapshot = DebugInspectorSnapshot::from_document(&sample, &mut ApproxTextMeasurer);
+    let trace = DebugScrollRangeTrace::from_snapshot(&snapshot);
+    ext_widgets::scroll_range_panel(
+        ui,
+        panel,
+        "diagnostics.scroll",
+        &trace,
+        ext_widgets::ScrollRangePanelOptions {
+            action_prefix: Some("diagnostics.scroll".to_owned()),
+            max_range_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_wheel_route_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.wheel.panel", "Wheel route");
+    let mut sample = diagnostics_wheel_route_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 130.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics wheel route layout");
+    let trace = DebugWheelRouteTrace::from_document(
+        &sample,
+        UiWheelEvent::pixels(UiPoint::new(32.0, 30.0), UiPoint::new(0.0, 28.0)),
+    );
+    ext_widgets::wheel_route_panel(
+        ui,
+        panel,
+        "diagnostics.wheel",
+        &trace,
+        ext_widgets::WheelRoutePanelOptions {
+            action_prefix: Some("diagnostics.wheel".to_owned()),
+            max_candidate_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_wheel_route_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 130.0));
+    let mut back_style =
+        UiNodeStyle::new(operad::layout::absolute(24.0, 20.0, 116.0, 64.0)).with_z_index(1);
+    back_style.set_clip(ClipBehavior::Clip);
+    let back_scroll = sample.add_child(
+        sample.root(),
+        UiNode::container("diagnostics.wheel.back_scroll", back_style)
+            .with_scroll(ScrollAxes::VERTICAL)
+            .with_visual(UiVisual::panel(
+                color(32, 68, 104),
+                Some(StrokeStyle::new(color(82, 128, 172), 1.0)),
+                4.0,
+            )),
+    );
+    sample.add_child(
+        back_scroll,
+        UiNode::container(
+            "diagnostics.wheel.content",
+            LayoutStyle::size(116.0, 144.0).with_flex_shrink(0.0),
+        ),
+    );
+    let front = UiNode::container(
+        "diagnostics.wheel.front_panel",
+        UiNodeStyle::new(operad::layout::absolute(12.0, 12.0, 148.0, 88.0)).with_z_index(10),
+    )
+    .with_visual(UiVisual::panel(
+        color(44, 50, 58),
+        Some(StrokeStyle::new(color(104, 116, 132), 1.0)),
+        5.0,
+    ));
+    sample.add_child(sample.root(), front);
+    sample
+}
+
+fn diagnostics_scroll_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.scroll_timeline.panel",
+        "Scroll timeline",
+    );
+    let trace = diagnostics_scroll_timeline_sample();
+    ext_widgets::scroll_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.scroll_timeline",
+        &trace,
+        ext_widgets::ScrollTimelinePanelOptions {
+            action_prefix: Some("diagnostics.scroll_timeline".to_owned()),
+            max_node_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_scroll_timeline_sample() -> DebugScrollTimelineTrace {
+    fn frame(item_width: f32, offset: UiPoint, frame_index: u64) -> DebugFrameTrace {
+        let mut document = diagnostics_clip_scroll_sample_document_with_item_width(item_width);
+        document
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics scroll timeline layout");
+        if let Some(scroll_node) = document
+            .nodes()
+            .iter()
+            .position(|node| node.name() == "diagnostics.clip.viewport")
+            .map(UiNodeId::from_index)
+        {
+            document.set_scroll_offset(scroll_node, offset);
+        }
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("scroll", UiSize::new(220.0, 120.0))
+                .frame_index(frame_index),
+        )
+    }
+
+    let first = frame(78.0, UiPoint::new(0.0, 0.0), 40);
+    let second = frame(180.0, UiPoint::new(28.0, 8.0), 41);
+    let third = frame(72.0, UiPoint::new(0.0, 0.0), 42);
+    DebugScrollTimelineTrace::from_traces([&first, &second, &third])
+}
+
+fn diagnostics_responsive_layout_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    state: &ShowcaseState,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.responsive.panel",
+        "Responsive triage",
+    );
+    let cramped = diagnostics_sample_snapshot_with_preview_size(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+        52.0,
+        18.0,
+    );
+    let crowded = diagnostics_sample_snapshot_with_preview_size(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+        196.0,
+        34.0,
+    );
+    let comfortable = diagnostics_sample_snapshot_with_preview_size(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+        96.0,
+        32.0,
+    );
+    let trace = DebugResponsiveLayoutTrace::from_snapshots([
+        (UiSize::new(280.0, 180.0), &cramped),
+        (UiSize::new(360.0, 200.0), &crowded),
+        (UiSize::new(520.0, 240.0), &comfortable),
+    ]);
+    ext_widgets::responsive_layout_panel(
+        ui,
+        panel,
+        "diagnostics.responsive",
+        &trace,
+        ext_widgets::ResponsiveLayoutPanelOptions {
+            action_prefix: Some("diagnostics.responsive".to_owned()),
+            max_viewport_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_clip_scroll_sample_document() -> UiDocument {
+    diagnostics_clip_scroll_sample_document_with_item_width(78.0)
+}
+
+fn diagnostics_clip_scroll_sample_document_with_item_width(item_width: f32) -> UiDocument {
+    diagnostics_clip_scroll_timeline_sample_document(item_width, 26.0)
+}
+
+fn diagnostics_clip_scroll_timeline_sample_document(item_width: f32, item_y: f32) -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    let mut viewport_style = UiNodeStyle::from(
+        LayoutStyle::new()
+            .with_width(96.0)
+            .with_height(48.0)
+            .with_flex_shrink(0.0),
+    );
+    viewport_style.set_clip(ClipBehavior::Clip);
+    let viewport = sample.add_child(
+        sample.root(),
+        UiNode::container("diagnostics.clip.viewport", viewport_style)
+            .with_scroll(ScrollAxes::BOTH)
+            .with_visual(UiVisual::panel(
+                color(18, 24, 32),
+                Some(StrokeStyle::new(color(62, 77, 98), 1.0)),
+                4.0,
+            )),
+    );
+    sample.add_child(
+        viewport,
+        UiNode::container(
+            "diagnostics.clip.item",
+            UiNodeStyle::new(operad::layout::absolute(70.0, item_y, item_width, 30.0)),
+        )
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            4.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_timing_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.timing.panel", "Frame timing");
+    ext_widgets::frame_timing_panel(
+        ui,
+        panel,
+        "diagnostics.timing",
+        &diagnostics_frame_timing_sample(),
+        ext_widgets::FrameTimingPanelOptions {
+            budget: Some(std::time::Duration::from_millis(16)),
+            action_prefix: Some("diagnostics.timing".to_owned()),
+            max_stage_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_budget_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.budget.panel", "Frame budget");
+    let trace = DebugFrameBudgetTrace::from_frame_timing(
+        &diagnostics_frame_timing_sample(),
+        Some(std::time::Duration::from_millis(16)),
+        diagnostics_dirty_state_sample(),
+    );
+    ext_widgets::frame_budget_panel(
+        ui,
+        panel,
+        "diagnostics.budget",
+        &trace,
+        ext_widgets::FrameBudgetPanelOptions {
+            action_prefix: Some("diagnostics.budget".to_owned()),
+            max_stage_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_timing_waterfall_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    frame_trace: &DebugFrameTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.waterfall.panel",
+        "Timing waterfall",
+    );
+    let trace = DebugFrameTimingWaterfallTrace::from_trace(frame_trace);
+    ext_widgets::frame_timing_waterfall_panel(
+        ui,
+        panel,
+        "diagnostics.waterfall",
+        &trace,
+        ext_widgets::FrameTimingWaterfallPanelOptions {
+            action_prefix: Some("diagnostics.waterfall".to_owned()),
+            max_section_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_slow_frame_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    frame_trace: &DebugFrameTrace,
+    state: &ShowcaseState,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.slow_frame.panel", "Slow frame");
+    let slow_nodes = diagnostics_slow_node_trace_sample(state);
+    let cache = diagnostics_cache_reuse_sample();
+    let trace = DebugSlowFrameTrace::from_trace_with_slow_nodes_and_cache(
+        frame_trace,
+        Some(&slow_nodes),
+        Some(&cache),
+    );
+    ext_widgets::slow_frame_panel(
+        ui,
+        panel,
+        "diagnostics.slow_frame",
+        &trace,
+        ext_widgets::SlowFramePanelOptions {
+            action_prefix: Some("diagnostics.slow_frame".to_owned()),
+            max_record_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_bottleneck_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    frame_trace: &DebugFrameTrace,
+    state: &ShowcaseState,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.bottlenecks.panel",
+        "Frame bottlenecks",
+    );
+    let slow_nodes = diagnostics_slow_node_trace_sample(state);
+    let cache = diagnostics_cache_reuse_sample();
+    let trace = DebugFrameBottleneckTrace::from_trace_with_slow_nodes_and_cache(
+        frame_trace,
+        Some(&slow_nodes),
+        Some(&cache),
+    );
+    ext_widgets::frame_bottleneck_panel(
+        ui,
+        panel,
+        "diagnostics.bottlenecks",
+        &trace,
+        ext_widgets::FrameBottleneckPanelOptions {
+            action_prefix: Some("diagnostics.bottlenecks".to_owned()),
+            max_record_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugFrameTrace) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.autopsy.panel", "Frame autopsy");
+    let cache = diagnostics_cache_reuse_sample();
+    let autopsy = DebugFrameAutopsyTrace::from_trace_with_cache(trace, Some(&cache));
+    ext_widgets::frame_autopsy_panel(
+        ui,
+        panel,
+        "diagnostics.autopsy",
+        &autopsy,
+        ext_widgets::FrameAutopsyPanelOptions {
+            action_prefix: Some("diagnostics.autopsy".to_owned()),
+            max_source_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_recorder_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    recorder: &DebugFrameRecorder,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.recorder.panel", "Frame recorder");
+    ext_widgets::frame_recorder_panel(
+        ui,
+        panel,
+        "diagnostics.recorder",
+        recorder,
+        ext_widgets::FrameRecorderPanelOptions {
+            action_prefix: Some("diagnostics.recorder".to_owned()),
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFrameTimelineTrace,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.timeline.panel", "Frame timeline");
+    ext_widgets::frame_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.timeline",
+        trace,
+        ext_widgets::FrameTimelinePanelOptions {
+            action_prefix: Some("diagnostics.timeline".to_owned()),
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_regression_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFrameRegressionTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.regression.panel",
+        "Frame regression",
+    );
+    ext_widgets::frame_regression_panel(
+        ui,
+        panel,
+        "diagnostics.regression",
+        trace,
+        ext_widgets::FrameRegressionPanelOptions {
+            action_prefix: Some("diagnostics.regression".to_owned()),
+            max_record_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_fix_verification_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugFixVerificationTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.fix_verification.panel",
+        "Fix verification",
+    );
+    ext_widgets::fix_verification_panel(
+        ui,
+        panel,
+        "diagnostics.fix_verification",
+        trace,
+        ext_widgets::FixVerificationPanelOptions {
+            action_prefix: Some("diagnostics.fix_verification".to_owned()),
+            max_record_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_performance_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugPerformanceTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.performance_timeline.panel",
+        "Performance timeline",
+    );
+    ext_widgets::performance_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.performance_timeline",
+        trace,
+        ext_widgets::PerformanceTimelinePanelOptions {
+            action_prefix: Some("diagnostics.performance_timeline".to_owned()),
+            max_stage_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_why_trace_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugWhyTrace) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.why.panel", "Why trace");
+    ext_widgets::why_trace_panel(
+        ui,
+        panel,
+        "diagnostics.why",
+        trace,
+        ext_widgets::WhyTracePanelOptions {
+            action_prefix: Some("diagnostics.why".to_owned()),
+            max_reason_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_why_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugWhyTimelineTrace,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.why_timeline.panel", "Why timeline");
+    ext_widgets::why_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.why_timeline",
+        trace,
+        ext_widgets::WhyTimelinePanelOptions {
+            action_prefix: Some("diagnostics.why_timeline".to_owned()),
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_node_frame_history_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    traces: &[DebugFrameTrace],
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.node_history.panel",
+        "Node frame history",
+    );
+    let trace =
+        DebugNodeFrameHistoryTrace::from_traces("diagnostics.sample.preview", traces.iter());
+    ext_widgets::node_frame_history_panel(
+        ui,
+        panel,
+        "diagnostics.node_history",
+        &trace,
+        ext_widgets::NodeFrameHistoryPanelOptions {
+            action_prefix: Some("diagnostics.node_history".to_owned()),
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_node_change_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    traces: &[DebugFrameTrace],
+) {
+    let Some([before, after]) = traces.windows(2).last() else {
+        return;
+    };
+    let panel = diagnostics_panel(ui, parent, "diagnostics.node_change.panel", "Node change");
+    let trace =
+        DebugNodeChangeTrace::from_frame_traces(before, after, "diagnostics.sample.preview");
+    ext_widgets::node_change_panel(
+        ui,
+        panel,
+        "diagnostics.node_change",
+        &trace,
+        ext_widgets::NodeChangePanelOptions {
+            action_prefix: Some("diagnostics.node_change".to_owned()),
+            max_change_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_trace_samples(
+    state: &ShowcaseState,
+    resource_report: &DebugResourceReport,
+) -> Vec<DebugFrameTrace> {
+    let specs = [
+        (
+            40,
+            0.0,
+            false,
+            FrameTiming::new()
+                .section("tree-build", std::time::Duration::from_micros(700))
+                .section("layout", std::time::Duration::from_micros(1_900))
+                .section("render", std::time::Duration::from_micros(4_100)),
+            DirtyFlags {
+                paint: true,
+                ..DirtyFlags::NONE
+            },
+            DebugResourceReport::default(),
+        ),
+        (
+            41,
+            0.6,
+            false,
+            FrameTiming::new()
+                .section("layout", std::time::Duration::from_micros(4_400))
+                .section("text", std::time::Duration::from_micros(3_200))
+                .section("render", std::time::Duration::from_micros(11_400)),
+            DirtyFlags {
+                layout: true,
+                text_measurement: true,
+                paint: true,
+                ..DirtyFlags::NONE
+            },
+            DebugResourceReport::default(),
+        ),
+        (
+            42,
+            state.diagnostics_animation_hover,
+            state.diagnostics_animation_active,
+            diagnostics_frame_timing_sample(),
+            DirtyFlags {
+                layout: true,
+                input: true,
+                paint: true,
+                text_measurement: true,
+                ..DirtyFlags::NONE
+            },
+            resource_report.clone(),
+        ),
+    ];
+    specs
+        .into_iter()
+        .map(|(frame, hover, active, timing, dirty_flags, resources)| {
+            let mut sample = diagnostics_sample_document_for(hover, active);
+            sample
+                .compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
+                .expect("diagnostics frame timeline sample layout");
+            let route = DebugEventRouteTrace::from_pointer_event(
+                &sample,
+                DebugPointerRouteKind::Down,
+                UiPoint::new(140.0, 22.0),
+            );
+            DebugFrameTrace::from_document(
+                &sample,
+                &mut ApproxTextMeasurer,
+                DebugFrameTraceContext::new("diagnostics", UiSize::new(320.0, 180.0))
+                    .frame_index(frame)
+                    .timing(timing)
+                    .timing_budget(std::time::Duration::from_millis(16))
+                    .dirty_flags(dirty_flags)
+                    .route(route)
+                    .resources(resources)
+                    .selected_node("diagnostics.sample.preview"),
+            )
+        })
+        .collect::<Vec<_>>()
+}
+
+fn diagnostics_cache_reuse_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.cache.panel", "Cache reuse");
+    let trace = diagnostics_cache_reuse_sample();
+    ext_widgets::cache_reuse_panel(
+        ui,
+        panel,
+        "diagnostics.cache",
+        &trace,
+        ext_widgets::CacheReusePanelOptions {
+            action_prefix: Some("diagnostics.cache".to_owned()),
+            max_cache_rows: 6,
+            max_display_list_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_cache_reuse_sample() -> DebugCacheReuseTrace {
+    let performance = PerformanceSnapshot::new(42)
+        .cache(
+            CacheDiagnostic::new("layout")
+                .lookup(true)
+                .lookup(false)
+                .lookup(false),
+        )
+        .cache(
+            CacheDiagnostic::new("shaped-text")
+                .lookup(true)
+                .lookup(true),
+        )
+        .cache(CacheDiagnostic::new("image").lookup(true))
+        .cache(CacheDiagnostic::new("canvas-texture").lookup(true))
+        .cache(
+            CacheDiagnostic::new("display-list")
+                .lookup(true)
+                .lookup(false)
+                .eviction(),
+        );
+    let display_reports = [
+        DisplayListReuseReport {
+            key: DisplayListKey::editor_background("diagnostics", 7),
+            outcome: DisplayListReuseOutcome::Reused,
+            dirty_flags: DirtyFlags::NONE,
+            frame: 42,
+            kind: Some(DisplayListKind::StaticBackground),
+            invalidation: Some(DisplayListInvalidation::STATIC_EDITOR_BACKGROUND),
+            item_count: Some(12),
+            created_frame: Some(35),
+            last_used_frame: Some(41),
+        },
+        DisplayListReuseReport {
+            key: DisplayListKey::new(
+                DisplayListScope::Node(UiNodeId::from_index(4)),
+                "preview",
+                3,
+            ),
+            outcome: DisplayListReuseOutcome::MissDirty,
+            dirty_flags: DirtyFlags {
+                paint: true,
+                ..DirtyFlags::NONE
+            },
+            frame: 42,
+            kind: Some(DisplayListKind::StaticPanel),
+            invalidation: Some(DisplayListInvalidation::STATIC_PANEL),
+            item_count: Some(8),
+            created_frame: Some(40),
+            last_used_frame: Some(41),
+        },
+        DisplayListReuseReport {
+            key: DisplayListKey::new(DisplayListScope::custom("diagnostics"), "old-panel", 1),
+            outcome: DisplayListReuseOutcome::MissEvicted,
+            dirty_flags: DirtyFlags::NONE,
+            frame: 42,
+            kind: None,
+            invalidation: None,
+            item_count: None,
+            created_frame: None,
+            last_used_frame: None,
+        },
+    ];
+    DebugCacheReuseTrace::from_performance_and_display_lists(&performance, &display_reports)
+}
+
+fn diagnostics_frame_timing_sample() -> FrameTiming {
+    FrameTiming::new()
+        .section("tree-build", std::time::Duration::from_micros(900))
+        .section("layout", std::time::Duration::from_micros(2_800))
+        .section("paint", std::time::Duration::from_micros(1_900))
+        .section("batch", std::time::Duration::from_micros(1_100))
+        .section("render", std::time::Duration::from_micros(7_600))
+        .section("gpu-render", std::time::Duration::from_micros(4_200))
+}
+
+fn diagnostics_dirty_state_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.dirty.panel", "Invalidation");
+    let explanation = diagnostics_dirty_state_sample();
+    ext_widgets::dirty_state_panel(
+        ui,
+        panel,
+        "diagnostics.dirty",
+        &explanation,
+        ext_widgets::DirtyStatePanelOptions {
+            action_prefix: Some("diagnostics.dirty".to_owned()),
+            max_invalidation_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_widget_state_retention_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.widget_state.panel", "Widget state");
+    let trace = diagnostics_widget_state_retention_sample();
+    ext_widgets::widget_state_retention_panel(
+        ui,
+        panel,
+        "diagnostics.widget_state",
+        &trace,
+        ext_widgets::WidgetStateRetentionPanelOptions {
+            action_prefix: Some("diagnostics.widget_state".to_owned()),
+            max_state_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_widget_state_retention_sample() -> DebugWidgetStateRetentionTrace {
+    let mut store =
+        operad::state::RetainedWidgetStateStore::new(operad::state::WidgetStateRetention::new(2));
+    let search = operad::state::WidgetKey::document("showcase", "search");
+    let popover = operad::state::WidgetKey::document("showcase", "filter_popover");
+    let popover_key = operad::state::WidgetStateKey::new(popover.clone(), "overlay");
+
+    store.begin_frame([search.clone(), popover.clone()]);
+    store
+        .ensure(
+            search.clone(),
+            operad::state::WidgetStateSlotDescriptor::edit(),
+            operad::state::WidgetStateValue::edit("widgets", 7),
+        )
+        .expect("diagnostics search edit state");
+    store
+        .set(
+            popover.clone(),
+            operad::state::WidgetStateSlotDescriptor::overlay(),
+            operad::state::WidgetStateValue::overlay(true),
+        )
+        .expect("diagnostics popover state");
+    let _ = store.set_keepalive(&popover_key, true);
+    store.begin_frame([search]);
+    DebugWidgetStateRetentionTrace::from_store(&store)
+}
+
+fn diagnostics_invalidation_blame_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.invalidation.panel",
+        "Invalidation blame",
+    );
+    let trace = DebugInvalidationBlameTrace::from_dirty_state(&diagnostics_dirty_state_sample());
+    ext_widgets::invalidation_blame_panel(
+        ui,
+        panel,
+        "diagnostics.invalidation",
+        &trace,
+        ext_widgets::InvalidationBlamePanelOptions {
+            action_prefix: Some("diagnostics.invalidation".to_owned()),
+            max_trigger_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_invalidation_blast_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.invalidation_blast.panel",
+        "Invalidation blast",
+    );
+    let trace = DebugInvalidationBlastTrace::from_dirty_state(&diagnostics_dirty_state_sample());
+    ext_widgets::invalidation_blast_panel(
+        ui,
+        panel,
+        "diagnostics.invalidation_blast",
+        &trace,
+        ext_widgets::InvalidationBlastPanelOptions {
+            action_prefix: Some("diagnostics.invalidation_blast".to_owned()),
+            max_subsystem_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_invalidation_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.invalidation_timeline.panel",
+        "Invalidation timeline",
+    );
+    let trace = diagnostics_invalidation_timeline_sample();
+    ext_widgets::invalidation_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.invalidation_timeline",
+        &trace,
+        ext_widgets::InvalidationTimelinePanelOptions {
+            action_prefix: Some("diagnostics.invalidation_timeline".to_owned()),
+            max_reason_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_dirty_state_sample() -> DirtyStateExplanation {
+    let invalidations = [
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Resize).detail("viewport"),
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Input).detail("pointer moved"),
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Resource).detail("atlas"),
+    ];
+    DirtyStateExplanation::from_invalidations(&invalidations)
+}
+
+fn diagnostics_invalidation_timeline_sample() -> DebugInvalidationTimelineTrace {
+    let resize_start = [
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Resize).detail("viewport"),
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Input).detail("pointer moved"),
+    ];
+    let resize_resource = [
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Resize).detail("viewport"),
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Resource).detail("atlas"),
+    ];
+    let paint_only = [
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Animation).detail("hover glow"),
+        RuntimeInvalidation::new(RuntimeInvalidationReason::Resource).detail("atlas"),
+    ];
+    let first = DirtyStateExplanation::from_invalidations(&resize_start);
+    let second = DirtyStateExplanation::from_invalidations(&resize_resource);
+    let third = DirtyStateExplanation::from_invalidations(&paint_only);
+    DebugInvalidationTimelineTrace::from_dirty_states([
+        ("diagnostics #40", Some(40), &first),
+        ("diagnostics #41", Some(41), &second),
+        ("diagnostics #42", Some(42), &third),
+    ])
+}
+
+fn diagnostics_overlap_report_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.overlaps.panel", "Overlap report");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let report = DebugOverlapReport::from_document(&sample);
+    ext_widgets::overlap_report_panel(
+        ui,
+        panel,
+        "diagnostics.overlaps",
+        &report,
+        ext_widgets::OverlapReportPanelOptions {
+            action_prefix: Some("diagnostics.overlaps".to_owned()),
+            max_overlap_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_overlap_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugOverlapTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.overlap_timeline.panel",
+        "Overlap timeline",
+    );
+    ext_widgets::overlap_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.overlap_timeline",
+        trace,
+        ext_widgets::OverlapTimelinePanelOptions {
+            action_prefix: Some("diagnostics.overlap_timeline".to_owned()),
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_overlap_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let report = DebugOverlapReport::from_document(&sample);
+    let Some(trace) = DebugOverlapAutopsyTrace::from_report(&report) else {
+        return;
+    };
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.overlap_autopsy.panel",
+        "Overlap autopsy",
+    );
+    ext_widgets::overlap_autopsy_panel(
+        ui,
+        panel,
+        "diagnostics.overlap_autopsy",
+        &trace,
+        ext_widgets::OverlapAutopsyPanelOptions {
+            action_prefix: Some("diagnostics.overlap_autopsy".to_owned()),
+            max_source_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_pointer_probe_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.probe.panel", "Pointer probe");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let probe = DebugPointerProbe::pointer_down(&sample, UiPoint::new(140.0, 22.0));
+    ext_widgets::pointer_probe_panel(
+        ui,
+        panel,
+        "diagnostics.probe",
+        &probe,
+        ext_widgets::PointerProbePanelOptions {
+            action_prefix: Some("diagnostics.probe".to_owned()),
+            max_candidate_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_pointer_session_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugPointerSessionTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.pointer_session.panel",
+        "Pointer session",
+    );
+    ext_widgets::pointer_session_panel(
+        ui,
+        panel,
+        "diagnostics.pointer_session",
+        trace,
+        ext_widgets::PointerSessionPanelOptions {
+            action_prefix: Some("diagnostics.pointer_session".to_owned()),
+            max_route_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_pointer_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.pointer_autopsy.panel",
+        "Pointer autopsy",
+    );
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let trace = DebugPointerAutopsyTrace::pointer_down(&sample, UiPoint::new(140.0, 22.0));
+    ext_widgets::pointer_autopsy_panel(
+        ui,
+        panel,
+        "diagnostics.pointer_autopsy",
+        &trace,
+        ext_widgets::PointerAutopsyPanelOptions {
+            action_prefix: Some("diagnostics.pointer_autopsy".to_owned()),
+            max_source_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_point_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.point_autopsy.panel",
+        "Point autopsy",
+    );
+    let mut sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    sample
+        .compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics point autopsy sample layout");
+    let trace = DebugPointAutopsyTrace::pointer_down(
+        &sample,
+        &mut ApproxTextMeasurer,
+        UiPoint::new(140.0, 22.0),
+    );
+    ext_widgets::point_autopsy_panel(
+        ui,
+        panel,
+        "diagnostics.point_autopsy",
+        &trace,
+        ext_widgets::PointAutopsyPanelOptions {
+            action_prefix: Some("diagnostics.point_autopsy".to_owned()),
+            max_source_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_inspect_point_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.inspect_point.panel",
+        "Inspect point",
+    );
+    let mut sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    sample
+        .compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics inspect point sample layout");
+    let trace = DebugInspectPointTrace::pointer_down(
+        &sample,
+        &mut ApproxTextMeasurer,
+        UiPoint::new(140.0, 22.0),
+    );
+    ext_widgets::inspect_point_panel(
+        ui,
+        panel,
+        "diagnostics.inspect_point",
+        &trace,
+        ext_widgets::InspectPointPanelOptions {
+            action_prefix: Some("diagnostics.inspect_point".to_owned()),
+            max_source_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_interaction_state_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    state: &ShowcaseState,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.interaction.panel",
+        "Interaction state",
+    );
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let card = diagnostics_sample_node_id(&sample, "diagnostics.sample.card")
+        .expect("diagnostics sample card");
+    let preview = diagnostics_sample_node_id(&sample, "diagnostics.sample.preview")
+        .expect("diagnostics sample preview");
+    let hotspot = diagnostics_sample_node_id(&sample, "diagnostics.sample.hotspot")
+        .expect("diagnostics sample hotspot");
+    let mut host = HostInteractionState {
+        hovered: Some(hotspot),
+        pressed: Some(hotspot),
+        focused: Some(preview),
+        wheel_target: Some(card),
+        input_consumed: true,
+        input_consumed_by: Some(hotspot),
+        active_shortcut_scopes: vec![CommandScope::Global, CommandScope::Panel],
+        ..Default::default()
+    };
+    host.shortcut_route = Some(HostShortcutRoute {
+        shortcut: Shortcut::ctrl('k'),
+        active_scopes: vec![CommandScope::Global, CommandScope::Panel],
+        target: Some(preview),
+        command: Some(CommandId::new("diagnostics.palette")),
+    });
+    let trace = DebugInteractionStateTrace::from_document(
+        &sample,
+        DebugOverlayContext::new(host),
+        DebugOverlayOptions::default(),
+    );
+    ext_widgets::interaction_state_panel(
+        ui,
+        panel,
+        "diagnostics.interaction",
+        &trace,
+        ext_widgets::InteractionStatePanelOptions {
+            action_prefix: Some("diagnostics.interaction".to_owned()),
+            max_interaction_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_interaction_state_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugInteractionStateTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.interaction_timeline.panel",
+        "Interaction timeline",
+    );
+    ext_widgets::interaction_state_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.interaction_timeline",
+        trace,
+        ext_widgets::InteractionStateTimelinePanelOptions {
+            action_prefix: Some("diagnostics.interaction_timeline".to_owned()),
+            max_interaction_rows: 5,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_interaction_state_timeline_sample(
+    state: &ShowcaseState,
+) -> DebugInteractionStateTimelineTrace {
+    fn frame(state: &ShowcaseState, mode: &str, label: &str, frame_index: u64) -> DebugFrameTrace {
+        let mut sample = diagnostics_sample_document_for(
+            state.diagnostics_animation_hover,
+            state.diagnostics_animation_active,
+        );
+        let card = diagnostics_sample_node_id(&sample, "diagnostics.sample.card")
+            .expect("diagnostics sample card");
+        let preview = diagnostics_sample_node_id(&sample, "diagnostics.sample.preview")
+            .expect("diagnostics sample preview");
+        let hotspot = diagnostics_sample_node_id(&sample, "diagnostics.sample.hotspot")
+            .expect("diagnostics sample hotspot");
+        let mut host = HostInteractionState::default();
+        let mut gesture = None;
+        match mode {
+            "press" => {
+                let press = GestureEvent::Press {
+                    target: Some(hotspot),
+                    pointer_id: PointerId::MOUSE,
+                    position: UiPoint::new(140.0, 22.0),
+                    button: PointerButton::Primary,
+                    modifiers: operad::KeyModifiers::NONE,
+                };
+                host.apply_gesture(&press);
+                host.focused = Some(preview);
+                host.wheel_target = Some(card);
+                host.input_consumed = true;
+                host.input_consumed_by = Some(hotspot);
+                gesture = Some(press);
+            }
+            "focus" => {
+                host.focused = Some(preview);
+            }
+            _ => {}
+        }
+        sample
+            .compute_layout(UiSize::new(260.0, 180.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics interaction timeline layout");
+        let overlay_context = match gesture.as_ref() {
+            Some(gesture) => DebugOverlayContext::new(host).active_gesture(gesture),
+            None => DebugOverlayContext::new(host),
+        };
+        let interaction_state = DebugInteractionStateTrace::from_document(
+            &sample,
+            overlay_context,
+            DebugOverlayOptions::default(),
+        );
+        DebugFrameTrace::from_document(
+            &sample,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new(label, UiSize::new(260.0, 180.0))
+                .frame_index(frame_index)
+                .interaction_state(interaction_state),
+        )
+    }
+
+    let idle = frame(state, "idle", "interaction idle", 120);
+    let pressed = frame(state, "press", "interaction pressed", 121);
+    let focused = frame(state, "focus", "interaction focus", 122);
+    DebugInteractionStateTimelineTrace::from_traces([&idle, &pressed, &focused])
+}
+
+fn diagnostics_shortcut_route_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.shortcut_route.panel",
+        "Shortcut route",
+    );
+    let registry = diagnostics_command_registry();
+    let trace = DebugShortcutRouteTrace::from_registry(
+        &registry,
+        Shortcut::ctrl('k'),
+        &[CommandScope::Global, CommandScope::Panel],
+    );
+    ext_widgets::shortcut_route_panel(
+        ui,
+        panel,
+        "diagnostics.shortcut_route",
+        &trace,
+        ext_widgets::ShortcutRoutePanelOptions {
+            action_prefix: Some("diagnostics.shortcut_route".to_owned()),
+            max_scope_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_action_map_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.actions.panel", "Action map");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let trace = DebugActionMapTrace::from_document(&sample);
+    ext_widgets::action_map_panel(
+        ui,
+        panel,
+        "diagnostics.actions",
+        &trace,
+        ext_widgets::ActionMapPanelOptions {
+            action_prefix: Some("diagnostics.actions".to_owned()),
+            max_action_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_action_dispatch_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.dispatch.panel", "Action dispatch");
+    let trace = diagnostics_action_dispatch_sample();
+    ext_widgets::action_dispatch_panel(
+        ui,
+        panel,
+        "diagnostics.dispatch",
+        &trace,
+        ext_widgets::ActionDispatchPanelOptions {
+            action_prefix: Some("diagnostics.dispatch".to_owned()),
+            max_action_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_action_dispatch_sample() -> DebugActionDispatchTrace {
+    let sample = diagnostics_sample_document_for(0.35, true);
+    let preview = diagnostics_sample_node_id(&sample, "diagnostics.sample.preview")
+        .expect("diagnostics sample preview");
+    let hotspot = diagnostics_sample_node_id(&sample, "diagnostics.sample.hotspot")
+        .expect("diagnostics sample hotspot");
+    let mut queue = WidgetActionQueue::new();
+    queue.push(WidgetAction::pointer_activate(
+        preview,
+        "diagnostics.preview.activate",
+        1,
+    ));
+    queue.push(WidgetAction::keyboard_activate(
+        hotspot,
+        WidgetActionBinding::command(CommandId::new("diagnostics.inspect")),
+    ));
+    let registry = diagnostics_command_registry();
+    DebugActionDispatchTrace::from_queue_with_registry(&queue, &registry)
+}
+
+fn diagnostics_action_map_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugActionMapTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.action_timeline.panel",
+        "Action timeline",
+    );
+    ext_widgets::action_map_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.action_timeline",
+        trace,
+        ext_widgets::ActionMapTimelinePanelOptions {
+            action_prefix: Some("diagnostics.action_timeline".to_owned()),
+            max_action_rows: 6,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_drag_affordance_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.drag.panel", "Drag affordances");
+    let mut sample = diagnostics_drag_affordance_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics drag affordance layout");
+    let trace = DebugDragAffordanceTrace::from_document(&sample, &mut ApproxTextMeasurer);
+    ext_widgets::drag_affordance_panel(
+        ui,
+        panel,
+        "diagnostics.drag",
+        &trace,
+        ext_widgets::DragAffordancePanelOptions {
+            action_prefix: Some("diagnostics.drag".to_owned()),
+            max_drag_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_drag_affordance_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    let host = sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.drag.host",
+            UiNodeStyle::new(operad::layout::absolute(8.0, 8.0, 172.0, 84.0)),
+        )
+        .with_visual(UiVisual::panel(
+            color(18, 26, 36),
+            Some(StrokeStyle::new(color(52, 65, 84), 1.0)),
+            4.0,
+        )),
+    );
+    sample.add_child(
+        host,
+        UiNode::container(
+            "diagnostics.drag.edge",
+            UiNodeStyle::new(operad::layout::absolute(82.0, 0.0, 2.0, 84.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.drag.edge.resize")
+        .with_action_mode(WidgetActionMode::PointerEditParentRect)
+        .with_visual(UiVisual::panel(
+            color(92, 150, 218),
+            Some(StrokeStyle::new(color(166, 210, 255), 1.0)),
+            1.0,
+        )),
+    );
+    sample.add_child(
+        host,
+        UiNode::container(
+            "diagnostics.drag.gutter",
+            UiNodeStyle::new(operad::layout::absolute(124.0, 8.0, 6.0, 68.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.drag.gutter.resize")
+        .with_action_mode(WidgetActionMode::PointerEditParentRect)
+        .with_visual(UiVisual::panel(
+            color(72, 138, 92),
+            Some(StrokeStyle::new(color(132, 214, 162), 1.0)),
+            2.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_interaction_affordance_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.affordances.panel",
+        "Interaction affordances",
+    );
+    let mut sample = diagnostics_interaction_affordance_sample_document();
+    sample
+        .compute_layout(UiSize::new(260.0, 160.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics affordance layout");
+    let trace = DebugInteractionAffordanceTrace::from_document(&sample, &mut ApproxTextMeasurer);
+    ext_widgets::interaction_affordance_panel(
+        ui,
+        panel,
+        "diagnostics.affordances",
+        &trace,
+        ext_widgets::InteractionAffordancePanelOptions {
+            action_prefix: Some("diagnostics.affordances".to_owned()),
+            max_affordance_rows: 7,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_interaction_affordance_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugInteractionAffordanceTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.affordance_timeline.panel",
+        "Affordance timeline",
+    );
+    ext_widgets::interaction_affordance_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.affordance_timeline",
+        trace,
+        ext_widgets::InteractionAffordanceTimelinePanelOptions {
+            action_prefix: Some("diagnostics.affordance_timeline".to_owned()),
+            max_affordance_rows: 5,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_interaction_affordance_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(260.0, 160.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.affordances.good",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 78.0, 30.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.affordances.good.activate")
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        ))
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Button)
+                .label("Good affordance")
+                .focusable(),
+        ),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.affordances.blank",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 42.0, 78.0, 30.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.affordances.blank.activate"),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.affordances.passive_action",
+            UiNodeStyle::new(operad::layout::absolute(92.0, 0.0, 78.0, 30.0)),
+        )
+        .with_action("diagnostics.affordances.passive.activate")
+        .with_visual(UiVisual::panel(
+            color(70, 120, 86),
+            Some(StrokeStyle::new(color(126, 196, 140), 1.0)),
+            5.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.affordances.tiny",
+            UiNodeStyle::new(operad::layout::absolute(92.0, 42.0, 12.0, 12.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(180, 72, 84),
+            Some(StrokeStyle::new(color(255, 145, 155), 1.0)),
+            3.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.affordances.glow",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 88.0, 72.0, 28.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.affordances.glow.activate")
+        .with_material(ElementMaterial::new().with_paint_outset(LayoutInsets::points(12.0)))
+        .with_visual(UiVisual::panel(
+            color(34, 83, 130),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            6.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_paint_order_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.paint.panel", "Paint order");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let trace = DebugPaintOrderTrace::from_document(&sample, UiPoint::new(140.0, 22.0));
+    ext_widgets::paint_order_panel(
+        ui,
+        panel,
+        "diagnostics.paint",
+        &trace,
+        ext_widgets::PaintOrderPanelOptions {
+            action_prefix: Some("diagnostics.paint".to_owned()),
+            max_stack_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_stacking_order_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.stacking.panel", "Stacking order");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let trace = DebugStackingOrderTrace::from_document(&sample);
+    ext_widgets::stacking_order_panel(
+        ui,
+        panel,
+        "diagnostics.stacking",
+        &trace,
+        ext_widgets::StackingOrderPanelOptions {
+            action_prefix: Some("diagnostics.stacking".to_owned()),
+            max_stack_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_stacking_order_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.stacking_timeline.panel",
+        "Stacking timeline",
+    );
+    let trace = diagnostics_stacking_order_timeline_sample();
+    ext_widgets::stacking_order_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.stacking_timeline",
+        &trace,
+        ext_widgets::StackingOrderTimelinePanelOptions {
+            action_prefix: Some("diagnostics.stacking_timeline".to_owned()),
+            max_stack_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_stacking_order_timeline_sample() -> DebugStackingOrderTimelineTrace {
+    fn frame(cover_z: i16, label: &str, frame_index: u64) -> DebugFrameTrace {
+        let mut sample = UiDocument::new(root_style(220.0, 120.0));
+        sample.add_child(
+            sample.root(),
+            UiNode::container(
+                "diagnostics.stack.target",
+                UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 92.0, 36.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_visual(UiVisual::panel(ColorRgba::new(30, 92, 150, 255), None, 0.0)),
+        );
+        sample.add_child(
+            sample.root(),
+            UiNode::container(
+                "diagnostics.stack.cover",
+                UiNodeStyle::new(operad::layout::absolute(20.0, 0.0, 92.0, 36.0))
+                    .with_z_index(cover_z),
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(130, 76, 34, 255), None, 0.0)),
+        );
+        sample
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics stacking timeline layout");
+        DebugFrameTrace::from_document(
+            &sample,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new(label, UiSize::new(220.0, 120.0)).frame_index(frame_index),
+        )
+    }
+
+    let behind = frame(-2, "stack target front", 40);
+    let covered = frame(8, "stack cover front", 41);
+    let restored = frame(-2, "stack restored", 42);
+    DebugStackingOrderTimelineTrace::from_traces([&behind, &covered, &restored])
+}
+
+fn diagnostics_render_layers_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.layers.panel", "Render layers");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let trace = DebugRenderLayerTrace::from_document(&sample);
+    ext_widgets::render_layers_panel(
+        ui,
+        panel,
+        "diagnostics.layers",
+        &trace,
+        ext_widgets::RenderLayersPanelOptions {
+            action_prefix: Some("diagnostics.layers".to_owned()),
+            max_layer_rows: 4,
+            max_item_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_render_layer_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.layer_timeline.panel",
+        "Render layer timeline",
+    );
+    let trace = diagnostics_render_layer_timeline_sample();
+    ext_widgets::render_layer_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.layer_timeline",
+        &trace,
+        ext_widgets::RenderLayerTimelinePanelOptions {
+            action_prefix: Some("diagnostics.layer_timeline".to_owned()),
+            max_layer_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_render_layer_timeline_sample() -> DebugRenderLayerTimelineTrace {
+    fn frame(effect: bool, frame_index: u64) -> DebugFrameTrace {
+        let mut document = UiDocument::new(root_style(220.0, 120.0));
+        document.add_child(
+            document.root(),
+            UiNode::container(
+                "layer.base",
+                UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 72.0, 32.0)),
+            )
+            .with_visual(UiVisual::panel(
+                ColorRgba::new(42, 120, 180, 255),
+                None,
+                0.0,
+            )),
+        );
+        let mut accent = UiNode::container(
+            "layer.accent",
+            UiNodeStyle::new(operad::layout::absolute(86.0, 0.0, 72.0, 32.0)),
+        )
+        .with_visual(UiVisual::panel(
+            ColorRgba::new(112, 90, 190, 220),
+            None,
+            0.0,
+        ));
+        if effect {
+            accent = accent.with_shader(ShaderEffect::new("debug.glow"));
+        }
+        document.add_child(document.root(), accent);
+        document
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics render layer timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("layers", UiSize::new(220.0, 120.0))
+                .frame_index(frame_index),
+        )
+    }
+
+    let first = frame(false, 46);
+    let second = frame(true, 47);
+    let third = frame(false, 48);
+    DebugRenderLayerTimelineTrace::from_traces([&first, &second, &third])
+}
+
+fn diagnostics_paint_overdraw_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.overdraw.panel", "Paint overdraw");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let trace = DebugPaintOverdrawTrace::from_document(&sample);
+    ext_widgets::paint_overdraw_panel(
+        ui,
+        panel,
+        "diagnostics.overdraw",
+        &trace,
+        ext_widgets::PaintOverdrawPanelOptions {
+            action_prefix: Some("diagnostics.overdraw".to_owned()),
+            max_overdraw_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_paint_overdraw_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    state: &ShowcaseState,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.overdraw_timeline.panel",
+        "Paint overdraw timeline",
+    );
+    let trace = diagnostics_paint_overdraw_timeline_sample(state);
+    ext_widgets::paint_overdraw_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.overdraw_timeline",
+        &trace,
+        ext_widgets::PaintOverdrawTimelinePanelOptions {
+            action_prefix: Some("diagnostics.overdraw_timeline".to_owned()),
+            max_item_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_paint_overdraw_timeline_sample(
+    state: &ShowcaseState,
+) -> DebugPaintOverdrawTimelineTrace {
+    fn frame(mut document: UiDocument, frame_index: u64) -> DebugFrameTrace {
+        document
+            .compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics overdraw timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("overdraw", UiSize::new(320.0, 180.0))
+                .frame_index(frame_index),
+        )
+    }
+
+    let first = frame(
+        diagnostics_sample_document_for(0.0, state.diagnostics_animation_active),
+        40,
+    );
+    let second = frame(
+        diagnostics_sample_document_for(
+            state.diagnostics_animation_hover,
+            state.diagnostics_animation_active,
+        ),
+        41,
+    );
+    let third = frame(
+        diagnostics_sample_document_for(0.0, state.diagnostics_animation_active),
+        42,
+    );
+    DebugPaintOverdrawTimelineTrace::from_traces([&first, &second, &third])
+}
+
+fn diagnostics_paint_batches_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.batches.panel", "Paint batches");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    let layout = sample.layout_snapshot();
+    let paint = sample.paint_list();
+    let trace = DebugPaintBatchTrace::from_parts(&layout, &paint);
+    ext_widgets::paint_batches_panel(
+        ui,
+        panel,
+        "diagnostics.batches",
+        &trace,
+        ext_widgets::PaintBatchesPanelOptions {
+            action_prefix: Some("diagnostics.batches".to_owned()),
+            max_batch_rows: 5,
+            max_break_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_paint_batch_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.batch_timeline.panel",
+        "Paint batch timeline",
+    );
+    let trace = diagnostics_paint_batch_timeline_sample();
+    ext_widgets::paint_batch_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.batch_timeline",
+        &trace,
+        ext_widgets::PaintBatchTimelinePanelOptions {
+            action_prefix: Some("diagnostics.batch_timeline".to_owned()),
+            max_reason_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_paint_batch_timeline_sample() -> DebugPaintBatchTimelineTrace {
+    fn frame(shader: bool, frame_index: u64) -> DebugFrameTrace {
+        let mut document = UiDocument::new(root_style(220.0, 120.0));
+        document.add_child(
+            document.root(),
+            UiNode::container(
+                "batch.left",
+                UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 44.0, 24.0)),
+            )
+            .with_visual(UiVisual::panel(
+                ColorRgba::new(42, 120, 180, 255),
+                None,
+                0.0,
+            )),
+        );
+        document.add_child(
+            document.root(),
+            UiNode::container(
+                "batch.middle",
+                UiNodeStyle::new(operad::layout::absolute(48.0, 0.0, 44.0, 24.0)),
+            )
+            .with_visual(UiVisual::panel(
+                ColorRgba::new(42, 120, 180, 255),
+                None,
+                0.0,
+            )),
+        );
+        let mut glow = UiNode::container(
+            "batch.glow",
+            UiNodeStyle::new(operad::layout::absolute(96.0, 0.0, 44.0, 24.0)),
+        )
+        .with_visual(UiVisual::panel(
+            ColorRgba::new(42, 120, 180, 255),
+            None,
+            0.0,
+        ));
+        if shader {
+            glow = glow.with_shader(ShaderEffect::new("debug.glow"));
+        }
+        document.add_child(document.root(), glow);
+        document
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics paint batch timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("batches", UiSize::new(220.0, 120.0))
+                .frame_index(frame_index),
+        )
+    }
+
+    let first = frame(false, 50);
+    let second = frame(true, 51);
+    let third = frame(false, 52);
+    DebugPaintBatchTimelineTrace::from_traces([&first, &second, &third])
+}
+
+fn diagnostics_visual_effects_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.effects.panel", "Visual effects");
+    let mut sample = diagnostics_visual_effect_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics visual effect sample layout");
+    let snapshot = DebugInspectorSnapshot::from_document(&sample, &mut ApproxTextMeasurer);
+    let trace = DebugVisualEffectTrace::from_snapshot(&snapshot, Some("diagnostics.effects.glow"));
+    ext_widgets::visual_effects_panel(
+        ui,
+        panel,
+        "diagnostics.effects",
+        &trace,
+        ext_widgets::VisualEffectsPanelOptions {
+            action_prefix: Some("diagnostics.effects".to_owned()),
+            max_effect_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_visual_effect_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.effect_timeline.panel",
+        "Effect timeline",
+    );
+    let trace = diagnostics_visual_effect_timeline_sample();
+    ext_widgets::visual_effect_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.effect_timeline",
+        &trace,
+        ext_widgets::VisualEffectTimelinePanelOptions {
+            action_prefix: Some("diagnostics.effect_timeline".to_owned()),
+            max_effect_rows: 4,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_visual_effect_timeline_sample() -> DebugVisualEffectTimelineTrace {
+    fn frame(label: &str, with_effect: bool, frame_index: u64) -> DebugFrameTrace {
+        let mut sample = diagnostics_visual_effect_sample_document_for(with_effect);
+        sample
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics visual effect timeline layout");
+        DebugFrameTrace::from_document(
+            &sample,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new(label, UiSize::new(220.0, 120.0)).frame_index(frame_index),
+        )
+    }
+
+    let clean = frame("effects clean", false, 60);
+    let clipped = frame("effects glow", true, 61);
+    let restored = frame("effects restored", false, 62);
+    DebugVisualEffectTimelineTrace::from_traces([&clean, &clipped, &restored])
+}
+
+fn diagnostics_bounds_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.bounds.panel", "Bounds autopsy");
+    let mut sample = diagnostics_visual_effect_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics bounds autopsy sample layout");
+    let snapshot = DebugInspectorSnapshot::from_document(&sample, &mut ApproxTextMeasurer);
+    let Some(trace) =
+        DebugBoundsAutopsyTrace::from_snapshot(&snapshot, Some("diagnostics.effects.glow"))
+    else {
+        return;
+    };
+    ext_widgets::bounds_autopsy_panel(
+        ui,
+        panel,
+        "diagnostics.bounds",
+        &trace,
+        ext_widgets::BoundsAutopsyPanelOptions {
+            action_prefix: Some("diagnostics.bounds".to_owned()),
+            max_source_rows: 7,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_visual_effect_sample_document() -> UiDocument {
+    diagnostics_visual_effect_sample_document_for(true)
+}
+
+fn diagnostics_visual_effect_sample_document_for(with_effect: bool) -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    let mut glow = UiNode::container(
+        "diagnostics.effects.glow",
+        UiNodeStyle::new(operad::layout::absolute(18.0, 20.0, 72.0, 32.0)),
+    )
+    .with_input(InputBehavior::BUTTON)
+    .with_visual(UiVisual::panel(
+        color(34, 83, 130),
+        Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+        6.0,
+    ))
+    .with_accessibility(
+        AccessibilityMeta::new(AccessibilityRole::Button)
+            .label("Glow effect target")
+            .focusable(),
+    );
+    if with_effect {
+        glow = glow.with_material(
+            ElementMaterial::shader(ShaderEffect::glow(color(100, 180, 255), 0.85, 8.0))
+                .with_paint_outset(LayoutInsets::points(10.0))
+                .with_geometry_effect(GeometryEffect::wave(4.0)),
+        );
+    }
+    sample.add_child(sample.root(), glow);
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.effects.marker",
+            UiNodeStyle::new(operad::layout::absolute(104.0, 20.0, 52.0, 32.0)),
+        )
+        .with_visual(UiVisual::panel(
+            color(48, 58, 72),
+            Some(StrokeStyle::new(color(90, 105, 126), 1.0)),
+            4.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_text_layout_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.text.panel", "Text layout");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    if let Some(trace) = DebugTextLayoutTrace::from_document(
+        &sample,
+        &mut ApproxTextMeasurer,
+        Some("diagnostics.sample.label"),
+    ) {
+        ext_widgets::text_layout_panel(
+            ui,
+            panel,
+            "diagnostics.text",
+            &trace,
+            ext_widgets::TextLayoutPanelOptions {
+                action_prefix: Some("diagnostics.text".to_owned()),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn diagnostics_text_style_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.text_style.panel", "Text style");
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    if let Some(trace) =
+        DebugTextStyleTrace::from_document(&sample, Some("diagnostics.sample.label"))
+    {
+        ext_widgets::text_style_panel(
+            ui,
+            panel,
+            "diagnostics.text_style",
+            &trace,
+            ext_widgets::TextStylePanelOptions {
+                action_prefix: Some("diagnostics.text_style".to_owned()),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn diagnostics_text_input_state_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.text_input_state.panel",
+        "Text input state",
+    );
+    let mut sample = TextInputState::new("alpha\nbeta").multiline(true);
+    sample.paste_text_with_outcome("!");
+    sample.set_selection(0, 5);
+    sample.set_composing(Some("preedit".to_owned()));
+    let trace = DebugTextInputStateTrace::from_state(&sample);
+    ext_widgets::text_input_state_panel(
+        ui,
+        panel,
+        "diagnostics.text_input_state",
+        &trace,
+        ext_widgets::TextInputStatePanelOptions {
+            action_prefix: Some("diagnostics.text_input_state".to_owned()),
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_text_input_event_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.text_input_event.panel",
+        "Text input event",
+    );
+    let mut sample_doc = UiDocument::new(root_style(260.0, 90.0));
+    let root = sample_doc.root();
+    let mut input_state = TextInputState::new("");
+    let options = TextInputOptions::default();
+    let policy = options.interaction_policy();
+    let input = widgets::text_input(
+        &mut sample_doc,
+        root,
+        "diagnostics.text_input_event.sample",
+        &input_state,
+        options.clone(),
+    );
+    sample_doc
+        .compute_layout(UiSize::new(260.0, 90.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics text input event layout");
+    let metrics = operad::widgets::text_input::TextInputLayoutMetrics::new(
+        UiRect::new(0.0, 0.0, 180.0, 30.0),
+        8.0,
+        18.0,
+    );
+    let context = operad::widgets::text_input::TextInputPlatformContext::for_node(
+        input,
+        input_state.caret_rect(metrics),
+    );
+    let _focus = operad::widgets::text_input::handle_text_input_event_with_options(
+        &mut sample_doc,
+        input,
+        &mut input_state,
+        &options,
+        UiInputEvent::PointerDown(UiPoint::new(8.0, 8.0)),
+        Some(context.clone()),
+    );
+    let outcome = operad::widgets::text_input::handle_text_input_event_with_options(
+        &mut sample_doc,
+        input,
+        &mut input_state,
+        &options,
+        UiInputEvent::TextInput("AB".to_owned()),
+        Some(context),
+    );
+    let trace = DebugTextInputEventTrace::from_event_outcome_with_policy(&outcome, policy);
+    ext_widgets::text_input_event_panel(
+        ui,
+        panel,
+        "diagnostics.text_input_event",
+        &trace,
+        ext_widgets::TextInputEventPanelOptions {
+            action_prefix: Some("diagnostics.text_input_event".to_owned()),
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_text_localization_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.text_localization.panel",
+        "Text localization",
+    );
+    let sample = diagnostics_text_localization_sample_document();
+    let trace = DebugTextLocalizationTrace::from_document(&sample);
+    ext_widgets::text_localization_panel(
+        ui,
+        panel,
+        "diagnostics.text_localization",
+        &trace,
+        ext_widgets::TextLocalizationPanelOptions {
+            action_prefix: Some("diagnostics.text_localization".to_owned()),
+            max_text_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_text_localization_sample_document() -> UiDocument {
+    let mut style = text(13.0, color(222, 230, 240));
+    style.wrap = TextWrap::None;
+    let policy = LocalizationPolicy::new(LocaleId::new("ar-EG").expect("showcase locale"))
+        .with_bidi(BidiPolicy::Embed);
+    let mut sample = UiDocument::new(root_style(260.0, 100.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::localized_text(
+            "diagnostics.text_localization.dynamic",
+            DynamicLabelMeta::dynamic("toolbar.save", "Save", 7),
+            Some(&policy),
+            style.clone(),
+            LayoutStyle::size(92.0, 18.0),
+        ),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::text(
+            "diagnostics.text_localization.static",
+            "Settings",
+            style,
+            LayoutStyle::size(128.0, 18.0),
+        ),
+    );
+    sample
+}
+
+fn diagnostics_text_contrast_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.text_contrast.panel",
+        "Text contrast",
+    );
+    let mut sample = diagnostics_text_contrast_sample_document();
+    sample
+        .compute_layout(UiSize::new(240.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics text contrast layout");
+    let trace = DebugTextContrastTrace::from_document(&sample);
+    ext_widgets::text_contrast_panel(
+        ui,
+        panel,
+        "diagnostics.text_contrast",
+        &trace,
+        ext_widgets::TextContrastPanelOptions {
+            action_prefix: Some("diagnostics.text_contrast".to_owned()),
+            max_text_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_text_contrast_sample_document() -> UiDocument {
+    let mut low_style = TextStyle::default();
+    low_style.font_size = 13.0;
+    low_style.line_height = 18.0;
+    low_style.color = color(78, 84, 92);
+    let mut readable_style = low_style.clone();
+    readable_style.color = color(235, 242, 250);
+    let mut sample = UiDocument::new(root_style(240.0, 120.0));
+    let panel = sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.text_contrast.panel_bg",
+            UiNodeStyle::new(operad::layout::absolute(12.0, 12.0, 188.0, 72.0)),
+        )
+        .with_visual(UiVisual::panel(
+            color(44, 50, 58),
+            Some(StrokeStyle::new(color(88, 100, 118), 1.0)),
+            5.0,
+        )),
+    );
+    sample.add_child(
+        panel,
+        UiNode::text(
+            "diagnostics.text_contrast.low",
+            "Muted label",
+            low_style,
+            LayoutStyle::size(124.0, 18.0),
+        ),
+    );
+    sample.add_child(
+        panel,
+        UiNode::text(
+            "diagnostics.text_contrast.good",
+            "Readable label",
+            readable_style,
+            LayoutStyle::size(132.0, 18.0),
+        ),
+    );
+    sample
+}
+
+fn diagnostics_text_fit_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.text_fit.panel", "Text fit");
+    let mut sample = diagnostics_text_fit_sample_document();
+    sample
+        .compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics text fit layout");
+    let trace = DebugTextFitTrace::from_document(&sample, &mut ApproxTextMeasurer);
+    ext_widgets::text_fit_panel(
+        ui,
+        panel,
+        "diagnostics.text_fit",
+        &trace,
+        ext_widgets::TextFitPanelOptions {
+            action_prefix: Some("diagnostics.text_fit".to_owned()),
+            max_text_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_text_fit_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.text_fit_timeline.panel",
+        "Text fit timeline",
+    );
+    let trace = diagnostics_text_fit_timeline_sample();
+    ext_widgets::text_fit_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.text_fit_timeline",
+        &trace,
+        ext_widgets::TextFitTimelinePanelOptions {
+            action_prefix: Some("diagnostics.text_fit_timeline".to_owned()),
+            max_text_rows: 4,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_text_fit_timeline_sample() -> DebugTextFitTimelineTrace {
+    fn frame(width: f32, frame_index: u64) -> DebugFrameTrace {
+        let mut style = text(13.0, color(222, 230, 240));
+        style.wrap = TextWrap::None;
+        let mut document = UiDocument::new(root_style(300.0, 80.0));
+        document.add_child(
+            document.root(),
+            UiNode::text(
+                "diagnostics.text_fit.timeline.long",
+                "Localized toolbar label",
+                style,
+                LayoutStyle::size(width, 18.0),
+            ),
+        );
+        document
+            .compute_layout(UiSize::new(300.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics text fit timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("text", UiSize::new(300.0, 80.0)).frame_index(frame_index),
+        )
+    }
+
+    let first = frame(240.0, 40);
+    let second = frame(56.0, 41);
+    let third = frame(240.0, 42);
+    DebugTextFitTimelineTrace::from_traces([&first, &second, &third])
+}
+
+fn diagnostics_text_fit_sample_document() -> UiDocument {
+    let mut style = text(13.0, color(222, 230, 240));
+    style.wrap = TextWrap::None;
+    let mut sample = UiDocument::new(root_style(260.0, 120.0));
+    let stack = sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.text_fit.stack",
+            LayoutStyle::column()
+                .with_width(220.0)
+                .with_height(90.0)
+                .gap(6.0),
+        ),
+    );
+    sample.add_child(
+        stack,
+        UiNode::text(
+            "diagnostics.text_fit.short",
+            "Fits",
+            style.clone(),
+            LayoutStyle::size(120.0, 18.0),
+        ),
+    );
+    sample.add_child(
+        stack,
+        UiNode::text(
+            "diagnostics.text_fit.long",
+            "A very long localized toolbar label",
+            style,
+            LayoutStyle::size(80.0, 18.0),
+        ),
+    );
+    sample
+}
+
+fn diagnostics_event_route_panel(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.route.panel", "Event route");
+    let trace = diagnostics_sample_event_route(state);
+    ext_widgets::event_route_panel(
+        ui,
+        panel,
+        "diagnostics.route",
+        &trace,
+        ext_widgets::EventRoutePanelOptions {
+            action_prefix: Some("diagnostics.route".to_owned()),
+            max_candidate_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_frame_diff_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    state: &ShowcaseState,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.diff.panel", "Frame diff");
+    let previous = diagnostics_sample_snapshot_for(0.0, !state.diagnostics_animation_active);
+    let diff = DebugFrameDiff::from_snapshots(&previous, snapshot);
+    ext_widgets::frame_diff_panel(
+        ui,
+        panel,
+        "diagnostics.diff",
+        &diff,
+        ext_widgets::FrameDiffPanelOptions {
+            action_prefix: Some("diagnostics.diff".to_owned()),
+            max_change_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_layout_movement_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    state: &ShowcaseState,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.movement.panel", "Layout movement");
+    let previous = diagnostics_sample_snapshot_with_preview_size(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+        132.0,
+        24.0,
+    );
+    let trace = DebugLayoutMovementTrace::from_snapshots(&previous, snapshot);
+    ext_widgets::layout_movement_panel(
+        ui,
+        panel,
+        "diagnostics.movement",
+        &trace,
+        ext_widgets::LayoutMovementPanelOptions {
+            action_prefix: Some("diagnostics.movement".to_owned()),
+            max_movement_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_layout_jank_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugLayoutJankTimelineTrace,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.layout_jank.panel", "Layout jank");
+    ext_widgets::layout_jank_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.layout_jank",
+        trace,
+        ext_widgets::LayoutJankTimelinePanelOptions {
+            action_prefix: Some("diagnostics.layout_jank".to_owned()),
+            max_node_rows: 6,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_constraint_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.constraints.panel", "Constraints");
+    let report = DebugConstraintReport::from_snapshot(snapshot);
+    ext_widgets::constraint_issues_panel(
+        ui,
+        panel,
+        "diagnostics.constraints",
+        &report,
+        ext_widgets::ConstraintIssuesPanelOptions {
+            action_prefix: Some("diagnostics.constraints".to_owned()),
+            max_issue_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_resource_panel(ui: &mut UiDocument, parent: UiNodeId, report: &DebugResourceReport) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.resources.panel", "Resources");
+    ext_widgets::resource_diagnostics_panel(
+        ui,
+        panel,
+        "diagnostics.resources",
+        report,
+        ext_widgets::ResourceDiagnosticsPanelOptions {
+            action_prefix: Some("diagnostics.resources".to_owned()),
+            max_resource_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_resource_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.resource_timeline.panel",
+        "Resource timeline",
+    );
+    let trace = diagnostics_resource_timeline_sample();
+    ext_widgets::resource_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.resource_timeline",
+        &trace,
+        ext_widgets::ResourceTimelinePanelOptions {
+            action_prefix: Some("diagnostics.resource_timeline".to_owned()),
+            max_resource_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_resource_timeline_sample() -> DebugResourceTimelineTrace {
+    fn report(upload: bool) -> DebugResourceReport {
+        let handle = ResourceHandle::Image(ImageHandle::app("diagnostics.timeline"));
+        let paint = PaintList {
+            items: vec![diagnostics_resource_paint_item(
+                UiNodeId::root(),
+                handle.id().key.clone(),
+                0.0,
+            )],
+        };
+        let updates = if upload {
+            vec![ResourceUpdate::rgba8_image(
+                handle,
+                PixelSize::new(2, 2),
+                vec![96; 16],
+            )]
+        } else {
+            Vec::new()
+        };
+        DebugResourceReport::from_paint_and_updates(&paint, &updates)
+    }
+
+    fn frame(upload: bool, frame_index: u64) -> DebugFrameTrace {
+        let mut document = UiDocument::new(root_style(160.0, 80.0));
+        document
+            .compute_layout(UiSize::new(160.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics resource timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("resources", UiSize::new(160.0, 80.0))
+                .frame_index(frame_index)
+                .resources(report(upload)),
+        )
+    }
+
+    let first = frame(true, 60);
+    let second = frame(false, 61);
+    let third = frame(true, 62);
+    DebugResourceTimelineTrace::from_traces([&first, &second, &third])
+}
+
+fn diagnostics_resource_report_sample(snapshot: &DebugInspectorSnapshot) -> DebugResourceReport {
+    let cover = ResourceHandle::Image(ImageHandle::app("diagnostics.cover"));
+    let missing = ResourceHandle::Image(ImageHandle::app("diagnostics.missing"));
+    let unused = ResourceHandle::Image(ImageHandle::app("diagnostics.unused"));
+    let node = snapshot
+        .node("diagnostics.sample.preview")
+        .map(|node| node.id)
+        .unwrap_or_else(UiNodeId::root);
+    let paint = PaintList {
+        items: vec![
+            diagnostics_resource_paint_item(node, cover.id().key.clone(), 0.0),
+            diagnostics_resource_paint_item(node, missing.id().key.clone(), 34.0),
+        ],
+    };
+    let updates = vec![
+        ResourceUpdate::rgba8_image(cover, PixelSize::new(2, 2), vec![72; 16]),
+        ResourceUpdate::rgba8_image(unused, PixelSize::new(1, 1), vec![128; 4]),
+    ];
+    DebugResourceReport::from_paint_and_updates(&paint, &updates)
+}
+
+fn diagnostics_resource_paint_item(node: UiNodeId, key: String, x: f32) -> PaintItem {
+    PaintItem {
+        node,
+        rect: UiRect::new(x, 0.0, 28.0, 28.0),
+        clip_rect: UiRect::new(0.0, 0.0, 120.0, 48.0),
+        z_index: 0,
+        layer_order: operad::platform::LayerOrder::DEFAULT,
+        opacity: 1.0,
+        transform: PaintTransform::default(),
+        shader: None,
+        material: None,
+        kind: PaintKind::Image { key, tint: None },
+    }
+}
+
+fn diagnostics_node_explanation_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    state: &ShowcaseState,
+    snapshot: &DebugInspectorSnapshot,
+    resources: &DebugResourceReport,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.explain.panel", "Explain node");
+    let route = diagnostics_sample_event_route(state);
+    if let Some(explanation) = DebugNodeExplanation::from_context(
+        snapshot,
+        Some("diagnostics.sample.preview"),
+        Some(&route),
+        Some(resources),
+    ) {
+        ext_widgets::node_explanation_panel(
+            ui,
+            panel,
+            "diagnostics.explain",
+            &explanation,
+            ext_widgets::NodeExplanationPanelOptions {
+                action_prefix: Some("diagnostics.explain".to_owned()),
+                max_overlap_rows: 3,
+                max_constraint_rows: 3,
+                max_resource_rows: 3,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn diagnostics_inspect_node_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    state: &ShowcaseState,
+    snapshot: &DebugInspectorSnapshot,
+    resources: &DebugResourceReport,
+) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.inspect_node.panel", "Inspect node");
+    let route = diagnostics_sample_event_route(state);
+    if let Some(trace) = DebugInspectNodeTrace::from_context(
+        snapshot,
+        Some("diagnostics.sample.preview"),
+        Some(&route),
+        Some(resources),
+        None,
+    ) {
+        ext_widgets::inspect_node_panel(
+            ui,
+            panel,
+            "diagnostics.inspect_node",
+            &trace,
+            ext_widgets::InspectNodePanelOptions {
+                action_prefix: Some("diagnostics.inspect_node".to_owned()),
+                max_source_rows: 8,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn diagnostics_node_provenance_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+    resources: &DebugResourceReport,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.provenance.panel",
+        "Node provenance",
+    );
+    if let Some(trace) = DebugNodeProvenanceTrace::from_context(
+        snapshot,
+        Some("diagnostics.sample.preview"),
+        Some(resources),
+    ) {
+        ext_widgets::node_provenance_panel(
+            ui,
+            panel,
+            "diagnostics.provenance",
+            &trace,
+            ext_widgets::NodeProvenancePanelOptions {
+                action_prefix: Some("diagnostics.provenance".to_owned()),
+                max_source_rows: 8,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn diagnostics_geometry_preview(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    state: &ShowcaseState,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    widgets::label(
+        ui,
+        parent,
+        "diagnostics.hitbox.title",
+        "Hitboxes",
+        text(14.0, color(222, 230, 240)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let mut preview_style = UiNodeStyle::from(
+        LayoutStyle::new()
+            .with_width(320.0)
+            .with_height(180.0)
+            .with_flex_shrink(0.0),
+    );
+    preview_style.set_clip(ClipBehavior::Clip);
+    let preview = ui.add_child(
+        parent,
+        UiNode::container("diagnostics.hitbox.preview", preview_style).with_visual(
+            UiVisual::panel(
+                color(12, 17, 24),
+                Some(StrokeStyle::new(color(47, 62, 82), 1.0)),
+                4.0,
+            ),
+        ),
+    );
+    let mut overlay_options = ext_widgets::HitboxDebugOverlayOptions {
+        action_prefix: Some("diagnostics.hitbox.visual".to_owned()),
+        selected_node: Some("diagnostics.sample.preview".to_owned()),
+        show_labels: false,
+        max_nodes: 16,
+        max_overlaps: 8,
+        ..Default::default()
+    };
+    overlay_options.show_paint_bounds = true;
+    ext_widgets::hitbox_debug_overlay(
+        ui,
+        preview,
+        "diagnostics.hitbox.visual",
+        snapshot,
+        overlay_options,
+    );
+
+    widgets::label(
+        ui,
+        parent,
+        "diagnostics.point.preview.title",
+        "Inspect point",
+        text(14.0, color(222, 230, 240)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let mut point_sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    point_sample
+        .compute_layout(UiSize::new(260.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics point overlay sample layout");
+    let point_trace = DebugInspectPointTrace::pointer_down(
+        &point_sample,
+        &mut ApproxTextMeasurer,
+        UiPoint::new(140.0, 22.0),
+    );
+    let mut point_preview_style = UiNodeStyle::from(
+        LayoutStyle::new()
+            .with_width(320.0)
+            .with_height(150.0)
+            .with_flex_shrink(0.0),
+    );
+    point_preview_style.set_clip(ClipBehavior::Clip);
+    let point_preview = ui.add_child(
+        parent,
+        UiNode::container("diagnostics.point.preview", point_preview_style).with_visual(
+            UiVisual::panel(
+                color(12, 17, 24),
+                Some(StrokeStyle::new(color(47, 62, 82), 1.0)),
+                4.0,
+            ),
+        ),
+    );
+    let point_options = ext_widgets::InspectPointOverlayOptions {
+        action_prefix: Some("diagnostics.point.visual".to_owned()),
+        show_labels: false,
+        ..Default::default()
+    };
+    ext_widgets::inspect_point_overlay(
+        ui,
+        point_preview,
+        "diagnostics.point.visual",
+        &point_trace,
+        point_options,
+    );
+
+    widgets::label(
+        ui,
+        parent,
+        "diagnostics.bounds.preview.title",
+        "Bounds",
+        text(14.0, color(222, 230, 240)),
+        LayoutStyle::new().with_width_percent(1.0),
+    );
+    let mut bounds_sample = diagnostics_visual_effect_sample_document();
+    bounds_sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics bounds overlay sample layout");
+    let bounds_snapshot =
+        DebugInspectorSnapshot::from_document(&bounds_sample, &mut ApproxTextMeasurer);
+    let Some(bounds_trace) =
+        DebugBoundsAutopsyTrace::from_snapshot(&bounds_snapshot, Some("diagnostics.effects.glow"))
+    else {
+        return;
+    };
+    let mut bounds_preview_style = UiNodeStyle::from(
+        LayoutStyle::new()
+            .with_width(320.0)
+            .with_height(150.0)
+            .with_flex_shrink(0.0),
+    );
+    bounds_preview_style.set_clip(ClipBehavior::Clip);
+    let bounds_preview = ui.add_child(
+        parent,
+        UiNode::container("diagnostics.bounds.preview", bounds_preview_style).with_visual(
+            UiVisual::panel(
+                color(12, 17, 24),
+                Some(StrokeStyle::new(color(47, 62, 82), 1.0)),
+                4.0,
+            ),
+        ),
+    );
+    let bounds_options = ext_widgets::BoundsAutopsyOverlayOptions {
+        action_prefix: Some("diagnostics.bounds.visual".to_owned()),
+        show_labels: false,
+        ..Default::default()
+    };
+    ext_widgets::bounds_autopsy_overlay(
+        ui,
+        bounds_preview,
+        "diagnostics.bounds.visual",
+        &bounds_trace,
+        bounds_options,
+    );
+}
+
+fn diagnostics_hit_targets_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.hit_targets.panel", "Hit targets");
+    let mut sample = diagnostics_hit_targets_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics hit target layout");
+    let trace = DebugHitTargetTrace::from_document(&sample, &mut ApproxTextMeasurer);
+    ext_widgets::hit_target_panel(
+        ui,
+        panel,
+        "diagnostics.hit_targets",
+        &trace,
+        ext_widgets::HitTargetPanelOptions {
+            action_prefix: Some("diagnostics.hit_targets".to_owned()),
+            max_target_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_hitbox_map_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.hitbox_map.panel", "Hitbox map");
+    let mut sample = diagnostics_hitbox_map_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics hitbox map layout");
+    let trace = DebugHitboxMapTrace::from_document(&sample);
+    ext_widgets::hitbox_map_panel(
+        ui,
+        panel,
+        "diagnostics.hitbox_map",
+        &trace,
+        ext_widgets::HitboxMapPanelOptions {
+            action_prefix: Some("diagnostics.hitbox_map".to_owned()),
+            max_hitbox_rows: 6,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_hitbox_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugHitboxTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.hitbox_timeline.panel",
+        "Hitbox timeline",
+    );
+    ext_widgets::hitbox_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.hitbox_timeline",
+        trace,
+        ext_widgets::HitboxTimelinePanelOptions {
+            action_prefix: Some("diagnostics.hitbox_timeline".to_owned()),
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_paint_hit_mismatch_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.paint_hit.panel",
+        "Paint/hit mismatch",
+    );
+    let mut sample = diagnostics_paint_hit_mismatch_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics paint hit mismatch layout");
+    let trace = DebugPaintHitMismatchTrace::from_document(&sample, &mut ApproxTextMeasurer);
+    ext_widgets::paint_hit_mismatch_panel(
+        ui,
+        panel,
+        "diagnostics.paint_hit",
+        &trace,
+        ext_widgets::PaintHitMismatchPanelOptions {
+            action_prefix: Some("diagnostics.paint_hit".to_owned()),
+            max_mismatch_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_paint_hit_mismatch_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.paint_hit_timeline.panel",
+        "Paint/hit timeline",
+    );
+    let trace = diagnostics_paint_hit_mismatch_timeline_sample();
+    ext_widgets::paint_hit_mismatch_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.paint_hit_timeline",
+        &trace,
+        ext_widgets::PaintHitMismatchTimelinePanelOptions {
+            action_prefix: Some("diagnostics.paint_hit_timeline".to_owned()),
+            max_mismatch_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_paint_hit_mismatch_timeline_sample() -> DebugPaintHitMismatchTimelineTrace {
+    fn frame(mut document: UiDocument, label: &str, frame_index: u64) -> DebugFrameTrace {
+        document
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics paint hit timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new(label, UiSize::new(220.0, 120.0)).frame_index(frame_index),
+        )
+    }
+
+    let clean = frame(
+        diagnostics_paint_hit_mismatch_clean_sample_document(),
+        "paint hit clean",
+        80,
+    );
+    let mismatch = frame(
+        diagnostics_paint_hit_mismatch_sample_document(),
+        "paint hit mismatch",
+        81,
+    );
+    let restored = frame(
+        diagnostics_paint_hit_mismatch_clean_sample_document(),
+        "paint hit restored",
+        82,
+    );
+    DebugPaintHitMismatchTimelineTrace::from_traces([&clean, &mismatch, &restored])
+}
+
+fn diagnostics_visibility_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(ui, parent, "diagnostics.visibility.panel", "Visibility");
+    let mut sample = diagnostics_visibility_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics visibility layout");
+    let trace = DebugVisibilityTrace::from_document(&sample, &mut ApproxTextMeasurer);
+    ext_widgets::visibility_panel(
+        ui,
+        panel,
+        "diagnostics.visibility",
+        &trace,
+        ext_widgets::VisibilityPanelOptions {
+            action_prefix: Some("diagnostics.visibility".to_owned()),
+            max_visibility_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_visibility_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.visibility_timeline.panel",
+        "Visibility timeline",
+    );
+    let trace = diagnostics_visibility_timeline_sample();
+    ext_widgets::visibility_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.visibility_timeline",
+        &trace,
+        ext_widgets::VisibilityTimelinePanelOptions {
+            action_prefix: Some("diagnostics.visibility_timeline".to_owned()),
+            max_issue_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_visibility_timeline_sample() -> DebugVisibilityTimelineTrace {
+    fn frame(mut document: UiDocument, frame_index: u64) -> DebugFrameTrace {
+        document
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics visibility timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("visibility", UiSize::new(220.0, 120.0))
+                .frame_index(frame_index),
+        )
+    }
+
+    let first = frame(diagnostics_visibility_sample_document(), 40);
+    let second = frame(diagnostics_visibility_sample_document(), 41);
+    let third = frame(diagnostics_visibility_recovered_sample_document(), 42);
+    DebugVisibilityTimelineTrace::from_traces([&first, &second, &third])
+}
+
+fn diagnostics_visibility_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.visibility.transparent",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 80.0, 28.0)).with_opacity(0.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        )),
+    );
+    let mut clip_style = UiNodeStyle::from(
+        LayoutStyle::new()
+            .with_width(44.0)
+            .with_height(24.0)
+            .with_flex_shrink(0.0),
+    );
+    clip_style.set_clip(ClipBehavior::Clip);
+    let clipper = sample.add_child(
+        sample.root(),
+        UiNode::container("diagnostics.visibility.clipper", clip_style),
+    );
+    sample.add_child(
+        clipper,
+        UiNode::container(
+            "diagnostics.visibility.clipped",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 90.0, 24.0)),
+        )
+        .with_visual(UiVisual::panel(
+            color(180, 72, 84),
+            Some(StrokeStyle::new(color(255, 145, 155), 1.0)),
+            4.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.visibility.no_paint",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 64.0, 80.0, 24.0)),
+        )
+        .with_input(InputBehavior::BUTTON),
+    );
+    sample
+}
+
+fn diagnostics_visibility_recovered_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.visibility.transparent",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 80.0, 28.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.visibility.no_paint",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 64.0, 80.0, 24.0)),
+        )
+        .with_input(InputBehavior::BUTTON),
+    );
+    sample
+}
+
+fn diagnostics_paint_hit_mismatch_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.paint_hit.blank",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 78.0, 30.0)),
+        )
+        .with_input(InputBehavior::BUTTON),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.paint_hit.glow",
+            UiNodeStyle::new(operad::layout::absolute(96.0, 8.0, 72.0, 28.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_material(
+            ElementMaterial::new()
+                .with_paint_outset(LayoutInsets::points(12.0))
+                .with_geometry_effect(GeometryEffect::wave(3.0)),
+        )
+        .with_visual(UiVisual::panel(
+            color(34, 83, 130),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            6.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_paint_hit_mismatch_clean_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.paint_hit.blank",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 78.0, 30.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(46, 116, 84),
+            Some(StrokeStyle::new(color(121, 214, 167), 1.0)),
+            6.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.paint_hit.glow",
+            UiNodeStyle::new(operad::layout::absolute(96.0, 8.0, 72.0, 28.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(34, 83, 130),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            6.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_hitbox_map_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.hitbox_map.action",
+            LayoutStyle::new().with_width(72.0).with_height(32.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.hitbox_map.action.activate")
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        )),
+    );
+    let mut clip_style = UiNodeStyle::from(
+        LayoutStyle::new()
+            .with_width(36.0)
+            .with_height(24.0)
+            .with_flex_shrink(0.0),
+    );
+    clip_style.set_clip(ClipBehavior::Clip);
+    let clipper = sample.add_child(
+        sample.root(),
+        UiNode::container("diagnostics.hitbox_map.clipper", clip_style),
+    );
+    sample.add_child(
+        clipper,
+        UiNode::container(
+            "diagnostics.hitbox_map.clipped",
+            UiNodeStyle::new(operad::layout::absolute(0.0, 0.0, 80.0, 24.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(180, 72, 84),
+            Some(StrokeStyle::new(color(255, 145, 155), 1.0)),
+            4.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.hitbox_map.paint_only",
+            UiNodeStyle::new(operad::layout::absolute(96.0, 0.0, 48.0, 24.0)),
+        )
+        .with_visual(UiVisual::panel(
+            color(72, 105, 132),
+            Some(StrokeStyle::new(color(140, 160, 190), 1.0)),
+            4.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_hit_targets_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.hit_targets.good",
+            LayoutStyle::new().with_width(72.0).with_height(32.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.hit_targets.tiny",
+            UiNodeStyle::new(operad::layout::absolute(92.0, 0.0, 12.0, 12.0)),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(180, 72, 84),
+            Some(StrokeStyle::new(color(255, 145, 155), 1.0)),
+            3.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_hitbox_occlusion_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.hitbox_occlusion.panel",
+        "Hitbox occlusion",
+    );
+    let mut sample = diagnostics_hitbox_occlusion_sample_document();
+    sample
+        .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+        .expect("diagnostics hitbox occlusion layout");
+    let trace = DebugHitboxOcclusionTrace::from_document(&sample);
+    ext_widgets::hitbox_occlusion_panel(
+        ui,
+        panel,
+        "diagnostics.hitbox_occlusion",
+        &trace,
+        ext_widgets::HitboxOcclusionPanelOptions {
+            action_prefix: Some("diagnostics.hitbox_occlusion".to_owned()),
+            max_occlusion_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_hitbox_occlusion_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugHitboxOcclusionTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.hitbox_occlusion_timeline.panel",
+        "Hitbox occlusion timeline",
+    );
+    ext_widgets::hitbox_occlusion_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.hitbox_occlusion_timeline",
+        trace,
+        ext_widgets::HitboxOcclusionTimelinePanelOptions {
+            action_prefix: Some("diagnostics.hitbox_occlusion_timeline".to_owned()),
+            max_occlusion_rows: 4,
+            max_frame_rows: 3,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_hitbox_occlusion_timeline_sample() -> DebugHitboxOcclusionTimelineTrace {
+    fn frame(mut document: UiDocument, label: &str, frame_index: u64) -> DebugFrameTrace {
+        document
+            .compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics hitbox occlusion timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new(label, UiSize::new(220.0, 120.0)).frame_index(frame_index),
+        )
+    }
+
+    let clean = frame(
+        diagnostics_hitbox_occlusion_clean_sample_document(),
+        "hitbox clear",
+        90,
+    );
+    let covered = frame(
+        diagnostics_hitbox_occlusion_sample_document(),
+        "hitbox covered",
+        91,
+    );
+    let restored = frame(
+        diagnostics_hitbox_occlusion_clean_sample_document(),
+        "hitbox restored",
+        92,
+    );
+    DebugHitboxOcclusionTimelineTrace::from_traces([&clean, &covered, &restored])
+}
+
+fn diagnostics_hitbox_occlusion_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.hitbox_occlusion.target",
+            LayoutStyle::new().with_width(96.0).with_height(36.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        )),
+    );
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.hitbox_occlusion.cover",
+            UiNodeStyle::new(operad::layout::absolute(24.0, 0.0, 96.0, 36.0)).with_z_index(8),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(180, 72, 84),
+            Some(StrokeStyle::new(color(255, 145, 155), 1.0)),
+            5.0,
+        )),
+    );
+    sample
+}
+
+fn diagnostics_hitbox_occlusion_clean_sample_document() -> UiDocument {
+    let mut sample = UiDocument::new(root_style(220.0, 120.0));
+    sample.add_child(
+        sample.root(),
+        UiNode::container(
+            "diagnostics.hitbox_occlusion.target",
+            LayoutStyle::new().with_width(96.0).with_height(36.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_visual(UiVisual::panel(
+            color(52, 112, 180),
+            Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
+            5.0,
+        )),
+    );
+    sample
 }
 
 fn diagnostics_selected_node_panel(
@@ -8549,6 +13460,29 @@ fn diagnostics_selected_node_panel(
                     },
                 )
                 .read_only(),
+                ext_widgets::PropertyGridRow::new(
+                    "hitbox",
+                    "Hitbox",
+                    snapshot
+                        .hitbox("diagnostics.sample.preview")
+                        .and_then(|hitbox| hitbox.hit_rect)
+                        .map(|rect| {
+                            format!(
+                                "{:.0}, {:.0}; {:.0} x {:.0}",
+                                rect.x, rect.y, rect.width, rect.height
+                            )
+                        })
+                        .unwrap_or_else(|| "Not hit-testable".to_owned()),
+                )
+                .with_kind(ext_widgets::PropertyValueKind::Number)
+                .read_only(),
+                ext_widgets::PropertyGridRow::new(
+                    "overlaps",
+                    "Overlaps",
+                    snapshot.overlaps_for(node.id).count().to_string(),
+                )
+                .with_kind(ext_widgets::PropertyValueKind::Number)
+                .read_only(),
             ]
         })
         .unwrap_or_else(|| {
@@ -8564,6 +13498,106 @@ fn diagnostics_selected_node_panel(
         &rows,
         diagnostics_grid_options("Selected node details"),
     );
+}
+
+fn diagnostics_animation_activity_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.animation.activity.panel",
+        "Animation activity",
+    );
+    let trace = DebugAnimationActivityTrace::from_snapshot(snapshot);
+    ext_widgets::animation_activity_panel(
+        ui,
+        panel,
+        "diagnostics.animation.activity",
+        &trace,
+        ext_widgets::AnimationActivityPanelOptions {
+            action_prefix: Some("diagnostics.animation.activity".to_owned()),
+            max_activity_rows: 5,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_animation_activity_timeline_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    trace: &DebugAnimationActivityTimelineTrace,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.animation.timeline.panel",
+        "Animation timeline",
+    );
+    ext_widgets::animation_activity_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.animation.timeline",
+        trace,
+        ext_widgets::AnimationActivityTimelinePanelOptions {
+            action_prefix: Some("diagnostics.animation.timeline".to_owned()),
+            max_activity_rows: 4,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_animation_activity_timeline_sample() -> DebugAnimationActivityTimelineTrace {
+    fn frame(active: bool, label: &str, frame_index: u64) -> DebugFrameTrace {
+        let mut sample = UiDocument::new(root_style(240.0, 140.0));
+        if active {
+            sample.add_child(
+                sample.root(),
+                UiNode::container("diagnostics.animation.pulse", LayoutStyle::size(80.0, 32.0))
+                    .with_animation(
+                        AnimationMachine::new(
+                            vec![
+                                AnimationState::new(
+                                    "idle",
+                                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+                                ),
+                                AnimationState::new(
+                                    "hot",
+                                    AnimatedValues::new(1.0, UiPoint::new(20.0, 0.0), 1.1),
+                                ),
+                            ],
+                            vec![AnimationTransition::when(
+                                "idle",
+                                "hot",
+                                AnimationCondition::bool("hot", true),
+                                0.25,
+                            )],
+                            "idle",
+                        )
+                        .expect("diagnostics animation")
+                        .with_bool_input("hot", true)
+                        .with_number_input("hover", 0.7)
+                        .with_blend_binding(AnimationBlendBinding::new("hover", "idle", "hot")),
+                    ),
+            );
+        }
+        sample
+            .compute_layout(UiSize::new(240.0, 140.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics animation timeline layout");
+        DebugFrameTrace::from_document(
+            &sample,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new(label, UiSize::new(240.0, 140.0)).frame_index(frame_index),
+        )
+    }
+
+    let idle = frame(false, "animation idle", 70);
+    let active = frame(true, "animation active", 71);
+    let resolved = frame(false, "animation resolved", 72);
+    DebugAnimationActivityTimelineTrace::from_traces([&idle, &active, &resolved])
 }
 
 fn diagnostics_animation_panel(
@@ -8700,6 +13734,87 @@ fn diagnostics_animation_panel(
         text(12.0, color(166, 180, 198)),
         LayoutStyle::new().with_width_percent(1.0),
     );
+}
+
+fn diagnostics_accessibility_tree_panel(
+    ui: &mut UiDocument,
+    parent: UiNodeId,
+    snapshot: &DebugInspectorSnapshot,
+) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.a11y.tree.panel",
+        "Accessibility tree",
+    );
+    let trace = DebugAccessibilityTreeTrace::from_snapshot(snapshot);
+    ext_widgets::accessibility_tree_panel(
+        ui,
+        panel,
+        "diagnostics.a11y.tree",
+        &trace,
+        ext_widgets::AccessibilityTreePanelOptions {
+            action_prefix: Some("diagnostics.a11y.tree".to_owned()),
+            max_node_rows: 8,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_accessibility_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
+    let panel = diagnostics_panel(
+        ui,
+        parent,
+        "diagnostics.a11y.timeline.panel",
+        "Accessibility timeline",
+    );
+    let trace = diagnostics_accessibility_timeline_sample();
+    ext_widgets::accessibility_timeline_panel(
+        ui,
+        panel,
+        "diagnostics.a11y.timeline",
+        &trace,
+        ext_widgets::AccessibilityTimelinePanelOptions {
+            action_prefix: Some("diagnostics.a11y.timeline".to_owned()),
+            max_node_rows: 6,
+            max_frame_rows: 4,
+            ..Default::default()
+        },
+    );
+}
+
+fn diagnostics_accessibility_timeline_sample() -> DebugAccessibilityTimelineTrace {
+    fn frame(accessible: bool, frame_index: u64) -> DebugFrameTrace {
+        let mut document = UiDocument::new(root_style(180.0, 80.0));
+        let mut node = UiNode::container(
+            "diagnostics.a11y.timeline.target",
+            LayoutStyle::size(80.0, 28.0),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.a11y.timeline.activate");
+        if accessible {
+            node = node.with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Button)
+                    .label("Timeline target")
+                    .focusable()
+                    .action(AccessibilityAction::new("activate", "Activate")),
+            );
+        }
+        document.add_child(document.root(), node);
+        document
+            .compute_layout(UiSize::new(180.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("diagnostics accessibility timeline layout");
+        DebugFrameTrace::from_document(
+            &document,
+            &mut ApproxTextMeasurer,
+            DebugFrameTraceContext::new("a11y", UiSize::new(180.0, 80.0)).frame_index(frame_index),
+        )
+    }
+
+    let first = frame(true, 30);
+    let second = frame(false, 31);
+    let third = frame(true, 32);
+    DebugAccessibilityTimelineTrace::from_traces([&first, &second, &third])
 }
 
 fn diagnostics_accessibility_details(
@@ -9088,6 +14203,51 @@ fn diagnostics_sample_snapshot(state: &ShowcaseState) -> DebugInspectorSnapshot 
 }
 
 fn diagnostics_sample_snapshot_for(hover: f32, active: bool) -> DebugInspectorSnapshot {
+    let sample = diagnostics_sample_document_for(hover, active);
+    DebugInspectorSnapshot::from_document(&sample, &mut ApproxTextMeasurer)
+}
+
+fn diagnostics_sample_snapshot_with_preview_size(
+    hover: f32,
+    active: bool,
+    preview_width: f32,
+    preview_height: f32,
+) -> DebugInspectorSnapshot {
+    let sample =
+        diagnostics_sample_document_with_preview_size(hover, active, preview_width, preview_height);
+    DebugInspectorSnapshot::from_document(&sample, &mut ApproxTextMeasurer)
+}
+
+fn diagnostics_sample_event_route(state: &ShowcaseState) -> DebugEventRouteTrace {
+    let sample = diagnostics_sample_document_for(
+        state.diagnostics_animation_hover,
+        state.diagnostics_animation_active,
+    );
+    DebugEventRouteTrace::from_pointer_event(
+        &sample,
+        DebugPointerRouteKind::Down,
+        UiPoint::new(140.0, 22.0),
+    )
+}
+
+fn diagnostics_sample_node_id(document: &UiDocument, name: &str) -> Option<UiNodeId> {
+    document
+        .nodes()
+        .iter()
+        .enumerate()
+        .find_map(|(index, node)| (node.name() == name).then_some(UiNodeId::from_index(index)))
+}
+
+fn diagnostics_sample_document_for(hover: f32, active: bool) -> UiDocument {
+    diagnostics_sample_document_with_preview_size(hover, active, 160.0, 38.0)
+}
+
+fn diagnostics_sample_document_with_preview_size(
+    hover: f32,
+    active: bool,
+    preview_width: f32,
+    preview_height: f32,
+) -> UiDocument {
     let mut sample = UiDocument::new(root_style(320.0, 180.0));
     let card = sample.add_child(
         sample.root(),
@@ -9112,9 +14272,12 @@ fn diagnostics_sample_snapshot_for(hover: f32, active: bool) -> DebugInspectorSn
         card,
         UiNode::container(
             "diagnostics.sample.preview",
-            LayoutStyle::new().with_width(160.0).with_height(38.0),
+            LayoutStyle::new()
+                .with_width(preview_width)
+                .with_height(preview_height),
         )
         .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.preview.activate")
         .with_visual(UiVisual::panel(
             color(52, 112, 180),
             Some(StrokeStyle::new(color(116, 183, 255), 1.0)),
@@ -9152,6 +14315,25 @@ fn diagnostics_sample_snapshot_for(hover: f32, active: bool) -> DebugInspectorSn
             .with_trigger_input("pulse"),
         ),
     );
+    sample.add_child(
+        card,
+        UiNode::container(
+            "diagnostics.sample.hotspot",
+            UiNodeStyle::new(operad::layout::absolute(126.0, 10.0, 82.0, 34.0)).with_z_index(8),
+        )
+        .with_input(InputBehavior::BUTTON)
+        .with_action("diagnostics.hotspot.activate")
+        .with_visual(UiVisual::panel(
+            color(160, 98, 54),
+            Some(StrokeStyle::new(color(255, 203, 96), 1.0)),
+            5.0,
+        ))
+        .with_accessibility(
+            AccessibilityMeta::new(AccessibilityRole::Button)
+                .label("Overlapping debug target")
+                .focusable(),
+        ),
+    );
     widgets::label(
         &mut sample,
         card,
@@ -9163,7 +14345,7 @@ fn diagnostics_sample_snapshot_for(hover: f32, active: bool) -> DebugInspectorSn
     sample
         .compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
         .expect("sample layout");
-    DebugInspectorSnapshot::from_document(&sample, &mut ApproxTextMeasurer)
+    sample
 }
 
 fn diagnostics_command_registry() -> CommandRegistry {
@@ -9256,7 +14438,7 @@ fn tree_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         text(12.0, color(166, 176, 190)),
         LayoutStyle::new().with_width_percent(1.0),
     );
-    let virtual_nodes = ext_widgets::virtualized_tree_view(
+    ext_widgets::virtualized_tree_view(
         ui,
         body,
         "trees.virtual",
@@ -9265,10 +14447,10 @@ fn tree_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
         ext_widgets::VirtualTreeViewSpec::new(24.0, 112.0)
             .scroll_offset(state.tree_virtual_scroll)
             .overscan_rows(1),
-        ext_widgets::TreeViewOptions::default().with_row_action_prefix("trees.virtual"),
+        ext_widgets::TreeViewOptions::default()
+            .with_row_action_prefix("trees.virtual")
+            .with_scroll_action("trees.virtual.scroll"),
     );
-    ui.node_mut(virtual_nodes.body)
-        .set_action("trees.virtual.scroll");
     widgets::label(
         ui,
         body,
@@ -11396,7 +16578,7 @@ fn shader_lab_dropdown_select(
                 .with_flex_shrink(0.0),
         ),
     );
-    let nodes = ext_widgets::dropdown_select(
+    ext_widgets::dropdown_select(
         ui,
         anchor,
         name,
@@ -11408,8 +16590,6 @@ fn shader_lab_dropdown_select(
         )),
         dropdown_select_options(width, name, placeholder, accessibility_label),
     );
-    ui.node_mut(nodes.trigger)
-        .set_action(format!("{name}.toggle"));
 }
 
 fn shader_lab_selected_material(state: &ShowcaseState) -> ElementMaterial {
@@ -11656,20 +16836,21 @@ fn shader_lab_editor_column(
             4.0,
         )),
     );
-    let editor_scroll = widgets::scroll_area(
+    let editor_scroll = widgets::scroll_area_with_options(
         ui,
         editor_frame,
         "shader_lab.editor.scroll",
-        ScrollAxes::BOTH,
-        LayoutStyle::column()
-            .with_width_percent(1.0)
-            .with_height_percent(1.0),
+        widgets::ScrollAreaOptions::new(
+            ScrollAxes::BOTH,
+            LayoutStyle::column()
+                .with_width_percent(1.0)
+                .with_height_percent(1.0),
+        )
+        .with_scroll(
+            operad::ScrollState::new(ScrollAxes::BOTH).with_offset(state.shader_lab_editor_scroll),
+        )
+        .with_action("shader_lab.editor.scroll"),
     );
-    ui.node_mut(editor_scroll)
-        .set_action("shader_lab.editor.scroll");
-    if let Some(scroll) = ui.node_mut(editor_scroll).scroll_mut() {
-        scroll.set_offset(state.shader_lab_editor_scroll);
-    }
 
     let mut code_options = state.text_edit_options(FocusedTextInput::ShaderLabSource);
     code_options.edit_action = Some("shader_lab.editor.edit".into());
@@ -12451,20 +17632,7 @@ fn themed_button_options(
     state: ComponentState,
     layout: LayoutStyle,
 ) -> widgets::ButtonOptions {
-    let mut options = widgets::ButtonOptions::new(layout).with_action(action.into());
-    options.visual = theme.resolve_visual(ComponentRole::Button, state);
-    options.hovered_visual =
-        Some(theme.resolve_visual(ComponentRole::Button, ComponentState::HOVERED));
-    options.pressed_visual =
-        Some(theme.resolve_visual(ComponentRole::Button, ComponentState::PRESSED));
-    options.pressed_hovered_visual =
-        Some(theme.resolve_visual(ComponentRole::Button, ComponentState::PRESSED));
-    options.focused_visual =
-        Some(theme.resolve_visual(ComponentRole::Button, ComponentState::FOCUSED));
-    options.disabled_visual =
-        Some(theme.resolve_visual(ComponentRole::Button, ComponentState::DISABLED));
-    options.text_style = theme.resolve_text(ComponentRole::Button, state);
-    options
+    widgets::ButtonOptions::themed(theme, state, layout).with_action(action.into())
 }
 
 fn styling_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState) {
@@ -13449,25 +18617,16 @@ fn slider_checkbox_with_layout(
     widgets::checkbox(ui, parent, name, label, checked, options);
 }
 
-fn choice_button(
-    ui: &mut UiDocument,
-    parent: UiNodeId,
-    name: &'static str,
-    label: &'static str,
-    selected: bool,
-) {
-    let mut options =
-        widgets::ButtonOptions::new(LayoutStyle::new().with_width(78.0).with_height(28.0))
-            .with_action(name);
-    options.visual = if selected {
-        button_visual(48, 112, 184)
-    } else {
-        button_visual(38, 46, 58)
-    };
+fn segmented_options(action_prefix: &'static str) -> ext_widgets::SegmentedControlOptions {
+    let mut options = ext_widgets::SegmentedControlOptions::default()
+        .with_action_prefix(action_prefix)
+        .with_layout(LayoutStyle::row().with_height(30.0).with_gap(4.0));
+    options.visual = button_visual(38, 46, 58);
+    options.selected_visual = button_visual(48, 112, 184);
     options.hovered_visual = Some(button_visual(65, 86, 106));
     options.pressed_visual = Some(button_visual(34, 54, 84));
     options.text_style = text(12.0, color(238, 244, 252));
-    widgets::button(ui, parent, name, label, options);
+    options
 }
 
 fn divider(ui: &mut UiDocument, parent: UiNodeId, name: &'static str) {
@@ -13661,22 +18820,24 @@ fn layout_panel_contents(
     offset_y: f32,
     items: &[&'static str],
 ) {
-    let scroll = widgets::scroll_area(
+    let scroll = widgets::scroll_area_with_options(
         ui,
         parent,
         format!("{name}.scroll_area"),
-        ScrollAxes::VERTICAL,
-        LayoutStyle::column()
-            .with_width_percent(1.0)
-            .with_height(0.0)
-            .with_flex_grow(1.0)
-            .with_padding(8.0)
-            .with_gap(6.0),
+        widgets::ScrollAreaOptions::new(
+            ScrollAxes::VERTICAL,
+            LayoutStyle::column()
+                .with_width_percent(1.0)
+                .with_height(0.0)
+                .with_flex_grow(1.0)
+                .with_padding(8.0)
+                .with_gap(6.0),
+        )
+        .with_scroll(
+            operad::ScrollState::new(ScrollAxes::VERTICAL).with_offset(UiPoint::new(0.0, offset_y)),
+        )
+        .with_action(format!("{name}.scroll")),
     );
-    ui.node_mut(scroll).set_action(format!("{name}.scroll"));
-    if let Some(scroll_state) = ui.node_mut(scroll).scroll_mut() {
-        scroll_state.set_offset(UiPoint::new(0.0, offset_y));
-    }
     for (index, item) in items.iter().enumerate() {
         let row = ui.add_child(
             scroll,
@@ -13712,22 +18873,24 @@ fn layout_workspace_contents(
     name: &'static str,
     offset_y: f32,
 ) {
-    let scroll = widgets::scroll_area(
+    let scroll = widgets::scroll_area_with_options(
         ui,
         parent,
         format!("{name}.scroll_area"),
-        ScrollAxes::VERTICAL,
-        LayoutStyle::column()
-            .with_width_percent(1.0)
-            .with_height(0.0)
-            .with_flex_grow(1.0)
-            .with_padding(10.0)
-            .with_gap(10.0),
+        widgets::ScrollAreaOptions::new(
+            ScrollAxes::VERTICAL,
+            LayoutStyle::column()
+                .with_width_percent(1.0)
+                .with_height(0.0)
+                .with_flex_grow(1.0)
+                .with_padding(10.0)
+                .with_gap(10.0),
+        )
+        .with_scroll(
+            operad::ScrollState::new(ScrollAxes::VERTICAL).with_offset(UiPoint::new(0.0, offset_y)),
+        )
+        .with_action(format!("{name}.scroll")),
     );
-    ui.node_mut(scroll).set_action(format!("{name}.scroll"));
-    if let Some(scroll_state) = ui.node_mut(scroll).scroll_mut() {
-        scroll_state.set_offset(UiPoint::new(0.0, offset_y));
-    }
     let row_one = wrapping_row(ui, scroll, "layout.workspace.row.primary", 8.0);
     layout_card(
         ui,

@@ -15,6 +15,18 @@ use crate::accessibility::{
 };
 use crate::commands::{CommandId, CommandRegistry};
 use crate::core::document::AuditWarning;
+use crate::debug::{
+    DebugCaptureReport, DebugContractReport, DebugEventRouteTrace, DebugFrameAutopsyTrace,
+    DebugFrameBottleneckTrace, DebugFrameBudgetTrace, DebugFrameRecorder, DebugFrameTrace,
+    DebugFrameTraceContext, DebugFrameTraceStatus, DebugInspectNodeTrace, DebugInspectPointTrace,
+    DebugInspectorSnapshot, DebugIssueReport, DebugOverlapKind, DebugOverlapReason,
+    DebugOverlapRecord, DebugOverlapReport, DebugPaintHitMismatchRecord,
+    DebugPaintHitMismatchTrace, DebugPointAutopsyTrace, DebugPointerProbe,
+    DebugPointerProbeCandidate, DebugPointerRouteKind, DebugResourceReport, DebugSlowFrameTrace,
+    DebugSlowNodeTrace, DebugTextFitTrace, DebugVisibilityRecord, DebugVisibilityTrace,
+    DebugWhyTrace,
+};
+use crate::diagnostics::FrameTimingExplanation;
 use crate::display::{
     DisplayListInvalidationReport, DisplayListKey, DisplayListReuseOutcome, DisplayListReuseReport,
 };
@@ -137,6 +149,21 @@ pub struct EventReplayStepResult {
     pub platform_response: Option<PlatformServiceResponse>,
     pub viewport_resize: Option<UiSize>,
     pub result: Option<UiInputResult>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventReplayPointerEvent {
+    pub label: String,
+    pub event: DebugPointerRouteKind,
+    pub point: UiPoint,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventReplayPointerDiagnostic<T> {
+    pub label: String,
+    pub event: DebugPointerRouteKind,
+    pub point: UiPoint,
+    pub trace: T,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -442,6 +469,26 @@ fn replay_input_to_ui_event(input: &ReplayInput) -> Option<UiInputEvent> {
     }
 }
 
+fn ui_input_pointer_event(event: &UiInputEvent) -> Option<(DebugPointerRouteKind, UiPoint)> {
+    match event {
+        UiInputEvent::PointerMove(point) => Some((DebugPointerRouteKind::Move, *point)),
+        UiInputEvent::PointerDown(point) => Some((DebugPointerRouteKind::Down, *point)),
+        UiInputEvent::PointerUp(point) => Some((DebugPointerRouteKind::Up, *point)),
+        UiInputEvent::Wheel(wheel) => Some((DebugPointerRouteKind::Wheel, wheel.position)),
+        UiInputEvent::TextInput(_) | UiInputEvent::Key { .. } | UiInputEvent::Focus(_) => None,
+    }
+}
+
+fn replay_pointer_step(step: &EventReplayStepResult) -> Option<EventReplayPointerEvent> {
+    let converted = step.converted.as_ref()?;
+    let (event, point) = ui_input_pointer_event(converted)?;
+    Some(EventReplayPointerEvent {
+        label: step.label.clone(),
+        event,
+        point,
+    })
+}
+
 fn replay_input_to_platform_response(input: &ReplayInput) -> Option<PlatformServiceResponse> {
     match input {
         ReplayInput::PlatformResponse(response) => Some(response.clone()),
@@ -503,11 +550,457 @@ impl ScenarioFrameReport {
         )
     }
 
+    pub fn debug_event_routes(&self, document: &UiDocument) -> Vec<DebugEventRouteTrace> {
+        self.events.debug_event_routes(document)
+    }
+
+    pub fn pointer_steps(&self) -> impl Iterator<Item = EventReplayPointerEvent> + '_ {
+        self.events.pointer_steps()
+    }
+
+    pub fn pointer_step(&self, label: &str) -> TestResult<EventReplayPointerEvent> {
+        self.events.pointer_step(label)
+    }
+
+    pub fn last_pointer_event(&self) -> Option<(DebugPointerRouteKind, UiPoint)> {
+        self.events.last_pointer_event()
+    }
+
+    pub fn last_pointer_step(&self) -> Option<EventReplayPointerEvent> {
+        self.events.last_pointer_step()
+    }
+
+    pub fn debug_point_autopsy(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        label: &str,
+    ) -> TestResult<DebugPointAutopsyTrace> {
+        self.events
+            .debug_point_autopsy(document, text_measurer, label)
+    }
+
+    pub fn debug_last_point_autopsy(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Option<DebugPointAutopsyTrace> {
+        self.events
+            .debug_last_point_autopsy(document, text_measurer)
+    }
+
+    pub fn debug_why_point(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        label: &str,
+    ) -> TestResult<DebugWhyTrace> {
+        self.events.debug_why_point(document, text_measurer, label)
+    }
+
+    pub fn debug_last_why_point(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Option<DebugWhyTrace> {
+        self.events.debug_last_why_point(document, text_measurer)
+    }
+
+    pub fn debug_point_autopsies(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Vec<EventReplayPointerDiagnostic<DebugPointAutopsyTrace>> {
+        self.events.debug_point_autopsies(document, text_measurer)
+    }
+
+    pub fn debug_inspect_point(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        label: &str,
+    ) -> TestResult<DebugInspectPointTrace> {
+        self.events
+            .debug_inspect_point(document, text_measurer, label)
+    }
+
+    pub fn debug_last_inspect_point(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Option<DebugInspectPointTrace> {
+        self.events
+            .debug_last_inspect_point(document, text_measurer)
+    }
+
+    pub fn debug_inspect_points(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Vec<EventReplayPointerDiagnostic<DebugInspectPointTrace>> {
+        self.events.debug_inspect_points(document, text_measurer)
+    }
+
+    pub fn debug_frame_context(
+        &self,
+        document: &UiDocument,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugFrameTraceContext {
+        let mut context = DebugFrameTraceContext::new(self.label.clone(), self.viewport())
+            .timing(self.timings.clone())
+            .dirty_flags(self.document.render_request.dirty_flags)
+            .routes(self.debug_event_routes(document))
+            .resources(
+                DebugResourceReport::from_render_frame_request_without_resolver(
+                    &self.document.render_request,
+                ),
+            );
+        if let Some(budget) = timing_budget {
+            context = context.timing_budget(budget);
+        }
+        if let Some(selected_node) = selected_node {
+            context = context.selected_node(selected_node);
+        }
+        context
+    }
+
+    pub fn debug_frame_trace(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugFrameTrace {
+        self.debug_frame_trace_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_frame_trace_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugFrameTrace {
+        DebugFrameTrace::from_document(
+            document,
+            text_measurer,
+            self.debug_frame_context(document, timing_budget, selected_node),
+        )
+    }
+
+    pub fn debug_why_frame(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugWhyTrace {
+        self.debug_why_frame_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_why_frame_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugWhyTrace {
+        let trace = self.debug_frame_trace_with_options(
+            document,
+            text_measurer,
+            timing_budget,
+            selected_node,
+        );
+        DebugWhyTrace::from_frame_trace(&trace)
+    }
+
+    pub fn record_debug_frame<'a>(
+        &self,
+        recorder: &'a mut DebugFrameRecorder,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Option<&'a DebugFrameTrace> {
+        self.record_debug_frame_with_options(recorder, document, text_measurer, None, None, None)
+    }
+
+    pub fn record_debug_frame_with_options<'a>(
+        &self,
+        recorder: &'a mut DebugFrameRecorder,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        frame_index: Option<u64>,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> Option<&'a DebugFrameTrace> {
+        let mut context = self.debug_frame_context(document, timing_budget, selected_node);
+        if let Some(frame_index) = frame_index {
+            context = context.frame_index(frame_index);
+        }
+        recorder.record_document(document, text_measurer, context)
+    }
+
+    pub fn debug_inspect_node_trace(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        selected_node: &str,
+    ) -> Option<DebugInspectNodeTrace> {
+        let route = self
+            .last_pointer_event()
+            .map(|(event, point)| DebugEventRouteTrace::from_pointer_event(document, event, point));
+        self.debug_inspect_node_trace_with_route_context(
+            document,
+            text_measurer,
+            selected_node,
+            route.as_ref(),
+        )
+    }
+
+    pub fn debug_inspect_node_trace_for_step(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        selected_node: &str,
+        label: &str,
+    ) -> TestResult<DebugInspectNodeTrace> {
+        let step = self.pointer_step(label)?;
+        let route = DebugEventRouteTrace::from_pointer_event(document, step.event, step.point);
+        self.debug_inspect_node_trace_with_route_context(
+            document,
+            text_measurer,
+            selected_node,
+            Some(&route),
+        )
+        .ok_or_else(|| {
+            TestFailure::new(format!(
+                "expected inspect-node trace for `{selected_node}` in scenario `{}`",
+                self.label
+            ))
+        })
+    }
+
+    pub fn debug_why_node(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        selected_node: &str,
+    ) -> Option<DebugWhyTrace> {
+        self.debug_inspect_node_trace(document, text_measurer, selected_node)
+            .map(|trace| DebugWhyTrace::from_inspect_node(&trace))
+    }
+
+    pub fn debug_why_node_for_step(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        selected_node: &str,
+        label: &str,
+    ) -> TestResult<DebugWhyTrace> {
+        let trace =
+            self.debug_inspect_node_trace_for_step(document, text_measurer, selected_node, label)?;
+        Ok(DebugWhyTrace::from_inspect_node(&trace))
+    }
+
+    fn debug_inspect_node_trace_with_route_context(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        selected_node: &str,
+        route: Option<&DebugEventRouteTrace>,
+    ) -> Option<DebugInspectNodeTrace> {
+        LayoutAssertions::new(document).node(selected_node).ok()?;
+        let snapshot = DebugInspectorSnapshot::from_document(document, text_measurer);
+        let resources = DebugResourceReport::from_render_frame_request_without_resolver(
+            &self.document.render_request,
+        );
+        let slow_nodes = DebugSlowNodeTrace::from_document(document, text_measurer);
+        let text_fit = DebugTextFitTrace::from_document(document, text_measurer);
+        DebugInspectNodeTrace::from_context_with_traces(
+            &snapshot,
+            Some(selected_node),
+            route,
+            Some(&resources),
+            Some(&slow_nodes),
+            Some(&text_fit),
+        )
+    }
+
+    pub fn debug_capture_report(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugCaptureReport {
+        self.debug_capture_report_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_capture_report_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugCaptureReport {
+        let trace = self.debug_frame_trace_with_options(
+            document,
+            text_measurer,
+            timing_budget,
+            selected_node,
+        );
+        DebugCaptureReport::from_frame_trace(&trace)
+    }
+
+    pub fn debug_frame_budget_trace(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugFrameBudgetTrace {
+        self.debug_frame_budget_trace_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_frame_budget_trace_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugFrameBudgetTrace {
+        let trace = self.debug_frame_trace_with_options(
+            document,
+            text_measurer,
+            timing_budget,
+            selected_node,
+        );
+        DebugFrameBudgetTrace::from_trace(&trace)
+    }
+
+    pub fn debug_issue_report(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugIssueReport {
+        self.debug_issue_report_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_issue_report_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugIssueReport {
+        let trace = self.debug_frame_trace_with_options(
+            document,
+            text_measurer,
+            timing_budget,
+            selected_node,
+        );
+        DebugIssueReport::from_frame_trace(&trace)
+    }
+
+    pub fn debug_slow_frame_trace(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugSlowFrameTrace {
+        self.debug_slow_frame_trace_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_slow_frame_trace_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugSlowFrameTrace {
+        let trace = self.debug_frame_trace_with_options(
+            document,
+            text_measurer,
+            timing_budget,
+            selected_node,
+        );
+        let slow_nodes = DebugSlowNodeTrace::from_document(document, text_measurer);
+        DebugSlowFrameTrace::from_trace_with_slow_nodes(&trace, &slow_nodes)
+    }
+
+    pub fn debug_frame_bottleneck_trace(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugFrameBottleneckTrace {
+        self.debug_frame_bottleneck_trace_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_frame_bottleneck_trace_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugFrameBottleneckTrace {
+        let trace = self.debug_frame_trace_with_options(
+            document,
+            text_measurer,
+            timing_budget,
+            selected_node,
+        );
+        let slow_nodes = DebugSlowNodeTrace::from_document(document, text_measurer);
+        DebugFrameBottleneckTrace::from_trace_with_slow_nodes(&trace, &slow_nodes)
+    }
+
+    pub fn debug_frame_autopsy_trace(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugFrameAutopsyTrace {
+        self.debug_frame_autopsy_trace_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_frame_autopsy_trace_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugFrameAutopsyTrace {
+        let trace = self.debug_frame_trace_with_options(
+            document,
+            text_measurer,
+            timing_budget,
+            selected_node,
+        );
+        DebugFrameAutopsyTrace::from_trace(&trace)
+    }
+
+    pub fn debug_contract_report(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugContractReport {
+        self.debug_contract_report_with_options(document, text_measurer, None, None)
+    }
+
+    pub fn debug_contract_report_with_options(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        timing_budget: Option<Duration>,
+        selected_node: Option<&str>,
+    ) -> DebugContractReport {
+        let trace = self.debug_frame_trace_with_options(
+            document,
+            text_measurer,
+            timing_budget,
+            selected_node,
+        );
+        DebugContractReport::from_frame_trace(&trace)
+    }
+
     pub fn snapshot_assertions(
         &self,
         name: impl Into<String>,
     ) -> TestResult<SnapshotAssertions<'_>> {
         self.render_assertions().require_snapshot_rgba8(name)
+    }
+
+    pub const fn viewport(&self) -> UiSize {
+        self.document.render_request.viewport
     }
 }
 
@@ -742,6 +1235,149 @@ impl EventReplayReport {
         }
     }
 
+    pub fn debug_event_routes(&self, document: &UiDocument) -> Vec<DebugEventRouteTrace> {
+        self.steps
+            .iter()
+            .filter_map(|step| {
+                step.converted
+                    .as_ref()
+                    .and_then(|event| DebugEventRouteTrace::from_input_event(document, event))
+            })
+            .collect()
+    }
+
+    pub fn pointer_steps(&self) -> impl Iterator<Item = EventReplayPointerEvent> + '_ {
+        self.steps.iter().filter_map(replay_pointer_step)
+    }
+
+    pub fn pointer_step(&self, label: &str) -> TestResult<EventReplayPointerEvent> {
+        let step = self.step(label)?;
+        replay_pointer_step(step).ok_or_else(|| {
+            TestFailure::new(format!(
+                "event replay step `{label}` is not a pointer event; converted: {:?}",
+                step.converted
+            ))
+        })
+    }
+
+    pub fn pointer_events(&self) -> impl Iterator<Item = (DebugPointerRouteKind, UiPoint)> + '_ {
+        self.pointer_steps().map(|step| (step.event, step.point))
+    }
+
+    pub fn last_pointer_event(&self) -> Option<(DebugPointerRouteKind, UiPoint)> {
+        self.pointer_events().last()
+    }
+
+    pub fn last_pointer_step(&self) -> Option<EventReplayPointerEvent> {
+        self.pointer_steps().last()
+    }
+
+    pub fn debug_point_autopsy(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        label: &str,
+    ) -> TestResult<DebugPointAutopsyTrace> {
+        let step = self.pointer_step(label)?;
+        Ok(DebugPointAutopsyTrace::from_pointer_event(
+            document,
+            text_measurer,
+            step.event,
+            step.point,
+        ))
+    }
+
+    pub fn debug_last_point_autopsy(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Option<DebugPointAutopsyTrace> {
+        let (event, point) = self.last_pointer_event()?;
+        Some(DebugPointAutopsyTrace::from_pointer_event(
+            document,
+            text_measurer,
+            event,
+            point,
+        ))
+    }
+
+    pub fn debug_why_point(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        label: &str,
+    ) -> TestResult<DebugWhyTrace> {
+        let autopsy = self.debug_point_autopsy(document, text_measurer, label)?;
+        Ok(DebugWhyTrace::from_point_autopsy(&autopsy))
+    }
+
+    pub fn debug_last_why_point(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Option<DebugWhyTrace> {
+        let autopsy = self.debug_last_point_autopsy(document, text_measurer)?;
+        Some(DebugWhyTrace::from_point_autopsy(&autopsy))
+    }
+
+    pub fn debug_point_autopsies(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Vec<EventReplayPointerDiagnostic<DebugPointAutopsyTrace>> {
+        self.pointer_steps()
+            .map(|step| {
+                let trace = DebugPointAutopsyTrace::from_pointer_event(
+                    document,
+                    text_measurer,
+                    step.event,
+                    step.point,
+                );
+                EventReplayPointerDiagnostic {
+                    label: step.label,
+                    event: step.event,
+                    point: step.point,
+                    trace,
+                }
+            })
+            .collect()
+    }
+
+    pub fn debug_inspect_point(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+        label: &str,
+    ) -> TestResult<DebugInspectPointTrace> {
+        let autopsy = self.debug_point_autopsy(document, text_measurer, label)?;
+        Ok(DebugInspectPointTrace::from_point_autopsy(autopsy))
+    }
+
+    pub fn debug_last_inspect_point(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Option<DebugInspectPointTrace> {
+        let autopsy = self.debug_last_point_autopsy(document, text_measurer)?;
+        Some(DebugInspectPointTrace::from_point_autopsy(autopsy))
+    }
+
+    pub fn debug_inspect_points(
+        &self,
+        document: &UiDocument,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> Vec<EventReplayPointerDiagnostic<DebugInspectPointTrace>> {
+        self.debug_point_autopsies(document, text_measurer)
+            .into_iter()
+            .map(|diagnostic| EventReplayPointerDiagnostic {
+                label: diagnostic.label,
+                event: diagnostic.event,
+                point: diagnostic.point,
+                trace: DebugInspectPointTrace::from_point_autopsy(diagnostic.trace),
+            })
+            .collect()
+    }
+
     pub fn clicked_nodes(&self) -> Vec<UiNodeId> {
         self.steps
             .iter()
@@ -774,8 +1410,104 @@ impl EventReplayReport {
         require_replay_node("clicked", node, self.clicked_nodes())
     }
 
+    pub fn require_step_clicked(&self, label: &str, node: UiNodeId) -> TestResult<UiNodeId> {
+        let step = self.step(label)?;
+        require_replay_step_node(step, ReplayNodeOutcome::Clicked, node)
+    }
+
+    pub fn require_clicked_name(
+        &self,
+        document: &UiDocument,
+        node_name: &str,
+    ) -> TestResult<UiNodeId> {
+        let (expected, _) = LayoutAssertions::new(document).node(node_name)?;
+        if let Some(clicked) = self
+            .clicked_nodes()
+            .into_iter()
+            .find(|clicked| document.node_is_descendant_or_self(expected, *clicked))
+        {
+            Ok(clicked)
+        } else {
+            Err(TestFailure::new(format_replay_named_node_failure(
+                document, self, "clicked", node_name, expected,
+            )))
+        }
+    }
+
+    pub fn require_step_clicked_name(
+        &self,
+        document: &UiDocument,
+        label: &str,
+        node_name: &str,
+    ) -> TestResult<UiNodeId> {
+        let (expected, _) = LayoutAssertions::new(document).node(node_name)?;
+        let step = self.step(label)?;
+        if let Some(clicked) = ReplayNodeOutcome::Clicked
+            .node(step)
+            .filter(|clicked| document.node_is_descendant_or_self(expected, *clicked))
+        {
+            Ok(clicked)
+        } else {
+            Err(TestFailure::new(format_replay_step_named_node_failure(
+                document,
+                step,
+                ReplayNodeOutcome::Clicked,
+                node_name,
+                expected,
+            )))
+        }
+    }
+
     pub fn require_focused(&self, node: UiNodeId) -> TestResult {
         require_replay_node("focused", node, self.focused_nodes())
+    }
+
+    pub fn require_step_focused(&self, label: &str, node: UiNodeId) -> TestResult<UiNodeId> {
+        let step = self.step(label)?;
+        require_replay_step_node(step, ReplayNodeOutcome::Focused, node)
+    }
+
+    pub fn require_focused_name(
+        &self,
+        document: &UiDocument,
+        node_name: &str,
+    ) -> TestResult<UiNodeId> {
+        let (expected, _) = LayoutAssertions::new(document).node(node_name)?;
+        if let Some(focused) = self
+            .focused_nodes()
+            .into_iter()
+            .find(|focused| document.node_is_descendant_or_self(expected, *focused))
+        {
+            Ok(focused)
+        } else {
+            Err(TestFailure::new(format_replay_named_node_failure(
+                document, self, "focused", node_name, expected,
+            )))
+        }
+    }
+
+    pub fn require_step_focused_name(
+        &self,
+        document: &UiDocument,
+        label: &str,
+        node_name: &str,
+    ) -> TestResult<UiNodeId> {
+        let (expected, _) = LayoutAssertions::new(document).node(node_name)?;
+        let step = self.step(label)?;
+        if let Some(focused) = ReplayNodeOutcome::Focused
+            .node(step)
+            .filter(|focused| document.node_is_descendant_or_self(expected, *focused))
+        {
+            Ok(focused)
+        } else {
+            Err(TestFailure::new(format_replay_step_named_node_failure(
+                document,
+                step,
+                ReplayNodeOutcome::Focused,
+                node_name,
+                expected,
+            )))
+        }
     }
 
     pub fn require_scrolled(&self, node: UiNodeId) -> TestResult {
@@ -788,16 +1520,29 @@ impl EventReplayReport {
 
     pub fn require_step_consumed_by(&self, label: &str, node: UiNodeId) -> TestResult {
         let step = self.step(label)?;
-        if step
-            .result
-            .as_ref()
-            .is_some_and(|result| result.consumed && result.consumed_by == Some(node))
+        require_replay_step_node(step, ReplayNodeOutcome::ConsumedBy, node).map(|_| ())
+    }
+
+    pub fn require_step_consumed_by_name(
+        &self,
+        document: &UiDocument,
+        label: &str,
+        node_name: &str,
+    ) -> TestResult<UiNodeId> {
+        let (expected, _) = LayoutAssertions::new(document).node(node_name)?;
+        let step = self.step(label)?;
+        if let Some(consumed_by) = ReplayNodeOutcome::ConsumedBy
+            .node(step)
+            .filter(|consumed_by| document.node_is_descendant_or_self(expected, *consumed_by))
         {
-            Ok(())
+            Ok(consumed_by)
         } else {
-            Err(TestFailure::new(format!(
-                "expected event replay step `{label}` to be consumed by {node:?}, got {:?}",
-                step.result
+            Err(TestFailure::new(format_replay_step_named_node_failure(
+                document,
+                step,
+                ReplayNodeOutcome::ConsumedBy,
+                node_name,
+                expected,
             )))
         }
     }
@@ -889,6 +1634,192 @@ fn require_replay_node(kind: &str, node: UiNodeId, actual: Vec<UiNodeId>) -> Tes
             "expected event replay {kind} node {node:?}, got {actual:?}"
         )))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayNodeOutcome {
+    Clicked,
+    Focused,
+    ConsumedBy,
+}
+
+impl ReplayNodeOutcome {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Clicked => "clicked",
+            Self::Focused => "focused",
+            Self::ConsumedBy => "consumed by",
+        }
+    }
+
+    fn node(self, step: &EventReplayStepResult) -> Option<UiNodeId> {
+        let result = step.result.as_ref()?;
+        match self {
+            Self::Clicked => result.clicked,
+            Self::Focused => result.focused,
+            Self::ConsumedBy => result.consumed.then_some(result.consumed_by).flatten(),
+        }
+    }
+}
+
+fn require_replay_step_node(
+    step: &EventReplayStepResult,
+    outcome: ReplayNodeOutcome,
+    node: UiNodeId,
+) -> TestResult<UiNodeId> {
+    if outcome.node(step) == Some(node) {
+        Ok(node)
+    } else {
+        Err(TestFailure::new(format!(
+            "expected event replay step `{}` to be {} {node:?}, got {:?}",
+            step.label,
+            outcome.label(),
+            step.result
+        )))
+    }
+}
+
+fn format_replay_named_node_failure(
+    document: &UiDocument,
+    report: &EventReplayReport,
+    kind: &str,
+    expected_name: &str,
+    expected_id: UiNodeId,
+) -> String {
+    let actual_ids = match kind {
+        "clicked" => report.clicked_nodes(),
+        "focused" => report.focused_nodes(),
+        _ => Vec::new(),
+    };
+    let actual_names = replay_node_names(document, &actual_ids);
+    let mut parts = vec![format!(
+        "expected event replay {kind} `{expected_name}`, got [{}]",
+        actual_names.join(", ")
+    )];
+    if let Some((event, point)) = report.last_pointer_event() {
+        push_replay_pointer_diagnostics(
+            &mut parts,
+            document,
+            "last pointer",
+            event,
+            point,
+            expected_name,
+            expected_id,
+        );
+    } else {
+        parts.push(
+            "no pointer event was replayed; inspect event_route_panel for keyboard/focus routing"
+                .to_owned(),
+        );
+    }
+    parts.join("; ")
+}
+
+fn format_replay_step_named_node_failure(
+    document: &UiDocument,
+    step: &EventReplayStepResult,
+    outcome: ReplayNodeOutcome,
+    expected_name: &str,
+    expected_id: UiNodeId,
+) -> String {
+    let actual = outcome
+        .node(step)
+        .map(|node| replay_node_name(document, node))
+        .unwrap_or_else(|| "none".to_owned());
+    let mut parts = vec![format!(
+        "expected event replay step `{}` {} `{expected_name}`, got {actual}",
+        step.label,
+        outcome.label()
+    )];
+    if let Some((event, point)) = step.converted.as_ref().and_then(ui_input_pointer_event) {
+        push_replay_pointer_diagnostics(
+            &mut parts,
+            document,
+            "step pointer",
+            event,
+            point,
+            expected_name,
+            expected_id,
+        );
+    } else {
+        parts.push(format!(
+            "step `{}` is not a pointer event; converted: {:?}",
+            step.label, step.converted
+        ));
+        parts.push("inspect: event_route_panel for keyboard/focus routing".to_owned());
+    }
+    parts.join("; ")
+}
+
+fn push_replay_pointer_diagnostics(
+    parts: &mut Vec<String>,
+    document: &UiDocument,
+    label: &str,
+    event: DebugPointerRouteKind,
+    point: UiPoint,
+    expected_name: &str,
+    expected_id: UiNodeId,
+) {
+    let probe = match event {
+        DebugPointerRouteKind::Down => DebugPointerProbe::pointer_down(document, point),
+        DebugPointerRouteKind::Move => DebugPointerProbe::pointer_move(document, point),
+        DebugPointerRouteKind::Up => DebugPointerProbe::pointer_up(document, point),
+        DebugPointerRouteKind::Wheel => {
+            DebugPointerProbe::from_pointer_event(document, DebugPointerRouteKind::Wheel, point)
+        }
+    };
+    parts.push(format!(
+        "{label} {} at {}",
+        event.label(),
+        format_test_point(point)
+    ));
+    parts.push(format!(
+        "routed target: {}",
+        probe.target_name.as_deref().unwrap_or("none")
+    ));
+    parts.push(format!(
+        "top candidate: {}",
+        probe
+            .candidates
+            .first()
+            .map(|candidate| candidate.name.as_str())
+            .unwrap_or("none")
+    ));
+    if let Some(candidate) = probe.candidate(expected_name) {
+        parts.push(format!(
+            "expected candidate: {}",
+            format_hit_candidate_detail(candidate)
+        ));
+        parts.push(format!("cause: {}", candidate.cause));
+        parts.push(format!("fix: {}", candidate.fix));
+    } else {
+        parts.push(format!(
+            "expected node #{} was not a pointer probe candidate",
+            expected_id.0
+        ));
+        parts.push(
+            "fix: inspect visibility, hitbox, clip, pointer input, and z/layer order".to_owned(),
+        );
+    }
+    parts.push("inspect: pointer_autopsy_panel or hitbox_debug_overlay".to_owned());
+}
+
+fn replay_node_names(document: &UiDocument, nodes: &[UiNodeId]) -> Vec<String> {
+    if nodes.is_empty() {
+        return vec!["none".to_owned()];
+    }
+    nodes
+        .iter()
+        .map(|node| replay_node_name(document, *node))
+        .collect()
+}
+
+fn replay_node_name(document: &UiDocument, node: UiNodeId) -> String {
+    document
+        .nodes()
+        .get(node.0)
+        .map(|node| node.name.clone())
+        .unwrap_or_else(|| format!("#{}", node.0))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1419,7 +2350,7 @@ pub fn run_ui_state_matrix<'a>(
     Ok(report)
 }
 
-pub fn is_blocking_just_work_warning(warning: &AuditWarning) -> bool {
+pub fn is_blocking_audit_warning(warning: &AuditWarning) -> bool {
     matches!(
         warning,
         AuditWarning::NonFiniteRect { .. }
@@ -1556,12 +2487,59 @@ impl<'a> LayoutAssertions<'a> {
     }
 
     pub fn require_visible(&self, name: &str) -> TestResult {
+        let mut measurer = ApproxTextMeasurer;
+        self.require_visible_with_measurer(name, &mut measurer)
+    }
+
+    pub fn visibility_trace(&self, text_measurer: &mut impl TextMeasurer) -> DebugVisibilityTrace {
+        DebugVisibilityTrace::from_document(self.document, text_measurer)
+    }
+
+    pub fn require_visible_with_measurer(
+        &self,
+        name: &str,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> TestResult {
         let (_, node) = self.node(name)?;
         if node.layout.visible {
             Ok(())
         } else {
-            Err(TestFailure::new(format!("node `{name}` is not visible")))
+            let visibility = self.visibility_trace(text_measurer);
+            Err(TestFailure::new(format_visibility_assertion_failure(
+                name,
+                node,
+                visibility.record(name),
+            )))
         }
+    }
+
+    pub fn hit_probe(&self, point: UiPoint) -> DebugPointerProbe {
+        DebugPointerProbe::pointer_down(self.document, point)
+    }
+
+    pub fn require_hit_at(&self, name: &str, point: UiPoint) -> TestResult<UiNodeId> {
+        let (expected, _) = self.node(name)?;
+        let hit = self.document.hit_test(point);
+        if let Some(hit) =
+            hit.filter(|hit| self.document.node_is_descendant_or_self(expected, *hit))
+        {
+            Ok(hit)
+        } else {
+            let probe = self.hit_probe(point);
+            Err(TestFailure::new(format_hit_assertion_failure(
+                self.document,
+                name,
+                expected,
+                point,
+                hit,
+                &probe,
+            )))
+        }
+    }
+
+    pub fn require_hit_center(&self, name: &str) -> TestResult<UiNodeId> {
+        let rect = self.rect(name)?;
+        self.require_hit_at(name, test_rect_center(rect))
     }
 
     pub fn require_min_size(&self, name: &str, min_size: UiSize) -> TestResult {
@@ -1921,7 +2899,7 @@ impl<'a> JustWorkAssertions<'a> {
     pub fn blocking_warnings(&self) -> Vec<&AuditWarning> {
         self.warnings
             .iter()
-            .filter(|warning| is_blocking_just_work_warning(warning))
+            .filter(|warning| is_blocking_audit_warning(warning))
             .collect()
     }
 
@@ -1968,6 +2946,59 @@ impl<'a> JustWorkAssertions<'a> {
         })
     }
 
+    pub fn overlap_report(&self) -> DebugOverlapReport {
+        DebugOverlapReport::from_document(self.document)
+    }
+
+    pub fn require_no_interactive_overlaps(&self) -> TestResult {
+        let report = self.overlap_report();
+        let overlaps = report
+            .overlaps
+            .iter()
+            .filter(|overlap| overlap.kind == DebugOverlapKind::InteractiveHitbox)
+            .collect::<Vec<_>>();
+        if overlaps.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no interactive hitbox overlaps:\n{}",
+                format_interactive_overlap_summaries(overlaps)
+            )))
+        }
+    }
+
+    pub fn paint_hit_mismatch_trace(
+        &self,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> DebugPaintHitMismatchTrace {
+        DebugPaintHitMismatchTrace::from_document(self.document, text_measurer)
+    }
+
+    pub fn require_no_paint_hit_mismatches(
+        &self,
+        text_measurer: &mut impl TextMeasurer,
+    ) -> TestResult {
+        let trace = self.paint_hit_mismatch_trace(text_measurer);
+        let mismatches = trace
+            .records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.status,
+                    DebugFrameTraceStatus::Error | DebugFrameTraceStatus::Warning
+                )
+            })
+            .collect::<Vec<_>>();
+        if mismatches.is_empty() {
+            Ok(())
+        } else {
+            Err(TestFailure::new(format!(
+                "expected no paint/hit mismatches:\n{}",
+                format_paint_hit_mismatch_summaries(mismatches)
+            )))
+        }
+    }
+
     fn require_no_blocking_kind(
         &self,
         label: &str,
@@ -1976,7 +3007,7 @@ impl<'a> JustWorkAssertions<'a> {
         let warnings = self
             .warnings
             .iter()
-            .filter(|warning| is_blocking_just_work_warning(warning) && predicate(warning))
+            .filter(|warning| is_blocking_audit_warning(warning) && predicate(warning))
             .collect::<Vec<_>>();
         if warnings.is_empty() {
             Ok(())
@@ -1987,6 +3018,211 @@ impl<'a> JustWorkAssertions<'a> {
             )))
         }
     }
+}
+
+fn format_visibility_assertion_failure(
+    name: &str,
+    node: &UiNode,
+    record: Option<&DebugVisibilityRecord>,
+) -> String {
+    if let Some(record) = record {
+        return format!(
+            "node `{name}` is not visible; issue: {}; cause: {}; fix: {}; rect: {}; clip: {}; inspect: visibility_panel",
+            record.issue.title(),
+            record.cause,
+            record.fix,
+            format_test_rect(record.rect),
+            format_test_rect(record.clip_rect)
+        );
+    }
+
+    format!(
+        "node `{name}` is not visible; rect: {}; clip: {}; inspect: visibility_panel",
+        format_test_rect(node.layout.rect),
+        format_test_rect(node.layout.clip_rect)
+    )
+}
+
+fn format_paint_assertion_failure(
+    name: &str,
+    node: &UiNode,
+    record: Option<&DebugVisibilityRecord>,
+) -> String {
+    if let Some(record) = record {
+        return format!(
+            "node `{name}` has no paint items; issue: {}; cause: {}; fix: {}; rect: {}; clip: {}; inspect: visibility_panel",
+            record.issue.title(),
+            record.cause,
+            record.fix,
+            format_test_rect(record.rect),
+            format_test_rect(record.clip_rect)
+        );
+    }
+
+    format!(
+        "node `{name}` has no paint items; visible: {}; rect: {}; clip: {}; inspect: visibility_panel or paint_order_panel",
+        node.layout.visible,
+        format_test_rect(node.layout.rect),
+        format_test_rect(node.layout.clip_rect)
+    )
+}
+
+fn format_hit_assertion_failure(
+    document: &UiDocument,
+    expected_name: &str,
+    expected_id: UiNodeId,
+    point: UiPoint,
+    actual_hit: Option<UiNodeId>,
+    probe: &DebugPointerProbe,
+) -> String {
+    let actual = actual_hit
+        .map(|hit| document.node(hit).name.as_str())
+        .unwrap_or("none");
+    let candidate = probe.candidate(expected_name);
+    let cause = candidate
+        .map(|candidate| candidate.cause.as_str())
+        .unwrap_or_else(|| {
+            probe
+                .candidates
+                .first()
+                .map(|candidate| candidate.cause.as_str())
+                .unwrap_or("no retained layout, paint, or hitbox geometry was close to this point")
+        });
+    let fix = candidate
+        .map(|candidate| candidate.fix.as_str())
+        .unwrap_or_else(|| {
+            probe
+                .candidates
+                .first()
+                .map(|candidate| candidate.fix.as_str())
+                .unwrap_or(
+                    "confirm the point is in the expected viewport and the target has layout size",
+                )
+        });
+    let target = probe.target_name.as_deref().unwrap_or("none");
+    let top = probe
+        .candidates
+        .first()
+        .map(|candidate| candidate.name.as_str())
+        .unwrap_or("none");
+    let expected_detail = candidate
+        .map(format_hit_candidate_detail)
+        .unwrap_or_else(|| {
+            format!(
+                "expected node #{} was not a pointer probe candidate",
+                expected_id.0
+            )
+        });
+
+    format!(
+        "expected point {} to hit `{expected_name}`, got `{actual}`; routed target: {target}; top candidate: {top}; expected candidate: {expected_detail}; cause: {cause}; fix: {fix}; inspect: pointer_autopsy_panel or hitbox_debug_overlay",
+        format_test_point(point),
+    )
+}
+
+fn format_hit_candidate_detail(candidate: &DebugPointerProbeCandidate) -> String {
+    let mut parts = vec![
+        format!("hit={}", candidate.hit),
+        format!("target={}", candidate.target),
+        format!("layout={}", candidate.layout_contains_point),
+        format!("clip={}", candidate.clip_contains_point),
+        format!("effective={}", candidate.effective_hit),
+        format!("pointer={}", candidate.pointer),
+    ];
+    if let Some(hit_rect) = candidate.hit_rect {
+        parts.push(format!("hit rect {}", format_test_rect(hit_rect)));
+    }
+    if !candidate.rejections.is_empty() {
+        parts.push(format!("{} route rejection(s)", candidate.rejections.len()));
+    }
+    parts.join(", ")
+}
+
+fn format_interactive_overlap_summaries(overlaps: Vec<&DebugOverlapRecord>) -> String {
+    overlaps
+        .into_iter()
+        .enumerate()
+        .map(|(index, overlap)| {
+            let reasons = if overlap.reasons.is_empty() {
+                "no recorded reason".to_owned()
+            } else {
+                overlap
+                    .reasons
+                    .iter()
+                    .map(debug_overlap_reason_summary)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!(
+                "{}. `{}` overlaps `{}` at {} ({:.0}px2); reasons: {}; inspect: overlap_report_panel",
+                index + 1,
+                overlap.back.name,
+                overlap.front.name,
+                format_test_rect(overlap.overlap_rect),
+                test_rect_area(overlap.overlap_rect),
+                reasons
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_paint_hit_mismatch_summaries(mismatches: Vec<&DebugPaintHitMismatchRecord>) -> String {
+    mismatches
+        .into_iter()
+        .enumerate()
+        .map(|(index, mismatch)| {
+            format!(
+                "{}. `{}` {}: {}; cause: {}; fix: {}",
+                index + 1,
+                mismatch.name,
+                mismatch.kind.title(),
+                mismatch.summary,
+                mismatch.cause,
+                mismatch.fix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn debug_overlap_reason_summary(reason: &DebugOverlapReason) -> String {
+    match reason {
+        DebugOverlapReason::SharedParent { .. } => "shared parent layout".to_owned(),
+        DebugOverlapReason::DifferentParents { .. } => "different parent chains".to_owned(),
+        DebugOverlapReason::AncestorDescendant { .. } => "ancestor/descendant geometry".to_owned(),
+        DebugOverlapReason::AbsolutePositioning { .. } => "absolute positioning".to_owned(),
+        DebugOverlapReason::LayerOrdering { .. } => "layer ordering".to_owned(),
+        DebugOverlapReason::ZOrdering { .. } => "z ordering".to_owned(),
+        DebugOverlapReason::BothPointerInteractive => {
+            "both nodes are pointer-interactive".to_owned()
+        }
+        DebugOverlapReason::PaintExtendsOutsideLayout { .. } => {
+            "paint extends outside layout".to_owned()
+        }
+        DebugOverlapReason::ClipReducesVisibleHitbox { .. } => {
+            "clip reduces visible hitbox".to_owned()
+        }
+    }
+}
+
+fn format_test_rect(rect: UiRect) -> String {
+    format!(
+        "x={:.1} y={:.1} w={:.1} h={:.1}",
+        rect.x, rect.y, rect.width, rect.height
+    )
+}
+
+fn format_test_point(point: UiPoint) -> String {
+    format!("x={:.1} y={:.1}", point.x, point.y)
+}
+
+fn test_rect_center(rect: UiRect) -> UiPoint {
+    UiPoint::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+}
+
+fn test_rect_area(rect: UiRect) -> f32 {
+    rect.width.max(0.0) * rect.height.max(0.0)
 }
 
 fn format_audit_warning_summaries(warnings: Vec<&AuditWarning>) -> String {
@@ -2562,8 +3798,12 @@ impl<'a> PaintAssertions<'a> {
             .filter(|item| item.node == id)
             .collect::<Vec<_>>();
         if items.is_empty() {
-            Err(TestFailure::new(format!(
-                "node `{node_name}` has no paint items"
+            let mut measurer = ApproxTextMeasurer;
+            let visibility = DebugVisibilityTrace::from_document(self.document, &mut measurer);
+            Err(TestFailure::new(format_paint_assertion_failure(
+                node_name,
+                self.document.node(id),
+                visibility.record(node_name),
             )))
         } else {
             Ok(items)
@@ -3640,6 +4880,10 @@ impl<'a> FrameTimingAssertions<'a> {
         self.timing
     }
 
+    pub fn explanation(&self, budget: Option<Duration>) -> FrameTimingExplanation {
+        FrameTimingExplanation::from_frame_timing(self.timing, budget)
+    }
+
     pub fn require_section(&self, name: &str) -> TestResult<Duration> {
         self.timing.duration(name).ok_or_else(|| {
             TestFailure::new(format!(
@@ -3664,13 +4908,8 @@ impl<'a> FrameTimingAssertions<'a> {
         if total <= budget {
             Ok(total)
         } else {
-            let dominant = self
-                .timing
-                .dominant_section()
-                .map(|summary| summary.diagnostic_summary())
-                .unwrap_or_else(|| "no sections recorded".to_string());
-            Err(TestFailure::new(format!(
-                "frame timing total {total:?} exceeded budget {budget:?}; dominant section: {dominant}"
+            Err(TestFailure::new(format_frame_timing_budget_failure(
+                &self.explanation(Some(budget)),
             )))
         }
     }
@@ -3681,7 +4920,8 @@ impl<'a> FrameTimingAssertions<'a> {
             Ok(duration)
         } else {
             Err(TestFailure::new(format!(
-                "frame timing section `{name}` duration {duration:?} exceeded budget {budget:?}"
+                "frame timing section `{name}` duration {duration:?} exceeded budget {budget:?}; {}; inspect: frame_timing_panel",
+                format_frame_timing_section_detail(self.timing, name, duration),
             )))
         }
     }
@@ -3692,6 +4932,102 @@ impl<'a> FrameTimingAssertions<'a> {
             .iter()
             .map(|section| section.name.as_str())
             .collect()
+    }
+}
+
+fn format_frame_timing_budget_failure(explanation: &FrameTimingExplanation) -> String {
+    let budget = explanation
+        .budget
+        .map(|budget| format!("{budget:?}"))
+        .unwrap_or_else(|| "none".to_owned());
+    let over_by = explanation
+        .budget
+        .and_then(|budget| (explanation.total > budget).then(|| explanation.total - budget))
+        .map(|duration| format!(" by {duration:?}"))
+        .unwrap_or_default();
+    let slowest = explanation
+        .slowest_stage_explanation()
+        .map(format_frame_timing_stage_explanation)
+        .unwrap_or_else(|| "no timing stages recorded".to_owned());
+    let grouped = if explanation.stages.is_empty() {
+        "none".to_owned()
+    } else {
+        explanation
+            .stages
+            .iter()
+            .take(3)
+            .map(format_frame_timing_stage_explanation)
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let missing = if explanation.missing_required_stages.is_empty() {
+        "none".to_owned()
+    } else {
+        explanation
+            .missing_required_stages
+            .iter()
+            .map(|stage| stage.label().to_owned())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    format!(
+        "frame timing total {:?} exceeded budget {budget}{over_by}; slowest stage: {slowest}; grouped stages: {grouped}; missing instrumentation: {missing}; inspect: frame_timing_panel, frame_budget_panel, or frame_bottleneck_panel",
+        explanation.total
+    )
+}
+
+fn format_frame_timing_stage_explanation(
+    stage: &crate::diagnostics::FrameTimingStageExplanation,
+) -> String {
+    let sources = if stage.source_labels.is_empty() {
+        "none".to_owned()
+    } else {
+        stage.source_labels.join("+")
+    };
+    format!(
+        "{} {:?} ({:.1}% of frame, sections: {sources})",
+        stage.label, stage.duration, stage.percent_of_total
+    )
+}
+
+fn format_frame_timing_section_detail(
+    timing: &FrameTiming,
+    section_name: &str,
+    duration: Duration,
+) -> String {
+    let explanation = FrameTimingExplanation::from_frame_timing(timing, None);
+    let percent = timing
+        .section_fraction(section_name)
+        .map(|fraction| format!("{:.1}% of frame", fraction * 100.0))
+        .unwrap_or_else(|| "unknown frame share".to_owned());
+    let stage = explanation
+        .stages
+        .iter()
+        .find(|stage| {
+            stage
+                .source_labels
+                .iter()
+                .any(|source| source == section_name)
+        })
+        .map(|stage| {
+            format!(
+                "pipeline stage {} totals {:?} across {} section{}",
+                stage.label,
+                stage.duration,
+                stage.section_count,
+                plural_s(stage.section_count)
+            )
+        })
+        .unwrap_or_else(|| "no matching pipeline stage".to_owned());
+    format!("section share {percent}; {stage}; sample {duration:?}")
+}
+
+fn plural_s(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
     }
 }
 
@@ -4123,6 +5459,10 @@ mod tests {
     use crate::commands::{
         Command, CommandId, CommandMeta, CommandRegistry, CommandScope, Shortcut,
     };
+    use crate::debug::{
+        DebugContractCheckKind, DebugFrameChangeKind, DebugInspectNodeSource, DebugWhyScope,
+        DebugWhySource,
+    };
     use crate::host::{
         process_document_frame, HostDocumentFrameRequest, HostFrameOutput, HostInteractionState,
     };
@@ -4262,6 +5602,83 @@ mod tests {
         assert!(report.require_clicked(scroll_area).is_err());
         assert!(report.step("empty.drag.move.0").is_ok());
         assert!(report.step("missing").is_err());
+    }
+
+    #[test]
+    fn event_replay_named_assertions_explain_pointer_route_failures() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        document.add_child(
+            document.root,
+            UiNode::container(
+                "back.button",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 90.0, 32.0)).style,
+                    z_index: 1,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        document.add_child(
+            document.root,
+            UiNode::container(
+                "front.button",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(50.0, 16.0, 90.0, 40.0)).style,
+                    z_index: 10,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let report = EventReplay::new()
+            .pointer_click("back.center", UiPoint::new(65.0, 36.0))
+            .run(&mut document);
+
+        report
+            .require_clicked_name(&document, "front.button")
+            .expect("front button clicked");
+        report
+            .require_focused_name(&document, "front.button")
+            .expect("front button focused");
+        report
+            .require_step_focused_name(&document, "back.center.down", "front.button")
+            .expect("front button focused on down");
+        report
+            .require_step_consumed_by_name(&document, "back.center.down", "front.button")
+            .expect("front button consumed down");
+        report
+            .require_step_clicked_name(&document, "back.center.up", "front.button")
+            .expect("front button clicked on up");
+        let error = report
+            .require_clicked_name(&document, "back.button")
+            .expect_err("back button should be covered");
+        let step_error = report
+            .require_step_clicked_name(&document, "back.center.up", "back.button")
+            .expect_err("back button should be covered on pointer up");
+
+        assert!(error
+            .message
+            .contains("expected event replay clicked `back.button`"));
+        assert!(error.message.contains("got [front.button]"));
+        assert!(error.message.contains("last pointer pointer-up"));
+        assert!(error.message.contains("routed target: front.button"));
+        assert!(error.message.contains("expected candidate:"));
+        assert!(error.message.contains("cause:"));
+        assert!(error.message.contains("fix:"));
+        assert!(error.message.contains("pointer_autopsy_panel"));
+        assert!(step_error
+            .message
+            .contains("expected event replay step `back.center.up` clicked `back.button`"));
+        assert!(step_error.message.contains("got front.button"));
+        assert!(step_error.message.contains("step pointer pointer-up"));
+        assert!(step_error.message.contains("routed target: front.button"));
+        assert!(step_error.message.contains("expected candidate:"));
+        assert!(step_error.message.contains("pointer_autopsy_panel"));
     }
 
     #[test]
@@ -4742,6 +6159,353 @@ mod tests {
     }
 
     #[test]
+    fn scenario_frame_report_builds_debug_trace_and_capture_report() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        let root = document.root;
+        let button = document.add_child(
+            root,
+            UiNode::container("menu.open", fixed_style(96.0, 32.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_visual(UiVisual::panel(
+                    ColorRgba::new(32, 44, 58, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(98, 128, 164, 255), 1.0)),
+                    4.0,
+                ))
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Open menu")
+                        .focusable()
+                        .action(AccessibilityAction::new("open", "Open")),
+                ),
+        );
+        document.add_child(
+            button,
+            UiNode::text(
+                "menu.open.label",
+                "Open",
+                TextStyle::default(),
+                LayoutStyle::from_taffy_style(fixed_style(52.0, 18.0).layout),
+            ),
+        );
+
+        let mut harness = ScenarioHarness::new(UiSize::new(180.0, 100.0));
+        let frame = harness
+            .run_frame(
+                "open-menu",
+                &mut document,
+                EventReplay::new().pointer_click("open", UiPoint::new(16.0, 16.0)),
+            )
+            .expect("scenario frame");
+        let mut measurer = ApproxTextMeasurer;
+
+        let trace = frame.debug_frame_trace_with_options(
+            &document,
+            &mut measurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+
+        assert_eq!(trace.label, "open-menu");
+        assert_eq!(trace.viewport, UiSize::new(180.0, 100.0));
+        assert_eq!(trace.dirty.flags, frame.document.render_request.dirty_flags);
+        assert_eq!(trace.routes.len(), 3);
+        assert_eq!(trace.timing.budget, Some(Duration::from_nanos(0)));
+        assert_eq!(trace.summary.route_count, 3);
+        assert_eq!(trace.summary.selected_node.as_deref(), Some("menu.open"));
+        assert_eq!(
+            trace.selected_node.as_ref().map(|node| node.name.as_str()),
+            Some("menu.open")
+        );
+
+        let report = frame.debug_capture_report_with_options(
+            &document,
+            &mut ApproxTextMeasurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+        let markdown = report.to_markdown();
+
+        assert_eq!(report.title, "Operad Debug Capture open-menu");
+        assert_eq!(report.frame_label, "open-menu[0]");
+        assert!(report
+            .selected_node_summary
+            .as_ref()
+            .is_some_and(|summary| summary.contains("menu.open")));
+        assert!(markdown.contains("# Operad Debug Capture open-menu"));
+        assert!(markdown.contains("## Question guide"));
+        assert!(markdown.contains("## Bottleneck triage"));
+        assert!(markdown.contains("menu.open"));
+
+        let contract = frame.debug_contract_report_with_options(
+            &document,
+            &mut ApproxTextMeasurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+        let routes = contract
+            .check(DebugContractCheckKind::EventRoutes)
+            .expect("event-route contract check");
+        let selected = contract
+            .check(DebugContractCheckKind::SelectedNode)
+            .expect("selected-node contract check");
+
+        assert_eq!(contract.frame_label, "open-menu");
+        assert_eq!(contract.check_count, 10);
+        assert!(routes.checked);
+        assert!(routes.summary.contains("3 event routes"));
+        assert!(selected.checked);
+        assert!(selected.summary.contains("menu.open"));
+
+        let budget = frame.debug_frame_budget_trace_with_options(
+            &document,
+            &mut ApproxTextMeasurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+        let issues = frame.debug_issue_report_with_options(
+            &document,
+            &mut ApproxTextMeasurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+        let slow_frame = frame.debug_slow_frame_trace_with_options(
+            &document,
+            &mut ApproxTextMeasurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+        let bottlenecks = frame.debug_frame_bottleneck_trace_with_options(
+            &document,
+            &mut ApproxTextMeasurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+        let autopsy = frame.debug_frame_autopsy_trace_with_options(
+            &document,
+            &mut ApproxTextMeasurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+        let why_frame = frame.debug_why_frame_with_options(
+            &document,
+            &mut ApproxTextMeasurer,
+            Some(Duration::from_nanos(0)),
+            Some("menu.open"),
+        );
+
+        assert_eq!(budget.status, DebugFrameTraceStatus::Warning);
+        assert!(budget.over_budget_by.is_some());
+        assert_eq!(issues.frame_label, "open-menu");
+        assert!(issues.issue_count > 0);
+        assert_eq!(slow_frame.frame_label, "open-menu");
+        assert!(slow_frame.over_budget_by.is_some());
+        assert!(slow_frame.record_count > 0);
+        assert_eq!(bottlenecks.frame_label, "open-menu");
+        assert!(bottlenecks.record_count > 0);
+        assert!(bottlenecks.top_label.is_some());
+        assert_eq!(autopsy.frame_label, "open-menu");
+        assert_eq!(autopsy.record_count, 10);
+        assert!(autopsy.summary.contains("frame autopsy"));
+        assert_eq!(why_frame.scope, DebugWhyScope::Frame);
+        assert!(why_frame.record(DebugWhySource::QuestionGuide).is_some());
+        assert!(why_frame.record(DebugWhySource::Issue).is_some());
+        assert!(why_frame
+            .first_step()
+            .is_some_and(|step| !step.action.is_empty()
+                && !step.panel.is_empty()
+                && !step.overlays.is_empty()));
+
+        let inspect_node = frame
+            .debug_inspect_node_trace(&document, &mut ApproxTextMeasurer, "menu.open")
+            .expect("inspect selected node");
+        let inspect_node_for_step = frame
+            .debug_inspect_node_trace_for_step(
+                &document,
+                &mut ApproxTextMeasurer,
+                "menu.open",
+                "open.down",
+            )
+            .expect("inspect selected node for pointer step");
+        let why_node = frame
+            .debug_why_node_for_step(&document, &mut ApproxTextMeasurer, "menu.open", "open.down")
+            .expect("why selected node for pointer step");
+
+        assert_eq!(inspect_node.selected_name, "menu.open");
+        assert!(inspect_node.summary.contains("inspect node"));
+        assert!(inspect_node
+            .record(DebugInspectNodeSource::NextStep)
+            .is_some());
+        assert!(inspect_node
+            .record(DebugInspectNodeSource::Provenance)
+            .is_some());
+        assert_eq!(inspect_node_for_step.selected_name, "menu.open");
+        assert!(inspect_node_for_step.explanation.route.is_some());
+        assert_eq!(why_node.scope, DebugWhyScope::Node);
+        assert_eq!(why_node.subject, "menu.open");
+        assert!(why_node.record(DebugWhySource::InspectNode).is_some());
+        assert!(why_node
+            .first_step()
+            .is_some_and(|step| step.subject == "menu.open" && !step.overlays.is_empty()));
+        assert!(frame
+            .debug_inspect_node_trace_for_step(
+                &document,
+                &mut ApproxTextMeasurer,
+                "missing.node",
+                "open.down",
+            )
+            .is_err());
+
+        assert_eq!(
+            frame.last_pointer_event(),
+            Some((DebugPointerRouteKind::Up, UiPoint::new(16.0, 16.0)))
+        );
+        assert_eq!(
+            frame.pointer_step("open.down").expect("named pointer step"),
+            EventReplayPointerEvent {
+                label: "open.down".to_owned(),
+                event: DebugPointerRouteKind::Down,
+                point: UiPoint::new(16.0, 16.0),
+            }
+        );
+        assert!(frame.pointer_step("missing").is_err());
+        assert!(frame.pointer_step("open").is_err());
+
+        let down_autopsy = frame
+            .debug_point_autopsy(&document, &mut ApproxTextMeasurer, "open.down")
+            .expect("named pointer point autopsy");
+        let all_autopsies = frame.debug_point_autopsies(&document, &mut ApproxTextMeasurer);
+        let all_inspect_points = frame.debug_inspect_points(&document, &mut ApproxTextMeasurer);
+        let point_autopsy = frame
+            .debug_last_point_autopsy(&document, &mut ApproxTextMeasurer)
+            .expect("last pointer point autopsy");
+        let inspect_point = frame
+            .debug_last_inspect_point(&document, &mut ApproxTextMeasurer)
+            .expect("last pointer inspect point");
+        let why_point = frame
+            .debug_why_point(&document, &mut ApproxTextMeasurer, "open.down")
+            .expect("named pointer why trace");
+        let last_why_point = frame
+            .debug_last_why_point(&document, &mut ApproxTextMeasurer)
+            .expect("last pointer why trace");
+
+        assert_eq!(down_autopsy.event, DebugPointerRouteKind::Down);
+        assert_eq!(down_autopsy.target_name.as_deref(), Some("menu.open"));
+        assert_eq!(
+            all_autopsies
+                .iter()
+                .map(|diagnostic| diagnostic.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["open.move", "open.down", "open.up"]
+        );
+        assert!(all_autopsies
+            .iter()
+            .all(|diagnostic| diagnostic.trace.target_name.as_deref() == Some("menu.open")));
+        assert_eq!(all_inspect_points.len(), 3);
+        assert!(all_inspect_points
+            .iter()
+            .all(|diagnostic| diagnostic.trace.summary.contains("inspect point")));
+        assert_eq!(point_autopsy.event, DebugPointerRouteKind::Up);
+        assert_eq!(point_autopsy.target_name.as_deref(), Some("menu.open"));
+        assert!(point_autopsy.summary.contains("point autopsy"));
+        assert!(point_autopsy.pointer.summary.contains("pointer autopsy"));
+        assert_eq!(inspect_point.target_name.as_deref(), Some("menu.open"));
+        assert!(inspect_point.summary.contains("inspect point"));
+        assert_eq!(why_point.scope, DebugWhyScope::Point);
+        assert!(why_point.record(DebugWhySource::PointAutopsy).is_some());
+        assert!(
+            why_point.first_step().is_some_and(
+                |step| step.action.contains("point-autopsy") && !step.overlays.is_empty()
+            )
+        );
+        assert_eq!(last_why_point.scope, DebugWhyScope::Point);
+    }
+
+    #[test]
+    fn scenario_frames_record_debug_timeline_and_node_history() {
+        let mut document = UiDocument::new(root_style(220.0, 120.0));
+        let root = document.root;
+        let button = document.add_child(
+            root,
+            UiNode::container("menu.open", fixed_style(96.0, 32.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_visual(UiVisual::panel(
+                    ColorRgba::new(32, 44, 58, 255),
+                    Some(StrokeStyle::new(ColorRgba::new(98, 128, 164, 255), 1.0)),
+                    4.0,
+                )),
+        );
+        let mut harness = ScenarioHarness::new(UiSize::new(220.0, 120.0));
+        let mut recorder = DebugFrameRecorder::new(4);
+
+        let first = harness
+            .run_frame("menu", &mut document, EventReplay::new())
+            .expect("first scenario frame");
+        let recorded_first = first
+            .record_debug_frame_with_options(
+                &mut recorder,
+                &document,
+                &mut ApproxTextMeasurer,
+                Some(1),
+                Some(Duration::from_millis(16)),
+                Some("menu.open"),
+            )
+            .expect("recorded first frame");
+        assert_eq!(recorded_first.frame_index, Some(1));
+
+        document.set_node_style(button, fixed_style(128.0, 40.0));
+        let second = harness
+            .run_frame("menu", &mut document, EventReplay::new())
+            .expect("second scenario frame");
+        second
+            .record_debug_frame_with_options(
+                &mut recorder,
+                &document,
+                &mut ApproxTextMeasurer,
+                Some(2),
+                Some(Duration::from_nanos(0)),
+                Some("menu.open"),
+            )
+            .expect("recorded second frame");
+
+        let summary = recorder.summary();
+        let timeline = recorder.timeline();
+        let history = recorder.node_history("menu.open");
+        let changed = history.record("menu #2").expect("second history row");
+        let latest_change = recorder
+            .latest_node_change("menu.open")
+            .expect("latest node change");
+        let latest_bottlenecks = recorder
+            .latest_frame_bottleneck_trace()
+            .expect("latest frame bottlenecks");
+        let latest_inspect = recorder
+            .latest_inspect_node_trace("menu.open")
+            .expect("latest inspect node");
+        let report = recorder.capture_report().expect("latest capture report");
+
+        assert_eq!(recorder.len(), 2);
+        assert_eq!(summary.latest_frame_index, Some(2));
+        assert_eq!(summary.latest_label.as_deref(), Some("menu #2"));
+        assert_eq!(timeline.frame_count, 2);
+        assert!(timeline.record("menu #1").is_some());
+        assert!(timeline.record("menu #2").is_some());
+        assert_eq!(history.frame_count, 2);
+        assert_eq!(history.changed_frame_count, 1);
+        assert!(changed.changed);
+        assert!(changed.change.is_some());
+        assert!(latest_change.changed);
+        assert!(latest_change.record(DebugFrameChangeKind::Layout).is_some());
+        assert_eq!(latest_bottlenecks.frame_index, Some(2));
+        assert!(latest_bottlenecks.record_count > 0);
+        assert_eq!(latest_inspect.selected_name, "menu.open");
+        assert!(recorder.latest_inspect_node_trace("missing.node").is_none());
+        assert_eq!(report.frame_index, Some(2));
+        assert!(report
+            .timeline_summary
+            .as_ref()
+            .is_some_and(|summary| summary.contains("frame timeline")));
+    }
+
+    #[test]
     fn layout_and_paint_assertions_use_stable_node_names() {
         let mut document = UiDocument::new(root_style(220.0, 120.0));
         let root = document.root;
@@ -4815,6 +6579,110 @@ mod tests {
         paint
             .require_node_kind("panel.label", PaintKindSelector::Text)
             .expect("text paint");
+    }
+
+    #[test]
+    fn layout_assertions_explain_invisible_nodes_with_visibility_trace() {
+        let mut document = UiDocument::new(root_style(120.0, 80.0));
+        document.add_child(
+            document.root,
+            UiNode::container(
+                "offscreen.button",
+                LayoutStyle::absolute_rect(UiRect::new(180.0, 16.0, 56.0, 28.0)),
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        document
+            .compute_layout(UiSize::new(120.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let error = LayoutAssertions::new(&document)
+            .require_visible("offscreen.button")
+            .expect_err("offscreen node should fail visibility assertion");
+
+        assert!(error.message.contains("offscreen.button"));
+        assert!(error.message.contains("issue: Hidden"));
+        assert!(error.message.contains("cause:"));
+        assert!(error.message.contains("fix:"));
+        assert!(error.message.contains("visibility_panel"));
+    }
+
+    #[test]
+    fn paint_assertions_explain_missing_node_paint_with_visibility_trace() {
+        let mut document = UiDocument::new(root_style(140.0, 80.0));
+        document.add_child(
+            document.root,
+            UiNode::container(
+                "blank.button",
+                LayoutStyle::absolute_rect(UiRect::new(16.0, 16.0, 80.0, 28.0)),
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        document
+            .compute_layout(UiSize::new(140.0, 80.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let error = PaintAssertions::new(&document)
+            .node_items("blank.button")
+            .expect_err("blank button should fail paint assertion");
+
+        assert!(error.message.contains("blank.button"));
+        assert!(error.message.contains("issue: No paint"));
+        assert!(error.message.contains("cause:"));
+        assert!(error.message.contains("fix:"));
+        assert!(error.message.contains("visibility_panel"));
+    }
+
+    #[test]
+    fn layout_assertions_explain_hit_test_mismatches_with_pointer_probe() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        document.add_child(
+            document.root,
+            UiNode::container(
+                "back.button",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 90.0, 32.0)).style,
+                    z_index: 1,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        let front = document.add_child(
+            document.root,
+            UiNode::container(
+                "front.button",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(50.0, 16.0, 90.0, 40.0)).style,
+                    z_index: 10,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let layout = LayoutAssertions::new(&document);
+        assert_eq!(
+            layout
+                .require_hit_center("front.button")
+                .expect("front hit"),
+            front
+        );
+        let error = layout
+            .require_hit_center("back.button")
+            .expect_err("front button should occlude back center");
+
+        assert!(error.message.contains("expected point"));
+        assert!(error.message.contains("back.button"));
+        assert!(error.message.contains("got `front.button`"));
+        assert!(error.message.contains("routed target: front.button"));
+        assert!(error.message.contains("expected candidate:"));
+        assert!(error.message.contains("cause:"));
+        assert!(error.message.contains("fix:"));
+        assert!(error.message.contains("pointer_autopsy_panel"));
     }
 
     #[test]
@@ -5141,7 +7009,75 @@ mod tests {
             .blocking_warnings()
             .iter()
             .any(|warning| matches!(warning, AuditWarning::ScrollRangeHidden { name, .. } if name == "vertical.scroll")));
-        assert!(audit.warnings().iter().any(is_blocking_just_work_warning));
+        assert!(audit.warnings().iter().any(is_blocking_audit_warning));
+    }
+
+    #[test]
+    fn just_work_assertions_explain_interactive_overlap_failures() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        document.add_child(
+            document.root,
+            UiNode::container(
+                "back.button",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 80.0, 32.0)).style,
+                    z_index: 1,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        document.add_child(
+            document.root,
+            UiNode::container(
+                "front.button",
+                UiNodeStyle {
+                    layout: LayoutStyle::absolute_rect(UiRect::new(56.0, 24.0, 80.0, 32.0)).style,
+                    z_index: 2,
+                    ..Default::default()
+                },
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let audit = JustWorkAssertions::new(&document);
+        let error = audit
+            .require_no_interactive_overlaps()
+            .expect_err("overlapping buttons should fail");
+        assert!(error.message.contains("interactive hitbox overlaps"));
+        assert!(error.message.contains("back.button"));
+        assert!(error.message.contains("front.button"));
+        assert!(error.message.contains("both nodes are pointer-interactive"));
+        assert!(error.message.contains("overlap_report_panel"));
+    }
+
+    #[test]
+    fn just_work_assertions_explain_paint_hit_mismatch_failures() {
+        let mut document = UiDocument::new(root_style(180.0, 100.0));
+        document.add_child(
+            document.root,
+            UiNode::container(
+                "blank.button",
+                LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 96.0, 32.0)),
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        document
+            .compute_layout(UiSize::new(180.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let audit = JustWorkAssertions::new(&document);
+        let error = audit
+            .require_no_paint_hit_mismatches(&mut ApproxTextMeasurer)
+            .expect_err("blank button should fail paint/hit assertion");
+        assert!(error.message.contains("paint/hit mismatches"));
+        assert!(error.message.contains("blank.button"));
+        assert!(error.message.contains("Hit without visible paint"));
+        assert!(error.message.contains("cause:"));
+        assert!(error.message.contains("fix:"));
     }
 
     #[test]
@@ -5881,15 +7817,21 @@ mod tests {
         assert!(assertions
             .require_total_within(Duration::from_millis(16))
             .is_ok());
-        assert!(assertions
+        let timing_error = assertions
             .require_total_within(Duration::from_millis(10))
-            .is_err());
+            .expect_err("over-budget timing should explain slowest stage");
+        assert!(timing_error.message.contains("slowest stage: backend-draw"));
+        assert!(timing_error.message.contains("grouped stages:"));
+        assert!(timing_error.message.contains("missing instrumentation:"));
+        assert!(timing_error.message.contains("frame_bottleneck_panel"));
         assert!(assertions
             .require_section_within("paint", Duration::from_millis(4))
             .is_ok());
-        assert!(assertions
+        let section_error = assertions
             .require_section_within("paint", Duration::from_millis(3))
-            .is_err());
+            .expect_err("section budget should explain pipeline stage");
+        assert!(section_error.message.contains("pipeline stage paint-list"));
+        assert!(section_error.message.contains("frame_timing_panel"));
         assert!(assertions.require_section("input").is_err());
 
         let series = FrameTimingSeries::new("scenario")

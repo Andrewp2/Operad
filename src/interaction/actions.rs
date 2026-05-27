@@ -8,7 +8,7 @@
 use std::fmt;
 
 use crate::commands::CommandId;
-use crate::input::{DragGesture, GestureEvent, GesturePhase, PointerButton};
+use crate::input::{DragGesture, GestureEvent, GesturePhase, PointerButton, RawWheelEvent};
 use crate::{
     EditPhase, KeyCode, KeyModifiers, ScrollState, UiDocument, UiInputEvent, UiInputResult,
     UiNodeId, UiPoint, UiRect,
@@ -123,26 +123,146 @@ pub enum WidgetActionTrigger {
     Programmatic,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WidgetPointerActivation {
+    pub button: PointerButton,
+    pub modifiers: KeyModifiers,
+}
+
+impl WidgetPointerActivation {
+    pub const fn new(button: PointerButton, modifiers: KeyModifiers) -> Self {
+        Self { button, modifiers }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WidgetKeyboardActivation {
+    pub key: Option<KeyCode>,
+    pub modifiers: KeyModifiers,
+}
+
+impl WidgetKeyboardActivation {
+    pub const fn new(key: Option<KeyCode>, modifiers: KeyModifiers) -> Self {
+        Self { key, modifiers }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WidgetActivationSource {
+    PointerClick(WidgetPointerActivation),
+    PointerWheel(RawWheelEvent),
+    Keyboard(WidgetKeyboardActivation),
+    Accessibility,
+    Programmatic,
+}
+
+impl WidgetActivationSource {
+    pub const fn trigger(self) -> WidgetActionTrigger {
+        match self {
+            Self::PointerClick(_) | Self::PointerWheel(_) => WidgetActionTrigger::Pointer,
+            Self::Keyboard(_) => WidgetActionTrigger::Keyboard,
+            Self::Accessibility => WidgetActionTrigger::Accessibility,
+            Self::Programmatic => WidgetActionTrigger::Programmatic,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WidgetActivation {
     pub trigger: WidgetActionTrigger,
     pub count: u8,
+    pub source: WidgetActivationSource,
 }
 
 impl WidgetActivation {
     pub const fn new(trigger: WidgetActionTrigger) -> Self {
-        Self { trigger, count: 1 }
+        let source = match trigger {
+            WidgetActionTrigger::Pointer => WidgetActivationSource::PointerClick(
+                WidgetPointerActivation::new(PointerButton::Primary, KeyModifiers::NONE),
+            ),
+            WidgetActionTrigger::Keyboard => WidgetActivationSource::Keyboard(
+                WidgetKeyboardActivation::new(None, KeyModifiers::NONE),
+            ),
+            WidgetActionTrigger::Accessibility => WidgetActivationSource::Accessibility,
+            WidgetActionTrigger::Programmatic => WidgetActivationSource::Programmatic,
+        };
+        Self {
+            trigger,
+            count: 1,
+            source,
+        }
     }
 
     pub const fn pointer(count: u8) -> Self {
         Self {
             trigger: WidgetActionTrigger::Pointer,
             count,
+            source: WidgetActivationSource::PointerClick(WidgetPointerActivation::new(
+                PointerButton::Primary,
+                KeyModifiers::NONE,
+            )),
+        }
+    }
+
+    pub const fn pointer_click(button: PointerButton, count: u8, modifiers: KeyModifiers) -> Self {
+        Self {
+            trigger: WidgetActionTrigger::Pointer,
+            count,
+            source: WidgetActivationSource::PointerClick(WidgetPointerActivation::new(
+                button, modifiers,
+            )),
+        }
+    }
+
+    pub const fn wheel(event: RawWheelEvent) -> Self {
+        Self {
+            trigger: WidgetActionTrigger::Pointer,
+            count: 1,
+            source: WidgetActivationSource::PointerWheel(event),
         }
     }
 
     pub const fn keyboard() -> Self {
-        Self::new(WidgetActionTrigger::Keyboard)
+        Self {
+            trigger: WidgetActionTrigger::Keyboard,
+            count: 1,
+            source: WidgetActivationSource::Keyboard(WidgetKeyboardActivation::new(
+                None,
+                KeyModifiers::NONE,
+            )),
+        }
+    }
+
+    pub const fn keyboard_key(key: KeyCode, modifiers: KeyModifiers) -> Self {
+        Self {
+            trigger: WidgetActionTrigger::Keyboard,
+            count: 1,
+            source: WidgetActivationSource::Keyboard(WidgetKeyboardActivation::new(
+                Some(key),
+                modifiers,
+            )),
+        }
+    }
+
+    pub const fn pointer_button(self) -> Option<PointerButton> {
+        match self.source {
+            WidgetActivationSource::PointerClick(pointer) => Some(pointer.button),
+            _ => None,
+        }
+    }
+
+    pub const fn wheel_event(self) -> Option<RawWheelEvent> {
+        match self.source {
+            WidgetActivationSource::PointerWheel(event) => Some(event),
+            _ => None,
+        }
+    }
+
+    pub const fn keyboard_event(self) -> Option<WidgetKeyboardActivation> {
+        match self.source {
+            WidgetActivationSource::Keyboard(keyboard) => Some(keyboard),
+            _ => None,
+        }
     }
 }
 
@@ -390,11 +510,50 @@ impl WidgetAction {
         )
     }
 
+    pub fn pointer_button_activate(
+        target: UiNodeId,
+        binding: impl Into<WidgetActionBinding>,
+        button: PointerButton,
+        count: u8,
+        modifiers: KeyModifiers,
+    ) -> Self {
+        Self::new(
+            target,
+            binding,
+            WidgetActionKind::Activate(WidgetActivation::pointer_click(button, count, modifiers)),
+        )
+    }
+
+    pub fn wheel_activate(
+        target: UiNodeId,
+        binding: impl Into<WidgetActionBinding>,
+        event: RawWheelEvent,
+    ) -> Self {
+        Self::new(
+            target,
+            binding,
+            WidgetActionKind::Activate(WidgetActivation::wheel(event)),
+        )
+    }
+
     pub fn keyboard_activate(target: UiNodeId, binding: impl Into<WidgetActionBinding>) -> Self {
         Self::new(
             target,
             binding,
             WidgetActionKind::Activate(WidgetActivation::keyboard()),
+        )
+    }
+
+    pub fn keyboard_key_activate(
+        target: UiNodeId,
+        binding: impl Into<WidgetActionBinding>,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Self {
+        Self::new(
+            target,
+            binding,
+            WidgetActionKind::Activate(WidgetActivation::keyboard_key(key, modifiers)),
         )
     }
 
@@ -553,7 +712,8 @@ impl WidgetAction {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> Option<Self> {
-        keyboard_activation_key(key, modifiers).then(|| Self::keyboard_activate(target, binding))
+        keyboard_activation_key(key, modifiers)
+            .then(|| Self::keyboard_key_activate(target, binding, key, modifiers))
     }
 
     pub fn from_gesture_event(
@@ -561,9 +721,22 @@ impl WidgetAction {
         mut binding_for: impl FnMut(UiNodeId) -> Option<WidgetActionBinding>,
     ) -> Option<Self> {
         match event {
-            GestureEvent::Click(click) if click.button == PointerButton::Primary => {
+            GestureEvent::Click(click) => {
                 let binding = binding_for(click.target)?;
-                Some(Self::pointer_activate(click.target, binding, click.count))
+                Some(Self::pointer_button_activate(
+                    click.target,
+                    binding,
+                    click.button,
+                    click.count,
+                    click.modifiers,
+                ))
+            }
+            GestureEvent::WheelTargeted {
+                target: Some(target),
+                event,
+            } => {
+                let binding = binding_for(*target)?;
+                Some(Self::wheel_activate(*target, binding, *event))
             }
             GestureEvent::Drag(gesture) => {
                 let binding = binding_for(gesture.target)?;
@@ -579,30 +752,56 @@ impl WidgetAction {
         binding_for: impl FnMut(UiNodeId) -> Option<WidgetActionBinding>,
     ) -> Option<Self> {
         match event {
-            GestureEvent::Click(click) if click.button == PointerButton::Primary => {
+            GestureEvent::Click(click) => {
                 let (target, binding, mode) =
                     resolve_action_target(document, click.target, binding_for)?;
                 match mode {
-                    WidgetActionMode::Activate => {
-                        Some(Self::pointer_activate(target, binding, click.count))
-                    }
+                    WidgetActionMode::Activate => Some(Self::pointer_button_activate(
+                        target,
+                        binding,
+                        click.button,
+                        click.count,
+                        click.modifiers,
+                    )),
                     WidgetActionMode::Drag => None,
-                    WidgetActionMode::PointerEdit => Some(pointer_edit_action(
-                        document,
-                        target,
-                        target,
-                        binding,
-                        WidgetValueEditPhase::Commit,
-                        click.position,
-                    )),
-                    WidgetActionMode::PointerEditParentRect => Some(pointer_edit_action(
-                        document,
-                        target,
-                        action_rect_parent(document, target),
-                        binding,
-                        WidgetValueEditPhase::Commit,
-                        click.position,
-                    )),
+                    WidgetActionMode::PointerEdit if click.button == PointerButton::Primary => {
+                        Some(pointer_edit_action(
+                            document,
+                            target,
+                            target,
+                            binding,
+                            WidgetValueEditPhase::Commit,
+                            click.position,
+                        ))
+                    }
+                    WidgetActionMode::PointerEditParentRect
+                        if click.button == PointerButton::Primary =>
+                    {
+                        Some(pointer_edit_action(
+                            document,
+                            target,
+                            action_rect_parent(document, target),
+                            binding,
+                            WidgetValueEditPhase::Commit,
+                            click.position,
+                        ))
+                    }
+                    WidgetActionMode::PointerEdit | WidgetActionMode::PointerEditParentRect => None,
+                }
+            }
+            GestureEvent::WheelTargeted {
+                target: Some(target),
+                event,
+            } => {
+                let (target, binding, mode) =
+                    resolve_action_target(document, *target, binding_for)?;
+                match mode {
+                    WidgetActionMode::Activate => {
+                        Some(Self::wheel_activate(target, binding, *event))
+                    }
+                    WidgetActionMode::Drag
+                    | WidgetActionMode::PointerEdit
+                    | WidgetActionMode::PointerEditParentRect => None,
                 }
             }
             GestureEvent::Drag(gesture) => {
@@ -988,6 +1187,56 @@ mod tests {
     }
 
     #[test]
+    fn non_primary_gesture_click_maps_to_pointer_activation_source() {
+        let click = GestureEvent::Click(crate::PointerClick {
+            pointer_id: PointerId::MOUSE,
+            target: UiNodeId(3),
+            position: UiPoint::new(10.0, 12.0),
+            button: PointerButton::Secondary,
+            count: 1,
+            modifiers: KeyModifiers {
+                shift: true,
+                ..KeyModifiers::NONE
+            },
+            timestamp_millis: 5,
+        });
+
+        let action = WidgetAction::from_gesture_event(&click, binding("grid.cycle")).unwrap();
+
+        assert_eq!(
+            action.kind,
+            WidgetActionKind::Activate(WidgetActivation::pointer_click(
+                PointerButton::Secondary,
+                1,
+                KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::NONE
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn wheel_gesture_maps_to_pointer_activation_source() {
+        let wheel = RawWheelEvent::lines(UiPoint::new(10.0, 12.0), UiPoint::new(0.0, -1.0), 8);
+        let event = GestureEvent::WheelTargeted {
+            target: Some(UiNodeId(4)),
+            event: wheel,
+        };
+
+        let action = WidgetAction::from_gesture_event(&event, binding("grid.cycle")).unwrap();
+
+        assert_eq!(
+            action.kind,
+            WidgetActionKind::Activate(WidgetActivation::wheel(wheel))
+        );
+        let WidgetActionKind::Activate(activation) = action.kind else {
+            panic!("expected activation");
+        };
+        assert_eq!(activation.wheel_event(), Some(wheel));
+    }
+
+    #[test]
     fn disabled_accessibility_metadata_suppresses_input_activation() {
         let mut document = fixed_doc();
         let disabled = document.add_child(
@@ -1115,6 +1364,83 @@ mod tests {
     }
 
     #[test]
+    fn activate_mode_emits_secondary_and_wheel_actions_for_document_actions() {
+        let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
+        let target = document.add_child(
+            document.root,
+            UiNode::container("grid.cycle", LayoutStyle::size(100.0, 20.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_action("grid.cycle"),
+        );
+        let click = GestureEvent::Click(crate::PointerClick {
+            pointer_id: PointerId::MOUSE,
+            target,
+            position: UiPoint::new(25.0, 8.0),
+            button: PointerButton::Secondary,
+            count: 1,
+            modifiers: KeyModifiers::NONE,
+            timestamp_millis: 5,
+        });
+        let wheel = RawWheelEvent::pixels(UiPoint::new(25.0, 8.0), UiPoint::new(0.0, -24.0), 6);
+        let wheel_event = GestureEvent::WheelTargeted {
+            target: Some(target),
+            event: wheel,
+        };
+
+        let click_action = WidgetAction::from_gesture_event_for_document(&document, &click, |id| {
+            document.nodes()[id.0].action.clone()
+        })
+        .expect("secondary click action");
+        let wheel_action =
+            WidgetAction::from_gesture_event_for_document(&document, &wheel_event, |id| {
+                document.nodes()[id.0].action.clone()
+            })
+            .expect("wheel action");
+
+        assert_eq!(
+            click_action.kind,
+            WidgetActionKind::Activate(WidgetActivation::pointer_click(
+                PointerButton::Secondary,
+                1,
+                KeyModifiers::NONE,
+            ))
+        );
+        assert_eq!(
+            wheel_action.kind,
+            WidgetActionKind::Activate(WidgetActivation::wheel(wheel))
+        );
+    }
+
+    #[test]
+    fn secondary_click_does_not_commit_pointer_edit_actions() {
+        let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
+        let target = document.add_child(
+            document.root,
+            UiNode::container("field", LayoutStyle::size(100.0, 20.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_pointer_edit_action("color.field"),
+        );
+        document
+            .compute_layout(UiSize::new(200.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+        let click = GestureEvent::Click(crate::PointerClick {
+            pointer_id: PointerId::MOUSE,
+            target,
+            position: UiPoint::new(25.0, 8.0),
+            button: PointerButton::Secondary,
+            count: 1,
+            modifiers: KeyModifiers::NONE,
+            timestamp_millis: 5,
+        });
+
+        let action = WidgetAction::from_gesture_event_for_document(&document, &click, |id| {
+            document.nodes()[id.0].action.clone()
+        });
+
+        assert!(action.is_none());
+    }
+
+    #[test]
     fn pointer_edit_drag_begin_uses_pointer_origin() {
         let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
         let target = document.add_child(
@@ -1235,7 +1561,10 @@ mod tests {
         assert_eq!(queue.len(), 2);
         assert_eq!(
             queue.as_slice()[0].kind,
-            WidgetActionKind::Activate(WidgetActivation::keyboard())
+            WidgetActionKind::Activate(WidgetActivation::keyboard_key(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))
         );
         assert_eq!(queue.as_slice()[1].target, UiNodeId(2));
     }
@@ -1330,7 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn secondary_gesture_click_is_not_semantic_activation() {
+    fn secondary_gesture_click_maps_to_secondary_activation() {
         let click = GestureEvent::Click(crate::PointerClick {
             pointer_id: PointerId::MOUSE,
             target: UiNodeId(3),
@@ -1341,7 +1670,16 @@ mod tests {
             timestamp_millis: 5,
         });
 
-        assert!(WidgetAction::from_gesture_event(&click, binding("context")).is_none());
+        let action = WidgetAction::from_gesture_event(&click, binding("context")).unwrap();
+
+        assert_eq!(
+            action.kind,
+            WidgetActionKind::Activate(WidgetActivation::pointer_click(
+                PointerButton::Secondary,
+                1,
+                KeyModifiers::NONE,
+            ))
+        );
     }
 
     #[test]

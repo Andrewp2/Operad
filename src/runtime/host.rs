@@ -1393,8 +1393,8 @@ mod tests {
     use crate::commands::{Command, CommandMeta};
     use crate::diagnostics::{DiagnosticCategory, DiagnosticReport};
     use crate::input::{
-        DragGesture, PointerButton, PointerEventKind, PointerId, RawKeyboardEvent, RawPointerEvent,
-        RawTextInputEvent, RawWheelEvent, WheelPhase,
+        DragGesture, PointerButton, PointerClick, PointerEventKind, PointerId, RawKeyboardEvent,
+        RawPointerEvent, RawTextInputEvent, RawWheelEvent, WheelPhase,
     };
     use crate::platform::{
         BackendAdapterKind, CapabilityDecision, CursorGrabMode, CursorRequest, InputCapabilities,
@@ -1405,8 +1405,8 @@ mod tests {
     use crate::{
         length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
         ApproxTextMeasurer, CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ColorRgba,
-        InputBehavior, LayoutStyle, StrokeStyle, UiContent, UiDocument, UiNode, UiNodeStyle,
-        UiPoint, UiVisual, WidgetActionKind, WidgetDragPhase,
+        InputBehavior, KeyModifiers, LayoutStyle, StrokeStyle, UiContent, UiDocument, UiNode,
+        UiNodeStyle, UiPoint, UiVisual, WidgetActionKind, WidgetDragPhase,
     };
     use taffy::prelude::{Size as TaffySize, Style};
 
@@ -2121,6 +2121,60 @@ mod tests {
         assert!(matches!(
             actions[1].kind,
             WidgetActionKind::Drag(drag) if drag.phase == WidgetDragPhase::Commit
+        ));
+    }
+
+    #[test]
+    fn document_widget_actions_dispatch_secondary_clicks_and_wheel_activations() {
+        let viewport = UiSize::new(220.0, 120.0);
+        let mut measurer = ApproxTextMeasurer;
+        let mut document = UiDocument::new(fixed_style(220.0, 120.0));
+        let target = document.add_child(
+            document.root,
+            UiNode::container(
+                "grid.cycle",
+                LayoutStyle::absolute_rect(UiRect::new(8.0, 12.0, 96.0, 32.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_action("grid.cycle"),
+        );
+        let wheel = RawWheelEvent::pixels(UiPoint::new(24.0, 24.0), UiPoint::new(0.0, -32.0), 12);
+        let mut host_output = HostFrameOutput::new(HostInteractionState::default());
+        host_output.gestures.push(GestureEvent::Click(PointerClick {
+            pointer_id: PointerId::MOUSE,
+            target,
+            position: UiPoint::new(24.0, 24.0),
+            button: PointerButton::Secondary,
+            count: 1,
+            modifiers: KeyModifiers::NONE,
+            timestamp_millis: 10,
+        }));
+        host_output.gestures.push(GestureEvent::WheelTargeted {
+            target: Some(target),
+            event: wheel,
+        });
+
+        let frame = process_document_frame(
+            &mut document,
+            &mut measurer,
+            HostDocumentFrameRequest::new(
+                viewport,
+                RenderTarget::window("main", viewport),
+                host_output,
+            ),
+        )
+        .expect("document frame");
+
+        let actions = collect_document_widget_actions(&document, &frame);
+        assert_eq!(actions.len(), 2, "{actions:#?}");
+        assert!(matches!(
+            actions[0].kind,
+            WidgetActionKind::Activate(activation)
+                if activation.pointer_button() == Some(PointerButton::Secondary)
+        ));
+        assert!(matches!(
+            actions[1].kind,
+            WidgetActionKind::Activate(activation) if activation.wheel_event() == Some(wheel)
         ));
     }
 

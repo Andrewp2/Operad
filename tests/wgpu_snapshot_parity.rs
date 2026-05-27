@@ -4,7 +4,9 @@ use operad::compositor::{
     CompositorClip, CompositorFilter, CompositorFilterKind, CompositorMask, MaskMode,
 };
 use operad::layout;
-use operad::platform::{ImageHandle, LayerOrder, PixelSize, ResourceHandle, ResourceId};
+use operad::platform::{
+    ImageHandle, LayerOrder, PixelColorSpace, PixelSize, ResourceHandle, ResourceId,
+};
 use operad::renderer::{
     RenderFrameRequest, RenderOptions, RenderTarget, RenderedImage, RendererAdapter,
     ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
@@ -76,6 +78,7 @@ fn wgpu_snapshot_renders_scene_document() {
 
     assert_eq!(wgpu_render_output.size, PixelSize::new(160, 120));
     assert_eq!(wgpu_render_output.format, ResourceFormat::Rgba8);
+    assert_eq!(wgpu_render_output.color_space, PixelColorSpace::Srgb);
     assert_eq!(
         pixel_rgba(&wgpu_render_output.pixels, 160, 20, 20),
         [64, 128, 188, 255]

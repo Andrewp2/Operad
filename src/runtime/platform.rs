@@ -84,6 +84,35 @@ impl PixelSize {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PixelColorSpace {
+    /// Standard RGB primaries with the sRGB transfer function.
+    ///
+    /// Raw `Rgba8` and `Bgra8` screenshot bytes use this color space unless a
+    /// backend explicitly documents a narrower adapter-specific escape hatch.
+    #[default]
+    Srgb,
+    /// Standard RGB primaries with linear-light channel values.
+    ///
+    /// This is useful at backend boundaries before encoding screenshots for
+    /// app or agent consumption. Public screenshot responses should convert to
+    /// `Srgb` unless the caller explicitly requested otherwise.
+    LinearSrgb,
+}
+
+impl PixelColorSpace {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Srgb => "srgb",
+            Self::LinearSrgb => "linear-srgb",
+        }
+    }
+
+    pub const fn is_srgb_encoded(self) -> bool {
+        matches!(self, Self::Srgb)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceDomain {
     BuiltIn,
@@ -701,8 +730,11 @@ pub enum NotificationResponse {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenshotFormat {
+    /// Unpremultiplied RGBA bytes encoded with the sRGB transfer function.
     Rgba8,
+    /// Unpremultiplied BGRA bytes encoded with the sRGB transfer function.
     Bgra8,
+    /// PNG bytes encoded from unpremultiplied sRGB pixels.
     Png,
 }
 
@@ -759,6 +791,7 @@ pub struct ScreenshotImage {
     pub size: PixelSize,
     pub scale_factor: f32,
     pub format: ScreenshotFormat,
+    pub color_space: PixelColorSpace,
     pub bytes: Vec<u8>,
 }
 
@@ -773,9 +806,63 @@ impl ScreenshotImage {
             size,
             scale_factor,
             format,
+            color_space: PixelColorSpace::Srgb,
             bytes,
         }
     }
+
+    pub fn srgb_rgba8(size: PixelSize, scale_factor: f32, bytes: Vec<u8>) -> Self {
+        Self::new(size, scale_factor, ScreenshotFormat::Rgba8, bytes)
+    }
+
+    pub fn srgb_bgra8(size: PixelSize, scale_factor: f32, bytes: Vec<u8>) -> Self {
+        Self::new(size, scale_factor, ScreenshotFormat::Bgra8, bytes)
+    }
+
+    pub fn from_linear_rgba8(size: PixelSize, scale_factor: f32, mut bytes: Vec<u8>) -> Self {
+        encode_linear_rgb_bytes_to_srgb(&mut bytes, ScreenshotFormat::Rgba8);
+        Self::srgb_rgba8(size, scale_factor, bytes)
+    }
+
+    pub fn from_linear_bgra8(size: PixelSize, scale_factor: f32, mut bytes: Vec<u8>) -> Self {
+        encode_linear_rgb_bytes_to_srgb(&mut bytes, ScreenshotFormat::Bgra8);
+        Self::srgb_bgra8(size, scale_factor, bytes)
+    }
+
+    pub fn with_color_space(mut self, color_space: PixelColorSpace) -> Self {
+        self.color_space = color_space;
+        self
+    }
+}
+
+fn encode_linear_rgb_bytes_to_srgb(bytes: &mut [u8], format: ScreenshotFormat) {
+    match format {
+        ScreenshotFormat::Rgba8 => {
+            for pixel in bytes.chunks_exact_mut(4) {
+                pixel[0] = linear_byte_to_srgb_byte(pixel[0]);
+                pixel[1] = linear_byte_to_srgb_byte(pixel[1]);
+                pixel[2] = linear_byte_to_srgb_byte(pixel[2]);
+            }
+        }
+        ScreenshotFormat::Bgra8 => {
+            for pixel in bytes.chunks_exact_mut(4) {
+                pixel[0] = linear_byte_to_srgb_byte(pixel[0]);
+                pixel[1] = linear_byte_to_srgb_byte(pixel[1]);
+                pixel[2] = linear_byte_to_srgb_byte(pixel[2]);
+            }
+        }
+        ScreenshotFormat::Png => {}
+    }
+}
+
+fn linear_byte_to_srgb_byte(value: u8) -> u8 {
+    let linear = f32::from(value) / 255.0;
+    let srgb = if linear <= 0.003_130_8 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
+    (srgb.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2292,6 +2379,25 @@ mod tests {
             PlatformResponse::unsupported(PlatformServiceKind::Cursor),
             PlatformResponse::Cursor(CursorResponse::Unsupported)
         );
+    }
+
+    #[test]
+    fn screenshot_images_are_srgb_by_default_and_can_encode_linear_sources() {
+        let srgb = ScreenshotImage::srgb_rgba8(PixelSize::new(1, 1), 2.0, vec![128, 64, 32, 200]);
+        assert_eq!(srgb.color_space, PixelColorSpace::Srgb);
+        assert_eq!(srgb.color_space.label(), "srgb");
+        assert!(srgb.color_space.is_srgb_encoded());
+        assert_eq!(srgb.bytes, vec![128, 64, 32, 200]);
+
+        let converted =
+            ScreenshotImage::from_linear_rgba8(PixelSize::new(1, 1), 1.0, vec![128, 0, 255, 77]);
+        assert_eq!(converted.color_space, PixelColorSpace::Srgb);
+        assert_eq!(converted.bytes, vec![188, 0, 255, 77]);
+
+        let converted_bgra =
+            ScreenshotImage::from_linear_bgra8(PixelSize::new(1, 1), 1.0, vec![64, 128, 255, 77]);
+        assert_eq!(converted_bgra.color_space, PixelColorSpace::Srgb);
+        assert_eq!(converted_bgra.bytes, vec![137, 188, 255, 77]);
     }
 
     #[test]

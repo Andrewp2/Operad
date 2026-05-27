@@ -32,6 +32,26 @@ impl ButtonOptions {
         }
     }
 
+    pub fn themed(theme: &Theme, state: ComponentState, layout: impl Into<LayoutStyle>) -> Self {
+        Self::new(layout).with_theme(theme, state)
+    }
+
+    pub fn with_theme(mut self, theme: &Theme, state: ComponentState) -> Self {
+        self.visual = theme.resolve_visual(ComponentRole::Button, state);
+        self.hovered_visual =
+            Some(theme.resolve_visual(ComponentRole::Button, ComponentState::HOVERED));
+        self.pressed_visual =
+            Some(theme.resolve_visual(ComponentRole::Button, ComponentState::PRESSED));
+        self.pressed_hovered_visual =
+            Some(theme.resolve_visual(ComponentRole::Button, ComponentState::PRESSED));
+        self.focused_visual =
+            Some(theme.resolve_visual(ComponentRole::Button, ComponentState::FOCUSED));
+        self.disabled_visual =
+            Some(theme.resolve_visual(ComponentRole::Button, ComponentState::DISABLED));
+        self.text_style = theme.resolve_text(ComponentRole::Button, state);
+        self
+    }
+
     pub fn with_layout(mut self, layout: impl Into<LayoutStyle>) -> Self {
         self.layout = layout.into();
         self
@@ -504,19 +524,37 @@ pub fn push_button_gesture_event_actions<'a>(
     options: &ButtonOptions,
     event: &GestureEvent,
 ) -> &'a mut WidgetActionQueue {
-    let GestureEvent::Click(click) = event else {
-        return queue;
-    };
-    if click.button != PointerButton::Primary
-        || !document.node_is_descendant_or_self(button, click.target)
-    {
-        return queue;
-    }
-    if !action_target_enabled(document, button) {
-        return queue;
-    }
-    if let Some(binding) = options.action.clone() {
-        queue.push(WidgetAction::pointer_activate(button, binding, click.count));
+    match event {
+        GestureEvent::Click(click) => {
+            if !document.node_is_descendant_or_self(button, click.target)
+                || !action_target_enabled(document, button)
+            {
+                return queue;
+            }
+            if let Some(binding) = options.action.clone() {
+                queue.push(WidgetAction::pointer_button_activate(
+                    button,
+                    binding,
+                    click.button,
+                    click.count,
+                    click.modifiers,
+                ));
+            }
+        }
+        GestureEvent::WheelTargeted {
+            target: Some(target),
+            event,
+        } => {
+            if !document.node_is_descendant_or_self(button, *target)
+                || !action_target_enabled(document, button)
+            {
+                return queue;
+            }
+            if let Some(binding) = options.action.clone() {
+                queue.push(WidgetAction::wheel_activate(button, binding, *event));
+            }
+        }
+        _ => {}
     }
     queue
 }

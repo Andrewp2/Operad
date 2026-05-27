@@ -12,7 +12,7 @@ use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
 use crate::platform::{
     BackendCapabilities, BackendCapabilityRequirement, CursorGrabMode, CursorRequest,
-    InputCapabilityKind, LayerOrder, LogicalRect, PixelSize, PlatformRequest,
+    InputCapabilityKind, LayerOrder, LogicalRect, PixelColorSpace, PixelSize, PlatformRequest,
     PlatformRequestIdAllocator, PlatformResponse, PlatformServiceCapabilities,
     PlatformServiceCapabilityKind, PlatformServiceRequest, PlatformServiceResponse, ResourceHandle,
     ResourceId, ResourceKind,
@@ -2084,6 +2084,7 @@ impl std::error::Error for RenderError {}
 pub struct RenderedImage {
     pub size: PixelSize,
     pub format: ResourceFormat,
+    pub color_space: PixelColorSpace,
     pub pixels: Vec<u8>,
 }
 
@@ -2092,8 +2093,14 @@ impl RenderedImage {
         Self {
             size,
             format,
+            color_space: PixelColorSpace::Srgb,
             pixels,
         }
+    }
+
+    pub fn with_color_space(mut self, color_space: PixelColorSpace) -> Self {
+        self.color_space = color_space;
+        self
     }
 }
 
@@ -2181,6 +2188,17 @@ mod tests {
             RenderOptions::default().accessibility_preferences,
             AccessibilityPreferences::DEFAULT
         );
+    }
+
+    #[test]
+    fn rendered_images_default_to_srgb_pixels() {
+        let image = RenderedImage::new(
+            PixelSize::new(1, 1),
+            ResourceFormat::Rgba8,
+            vec![128, 64, 32, 255],
+        );
+
+        assert_eq!(image.color_space, PixelColorSpace::Srgb);
     }
 
     #[test]

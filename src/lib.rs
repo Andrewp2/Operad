@@ -130,8 +130,9 @@ pub mod windows;
 pub use accessibility::{FocusNavigationDirection, FocusRestoreTarget, FocusTrap};
 pub use actions::{
     WidgetAction, WidgetActionBinding, WidgetActionId, WidgetActionKind, WidgetActionMode,
-    WidgetActionQueue, WidgetActionTrigger, WidgetActivation, WidgetDrag, WidgetDragPhase,
-    WidgetFocusChange, WidgetPointerEdit, WidgetSelection, WidgetTextEdit, WidgetValueEditPhase,
+    WidgetActionQueue, WidgetActionTrigger, WidgetActivation, WidgetActivationSource, WidgetDrag,
+    WidgetDragPhase, WidgetFocusChange, WidgetKeyboardActivation, WidgetPointerActivation,
+    WidgetPointerEdit, WidgetSelection, WidgetTextEdit, WidgetValueEditPhase,
 };
 pub use assets::BuiltInIcon;
 pub use commands::{

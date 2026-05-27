@@ -201,7 +201,19 @@ mod tests {
             "load",
             ProgressIndicatorValue::percent(62.0),
             &logs,
-            ProgressLogPanelOptions::default().with_accessibility_label("Load progress"),
+            ProgressLogPanelOptions::default()
+                .with_accessibility_label("Load progress")
+                .with_log_scroll(
+                    ScrollState::new(ScrollAxes::VERTICAL)
+                        .with_offset(UiPoint::new(0.0, 26.0))
+                        .with_sizes(UiSize::new(8.0, 96.0), UiSize::new(8.0, 78.0)),
+                )
+                .with_log_scroll_action("load.logs.scroll")
+                .with_trailing_action(
+                    ProgressLogPanelAction::new("Reset", "load.reset").with_options(
+                        crate::widgets::ButtonOptions::new(LayoutStyle::size(76.0, 30.0)),
+                    ),
+                ),
         );
         doc.compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
             .expect("layout");
@@ -212,6 +224,26 @@ mod tests {
         assert!(doc.node(nodes.progress.root).layout.rect.y < doc.node(nodes.logs).layout.rect.y);
         assert!(doc.node(nodes.logs).has_auto_scrollbar());
         assert!(doc.node(nodes.logs).scroll().is_some());
+        assert_eq!(
+            doc.node(nodes.logs)
+                .action()
+                .and_then(WidgetActionBinding::action_id)
+                .map(WidgetActionId::as_str),
+            Some("load.logs.scroll")
+        );
+
+        let reset = doc
+            .nodes()
+            .iter()
+            .find(|node| node.name() == "load.trailing_action")
+            .expect("reset button");
+        assert_eq!(
+            reset
+                .action()
+                .and_then(WidgetActionBinding::action_id)
+                .map(WidgetActionId::as_str),
+            Some("load.reset")
+        );
 
         let first_log = doc
             .nodes()
