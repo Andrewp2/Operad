@@ -5,10 +5,10 @@
 //! resolves to existing core primitives (`UiVisual`, `TextStyle`, `StrokeStyle`,
 //! and `ColorRgba`) instead of renderer-specific paint objects.
 
+pub mod stability;
+
 use std::collections::{HashMap, HashSet};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
-
-pub use crate::theme_stability as stability;
 
 use crate::{
     accessibility::AccessibilityPreferences, ColorRgba, FontFamily, FontStretch, FontStyle,

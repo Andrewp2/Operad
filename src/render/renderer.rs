@@ -672,6 +672,23 @@ pub struct CanvasHostCaptureState {
 }
 
 impl CanvasHostCaptureState {
+    pub(crate) fn remap_targets(
+        &mut self,
+        mut resolve: impl FnMut(UiNodeId) -> Option<UiNodeId>,
+    ) -> Vec<PlatformRequest> {
+        let mut releases = Vec::new();
+        self.active.retain_mut(|plan| {
+            if let Some(node) = resolve(plan.node) {
+                plan.node = node;
+                true
+            } else {
+                releases.extend(plan.release_platform_requests());
+                false
+            }
+        });
+        releases
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

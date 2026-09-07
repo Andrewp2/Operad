@@ -62318,12 +62318,14 @@ mod tests {
     use crate::{
         length, AccessibilityAction, AccessibilityMeta, AccessibilityRole, AnimationMachine,
         ApproxTextMeasurer, BidiPolicy, ClipBehavior, ColorRgba, ComponentRole, ComponentState,
-        ComponentStateSlot, DynamicLabelMeta, EditPhase, ElementMaterial, ElementShape,
-        InputBehavior, LayoutFlexWrap, LayoutStyle, LocaleId, LocalizationPolicy, PaintEffect,
-        PaintRect, ScopedThemeRegistry, ScrollAxes, StrokeStyle, TextStyle, TextWrap, Theme,
-        ThemePatch, ThemeScope, ThemeScopeId, ThemeScopeKind, UiFocusState, UiInputResult, UiNode,
-        UiNodeStyle, UiPoint, UiSize, UiVisual, UiWheelEvent,
+        ComponentStateSlot, DynamicLabelMeta, ElementMaterial, ElementShape, InputBehavior,
+        LayoutFlexWrap, LayoutStyle, LocaleId, LocalizationPolicy, PaintEffect, PaintRect,
+        ScopedThemeRegistry, ScrollAxes, StrokeStyle, TextStyle, TextWrap, Theme, ThemePatch,
+        ThemeScope, ThemeScopeId, ThemeScopeKind, UiFocusState, UiNode, UiNodeStyle, UiPoint,
+        UiSize, UiVisual, UiWheelEvent,
     };
+    #[cfg(feature = "widgets")]
+    use crate::{EditPhase, UiInputResult};
     use taffy::prelude::{
         Dimension, LengthPercentageAuto, Position, Rect, Size as TaffySize, Style,
     };

@@ -18,8 +18,8 @@ mod showcase_app {
         };
         use operad::input::{RawInputEvent, RawPointerEvent};
         use operad::platform::{CursorRequest, CursorShape, PlatformRequest};
+        use operad::renderer::EmptyResourceResolver;
         use operad::renderer::{RenderTarget, RendererAdapter};
-        use operad::testing::EmptyResourceResolver;
         #[cfg(feature = "wgpu")]
         use operad::wgpu_renderer::WgpuRenderer;
         use operad::{

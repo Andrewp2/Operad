@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Share document preparation, input routing, frame processing, and runtime state
+  retention between native and web hosts. Focus, gestures, IME targets, and
+  canvas captures follow stable node paths across rebuilds; removing targets
+  cancels their runtime ownership.
+- Retain documents and layout across redraws, rebuild after application updates
+  and viewport changes, and consume resource uploads only after presentation.
+  Frame-owned tooltips are removed before retaining the authored document.
+- Move invalidation and timing primitives into `core`, and make subsystem
+  modules own their implementations instead of re-exporting root declarations.
+- Make `diagnostics`, `inspector`, and `test-support` opt-in features. The native
+  showcase now requires `--features inspector`; `web-showcase` enables it.
+- Consolidate equivalent inspector option and node types into shared panel
+  contracts. Panel functions now return `DiagnosticPanelNodes` where they expose
+  a root and a row container, and use common timeline, source, record, candidate,
+  text, property, node, change, and issue options where their contracts match.
+- Import `EmptyResourceResolver` from `renderer`, timing primitives from `core`
+  or the crate root, and theme stability metadata from `theme::stability`.
+
 ## 9.0.1 - 2026-05-22
 
 - Added direct app-owned WGPU view composition with explicit load/clear

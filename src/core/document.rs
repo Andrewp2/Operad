@@ -3676,6 +3676,7 @@ impl Default for UiDocumentScale {
 pub struct UiDocument {
     pub(crate) root: UiNodeId,
     pub(crate) focus: UiFocusState,
+    pub(crate) focus_authored: bool,
     pub(crate) pointer_position: Option<UiPoint>,
     pub(crate) scale: UiDocumentScale,
     pub(crate) nodes: Vec<UiNode>,
@@ -3699,6 +3700,7 @@ impl UiDocument {
             root,
             nodes,
             focus: UiFocusState::default(),
+            focus_authored: false,
             pointer_position: None,
             scale: UiDocumentScale::default(),
             resource_updates: Vec::new(),
@@ -3772,6 +3774,25 @@ impl UiDocument {
     /// Clears queued renderer resource uploads from this document.
     pub fn clear_resource_updates(&mut self) {
         self.resource_updates.clear();
+    }
+
+    /// Remove frame-owned decorations before retaining the authored document.
+    pub(crate) fn truncate_runtime_nodes(&mut self, authored_count: usize) {
+        assert!(
+            authored_count > 0 && authored_count <= self.nodes.len(),
+            "invalid authored document boundary"
+        );
+        if self.nodes.len() <= authored_count {
+            return;
+        }
+        self.nodes.truncate(authored_count);
+        for node in &mut self.nodes {
+            node.children.retain(|id| id.index() < authored_count);
+        }
+        self.portal_hosts
+            .retain(|_, id| id.index() < authored_count);
+        self.sanitize_focus_state();
+        self.invalidate_layout();
     }
 
     #[allow(dead_code)]
@@ -3982,6 +4003,11 @@ impl UiDocument {
     }
 
     pub fn set_focus_state(&mut self, focus: UiFocusState) {
+        self.focus_authored = true;
+        self.set_runtime_focus_state(focus);
+    }
+
+    pub(crate) fn set_runtime_focus_state(&mut self, focus: UiFocusState) {
         self.sanitize_focus_state();
         let previous_hovered = self.focus.hovered;
         let previous_pressed = self.focus.pressed;
@@ -4052,7 +4078,11 @@ impl UiDocument {
         if let (Some(styles), UiContent::Text(text)) =
             (node.interaction_text_styles.as_ref(), &mut node.content)
         {
-            text.style = styles.resolve(enabled, hovered, pressed, focused);
+            let style = styles.resolve(enabled, hovered, pressed, focused);
+            if text.style != style {
+                text.style = style;
+                self.invalidate_layout();
+            }
         }
     }
 

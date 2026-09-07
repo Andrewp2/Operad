@@ -18,8 +18,8 @@ use operad::platform::{ImageHandle, PixelSize, ResourceHandle};
 use operad::renderer::RenderOptions;
 #[cfg(feature = "wgpu")]
 use operad::renderer::{
-    RenderFrameRequest, RenderTarget, RenderTargetKind, RendererAdapter, ResourceDescriptor,
-    ResourceFormat, ResourceUpdate,
+    EmptyResourceResolver, RenderFrameRequest, RenderTarget, RenderTargetKind, RendererAdapter,
+    ResourceDescriptor, ResourceFormat, ResourceUpdate,
 };
 use operad::testing::*;
 #[cfg(feature = "wgpu")]

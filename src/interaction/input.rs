@@ -478,6 +478,23 @@ pub struct PointerGestureTracker {
 }
 
 impl PointerGestureTracker {
+    /// Rebind document-local targets when a new document replaces the old one.
+    /// Missing targets cancel the gesture and cannot contribute to a later click.
+    pub(crate) fn remap_targets(&mut self, mut resolve: impl FnMut(UiNodeId) -> Option<UiNodeId>) {
+        self.active.retain(|_, active| {
+            if let Some(target) = resolve(active.target) {
+                active.target = target;
+                true
+            } else {
+                false
+            }
+        });
+        self.last_click = self.last_click.and_then(|mut click| {
+            click.target = resolve(click.target)?;
+            Some(click)
+        });
+    }
+
     pub fn new(settings: GestureSettings) -> Self {
         Self {
             settings,

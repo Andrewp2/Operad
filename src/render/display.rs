@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::testing::DirtyFlags;
+use crate::core::invalidation::DirtyFlags;
 use crate::{PaintList, UiNodeId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

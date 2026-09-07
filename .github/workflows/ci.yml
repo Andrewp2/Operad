@@ -46,7 +46,7 @@ jobs:
         run: cargo test --locked --all-features --test showcase_layout -- showcase_ --test-threads=1
 
       - name: Just Work performance smoke
-        run: cargo test --locked --no-default-features --features widgets --test perf_smoke -- --test-threads=1
+        run: cargo test --locked --no-default-features --features widgets,test-support --test perf_smoke -- --test-threads=1
 
       - name: Check examples
         run: cargo check --locked --all-features --examples

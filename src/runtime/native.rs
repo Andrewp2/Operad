@@ -6,8 +6,6 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::actions::action_target_enabled;
-use crate::host::process_host_frame_input_with_target_resolver;
 use crate::input::{
     text_input_for_key_event_text, PointerButton, PointerButtons, PointerEventKind, RawInputEvent,
     RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent, WheelDeltaUnit,
@@ -20,27 +18,23 @@ use crate::platform::{
     PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, RepaintResponse,
     TextImeRequest, TextImeResponse,
 };
+use crate::renderer::EmptyResourceResolver;
 use crate::renderer::{
     CanvasHostCaptureId, CanvasHostCapturePlan, CanvasRenderOutcome, CanvasRenderOutput,
     CanvasRenderReport, CanvasRenderRequest, DirtyRegionSet, RenderError, RenderFrameRequest,
     RenderTarget, RendererAdapter,
 };
-use crate::testing::EmptyResourceResolver;
 use crate::wgpu_renderer::{WgpuCanvasContext, WgpuSurfaceRenderer};
 use crate::{
     errors::{
         classify_render_error, ErrorKind, ErrorReport, FallbackAction, FallbackDecision,
         RuntimeErrorKind,
     },
-    host::{
-        process_document_frame, HostDocumentFrameOutput, HostDocumentFrameState, HostFrameOutput,
-        HostInteractionState, HostNodeInteraction,
-    },
+    host::{HostDocumentFrameOutput, HostFrameOutput, HostInteractionState, HostNodeInteraction},
 };
 use crate::{
-    AccessibilityRole, AnimationMachine, CanvasContent, CosmicTextMeasurer, KeyCode, KeyModifiers,
-    UiContent, UiDocument, UiFocusState, UiInputEvent, UiNodeId, UiPoint, UiRect, UiSize,
-    WidgetAction, WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
+    CanvasContent, CosmicTextMeasurer, KeyCode, KeyModifiers, UiContent, UiDocument, UiNodeId,
+    UiPoint, UiRect, UiSize, WidgetAction, WidgetActionBinding,
 };
 
 pub type NativeWindowResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -777,11 +771,9 @@ struct NativeWindowApp<State, Update, View> {
     renderer: Option<WgpuSurfaceRenderer<'static>>,
     canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
     hooks: NativeWindowHooks<State>,
-    frame_state: HostDocumentFrameState,
+    session: super::session::RuntimeSession,
     platform_request_ids: PlatformRequestIdAllocator,
     pending_platform_responses: Vec<PlatformServiceResponse>,
-    scroll_offsets: HashMap<String, UiPoint>,
-    animation_states: HashMap<String, AnimationMachine>,
     text_measurer: CosmicTextMeasurer,
     pending_input: Vec<RawInputEvent>,
     cursor: Option<UiPoint>,
@@ -815,11 +807,9 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             renderer: None,
             canvas_renderers,
             hooks,
-            frame_state: HostDocumentFrameState::new(),
+            session: super::session::RuntimeSession::new(),
             platform_request_ids: PlatformRequestIdAllocator::default(),
             pending_platform_responses: Vec::new(),
-            scroll_offsets: HashMap::new(),
-            animation_states: HashMap::new(),
             text_measurer: CosmicTextMeasurer::new(),
             pending_input: Vec::new(),
             cursor: None,
@@ -1014,10 +1004,13 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             return raw_input;
         }
 
+        if !raw_input.is_empty() {
+            self.session.invalidate_view();
+        }
         let mut remaining = Vec::with_capacity(raw_input.len());
         for event in raw_input {
             let handled =
-                native_canvas_input_for_raw_event(document, &self.frame_state.interaction, &event)
+                native_canvas_input_for_raw_event(document, self.session.interaction(), &event)
                     .is_some_and(|canvas_input| {
                         self.hooks
                             .canvas_input
@@ -1084,12 +1077,14 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
 
         let mut requests = Vec::new();
         if let Some(platform_requests) = self.hooks.platform_requests.as_mut() {
+            self.session.invalidate_view();
             requests.extend(
                 self.platform_request_ids
                     .allocate_all(platform_requests(&mut self.state, metrics)),
             );
         }
         if let Some(platform_service_requests) = self.hooks.platform_service_requests.as_mut() {
+            self.session.invalidate_view();
             requests.extend(platform_service_requests(&mut self.state, metrics));
         }
         let responses = requests
@@ -1105,6 +1100,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             return;
         }
         if let Some(platform_responses) = self.hooks.platform_responses.as_mut() {
+            self.session.invalidate_view();
             platform_responses(&mut self.state, responses);
         }
     }
@@ -1209,6 +1205,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let frame_started = Instant::now();
         let metrics = self.metrics_for_viewport(viewport);
         if let Some(before_render) = self.hooks.before_render.as_mut() {
+            self.session.invalidate_view();
             before_render(&mut self.state, metrics);
         }
         if let (Some(window), Some(title)) = (self.window.as_ref(), self.hooks.title.as_ref()) {
@@ -1225,27 +1222,29 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let mut nodes = document.node_count();
         document.tick_animations(animation_dt);
         let raw_input = self.dispatch_canvas_input_hooks(&document, raw_input);
-        let mut host_request = self.frame_state.host_frame_request(viewport);
-        host_request.raw_input = raw_input;
-        host_request.platform_responses = std::mem::take(&mut self.pending_platform_responses);
         let host_input_started = Instant::now();
-        let host_output =
-            process_host_frame_input_with_target_resolver(host_request, |event, state| {
-                resolve_target(event, state, &document)
-            });
+        let host_output = self.session.process_input(
+            &document,
+            viewport,
+            raw_input,
+            std::mem::take(&mut self.pending_platform_responses),
+        );
         let host_input = host_input_started.elapsed();
-        let frame_request = self.frame_state.document_frame_request(
+        let document_frame_started = Instant::now();
+        let frame = self.session.finish_frame(
+            &mut document,
             viewport,
             RenderTarget::window(self.options.title.clone(), viewport),
             host_output,
-        );
-        let document_frame_started = Instant::now();
-        let frame = process_document_frame(&mut document, &mut self.text_measurer, frame_request)?;
+            &mut self.text_measurer,
+            &mut self.platform_request_ids,
+        )?;
         let mut document_frame = document_frame_started.elapsed();
-        self.capture_document_runtime_state(&document);
-        let actions = collect_widget_actions(&document, &frame);
+        if document.animations_active() {
+            self.request_redraw();
+        }
+        let actions = crate::host::collect_document_widget_actions(&document, &frame);
         let actions_count = actions.len();
-        self.frame_state.apply_document_frame_output(&frame);
         self.apply_platform_service_requests(&frame);
 
         let mut action_rebuild = None;
@@ -1255,27 +1254,31 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             let action_started = Instant::now();
             for action in actions {
                 (self.update)(&mut self.state, action);
+                self.session.invalidate_view();
             }
             let rebuild_started = Instant::now();
-            let mut document = self.build_document(viewport)?;
+            document = self.build_document(viewport)?;
             build_document += rebuild_started.elapsed();
             nodes = document.node_count();
-            let frame_request = self.frame_state.document_frame_request(
+            let document_frame_started = Instant::now();
+            let frame = self.session.finish_frame(
+                &mut document,
                 viewport,
                 RenderTarget::window(self.options.title.clone(), viewport),
-                HostFrameOutput::new(self.frame_state.interaction.clone()),
-            );
-            let document_frame_started = Instant::now();
-            let frame =
-                process_document_frame(&mut document, &mut self.text_measurer, frame_request)?;
+                HostFrameOutput::new(self.session.interaction().clone()),
+                &mut self.text_measurer,
+                &mut self.platform_request_ids,
+            )?;
             document_frame += document_frame_started.elapsed();
-            self.capture_document_runtime_state(&document);
-            self.frame_state.apply_document_frame_output(&frame);
+            if document.animations_active() {
+                self.request_redraw();
+            }
             self.apply_platform_service_requests(&frame);
             action_rebuild = Some(action_started.elapsed());
             frame
         };
 
+        self.session.retain_document(document);
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame_report = Some(NativeFrameTimingReport {
                 viewport,
@@ -1294,6 +1297,9 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         };
         let paint_items = frame.render_request.paint.items.len();
         let canvas_started = Instant::now();
+        if !self.canvas_renderers.is_empty() {
+            self.session.invalidate_view();
+        }
         let canvas_report = self.canvas_renderers.render_frame_canvases(
             &mut self.state,
             renderer,
@@ -1327,6 +1333,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             }
             return Err(error.into());
         }
+        self.session.frame_presented();
         self.last_frame_report = Some(NativeFrameTimingReport {
             viewport,
             nodes,
@@ -1359,57 +1366,21 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         }
         self.last_tick = now;
         (self.update)(&mut self.state, WidgetAction::activate(UiNodeId(0), action));
+        self.session.invalidate_view();
     }
 
     fn build_document(&mut self, viewport: UiSize) -> Result<UiDocument, taffy::TaffyError>
     where
         View: FnMut(&State, UiSize) -> UiDocument,
     {
-        let mut document = (self.view)(&self.state, viewport);
-        document.set_ui_scale(self.options.ui_scale);
-        document.set_dpi_scale(self.scale_factor());
-        document.set_pointer_position(self.cursor);
-        restore_scroll_offsets(&mut document, &self.scroll_offsets);
-        self.restore_animation_states(&mut document);
-        let authored_focus = document.focus.focused;
-        let previous_focus = UiFocusState {
-            hovered: self.frame_state.interaction.hovered,
-            pressed: self.frame_state.interaction.pressed,
-            focused: self.frame_state.interaction.focused,
-        };
-        let mut focus = previous_focus.clone();
-        if authored_focus.is_some() {
-            focus.focused = authored_focus;
-        }
-        if let Some(cursor) = self.cursor {
-            focus.hovered = document.hit_test(cursor);
-            if self.buttons == PointerButtons::NONE {
-                focus.pressed = None;
-            }
-        }
-        document.set_focus_state(focus);
-        document.compute_layout(viewport, &mut self.text_measurer)?;
-        if let Some(cursor) = self.cursor {
-            let mut focus = document.focus.clone();
-            focus.hovered = document.hit_test(cursor);
-            if self.buttons == PointerButtons::NONE {
-                focus.pressed = None;
-            }
-            document.set_focus_state(focus);
-        }
-        if document.clamp_scroll_offsets() {
-            document.compute_layout(viewport, &mut self.text_measurer)?;
-            if let Some(cursor) = self.cursor {
-                let mut focus = document.focus.clone();
-                focus.hovered = document.hit_test(cursor);
-                if self.buttons == PointerButtons::NONE {
-                    focus.pressed = None;
-                }
-                document.set_focus_state(focus);
-            }
-        }
-        document.refresh_interaction_animation_inputs(previous_focus, self.cursor);
-        Ok(document)
+        let scale = crate::UiDocumentScale::new(self.options.ui_scale, self.scale_factor());
+        self.session.build_document(
+            viewport,
+            scale,
+            self.cursor,
+            &mut self.text_measurer,
+            |viewport| (self.view)(&self.state, viewport),
+        )
     }
 
     fn animation_delta_seconds(&mut self) -> f32 {
@@ -1419,68 +1390,6 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             .unwrap_or(Duration::ZERO);
         self.last_animation_tick = now;
         dt.as_secs_f32().clamp(0.0, 0.1)
-    }
-
-    fn capture_document_runtime_state(&mut self, document: &UiDocument) {
-        self.capture_scroll_offsets(document);
-        self.capture_animation_states(document);
-        if document.animations_active() {
-            self.request_redraw();
-        }
-    }
-
-    fn capture_scroll_offsets(&mut self, document: &UiDocument) {
-        self.scroll_offsets.clear();
-        for index in 0..document.node_count() {
-            let id = UiNodeId(index);
-            let Some(scroll) = document.scroll_state(id) else {
-                continue;
-            };
-            if scroll_offset_is_zero(scroll.offset) {
-                continue;
-            }
-            self.scroll_offsets
-                .insert(node_path_key(document, id), scroll.offset);
-        }
-    }
-
-    fn restore_animation_states(&self, document: &mut UiDocument) -> bool {
-        if self.animation_states.is_empty() {
-            return false;
-        }
-        let mut restored = Vec::new();
-        for index in 0..document.node_count() {
-            let id = UiNodeId(index);
-            let Some(animation) = document.node(id).animation.as_ref() else {
-                continue;
-            };
-            let Some(stored) = self.animation_states.get(&node_path_key(document, id)) else {
-                continue;
-            };
-            if animation.has_same_definition(stored) {
-                let mut restored_animation = animation.clone();
-                restored_animation.retain_runtime_from(stored);
-                restored.push((id, restored_animation));
-            }
-        }
-
-        let changed = !restored.is_empty();
-        for (id, animation) in restored {
-            document.node_mut(id).animation = Some(animation);
-        }
-        changed
-    }
-
-    fn capture_animation_states(&mut self, document: &UiDocument) {
-        self.animation_states.clear();
-        for index in 0..document.node_count() {
-            let id = UiNodeId(index);
-            let Some(animation) = document.node(id).animation.as_ref() else {
-                continue;
-            };
-            self.animation_states
-                .insert(node_path_key(document, id), animation.clone());
-        }
     }
 
     fn fail_and_exit(
@@ -1524,6 +1433,9 @@ where
 
         match event {
             winit::event::WindowEvent::CloseRequested => {
+                if self.hooks.close_requested.is_some() {
+                    self.session.invalidate_view();
+                }
                 let should_exit = self
                     .hooks
                     .close_requested
@@ -1600,6 +1512,9 @@ where
             }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
                 let key = key_code(&event, self.modifiers);
+                if self.hooks.keyboard_input.is_some() {
+                    self.session.invalidate_view();
+                }
                 let handled = self
                     .hooks
                     .keyboard_input
@@ -1686,6 +1601,9 @@ where
             return;
         };
         let timestamp_millis = self.timestamp_millis();
+        if self.hooks.raw_mouse_motion.is_some() {
+            self.session.invalidate_view();
+        }
         let handled = self
             .hooks
             .raw_mouse_motion
@@ -1697,7 +1615,7 @@ where
                         device_id,
                         delta,
                         timestamp_millis,
-                        captured_canvas: captured_raw_mouse_canvas(&self.frame_state.interaction),
+                        captured_canvas: captured_raw_mouse_canvas(self.session.interaction()),
                     },
                 )
             });
@@ -1713,6 +1631,7 @@ where
             .as_ref()
             .is_some_and(|idle_redraw| idle_redraw(&self.state))
         {
+            self.session.invalidate_view();
             self.request_redraw();
             return;
         }
@@ -1752,264 +1671,6 @@ where
     }
 }
 
-fn collect_widget_actions(
-    document: &UiDocument,
-    frame: &HostDocumentFrameOutput,
-) -> Vec<WidgetAction> {
-    let mut queue = WidgetActionQueue::new();
-    push_focus_transition_actions(
-        document,
-        &mut queue,
-        frame.previous_focused,
-        frame.host_output.state.focused,
-    );
-    for event in &frame.host_output.ui_events {
-        if let Some((target, phase, position, selecting)) =
-            text_pointer_edit_target(document, frame, event)
-        {
-            if let Some(binding) = action_binding(document, target) {
-                let target_rect = document
-                    .nodes()
-                    .get(target.0)
-                    .map(|node| node.layout.rect)
-                    .unwrap_or_else(|| crate::UiRect::new(0.0, 0.0, 0.0, 0.0));
-                queue.push(WidgetAction::text_pointer_edit(
-                    target,
-                    binding,
-                    event.clone(),
-                    phase,
-                    position,
-                    target_rect,
-                    selecting,
-                ));
-                continue;
-            }
-        }
-        let Some(target) = document.focus.focused else {
-            continue;
-        };
-        let Some(binding) = action_binding(document, target) else {
-            continue;
-        };
-        if text_edit_target(document, target)
-            && matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. })
-        {
-            queue.push(WidgetAction::text_edit(target, binding, event.clone()));
-            continue;
-        }
-        if text_edit_target(document, target) {
-            if let Some((phase, position, selecting)) =
-                text_pointer_edit_event(event, frame.host_output.state.pressed == Some(target))
-            {
-                let target_rect = document
-                    .nodes()
-                    .get(target.0)
-                    .map(|node| node.layout.rect)
-                    .unwrap_or_else(|| crate::UiRect::new(0.0, 0.0, 0.0, 0.0));
-                queue.push(WidgetAction::text_pointer_edit(
-                    target,
-                    binding,
-                    event.clone(),
-                    phase,
-                    position,
-                    target_rect,
-                    selecting,
-                ));
-                continue;
-            }
-        }
-        if let UiInputEvent::Key { key, modifiers } = event {
-            queue.push_key_activation(target, binding, *key, *modifiers);
-        }
-    }
-    for gesture in &frame.host_output.gestures {
-        queue.push_gesture_event_for_document(document, gesture, |id| action_binding(document, id));
-        if let Some(action) = drop_target_drag_action_from_gesture(document, gesture) {
-            queue.push(action);
-        }
-    }
-    for input in &frame.input_results {
-        let Some(target) = input.scrolled else {
-            continue;
-        };
-        let Some(binding) = action_binding(document, target) else {
-            continue;
-        };
-        if let Some(scroll) = document.scroll_state(target) {
-            queue.push(WidgetAction::scroll(target, binding, scroll));
-        }
-    }
-    queue.into_vec()
-}
-
-fn push_focus_transition_actions(
-    document: &UiDocument,
-    queue: &mut WidgetActionQueue,
-    previous: Option<UiNodeId>,
-    current: Option<UiNodeId>,
-) {
-    if previous == current {
-        return;
-    }
-    if let Some(previous) = previous {
-        if text_edit_target(document, previous) {
-            if let Some(binding) = action_binding(document, previous) {
-                queue.focus(previous, binding, false);
-            }
-        }
-    }
-    if let Some(current) = current {
-        if text_edit_target(document, current) {
-            if let Some(binding) = action_binding(document, current) {
-                queue.focus(current, binding, true);
-            }
-        }
-    }
-}
-
-fn text_pointer_edit_target(
-    document: &UiDocument,
-    frame: &HostDocumentFrameOutput,
-    event: &UiInputEvent,
-) -> Option<(UiNodeId, WidgetValueEditPhase, UiPoint, bool)> {
-    let pointer_position = match event {
-        UiInputEvent::PointerDown(point)
-        | UiInputEvent::PointerMove(point)
-        | UiInputEvent::PointerUp(point) => Some(*point),
-        _ => None,
-    };
-    if pointer_position.is_some_and(|point| document.auto_scrollbar_hit_target(point).is_some()) {
-        return None;
-    }
-    let (phase, position, selecting) = match event {
-        UiInputEvent::PointerDown(point) => (WidgetValueEditPhase::Begin, *point, false),
-        UiInputEvent::PointerMove(point) => {
-            let target = frame.host_output.state.pressed?;
-            if !text_edit_target(document, target) {
-                return None;
-            }
-            return Some((target, WidgetValueEditPhase::Update, *point, true));
-        }
-        UiInputEvent::PointerUp(point) => {
-            let target = frame.host_output.state.pressed.or(document.focus.pressed)?;
-            if !text_edit_target(document, target) {
-                return None;
-            }
-            return Some((target, WidgetValueEditPhase::Commit, *point, true));
-        }
-        _ => return None,
-    };
-    let target = document.hit_test(position)?;
-    text_edit_target(document, target).then_some((target, phase, position, selecting))
-}
-
-fn text_pointer_edit_event(
-    event: &UiInputEvent,
-    pressed: bool,
-) -> Option<(WidgetValueEditPhase, UiPoint, bool)> {
-    match event {
-        UiInputEvent::PointerDown(point) => Some((WidgetValueEditPhase::Begin, *point, false)),
-        UiInputEvent::PointerMove(point) if pressed => {
-            Some((WidgetValueEditPhase::Update, *point, true))
-        }
-        UiInputEvent::PointerUp(point) if pressed => {
-            Some((WidgetValueEditPhase::Commit, *point, true))
-        }
-        _ => None,
-    }
-}
-
-fn text_edit_target(document: &UiDocument, target: UiNodeId) -> bool {
-    document
-        .nodes()
-        .get(target.0)
-        .and_then(|node| node.accessibility.as_ref())
-        .is_some_and(|accessibility| {
-            matches!(
-                accessibility.role,
-                AccessibilityRole::TextBox | AccessibilityRole::SearchBox
-            )
-        })
-}
-
-fn action_binding(document: &UiDocument, id: UiNodeId) -> Option<WidgetActionBinding> {
-    document
-        .nodes()
-        .get(id.0)
-        .and_then(|node| node.action.clone())
-}
-
-fn drop_target_drag_action_from_gesture(
-    document: &UiDocument,
-    event: &crate::GestureEvent,
-) -> Option<WidgetAction> {
-    let crate::GestureEvent::Drag(gesture) = event else {
-        return None;
-    };
-    drag_source_action_target_for_hit(document, gesture.target)?;
-    let hit = document.hit_test(gesture.current)?;
-    let target = drop_action_target_for_hit(document, hit)?;
-    if target == gesture.target || document.node_is_descendant_or_self(gesture.target, target) {
-        return None;
-    }
-    let binding = action_binding(document, target)?;
-    let mut drag = *gesture;
-    drag.target = target;
-    WidgetAction::drag_from_gesture(&drag, binding)
-}
-
-fn drag_source_action_target_for_hit(document: &UiDocument, hit: UiNodeId) -> Option<UiNodeId> {
-    action_target_for_accessibility_action(document, hit, "drag.start")
-}
-
-fn drop_action_target_for_hit(document: &UiDocument, hit: UiNodeId) -> Option<UiNodeId> {
-    action_target_for_accessibility_action(document, hit, "drop.accept")
-}
-
-fn action_target_for_accessibility_action(
-    document: &UiDocument,
-    hit: UiNodeId,
-    accessibility_action_id: &str,
-) -> Option<UiNodeId> {
-    let mut current = Some(hit);
-    while let Some(id) = current {
-        let node = document.nodes().get(id.0)?;
-        let has_action = node.accessibility.as_ref().is_some_and(|accessibility| {
-            accessibility
-                .actions
-                .iter()
-                .any(|action| action.id == accessibility_action_id)
-        });
-        if has_action && node.action.is_some() && action_target_enabled(document, id) {
-            return Some(id);
-        }
-        current = node.parent();
-    }
-    None
-}
-
-fn resolve_target(
-    event: &RawInputEvent,
-    state: &HostInteractionState,
-    document: &UiDocument,
-) -> Option<UiNodeId> {
-    match event {
-        RawInputEvent::Pointer(pointer) => state
-            .drag_capture
-            .filter(|capture| {
-                capture.pointer_id == pointer.pointer_id
-                    && matches!(
-                        pointer.kind,
-                        PointerEventKind::Move | PointerEventKind::Up(_) | PointerEventKind::Cancel
-                    )
-            })
-            .map(|capture| capture.target)
-            .or_else(|| document.hit_test(pointer.position)),
-        RawInputEvent::Wheel(wheel) => document.hit_test(wheel.position),
-        RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
-    }
-}
-
 fn native_canvas_input_for_raw_event(
     document: &UiDocument,
     state: &HostInteractionState,
@@ -2017,13 +1678,13 @@ fn native_canvas_input_for_raw_event(
 ) -> Option<NativeCanvasInput> {
     match event {
         RawInputEvent::Pointer(pointer) => {
-            let target = resolve_target(event, state, document)?;
+            let target = super::session::resolve_target(event, state, document)?;
             let (node, canvas, rect) = canvas_target(document, target)?;
             (canvas.interaction.pointer_capture || canvas.interaction.pointer_lock).then(|| {
                 native_canvas_input(node, canvas, rect, Some(pointer.position), event.clone())
             })
         }
-        RawInputEvent::Wheel(wheel) => resolve_target(event, state, document)
+        RawInputEvent::Wheel(wheel) => super::session::resolve_target(event, state, document)
             .and_then(|target| canvas_target(document, target))
             .filter(|(_, canvas, _)| canvas.interaction.wheel_capture)
             .or_else(|| active_canvas_capture(document, state, |plan| plan.wheel_capture))
@@ -2420,55 +2081,6 @@ fn wheel_phase(phase: winit::event::TouchPhase) -> WheelPhase {
     }
 }
 
-fn restore_scroll_offsets(document: &mut UiDocument, offsets: &HashMap<String, UiPoint>) -> bool {
-    if offsets.is_empty() {
-        return false;
-    }
-    let mut scroll_offsets = Vec::new();
-    for index in 0..document.node_count() {
-        let id = UiNodeId(index);
-        if document.scroll_state(id).is_none() {
-            continue;
-        }
-        let Some(offset) = offsets.get(&node_path_key(document, id)).copied() else {
-            continue;
-        };
-        scroll_offsets.push((id, offset));
-    }
-
-    let mut changed = false;
-    for (id, offset) in scroll_offsets {
-        let Some(scroll) = document.node_mut(id).scroll.as_mut() else {
-            continue;
-        };
-        let offset = UiPoint::new(offset.x.max(0.0), offset.y.max(0.0));
-        if scroll.offset_is_authored() && scroll.offset != offset {
-            continue;
-        }
-        if scroll.offset != offset {
-            scroll.set_host_offset(offset);
-            changed = true;
-        }
-    }
-    changed
-}
-
-fn scroll_offset_is_zero(offset: UiPoint) -> bool {
-    offset.x.abs() <= f32::EPSILON && offset.y.abs() <= f32::EPSILON
-}
-
-fn node_path_key(document: &UiDocument, id: UiNodeId) -> String {
-    let mut path = Vec::new();
-    let mut current = Some(id);
-    while let Some(id) = current {
-        let node = document.node(id);
-        path.push(node.name.as_str());
-        current = node.parent;
-    }
-    path.reverse();
-    path.join("/")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2683,90 +2295,6 @@ mod tests {
             captured_raw_mouse_canvas(&capture_state),
             Some(CanvasHostCaptureId::new(canvas_id, "viewport"))
         );
-    }
-
-    #[test]
-    fn native_scroll_offsets_restore_to_stable_scroll_nodes_before_layout() {
-        let mut document = UiDocument::new(crate::LayoutStyle::column().with_size(100.0, 80.0));
-        let scroll = document.add_child(
-            document.root,
-            crate::UiNode::container(
-                "scroll",
-                crate::LayoutStyle::column().with_size(100.0, 80.0),
-            )
-            .with_scroll(crate::ScrollAxes::VERTICAL),
-        );
-        let child = document.add_child(
-            scroll,
-            crate::UiNode::container(
-                "content",
-                crate::LayoutStyle::size(100.0, 240.0).with_flex_shrink(0.0),
-            ),
-        );
-
-        let mut measurer = ApproxTextMeasurer;
-        document
-            .compute_layout(UiSize::new(100.0, 80.0), &mut measurer)
-            .unwrap();
-
-        let mut offsets = HashMap::new();
-        offsets.insert(node_path_key(&document, scroll), UiPoint::new(0.0, 120.0));
-
-        assert!(restore_scroll_offsets(&mut document, &offsets));
-        document
-            .compute_layout(UiSize::new(100.0, 80.0), &mut measurer)
-            .unwrap();
-        assert!(!document.clamp_scroll_offsets());
-
-        assert_eq!(
-            document.scroll_state(scroll).unwrap().offset,
-            UiPoint::new(0.0, 120.0)
-        );
-        assert_eq!(document.node(child).layout.rect.y, -120.0);
-    }
-
-    #[test]
-    fn native_scroll_offsets_do_not_override_authored_scroll_offsets() {
-        let mut document = UiDocument::new(crate::LayoutStyle::column().with_size(100.0, 80.0));
-        let scroll = document.add_child(
-            document.root,
-            crate::UiNode::container(
-                "scroll",
-                crate::LayoutStyle::column().with_size(100.0, 80.0),
-            )
-            .with_scroll(crate::ScrollAxes::VERTICAL),
-        );
-        let child = document.add_child(
-            scroll,
-            crate::UiNode::container(
-                "content",
-                crate::LayoutStyle::size(100.0, 240.0).with_flex_shrink(0.0),
-            ),
-        );
-        let mut measurer = ApproxTextMeasurer;
-        document
-            .compute_layout(UiSize::new(100.0, 80.0), &mut measurer)
-            .unwrap();
-
-        let mut offsets = HashMap::new();
-        offsets.insert(node_path_key(&document, scroll), UiPoint::new(0.0, 120.0));
-        document
-            .node_mut(scroll)
-            .scroll
-            .as_mut()
-            .unwrap()
-            .set_offset(UiPoint::new(0.0, 40.0));
-
-        assert!(!restore_scroll_offsets(&mut document, &offsets));
-        document
-            .compute_layout(UiSize::new(100.0, 80.0), &mut measurer)
-            .unwrap();
-
-        assert_eq!(
-            document.scroll_state(scroll).unwrap().offset,
-            UiPoint::new(0.0, 40.0)
-        );
-        assert_eq!(document.node(child).layout.rect.y, -40.0);
     }
 
     #[test]

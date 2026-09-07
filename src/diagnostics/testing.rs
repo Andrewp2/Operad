@@ -5,6 +5,7 @@
 //! inspect paint lists, diff rgba snapshots with tolerances, and track simple
 //! frame timing sections.
 
+use crate::core::timing::{FrameTiming, FrameTimingSectionSummary};
 use std::borrow::Cow;
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -43,7 +44,7 @@ use crate::platform::{
     PlatformServiceResponse, RenderingCapabilities, RepaintResponse, ResourceCapabilities,
     ScreenshotResponse, TextImeResponse,
 };
-pub use crate::renderer::EmptyResourceResolver;
+use crate::renderer::EmptyResourceResolver;
 use crate::renderer::{
     CanvasHitCollection, CanvasHitTarget, CanvasHostCaptureDiagnosticReport, CanvasRenderRegistry,
     CanvasRenderReport, CanvasRenderRequest, ImageRenderRegistry, ImageRenderRequest, RenderError,
@@ -4701,171 +4702,6 @@ impl<'a> SnapshotAssertions<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DirtyFlags {
-    pub layout: bool,
-    pub paint: bool,
-    pub input: bool,
-    pub theme: bool,
-    pub text_measurement: bool,
-}
-
-impl DirtyFlags {
-    pub const NONE: Self = Self {
-        layout: false,
-        paint: false,
-        input: false,
-        theme: false,
-        text_measurement: false,
-    };
-
-    pub const ALL: Self = Self {
-        layout: true,
-        paint: true,
-        input: true,
-        theme: true,
-        text_measurement: true,
-    };
-
-    pub const fn any(self) -> bool {
-        self.layout || self.paint || self.input || self.theme || self.text_measurement
-    }
-
-    pub const fn union(self, other: Self) -> Self {
-        Self {
-            layout: self.layout || other.layout,
-            paint: self.paint || other.paint,
-            input: self.input || other.input,
-            theme: self.theme || other.theme,
-            text_measurement: self.text_measurement || other.text_measurement,
-        }
-    }
-
-    pub fn clear(&mut self) {
-        *self = Self::NONE;
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameTimingSection {
-    pub name: String,
-    pub duration: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct FrameTimingSectionSummary {
-    pub name: String,
-    pub sample_count: usize,
-    pub total: Duration,
-    pub average: Duration,
-    pub max: Duration,
-    pub total_fraction: f64,
-}
-
-impl FrameTimingSectionSummary {
-    fn new(
-        name: impl Into<String>,
-        sample_count: usize,
-        total: Duration,
-        max: Duration,
-        all_sections_total: Duration,
-    ) -> Self {
-        let average = if sample_count == 0 {
-            Duration::ZERO
-        } else {
-            Duration::from_secs_f64(total.as_secs_f64() / sample_count as f64)
-        };
-        let total_fraction = if all_sections_total.is_zero() {
-            0.0
-        } else {
-            total.as_secs_f64() / all_sections_total.as_secs_f64()
-        };
-        Self {
-            name: name.into(),
-            sample_count,
-            total,
-            average,
-            max,
-            total_fraction,
-        }
-    }
-
-    pub fn percent_of_total(&self) -> f64 {
-        self.total_fraction * 100.0
-    }
-
-    pub fn diagnostic_summary(&self) -> String {
-        format!(
-            "{}: samples={}, total={:?}, average={:?}, max={:?}, share={:.1}%",
-            self.name,
-            self.sample_count,
-            self.total,
-            self.average,
-            self.max,
-            self.percent_of_total()
-        )
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FrameTiming {
-    pub sections: Vec<FrameTimingSection>,
-}
-
-impl FrameTiming {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn section(mut self, name: impl Into<String>, duration: Duration) -> Self {
-        self.sections.push(FrameTimingSection {
-            name: name.into(),
-            duration,
-        });
-        self
-    }
-
-    pub fn total(&self) -> Duration {
-        self.sections.iter().map(|section| section.duration).sum()
-    }
-
-    pub fn duration(&self, name: &str) -> Option<Duration> {
-        self.sections
-            .iter()
-            .find(|section| section.name == name)
-            .map(|section| section.duration)
-    }
-
-    pub fn section_fraction(&self, name: &str) -> Option<f64> {
-        let total = self.total();
-        if total.is_zero() {
-            return self.duration(name).map(|_| 0.0);
-        }
-        self.duration(name)
-            .map(|duration| duration.as_secs_f64() / total.as_secs_f64())
-    }
-
-    pub fn dominant_section(&self) -> Option<FrameTimingSectionSummary> {
-        let total = self.total();
-        self.sections
-            .iter()
-            .max_by_key(|section| section.duration)
-            .map(|section| {
-                FrameTimingSectionSummary::new(
-                    section.name.clone(),
-                    1,
-                    section.duration,
-                    section.duration,
-                    total,
-                )
-            })
-    }
-
-    pub fn within_budget(&self, budget: Duration) -> bool {
-        self.total() <= budget
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct FrameTimingAssertions<'a> {
     timing: &'a FrameTiming,
@@ -5479,6 +5315,7 @@ mod tests {
         ImageRenderRegistry, PaintBatch, PaintBatchKey, PaintBatchKind, RenderFrameOutput,
         RenderFrameRequest, RenderTarget, RenderTargetKind, RenderedImage, ResourceFormat,
     };
+    use crate::DirtyFlags;
     use crate::{
         length, root_style, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta,
         AccessibilityRole, AccessibilitySummary, AccessibilityValueRange, ApproxTextMeasurer,

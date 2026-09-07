@@ -6037,8 +6037,8 @@ fn read_timestamp_query_value(bytes: &[u8]) -> Result<u64, RenderError> {
 mod tests {
     use super::*;
     use crate::platform::LayerOrder;
+    use crate::renderer::EmptyResourceResolver;
     use crate::renderer::RenderOptions;
-    use crate::testing::EmptyResourceResolver;
     use crate::{PaintItem, PaintList, TextContent, UiNodeId};
 
     fn test_text_paint(text: impl Into<String>, rect: UiRect) -> TextPaint {

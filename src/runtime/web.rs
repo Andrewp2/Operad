@@ -6,7 +6,6 @@
 //! persistence, and WGPU surface presentation.
 
 use std::cell::{BorrowMutError, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -14,11 +13,7 @@ use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
-use crate::host::{
-    collect_document_widget_actions, process_document_frame,
-    process_host_frame_input_with_target_resolver, HostDocumentFrameOutput, HostDocumentFrameState,
-    HostFrameOutput, HostInteractionState,
-};
+use crate::host::{collect_document_widget_actions, HostDocumentFrameOutput, HostFrameOutput};
 use crate::input::{
     RawInputEvent, RawKeyboardEvent, RawPointerEvent, RawTextInputEvent, RawWheelEvent,
     WheelDeltaUnit, WheelPhase,
@@ -29,13 +24,12 @@ use crate::platform::{
     PlatformRequestId, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
     PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, RepaintResponse,
 };
+use crate::renderer::EmptyResourceResolver;
 use crate::renderer::{RenderError, RenderTarget, RendererAdapter};
-use crate::testing::EmptyResourceResolver;
 use crate::wgpu_renderer::WgpuSurfaceRenderer;
 use crate::{
-    AnimationMachine, CosmicTextMeasurer, KeyCode, KeyModifiers, PointerButton, PointerButtons,
-    PointerEventKind, UiDocument, UiFocusState, UiNodeId, UiPoint, UiRect, UiSize, WidgetAction,
-    WidgetActionBinding,
+    CosmicTextMeasurer, KeyCode, KeyModifiers, PointerButton, PointerButtons, PointerEventKind,
+    UiDocument, UiNodeId, UiPoint, UiRect, UiSize, WidgetAction, WidgetActionBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -302,7 +296,7 @@ struct WebRuntimeApp<State, Update, View> {
     update: Update,
     view: View,
     hooks: WebRuntimeHooks<State>,
-    frame_state: HostDocumentFrameState,
+    session: super::session::RuntimeSession,
     platform_request_ids: PlatformRequestIdAllocator,
     pending_platform_responses: Vec<PlatformServiceResponse>,
     async_platform_responses: Rc<RefCell<Vec<PlatformServiceResponse>>>,
@@ -313,8 +307,6 @@ struct WebRuntimeApp<State, Update, View> {
     cursor: Option<UiPoint>,
     buttons: PointerButtons,
     modifiers: KeyModifiers,
-    scroll_offsets: HashMap<String, UiPoint>,
-    animation_states: HashMap<String, AnimationMachine>,
     dpi_scale: f32,
     last_tick_ms: Option<f64>,
     last_animation_ms: Option<f64>,
@@ -402,7 +394,7 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
             update,
             view,
             hooks,
-            frame_state: HostDocumentFrameState::new(),
+            session: super::session::RuntimeSession::new(),
             platform_request_ids: PlatformRequestIdAllocator::new(1),
             pending_platform_responses: Vec::new(),
             async_platform_responses: Rc::new(RefCell::new(Vec::new())),
@@ -413,8 +405,6 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
             cursor: None,
             buttons: PointerButtons::NONE,
             modifiers: KeyModifiers::NONE,
-            scroll_offsets: HashMap::new(),
-            animation_states: HashMap::new(),
             dpi_scale,
             last_tick_ms: None,
             last_animation_ms: None,
@@ -446,6 +436,7 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
             timestamp_ms,
         };
         if let Some(before_render) = self.hooks.before_render.as_mut() {
+            self.session.invalidate_view();
             before_render(&mut self.state, metrics);
         }
         if let Some(title) = self.hooks.title.as_mut() {
@@ -461,23 +452,24 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
         document.tick_animations(animation_dt);
         let raw_input = std::mem::take(&mut self.pending_input);
         self.drain_async_platform_responses();
-        let mut host_request = self.frame_state.host_frame_request(viewport);
-        host_request.raw_input = raw_input;
-        host_request.platform_responses = std::mem::take(&mut self.pending_platform_responses);
-        let host_output =
-            process_host_frame_input_with_target_resolver(host_request, |event, state| {
-                resolve_target(event, state, &document)
-            });
-        let frame_request = self.frame_state.document_frame_request(
+        let host_output = self.session.process_input(
+            &document,
             viewport,
-            RenderTarget::window(self.options.target_name.clone(), viewport),
-            host_output,
+            raw_input,
+            std::mem::take(&mut self.pending_platform_responses),
         );
-        let frame = process_document_frame(&mut document, &mut self.text_measurer, frame_request)
+        let frame = self
+            .session
+            .finish_frame(
+                &mut document,
+                viewport,
+                RenderTarget::window(self.options.target_name.clone(), viewport),
+                host_output,
+                &mut self.text_measurer,
+                &mut self.platform_request_ids,
+            )
             .map_err(layout_web_error)?;
-        self.capture_document_runtime_state(&document);
         let actions = collect_document_widget_actions(&document, &frame);
-        self.frame_state.apply_document_frame_output(&frame);
         self.apply_platform_service_requests(&frame);
 
         let frame = if actions.is_empty() {
@@ -485,25 +477,29 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
         } else {
             for action in actions {
                 (self.update)(&mut self.state, action);
+                self.session.invalidate_view();
             }
-            let mut document = self.build_document(viewport).map_err(layout_web_error)?;
-            let frame_request = self.frame_state.document_frame_request(
-                viewport,
-                RenderTarget::window(self.options.target_name.clone(), viewport),
-                HostFrameOutput::new(self.frame_state.interaction.clone()),
-            );
-            let frame =
-                process_document_frame(&mut document, &mut self.text_measurer, frame_request)
-                    .map_err(layout_web_error)?;
-            self.capture_document_runtime_state(&document);
-            self.frame_state.apply_document_frame_output(&frame);
+            document = self.build_document(viewport).map_err(layout_web_error)?;
+            let frame = self
+                .session
+                .finish_frame(
+                    &mut document,
+                    viewport,
+                    RenderTarget::window(self.options.target_name.clone(), viewport),
+                    HostFrameOutput::new(self.session.interaction().clone()),
+                    &mut self.text_measurer,
+                    &mut self.platform_request_ids,
+                )
+                .map_err(layout_web_error)?;
             self.apply_platform_service_requests(&frame);
             frame
         };
 
+        self.session.retain_document(document);
         self.renderer
             .render_frame(frame.render_request, &EmptyResourceResolver)
             .map_err(render_web_error)?;
+        self.session.frame_presented();
         Ok(())
     }
 
@@ -511,51 +507,14 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
     where
         View: FnMut(&State, UiSize) -> UiDocument,
     {
-        let mut document = (self.view)(&self.state, viewport);
-        document.set_ui_scale(self.options.ui_scale);
-        document.set_dpi_scale(self.dpi_scale);
-        document.set_pointer_position(self.cursor);
-        restore_scroll_offsets(&mut document, &self.scroll_offsets);
-        self.restore_animation_states(&mut document);
-        let authored_focus = document.focus.focused;
-        let previous_focus = UiFocusState {
-            hovered: self.frame_state.interaction.hovered,
-            pressed: self.frame_state.interaction.pressed,
-            focused: self.frame_state.interaction.focused,
-        };
-        let mut focus = previous_focus.clone();
-        if authored_focus.is_some() {
-            focus.focused = authored_focus;
-        }
-        if let Some(cursor) = self.cursor {
-            focus.hovered = document.hit_test(cursor);
-            if self.buttons == PointerButtons::NONE {
-                focus.pressed = None;
-            }
-        }
-        document.set_focus_state(focus);
-        document.compute_layout(viewport, &mut self.text_measurer)?;
-        if let Some(cursor) = self.cursor {
-            let mut focus = document.focus.clone();
-            focus.hovered = document.hit_test(cursor);
-            if self.buttons == PointerButtons::NONE {
-                focus.pressed = None;
-            }
-            document.set_focus_state(focus);
-        }
-        if document.clamp_scroll_offsets() {
-            document.compute_layout(viewport, &mut self.text_measurer)?;
-            if let Some(cursor) = self.cursor {
-                let mut focus = document.focus.clone();
-                focus.hovered = document.hit_test(cursor);
-                if self.buttons == PointerButtons::NONE {
-                    focus.pressed = None;
-                }
-                document.set_focus_state(focus);
-            }
-        }
-        document.refresh_interaction_animation_inputs(previous_focus, self.cursor);
-        Ok(document)
+        let scale = crate::UiDocumentScale::new(self.options.ui_scale, self.dpi_scale);
+        self.session.build_document(
+            viewport,
+            scale,
+            self.cursor,
+            &mut self.text_measurer,
+            |viewport| (self.view)(&self.state, viewport),
+        )
     }
 
     fn uat_snapshot(&mut self) -> Result<JsValue, JsValue>
@@ -632,66 +591,8 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
         }
         set_js_array(&snapshot, "warnings", &warnings)?;
 
+        self.session.retain_document(document);
         Ok(snapshot.into())
-    }
-
-    fn capture_document_runtime_state(&mut self, document: &UiDocument) {
-        self.capture_scroll_offsets(document);
-        self.capture_animation_states(document);
-    }
-
-    fn capture_scroll_offsets(&mut self, document: &UiDocument) {
-        self.scroll_offsets.clear();
-        for index in 0..document.node_count() {
-            let id = UiNodeId(index);
-            let Some(scroll) = document.scroll_state(id) else {
-                continue;
-            };
-            if scroll_offset_is_zero(scroll.offset) {
-                continue;
-            }
-            self.scroll_offsets
-                .insert(node_path_key(document, id), scroll.offset);
-        }
-    }
-
-    fn restore_animation_states(&self, document: &mut UiDocument) -> bool {
-        if self.animation_states.is_empty() {
-            return false;
-        }
-        let mut restored = Vec::new();
-        for index in 0..document.node_count() {
-            let id = UiNodeId(index);
-            let Some(animation) = document.node(id).animation.as_ref() else {
-                continue;
-            };
-            let Some(stored) = self.animation_states.get(&node_path_key(document, id)) else {
-                continue;
-            };
-            if animation.has_same_definition(stored) {
-                let mut restored_animation = animation.clone();
-                restored_animation.retain_runtime_from(stored);
-                restored.push((id, restored_animation));
-            }
-        }
-
-        let changed = !restored.is_empty();
-        for (id, animation) in restored {
-            document.node_mut(id).animation = Some(animation);
-        }
-        changed
-    }
-
-    fn capture_animation_states(&mut self, document: &UiDocument) {
-        self.animation_states.clear();
-        for index in 0..document.node_count() {
-            let id = UiNodeId(index);
-            let Some(animation) = document.node(id).animation.as_ref() else {
-                continue;
-            };
-            self.animation_states
-                .insert(node_path_key(document, id), animation.clone());
-        }
     }
 
     fn dispatch_tick(&mut self, timestamp_ms: f64)
@@ -705,6 +606,7 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
         let mut last_tick = self.last_tick_ms.unwrap_or(timestamp_ms);
         let mut ticks = 0;
         while timestamp_ms - last_tick >= interval && ticks < 4 {
+            self.session.invalidate_view();
             (self.update)(
                 &mut self.state,
                 WidgetAction::activate(UiNodeId(0), action.clone()),
@@ -798,12 +700,14 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
 
         let mut requests = Vec::new();
         if let Some(platform_requests) = self.hooks.platform_requests.as_mut() {
+            self.session.invalidate_view();
             requests.extend(
                 self.platform_request_ids
                     .allocate_all(platform_requests(&mut self.state, metrics)),
             );
         }
         if let Some(platform_service_requests) = self.hooks.platform_service_requests.as_mut() {
+            self.session.invalidate_view();
             requests.extend(platform_service_requests(&mut self.state, metrics));
         }
         let responses = requests
@@ -905,6 +809,7 @@ impl<State, Update, View> WebRuntimeApp<State, Update, View> {
             return;
         }
         if let Some(platform_responses) = self.hooks.platform_responses.as_mut() {
+            self.session.invalidate_view();
             platform_responses(&mut self.state, responses);
         }
     }
@@ -1451,77 +1356,6 @@ fn text_input_for_key(event: &web_sys::KeyboardEvent) -> Option<String> {
     let mut chars = key.chars();
     let ch = chars.next()?;
     (chars.next().is_none() && !ch.is_control()).then_some(key)
-}
-
-fn resolve_target(
-    event: &RawInputEvent,
-    state: &HostInteractionState,
-    document: &UiDocument,
-) -> Option<UiNodeId> {
-    match event {
-        RawInputEvent::Pointer(pointer) => state
-            .drag_capture
-            .filter(|capture| {
-                capture.pointer_id == pointer.pointer_id
-                    && matches!(
-                        pointer.kind,
-                        PointerEventKind::Move | PointerEventKind::Up(_) | PointerEventKind::Cancel
-                    )
-            })
-            .map(|capture| capture.target)
-            .or_else(|| document.hit_test(pointer.position)),
-        RawInputEvent::Wheel(wheel) => document.hit_test(wheel.position),
-        RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
-    }
-}
-
-fn restore_scroll_offsets(document: &mut UiDocument, offsets: &HashMap<String, UiPoint>) -> bool {
-    if offsets.is_empty() {
-        return false;
-    }
-    let mut scroll_offsets = Vec::new();
-    for index in 0..document.node_count() {
-        let id = UiNodeId(index);
-        if document.scroll_state(id).is_none() {
-            continue;
-        }
-        let Some(offset) = offsets.get(&node_path_key(document, id)).copied() else {
-            continue;
-        };
-        scroll_offsets.push((id, offset));
-    }
-
-    let mut changed = false;
-    for (id, offset) in scroll_offsets {
-        let Some(scroll) = document.node_mut(id).scroll.as_mut() else {
-            continue;
-        };
-        let offset = UiPoint::new(offset.x.max(0.0), offset.y.max(0.0));
-        if scroll.offset_is_authored() && scroll.offset != offset {
-            continue;
-        }
-        if scroll.offset != offset {
-            scroll.set_host_offset(offset);
-            changed = true;
-        }
-    }
-    changed
-}
-
-fn scroll_offset_is_zero(offset: UiPoint) -> bool {
-    offset.x.abs() <= f32::EPSILON && offset.y.abs() <= f32::EPSILON
-}
-
-fn node_path_key(document: &UiDocument, id: UiNodeId) -> String {
-    let mut path = Vec::new();
-    let mut current = Some(id);
-    while let Some(id) = current {
-        let node = document.node(id);
-        path.push(node.name.as_str());
-        current = node.parent;
-    }
-    path.reverse();
-    path.join("/")
 }
 
 fn css_cursor(shape: CursorShape) -> &'static str {

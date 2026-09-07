@@ -4,9 +4,9 @@
 //! the bridge a backend uses to publish those semantics to a screen reader,
 //! coordinate focus traps, and reflect host accessibility preferences.
 
-use std::collections::{HashMap, HashSet};
+pub mod tooltips;
 
-pub use crate::tooltips;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityNode,

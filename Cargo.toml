@@ -1,6 +1,6 @@
 [package]
 name = "operad"
-version = "9.0.1"
+version = "10.0.0"
 edition = "2021"
 license = "MIT"
 description = "A cross-platform GUI library for Rust."
@@ -10,6 +10,7 @@ readme = "README.md"
 keywords = ["ui", "widgets", "rendering", "wgpu", "accessibility"]
 categories = ["gui", "rendering", "development-tools::testing"]
 include = [
+    "ARCHITECTURE.md",
     "CHANGELOG.md",
     "Cargo.lock",
     "Cargo.toml",
@@ -45,6 +46,9 @@ image-decode = ["dep:image"]
 text-cosmic = ["dep:cosmic-text", "dep:epaint_default_fonts"]
 widgets = []
 audit = []
+diagnostics = []
+inspector = ["diagnostics", "widgets"]
+test-support = ["diagnostics"]
 web-runtime = [
     "wgpu",
     "text-cosmic",
@@ -54,7 +58,7 @@ web-runtime = [
     "dep:wasm-bindgen-futures",
     "dep:web-sys",
 ]
-web-showcase = ["web-runtime", "widgets", "image-decode"]
+web-showcase = ["web-runtime", "widgets", "image-decode", "inspector"]
 
 [[example]]
 name = "minimal_native"
@@ -74,7 +78,7 @@ required-features = ["native-window", "widgets"]
 
 [[example]]
 name = "showcase"
-required-features = ["native-window", "widgets", "image-decode"]
+required-features = ["native-window", "widgets", "image-decode", "inspector"]
 
 [[example]]
 name = "showcase_web"
@@ -82,11 +86,19 @@ required-features = ["web-showcase"]
 
 [[test]]
 name = "api_surface"
-required-features = ["widgets"]
+required-features = ["widgets", "inspector", "test-support"]
 
 [[test]]
 name = "showcase_layout"
-required-features = ["native-window", "widgets"]
+required-features = ["native-window", "widgets", "inspector", "test-support"]
+
+[[test]]
+name = "perf_smoke"
+required-features = ["widgets", "test-support"]
+
+[[test]]
+name = "wgpu_snapshot_parity"
+required-features = ["wgpu", "test-support"]
 
 [profile.dev]
 opt-level = 1

@@ -9041,7 +9041,7 @@ fn diagnostics_issue_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &DebugF
         panel,
         "diagnostics.issues",
         &report,
-        ext_widgets::DebugIssuePanelOptions {
+        ext_widgets::IssuePanelOptions {
             action_prefix: Some("diagnostics.issues".to_owned()),
             max_issue_rows: 6,
             ..Default::default()
@@ -9357,7 +9357,7 @@ fn diagnostics_invariant_timeline_panel(
         panel,
         "diagnostics.invariant_timeline",
         trace,
-        ext_widgets::InvariantTimelinePanelOptions {
+        ext_widgets::TimelinePanelOptions {
             action_prefix: Some("diagnostics.invariant_timeline".to_owned()),
             max_frame_rows: 4,
             ..Default::default()
@@ -9381,7 +9381,7 @@ fn diagnostics_constraint_timeline_panel(
         panel,
         "diagnostics.constraint_timeline",
         trace,
-        ext_widgets::ConstraintTimelinePanelOptions {
+        ext_widgets::TimelinePanelOptions {
             action_prefix: Some("diagnostics.constraint_timeline".to_owned()),
             max_frame_rows: 6,
             ..Default::default()
@@ -9525,7 +9525,7 @@ fn diagnostics_node_recommendation_panel(
         panel,
         "diagnostics.node_recommendations",
         &recommendations,
-        ext_widgets::NodeRecommendationPanelOptions {
+        ext_widgets::NodeRowsPanelOptions {
             action_prefix: Some("diagnostics.node_recommendations".to_owned()),
             max_node_rows: 8,
             ..Default::default()
@@ -9540,7 +9540,7 @@ fn diagnostics_slow_nodes_panel(ui: &mut UiDocument, parent: UiNodeId, trace: &D
         panel,
         "diagnostics.slow_nodes",
         trace,
-        ext_widgets::SlowNodesPanelOptions {
+        ext_widgets::NodeRowsPanelOptions {
             action_prefix: Some("diagnostics.slow_nodes".to_owned()),
             max_node_rows: 6,
             ..Default::default()
@@ -9564,7 +9564,7 @@ fn diagnostics_slow_node_timeline_panel(
         panel,
         "diagnostics.slow_node_timeline",
         trace,
-        ext_widgets::SlowNodeTimelinePanelOptions {
+        ext_widgets::NodeTimelinePanelOptions {
             action_prefix: Some("diagnostics.slow_node_timeline".to_owned()),
             max_node_rows: 5,
             max_frame_rows: 4,
@@ -9821,7 +9821,7 @@ fn diagnostics_layout_cost_autopsy_panel(
         panel,
         "diagnostics.layout_cost_autopsy",
         &autopsy,
-        ext_widgets::LayoutCostAutopsyPanelOptions {
+        ext_widgets::SourcePanelOptions {
             action_prefix: Some("diagnostics.layout_cost_autopsy".to_owned()),
             max_source_rows: 8,
             ..Default::default()
@@ -9908,7 +9908,7 @@ fn diagnostics_layout_autopsy_panel(
             panel,
             "diagnostics.layout_autopsy",
             &trace,
-            ext_widgets::LayoutAutopsyPanelOptions {
+            ext_widgets::SourcePanelOptions {
                 action_prefix: Some("diagnostics.layout_autopsy".to_owned()),
                 max_source_rows: 8,
                 ..Default::default()
@@ -10069,7 +10069,7 @@ fn diagnostics_wheel_route_panel(ui: &mut UiDocument, parent: UiNodeId) {
         panel,
         "diagnostics.wheel",
         &trace,
-        ext_widgets::WheelRoutePanelOptions {
+        ext_widgets::CandidatePanelOptions {
             action_prefix: Some("diagnostics.wheel".to_owned()),
             max_candidate_rows: 5,
             ..Default::default()
@@ -10125,7 +10125,7 @@ fn diagnostics_scroll_timeline_panel(ui: &mut UiDocument, parent: UiNodeId) {
         panel,
         "diagnostics.scroll_timeline",
         &trace,
-        ext_widgets::ScrollTimelinePanelOptions {
+        ext_widgets::NodeTimelinePanelOptions {
             action_prefix: Some("diagnostics.scroll_timeline".to_owned()),
             max_node_rows: 4,
             max_frame_rows: 3,
@@ -10331,7 +10331,7 @@ fn diagnostics_slow_frame_panel(
         panel,
         "diagnostics.slow_frame",
         &trace,
-        ext_widgets::SlowFramePanelOptions {
+        ext_widgets::RecordPanelOptions {
             action_prefix: Some("diagnostics.slow_frame".to_owned()),
             max_record_rows: 8,
             ..Default::default()
@@ -10399,7 +10399,7 @@ fn diagnostics_frame_recorder_panel(
         panel,
         "diagnostics.recorder",
         recorder,
-        ext_widgets::FrameRecorderPanelOptions {
+        ext_widgets::TimelinePanelOptions {
             action_prefix: Some("diagnostics.recorder".to_owned()),
             max_frame_rows: 4,
             ..Default::default()
@@ -10418,7 +10418,7 @@ fn diagnostics_frame_timeline_panel(
         panel,
         "diagnostics.timeline",
         trace,
-        ext_widgets::FrameTimelinePanelOptions {
+        ext_widgets::TimelinePanelOptions {
             action_prefix: Some("diagnostics.timeline".to_owned()),
             max_frame_rows: 4,
             ..Default::default()
@@ -10442,7 +10442,7 @@ fn diagnostics_frame_regression_panel(
         panel,
         "diagnostics.regression",
         trace,
-        ext_widgets::FrameRegressionPanelOptions {
+        ext_widgets::RecordPanelOptions {
             action_prefix: Some("diagnostics.regression".to_owned()),
             max_record_rows: 8,
             ..Default::default()
@@ -10466,7 +10466,7 @@ fn diagnostics_fix_verification_panel(
         panel,
         "diagnostics.fix_verification",
         trace,
-        ext_widgets::FixVerificationPanelOptions {
+        ext_widgets::RecordPanelOptions {
             action_prefix: Some("diagnostics.fix_verification".to_owned()),
             max_record_rows: 8,
             ..Default::default()
@@ -10524,7 +10524,7 @@ fn diagnostics_why_timeline_panel(
         panel,
         "diagnostics.why_timeline",
         trace,
-        ext_widgets::WhyTimelinePanelOptions {
+        ext_widgets::TimelinePanelOptions {
             action_prefix: Some("diagnostics.why_timeline".to_owned()),
             max_frame_rows: 4,
             ..Default::default()
@@ -10550,7 +10550,7 @@ fn diagnostics_node_frame_history_panel(
         panel,
         "diagnostics.node_history",
         &trace,
-        ext_widgets::NodeFrameHistoryPanelOptions {
+        ext_widgets::TimelinePanelOptions {
             action_prefix: Some("diagnostics.node_history".to_owned()),
             max_frame_rows: 4,
             ..Default::default()
@@ -10574,7 +10574,7 @@ fn diagnostics_node_change_panel(
         panel,
         "diagnostics.node_change",
         &trace,
-        ext_widgets::NodeChangePanelOptions {
+        ext_widgets::ChangePanelOptions {
             action_prefix: Some("diagnostics.node_change".to_owned()),
             max_change_rows: 6,
             ..Default::default()
@@ -10944,7 +10944,7 @@ fn diagnostics_overlap_timeline_panel(
         panel,
         "diagnostics.overlap_timeline",
         trace,
-        ext_widgets::OverlapTimelinePanelOptions {
+        ext_widgets::TimelinePanelOptions {
             action_prefix: Some("diagnostics.overlap_timeline".to_owned()),
             max_frame_rows: 4,
             ..Default::default()
@@ -10972,7 +10972,7 @@ fn diagnostics_overlap_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId, stat
         panel,
         "diagnostics.overlap_autopsy",
         &trace,
-        ext_widgets::OverlapAutopsyPanelOptions {
+        ext_widgets::SourcePanelOptions {
             action_prefix: Some("diagnostics.overlap_autopsy".to_owned()),
             max_source_rows: 8,
             ..Default::default()
@@ -10992,7 +10992,7 @@ fn diagnostics_pointer_probe_panel(ui: &mut UiDocument, parent: UiNodeId, state:
         panel,
         "diagnostics.probe",
         &probe,
-        ext_widgets::PointerProbePanelOptions {
+        ext_widgets::CandidatePanelOptions {
             action_prefix: Some("diagnostics.probe".to_owned()),
             max_candidate_rows: 6,
             ..Default::default()
@@ -11041,7 +11041,7 @@ fn diagnostics_pointer_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId, stat
         panel,
         "diagnostics.pointer_autopsy",
         &trace,
-        ext_widgets::PointerAutopsyPanelOptions {
+        ext_widgets::SourcePanelOptions {
             action_prefix: Some("diagnostics.pointer_autopsy".to_owned()),
             max_source_rows: 8,
             ..Default::default()
@@ -11073,7 +11073,7 @@ fn diagnostics_point_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId, state:
         panel,
         "diagnostics.point_autopsy",
         &trace,
-        ext_widgets::PointAutopsyPanelOptions {
+        ext_widgets::SourcePanelOptions {
             action_prefix: Some("diagnostics.point_autopsy".to_owned()),
             max_source_rows: 8,
             ..Default::default()
@@ -12002,7 +12002,7 @@ fn diagnostics_bounds_autopsy_panel(ui: &mut UiDocument, parent: UiNodeId) {
         panel,
         "diagnostics.bounds",
         &trace,
-        ext_widgets::BoundsAutopsyPanelOptions {
+        ext_widgets::SourcePanelOptions {
             action_prefix: Some("diagnostics.bounds".to_owned()),
             max_source_rows: 7,
             ..Default::default()
@@ -12070,7 +12070,7 @@ fn diagnostics_text_layout_panel(ui: &mut UiDocument, parent: UiNodeId, state: &
             panel,
             "diagnostics.text",
             &trace,
-            ext_widgets::TextLayoutPanelOptions {
+            ext_widgets::PropertyPanelOptions {
                 action_prefix: Some("diagnostics.text".to_owned()),
                 ..Default::default()
             },
@@ -12092,7 +12092,7 @@ fn diagnostics_text_style_panel(ui: &mut UiDocument, parent: UiNodeId, state: &S
             panel,
             "diagnostics.text_style",
             &trace,
-            ext_widgets::TextStylePanelOptions {
+            ext_widgets::PropertyPanelOptions {
                 action_prefix: Some("diagnostics.text_style".to_owned()),
                 ..Default::default()
             },
@@ -12117,7 +12117,7 @@ fn diagnostics_text_input_state_panel(ui: &mut UiDocument, parent: UiNodeId) {
         panel,
         "diagnostics.text_input_state",
         &trace,
-        ext_widgets::TextInputStatePanelOptions {
+        ext_widgets::PropertyPanelOptions {
             action_prefix: Some("diagnostics.text_input_state".to_owned()),
             ..Default::default()
         },
@@ -12198,7 +12198,7 @@ fn diagnostics_text_localization_panel(ui: &mut UiDocument, parent: UiNodeId) {
         panel,
         "diagnostics.text_localization",
         &trace,
-        ext_widgets::TextLocalizationPanelOptions {
+        ext_widgets::TextRowsPanelOptions {
             action_prefix: Some("diagnostics.text_localization".to_owned()),
             max_text_rows: 4,
             ..Default::default()
@@ -12251,7 +12251,7 @@ fn diagnostics_text_contrast_panel(ui: &mut UiDocument, parent: UiNodeId) {
         panel,
         "diagnostics.text_contrast",
         &trace,
-        ext_widgets::TextContrastPanelOptions {
+        ext_widgets::TextRowsPanelOptions {
             action_prefix: Some("diagnostics.text_contrast".to_owned()),
             max_text_rows: 4,
             ..Default::default()
@@ -12312,7 +12312,7 @@ fn diagnostics_text_fit_panel(ui: &mut UiDocument, parent: UiNodeId) {
         panel,
         "diagnostics.text_fit",
         &trace,
-        ext_widgets::TextFitPanelOptions {
+        ext_widgets::TextRowsPanelOptions {
             action_prefix: Some("diagnostics.text_fit".to_owned()),
             max_text_rows: 4,
             ..Default::default()
@@ -12415,7 +12415,7 @@ fn diagnostics_event_route_panel(ui: &mut UiDocument, parent: UiNodeId, state: &
         panel,
         "diagnostics.route",
         &trace,
-        ext_widgets::EventRoutePanelOptions {
+        ext_widgets::CandidatePanelOptions {
             action_prefix: Some("diagnostics.route".to_owned()),
             max_candidate_rows: 6,
             ..Default::default()
@@ -12437,7 +12437,7 @@ fn diagnostics_frame_diff_panel(
         panel,
         "diagnostics.diff",
         &diff,
-        ext_widgets::FrameDiffPanelOptions {
+        ext_widgets::ChangePanelOptions {
             action_prefix: Some("diagnostics.diff".to_owned()),
             max_change_rows: 6,
             ..Default::default()
@@ -12504,7 +12504,7 @@ fn diagnostics_constraint_panel(
         panel,
         "diagnostics.constraints",
         &report,
-        ext_widgets::ConstraintIssuesPanelOptions {
+        ext_widgets::IssuePanelOptions {
             action_prefix: Some("diagnostics.constraints".to_owned()),
             max_issue_rows: 6,
             ..Default::default()
@@ -12679,7 +12679,7 @@ fn diagnostics_inspect_node_panel(
             panel,
             "diagnostics.inspect_node",
             &trace,
-            ext_widgets::InspectNodePanelOptions {
+            ext_widgets::SourcePanelOptions {
                 action_prefix: Some("diagnostics.inspect_node".to_owned()),
                 max_source_rows: 8,
                 ..Default::default()
@@ -12923,7 +12923,7 @@ fn diagnostics_hitbox_timeline_panel(
         panel,
         "diagnostics.hitbox_timeline",
         trace,
-        ext_widgets::HitboxTimelinePanelOptions {
+        ext_widgets::TimelinePanelOptions {
             action_prefix: Some("diagnostics.hitbox_timeline".to_owned()),
             max_frame_rows: 4,
             ..Default::default()

@@ -1,25 +1,19 @@
-//! Operad is a small retained-mode UI document layer.
+//! Operad is a retained UI document library with a shared runtime.
 //!
-//! The crate intentionally contains only reusable primitives: layout, text
-//! measurement, hit testing, focus, animation, and optional renderer backends.
+//! Documents, widgets, layout, text measurement, input, and animation are
+//! renderer-neutral. Platform adapters, diagnostics, and inspector UI are optional.
 //! Product-specific screens and game/application state should live in the
 //! consuming application crate.
 
 pub mod accessibility;
 #[cfg(feature = "accesskit-winit")]
-#[path = "adapters/accesskit_winit_adapter.rs"]
-pub mod accesskit_winit_adapter;
-#[path = "interaction/actions.rs"]
-pub mod actions;
+pub use adapters::accesskit_winit_adapter;
+pub use interaction::actions;
 pub mod adapters;
-#[path = "render/assets.rs"]
-pub mod assets;
-#[path = "domain/charts.rs"]
-pub mod charts;
-#[path = "interaction/commands.rs"]
-pub mod commands;
-#[path = "render/compositor.rs"]
-pub mod compositor;
+pub use domain::charts;
+pub use interaction::commands;
+pub use render::assets;
+pub use render::compositor;
 pub mod core;
 #[cfg(feature = "text-cosmic")]
 pub use core::document::CosmicTextMeasurer;
@@ -46,83 +40,53 @@ pub use core::document::{
     ANIMATION_INPUT_POINTER_NORM_Y, ANIMATION_INPUT_POINTER_X, ANIMATION_INPUT_POINTER_Y,
     ANIMATION_INPUT_PRESSED, APP_OVERLAY_PORTAL,
 };
-#[path = "diagnostics/debug.rs"]
-pub mod debug;
+#[cfg(any(test, feature = "diagnostics"))]
+pub use diagnostics::debug;
 pub mod diagnostics;
-#[path = "render/display.rs"]
-pub mod display;
+pub use render::display;
 pub mod domain;
-#[path = "interaction/drag_drop.rs"]
-pub mod drag_drop;
-#[path = "domain/editor.rs"]
-pub mod editor;
-#[path = "render/effective_geometry.rs"]
-pub mod effective_geometry;
-#[path = "diagnostics/errors.rs"]
-pub mod errors;
-#[path = "render/fonts.rs"]
-pub mod fonts;
-#[path = "interaction/forms.rs"]
-pub mod forms;
-#[path = "runtime/host.rs"]
-pub mod host;
-#[path = "core/i18n.rs"]
-pub mod i18n;
-#[path = "interaction/input.rs"]
-pub mod input;
-#[path = "interaction/input_devices.rs"]
-pub mod input_devices;
+pub use core::i18n;
+pub use diagnostics::errors;
+pub use domain::editor;
+pub use interaction::drag_drop;
+pub use interaction::forms;
+pub use interaction::input;
+pub use interaction::input_devices;
+pub use render::effective_geometry;
+pub use render::fonts;
+pub use runtime::host;
 pub mod interaction;
-#[path = "core/layout.rs"]
-pub mod layout;
-#[path = "render/layout_animation.rs"]
-pub mod layout_animation;
-#[path = "diagnostics/limits.rs"]
-pub mod limits;
-#[path = "interaction/navigation.rs"]
-pub mod navigation;
-#[path = "interaction/overlays.rs"]
-pub mod overlays;
-#[path = "render/paint.rs"]
-pub mod paint;
-#[path = "runtime/platform.rs"]
-pub mod platform;
+pub use core::layout;
+pub use diagnostics::limits;
+pub use interaction::navigation;
+pub use interaction::overlays;
+pub use render::layout_animation;
+pub use render::paint;
+pub use runtime::platform;
 pub mod prelude;
 pub mod render;
-#[path = "render/renderer.rs"]
-pub mod renderer;
-#[path = "render/resource_cache.rs"]
-pub mod resource_cache;
+pub use render::renderer;
+pub use render::resource_cache;
 pub mod runtime;
+pub use render::scrolling;
 #[cfg(all(feature = "web-runtime", target_arch = "wasm32"))]
 pub use runtime::web;
-#[path = "render/scrolling.rs"]
-pub mod scrolling;
 pub mod shell;
-#[path = "core/state.rs"]
-pub mod state;
-#[path = "interaction/tasks.rs"]
-pub mod tasks;
-#[path = "diagnostics/testing.rs"]
-pub mod testing;
+pub use core::state;
+#[cfg(any(test, feature = "test-support"))]
+pub use diagnostics::testing;
+pub use interaction::tasks;
 pub mod theme;
-#[path = "theme/stability.rs"]
-pub mod theme_stability;
-#[path = "accessibility/tooltips.rs"]
-pub mod tooltips;
-#[path = "interaction/transactions.rs"]
-pub mod transactions;
-#[path = "core/versioning.rs"]
-pub mod versioning;
-#[path = "render/virtualization.rs"]
-pub mod virtualization;
+
+pub use accessibility::tooltips;
 #[cfg(feature = "wgpu")]
-#[path = "adapters/wgpu_renderer.rs"]
-pub mod wgpu_renderer;
+pub use adapters::wgpu_renderer;
+pub use core::versioning;
+pub use interaction::transactions;
+pub use render::virtualization;
 #[cfg(feature = "widgets")]
 pub mod widgets;
-#[path = "runtime/windows.rs"]
-pub mod windows;
+pub use runtime::windows;
 
 pub use accessibility::{FocusNavigationDirection, FocusRestoreTarget, FocusTrap};
 pub use actions::{
@@ -135,6 +99,8 @@ pub use assets::BuiltInIcon;
 pub use commands::{
     Command, CommandEffect, CommandId, CommandMeta, CommandRegistry, CommandScope, Shortcut,
 };
+pub use core::invalidation::DirtyFlags;
+pub use core::timing::{FrameTiming, FrameTimingSection, FrameTimingSectionSummary};
 pub use drag_drop::{DragDropSurfaceKind, DropPayloadFilter};
 pub use forms::{FieldId, FieldState, FormId, FormState, ValidationMessage, ValidationSeverity};
 pub use i18n::{
@@ -162,7 +128,6 @@ pub use paint::{
 };
 #[cfg(feature = "native-window")]
 pub use runtime::native;
-pub use testing::{DirtyFlags, FrameTiming};
 pub use theme::{
     color_with_alpha, text_style_with_color, text_style_with_scale, ColorTokens,
     ComponentIconStates, ComponentLayoutTokens, ComponentRole, ComponentState, ComponentStateSlot,

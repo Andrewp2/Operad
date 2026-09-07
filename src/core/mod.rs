@@ -1,5 +1,11 @@
 //! Core retained UI contracts.
 
-pub mod document;
+pub mod i18n;
+pub mod layout;
+pub mod state;
+pub mod versioning;
 
-pub use crate::{i18n, layout, state, versioning};
+pub mod document;
+pub(crate) mod identity;
+pub mod invalidation;
+pub mod timing;

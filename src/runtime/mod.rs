@@ -5,9 +5,13 @@
 //! events into these contracts, while tests can drive the same lifecycle
 //! deterministically.
 
+pub mod host;
+pub mod platform;
+pub mod windows;
+
 use std::time::Duration;
 
-pub use crate::{host, platform, windows};
+pub mod session;
 
 #[cfg(feature = "native-window")]
 pub mod native;

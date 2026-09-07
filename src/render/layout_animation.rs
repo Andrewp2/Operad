@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use crate::core::identity::NodeIdentityIndex;
 use crate::{LayoutSnapshot, PaintList, PaintTransform, UiNodeId, UiPoint, UiRect};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,13 +44,23 @@ pub fn layout_animation_transitions(
     options: LayoutAnimationOptions,
 ) -> Vec<LayoutAnimationTransition> {
     let progress = options.progress.clamp(0.0, 1.0);
-    let mut previous_by_name = HashMap::<&str, &LayoutSnapshot>::new();
-    collect_layout_snapshot_by_name(previous, options.include_root, &mut previous_by_name);
+    let previous_ids = NodeIdentityIndex::from_layout(previous);
+    let current_ids = NodeIdentityIndex::from_layout(current);
+    let mut previous_by_id = HashMap::new();
+    collect_layout_snapshot_by_id(previous, &mut previous_by_id);
+    let previous_for_current = current_ids
+        .by_identity
+        .values()
+        .filter_map(|current| {
+            let old = current_ids.remap(*current, &previous_ids)?;
+            Some((*current, previous_by_id[&old]))
+        })
+        .collect();
 
     let mut transitions = Vec::new();
     collect_layout_transitions(
         current,
-        &previous_by_name,
+        &previous_for_current,
         options.include_root,
         options.animate_scale,
         progress,
@@ -94,29 +105,26 @@ fn compose_layout_and_paint_transform(
     }
 }
 
-fn collect_layout_snapshot_by_name<'a>(
+fn collect_layout_snapshot_by_id<'a>(
     snapshot: &'a LayoutSnapshot,
-    include: bool,
-    out: &mut HashMap<&'a str, &'a LayoutSnapshot>,
+    out: &mut HashMap<UiNodeId, &'a LayoutSnapshot>,
 ) {
-    if include {
-        out.insert(snapshot.name.as_str(), snapshot);
-    }
+    out.insert(snapshot.id, snapshot);
     for child in &snapshot.children {
-        collect_layout_snapshot_by_name(child, true, out);
+        collect_layout_snapshot_by_id(child, out);
     }
 }
 
 fn collect_layout_transitions(
     current: &LayoutSnapshot,
-    previous_by_name: &HashMap<&str, &LayoutSnapshot>,
+    previous_by_id: &HashMap<UiNodeId, &LayoutSnapshot>,
     include: bool,
     animate_scale: bool,
     progress: f32,
     out: &mut Vec<LayoutAnimationTransition>,
 ) {
     if include {
-        if let Some(previous) = previous_by_name.get(current.name.as_str()) {
+        if let Some(previous) = previous_by_id.get(&current.id) {
             if previous.rect != current.rect {
                 out.push(layout_transition(
                     previous,
@@ -128,7 +136,7 @@ fn collect_layout_transitions(
         }
     }
     for child in &current.children {
-        collect_layout_transitions(child, previous_by_name, true, animate_scale, progress, out);
+        collect_layout_transitions(child, previous_by_id, true, animate_scale, progress, out);
     }
 }
 
@@ -191,6 +199,50 @@ mod tests {
         root_style, ApproxTextMeasurer, ColorRgba, LayoutStyle, PaintItem, PaintKind, PaintList,
         StrokeStyle, UiDocument, UiNode, UiSize,
     };
+
+    #[test]
+    fn animation_identity_is_scoped_by_parent_and_rejects_ambiguity() {
+        let snapshot = |second_width, duplicate_parent| {
+            let mut doc = UiDocument::new(LayoutStyle::column().with_size(400.0, 300.0));
+            for (name, width) in [
+                ("first", 40.0),
+                (
+                    if duplicate_parent { "first" } else { "second" },
+                    second_width,
+                ),
+            ] {
+                let parent = doc.add_child(
+                    doc.root(),
+                    UiNode::container(name, LayoutStyle::column().with_size(200.0, 60.0)),
+                );
+                doc.add_child(
+                    parent,
+                    UiNode::container("label", LayoutStyle::size(width, 30.0)),
+                );
+            }
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            doc.layout_snapshot()
+        };
+        let previous = snapshot(80.0, false);
+        let current = snapshot(120.0, false);
+        let transitions =
+            layout_animation_transitions(&previous, &current, LayoutAnimationOptions::default());
+        assert_eq!(
+            transitions.len(),
+            1,
+            "a different panel's label must not supply the animation origin"
+        );
+        assert_eq!(transitions[0].from_rect.width, 80.0);
+        assert_eq!(transitions[0].to_rect.width, 120.0);
+        let ambiguous = snapshot(120.0, true);
+        assert!(layout_animation_transitions(
+            &previous,
+            &ambiguous,
+            LayoutAnimationOptions::default()
+        )
+        .is_empty());
+    }
 
     #[test]
     fn layout_animation_transitions_interpolate_changed_rects_after_layout() {

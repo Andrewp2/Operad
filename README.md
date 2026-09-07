@@ -30,7 +30,7 @@ fn main() -> NativeWindowResult {
 
 fn view(viewport: UiSize) -> UiDocument {
     let mut ui = UiDocument::new(root_style(viewport.width, viewport.height));
-    let root = ui.root;
+    let root = ui.root();
 
     widgets::button(
         &mut ui,
@@ -47,6 +47,26 @@ fn view(viewport: UiSize) -> UiDocument {
 The runner opens the window, creates the renderer, lays out the document, and
 routes input. Use `run_app` when widget actions should update application state;
 the `showcase` example is a compact app built that way.
+
+The runners retain the document between redraws. They rebuild the view after
+application updates, mutable hooks, or viewport changes. Input and animation
+frames reuse the document and its layout when possible. View functions describe
+application state; use tick actions or hooks for time-dependent state changes.
+
+Runtime state follows the path of node names, so give siblings unique, stable
+names. Reordering siblings preserves focus, active gestures, scrolling, and
+animation. Removing a node ends its runtime lifetime; moving it to a different
+parent starts a new lifetime. Explicit focus and scroll settings in a rebuilt
+view take precedence over retained state.
+
+Custom hosts can use `runtime::session::RuntimeSession` for the same lifecycle.
+Call `invalidate_view` when application state changes, obtain the document with
+`build_document`, process input and finish the frame, then return the document
+with `retain_document`. Call `frame_presented` after successful rendering to
+acknowledge resource uploads. Keep a separate session for each independent UI.
+Use `RuntimeSessionOptions` to configure host accessibility capabilities,
+rendering preferences, and layout animation. See [Architecture](ARCHITECTURE.md)
+for the ownership and invalidation rules.
 
 Web apps use the same retained document contract through the `web-runtime`
 feature:
@@ -96,13 +116,16 @@ cargo add operad
 - `accesskit-winit`: AccessKit support for winit hosts.
 - `text-cosmic`: cosmic-text measurement and shaping.
 - `audit`: audit helpers.
+- `diagnostics`: debug snapshots and reports.
+- `inspector`: diagnostics plus inspector and theme editor widgets.
+- `test-support`: headless scenarios, replay, and assertions for application tests.
 
 ## Examples
 
 Open a native window:
 
 ```bash
-cargo run --example showcase
+cargo run --example showcase --features inspector
 ```
 
 The starter native template is checked as an ordinary example:

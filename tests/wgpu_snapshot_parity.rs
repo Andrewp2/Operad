@@ -7,11 +7,12 @@ use operad::layout;
 use operad::platform::{
     ImageHandle, LayerOrder, PixelColorSpace, PixelSize, ResourceHandle, ResourceId,
 };
+use operad::renderer::EmptyResourceResolver;
 use operad::renderer::{
     RenderFrameRequest, RenderOptions, RenderTarget, RenderedImage, RendererAdapter,
     ResourceDescriptor, ResourceFormat, ResourceResolver, ResourceUpdate,
 };
-use operad::testing::{EmptyResourceResolver, EventReplay, ScenarioHarness};
+use operad::testing::{EventReplay, ScenarioHarness};
 use operad::wgpu_renderer::WgpuRenderer;
 use operad::{root_style, ApproxTextMeasurer, TextStyle};
 use operad::{

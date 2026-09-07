@@ -1,5 +1,11 @@
 //! Debug inspector widgets.
 
+pub use super::diagnostic_panel::{
+    CandidatePanelOptions, ChangePanelOptions, DiagnosticPanelNodes, IssuePanelOptions,
+    NodeRowsPanelOptions, NodeTimelinePanelOptions, PropertyPanelOptions, RecordPanelOptions,
+    SourcePanelOptions, TextRowsPanelOptions, TimelinePanelOptions,
+};
+
 use taffy::prelude::{
     AlignItems, Dimension, Display, FlexDirection, FlexWrap, JustifyContent, LengthPercentage,
     LengthPercentageAuto, Position, Rect as TaffyRect, Size as TaffySize, Style,
@@ -213,12 +219,6 @@ impl DebugLayoutTreePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugLayoutTreePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct NodeSearchPanelOptions {
     pub layout: LayoutStyle,
@@ -255,12 +255,6 @@ impl NodeSearchPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeSearchPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct LayoutCostPanelOptions {
     pub layout: LayoutStyle,
@@ -295,12 +289,6 @@ impl LayoutCostPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutCostPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -341,12 +329,6 @@ impl LayoutCostTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutCostTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct LayoutPressurePanelOptions {
     pub layout: LayoutStyle,
@@ -381,12 +363,6 @@ impl LayoutPressurePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutPressurePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -427,54 +403,6 @@ impl LayoutPressureTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutPressureTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct LayoutCostAutopsyPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_source_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for LayoutCostAutopsyPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_source_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl LayoutCostAutopsyPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutCostAutopsyPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct NodeHotspotsPanelOptions {
     pub layout: LayoutStyle,
@@ -511,140 +439,6 @@ impl NodeHotspotsPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeHotspotsPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeRecommendationPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_node_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for NodeRecommendationPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_node_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl NodeRecommendationPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeRecommendationPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct SlowNodesPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_node_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for SlowNodesPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_node_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl SlowNodesPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SlowNodesPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct SlowNodeTimelinePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_node_rows: usize,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for SlowNodeTimelinePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_node_rows: 5,
-            max_frame_rows: 4,
-            action_prefix: None,
-        }
-    }
-}
-
-impl SlowNodeTimelinePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SlowNodeTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct OverlapReportPanelOptions {
     pub layout: LayoutStyle,
@@ -679,180 +473,6 @@ impl OverlapReportPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlapReportPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct OverlapTimelinePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for OverlapTimelinePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_frame_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl OverlapTimelinePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlapTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct InvariantTimelinePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for InvariantTimelinePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_frame_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl InvariantTimelinePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvariantTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct ConstraintTimelinePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for ConstraintTimelinePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_frame_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl ConstraintTimelinePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConstraintTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct OverlapAutopsyPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_source_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for OverlapAutopsyPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_source_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl OverlapAutopsyPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlapAutopsyPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -929,18 +549,6 @@ impl FocusNavigationTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FocusNavigationPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FocusNavigationTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct AnimationActivityPanelOptions {
     pub layout: LayoutStyle,
@@ -975,12 +583,6 @@ impl AnimationActivityPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnimationActivityPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -1019,12 +621,6 @@ impl AnimationActivityTimelinePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnimationActivityTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -1256,12 +852,6 @@ impl FrameTimingPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameTimingPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct FrameBudgetPanelOptions {
     pub layout: LayoutStyle,
@@ -1296,12 +886,6 @@ impl FrameBudgetPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameBudgetPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -1340,54 +924,6 @@ impl FrameTimingWaterfallPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameTimingWaterfallPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct SlowFramePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_record_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for SlowFramePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_record_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl SlowFramePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SlowFramePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct FrameBottleneckPanelOptions {
     pub layout: LayoutStyle,
@@ -1422,12 +958,6 @@ impl FrameBottleneckPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameBottleneckPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -1466,138 +996,6 @@ impl FrameAutopsyPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameAutopsyPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct FrameTimelinePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for FrameTimelinePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_frame_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl FrameTimelinePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct FrameRegressionPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_record_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for FrameRegressionPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_record_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl FrameRegressionPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameRegressionPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct FixVerificationPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_record_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for FixVerificationPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_record_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl FixVerificationPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FixVerificationPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct PerformanceTimelinePanelOptions {
     pub layout: LayoutStyle,
@@ -1632,138 +1030,6 @@ impl PerformanceTimelinePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PerformanceTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct FrameRecorderPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for FrameRecorderPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_frame_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl FrameRecorderPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameRecorderPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeFrameHistoryPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for NodeFrameHistoryPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_frame_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl NodeFrameHistoryPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeFrameHistoryPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeChangePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_change_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for NodeChangePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_change_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl NodeChangePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeChangePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -1804,54 +1070,6 @@ impl CacheReusePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CacheReusePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct DebugIssuePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_issue_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for DebugIssuePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_issue_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl DebugIssuePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugIssuePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct IssueTimelinePanelOptions {
     pub layout: LayoutStyle,
@@ -1890,12 +1108,6 @@ impl IssueTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IssueTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct QuestionGuidePanelOptions {
     pub layout: LayoutStyle,
@@ -1930,12 +1142,6 @@ impl QuestionGuidePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuestionGuidePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -1974,54 +1180,6 @@ impl WhyTracePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WhyTracePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct WhyTimelinePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for WhyTimelinePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_frame_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl WhyTimelinePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WhyTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct DebugContractPanelOptions {
     pub layout: LayoutStyle,
@@ -2056,12 +1214,6 @@ impl DebugContractPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugContractPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -2100,12 +1252,6 @@ impl DebugInvariantPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugInvariantPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct DebugPanelRecommendationPanelOptions {
     pub layout: LayoutStyle,
@@ -2140,12 +1286,6 @@ impl DebugPanelRecommendationPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugPanelRecommendationPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -2184,12 +1324,6 @@ impl OverlayRecommendationPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlayRecommendationPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct DiagnosticsCoveragePanelOptions {
     pub layout: LayoutStyle,
@@ -2224,12 +1358,6 @@ impl DiagnosticsCoveragePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiagnosticsCoveragePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -2268,12 +1396,6 @@ impl InvestigationPlanPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvestigationPlanPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct DebugFindingInboxPanelOptions {
     pub layout: LayoutStyle,
@@ -2308,12 +1430,6 @@ impl DebugFindingInboxPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugFindingInboxPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -2352,12 +1468,6 @@ impl DebugHealthScorePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugHealthScorePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct RootCauseClusterPanelOptions {
     pub layout: LayoutStyle,
@@ -2392,12 +1502,6 @@ impl RootCauseClusterPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RootCauseClusterPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -2438,12 +1542,6 @@ impl RootCauseTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RootCauseTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct DebugSessionNarrativePanelOptions {
     pub layout: LayoutStyle,
@@ -2478,12 +1576,6 @@ impl DebugSessionNarrativePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugSessionNarrativePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -2524,12 +1616,6 @@ impl DebugCaptureReportPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DebugCaptureReportPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct DirtyStatePanelOptions {
     pub layout: LayoutStyle,
@@ -2568,12 +1654,6 @@ impl DirtyStatePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirtyStatePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct WidgetStateRetentionPanelOptions {
     pub layout: LayoutStyle,
@@ -2608,12 +1688,6 @@ impl WidgetStateRetentionPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WidgetStateRetentionPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -2652,12 +1726,6 @@ impl InvalidationBlamePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidationBlamePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct InvalidationBlastPanelOptions {
     pub layout: LayoutStyle,
@@ -2692,12 +1760,6 @@ impl InvalidationBlastPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidationBlastPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -2738,96 +1800,6 @@ impl InvalidationTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidationTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct EventRoutePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_candidate_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for EventRoutePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_candidate_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl EventRoutePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EventRoutePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct PointerProbePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_candidate_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for PointerProbePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_candidate_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl PointerProbePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PointerProbePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct PointerSessionPanelOptions {
     pub layout: LayoutStyle,
@@ -2864,98 +1836,8 @@ impl PointerSessionPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PointerSessionPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct PointerAutopsyPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_source_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for PointerAutopsyPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_source_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl PointerAutopsyPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PointerAutopsyPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct PointAutopsyPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_source_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for PointAutopsyPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_source_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl PointAutopsyPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PointAutopsyPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-pub type InspectPointPanelOptions = PointAutopsyPanelOptions;
-pub type InspectPointPanelNodes = PointAutopsyPanelNodes;
+pub type InspectPointPanelOptions = SourcePanelOptions;
+pub type InspectPointPanelNodes = DiagnosticPanelNodes;
 
 #[derive(Debug, Clone)]
 pub struct HitTargetPanelOptions {
@@ -2991,12 +1873,6 @@ impl HitTargetPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HitTargetPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3035,54 +1911,6 @@ impl HitboxMapPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HitboxMapPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct HitboxTimelinePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for HitboxTimelinePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_frame_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl HitboxTimelinePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HitboxTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct HitboxOcclusionPanelOptions {
     pub layout: LayoutStyle,
@@ -3117,12 +1945,6 @@ impl HitboxOcclusionPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HitboxOcclusionPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3163,12 +1985,6 @@ impl HitboxOcclusionTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HitboxOcclusionTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct PaintHitMismatchPanelOptions {
     pub layout: LayoutStyle,
@@ -3203,12 +2019,6 @@ impl PaintHitMismatchPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaintHitMismatchPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3249,12 +2059,6 @@ impl PaintHitMismatchTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaintHitMismatchTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct VisibilityPanelOptions {
     pub layout: LayoutStyle,
@@ -3289,12 +2093,6 @@ impl VisibilityPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisibilityPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3335,12 +2133,6 @@ impl VisibilityTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisibilityTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct ResponsiveLayoutPanelOptions {
     pub layout: LayoutStyle,
@@ -3377,12 +2169,6 @@ impl ResponsiveLayoutPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResponsiveLayoutPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct InteractionStatePanelOptions {
     pub layout: LayoutStyle,
@@ -3417,12 +2203,6 @@ impl InteractionStatePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractionStatePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3463,12 +2243,6 @@ impl InteractionStateTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractionStateTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct ShortcutRoutePanelOptions {
     pub layout: LayoutStyle,
@@ -3503,12 +2277,6 @@ impl ShortcutRoutePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShortcutRoutePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3547,12 +2315,6 @@ impl ActionMapPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionMapPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct ActionDispatchPanelOptions {
     pub layout: LayoutStyle,
@@ -3587,12 +2349,6 @@ impl ActionDispatchPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDispatchPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3633,12 +2389,6 @@ impl ActionMapTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionMapTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct DragAffordancePanelOptions {
     pub layout: LayoutStyle,
@@ -3675,12 +2425,6 @@ impl DragAffordancePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DragAffordancePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct InteractionAffordancePanelOptions {
     pub layout: LayoutStyle,
@@ -3715,12 +2459,6 @@ impl InteractionAffordancePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractionAffordancePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3761,12 +2499,6 @@ impl InteractionAffordanceTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractionAffordanceTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct PaintOrderPanelOptions {
     pub layout: LayoutStyle,
@@ -3803,12 +2535,6 @@ impl PaintOrderPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaintOrderPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct StackingOrderPanelOptions {
     pub layout: LayoutStyle,
@@ -3843,12 +2569,6 @@ impl StackingOrderPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StackingOrderPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3889,12 +2609,6 @@ impl StackingOrderTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StackingOrderTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct PaintOverdrawPanelOptions {
     pub layout: LayoutStyle,
@@ -3929,12 +2643,6 @@ impl PaintOverdrawPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaintOverdrawPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -3975,12 +2683,6 @@ impl PaintOverdrawTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaintOverdrawTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct PaintBatchesPanelOptions {
     pub layout: LayoutStyle,
@@ -4017,12 +2719,6 @@ impl PaintBatchesPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaintBatchesPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -4063,12 +2759,6 @@ impl PaintBatchTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaintBatchTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct RenderLayersPanelOptions {
     pub layout: LayoutStyle,
@@ -4105,12 +2795,6 @@ impl RenderLayersPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderLayersPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -4151,12 +2835,6 @@ impl RenderLayerTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderLayerTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct VisualEffectsPanelOptions {
     pub layout: LayoutStyle,
@@ -4191,12 +2869,6 @@ impl VisualEffectsPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisualEffectsPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -4237,63 +2909,6 @@ impl VisualEffectTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisualEffectTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct BoundsAutopsyPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_source_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for BoundsAutopsyPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_source_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl BoundsAutopsyPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoundsAutopsyPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextFitPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_text_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 pub struct TextFitTimelinePanelOptions {
     pub layout: LayoutStyle,
@@ -4302,26 +2917,6 @@ pub struct TextFitTimelinePanelOptions {
     pub max_text_rows: usize,
     pub max_frame_rows: usize,
     pub action_prefix: Option<String>,
-}
-
-impl Default for TextFitPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_text_rows: 8,
-            action_prefix: None,
-        }
-    }
 }
 
 impl Default for TextFitTimelinePanelOptions {
@@ -4345,150 +2940,11 @@ impl Default for TextFitTimelinePanelOptions {
     }
 }
 
-impl TextFitPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
 impl TextFitTimelinePanelOptions {
     pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextFitPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextFitTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextLayoutPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for TextLayoutPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            action_prefix: None,
-        }
-    }
-}
-
-impl TextLayoutPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextLayoutPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextStylePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for TextStylePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            action_prefix: None,
-        }
-    }
-}
-
-impl TextStylePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextStylePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextInputStatePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for TextInputStatePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            action_prefix: None,
-        }
-    }
-}
-
-impl TextInputStatePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextInputStatePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -4527,96 +2983,6 @@ impl TextInputEventPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextInputEventPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextLocalizationPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_text_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for TextLocalizationPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_text_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl TextLocalizationPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextLocalizationPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct TextContrastPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_text_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for TextContrastPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_text_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl TextContrastPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextContrastPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct ClipScrollPanelOptions {
     pub layout: LayoutStyle,
@@ -4653,12 +3019,6 @@ impl ClipScrollPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClipScrollPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct ClipChainPanelOptions {
     pub layout: LayoutStyle,
@@ -4693,12 +3053,6 @@ impl ClipChainPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClipChainPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -4739,12 +3093,6 @@ impl ClipChainTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClipChainTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct ScrollRangePanelOptions {
     pub layout: LayoutStyle,
@@ -4779,140 +3127,6 @@ impl ScrollRangePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScrollRangePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct WheelRoutePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_candidate_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for WheelRoutePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_candidate_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl WheelRoutePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WheelRoutePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScrollTimelinePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_node_rows: usize,
-    pub max_frame_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for ScrollTimelinePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_node_rows: 5,
-            max_frame_rows: 4,
-            action_prefix: None,
-        }
-    }
-}
-
-impl ScrollTimelinePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScrollTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct FrameDiffPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_change_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for FrameDiffPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_change_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl FrameDiffPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameDiffPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -4951,12 +3165,6 @@ impl NodeStyleComparePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStyleComparePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct LayoutMovementPanelOptions {
     pub layout: LayoutStyle,
@@ -4991,12 +3199,6 @@ impl LayoutMovementPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutMovementPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -5037,54 +3239,6 @@ impl LayoutJankTimelinePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutJankTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct ConstraintIssuesPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_issue_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for ConstraintIssuesPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_issue_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl ConstraintIssuesPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConstraintIssuesPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct ResourceDiagnosticsPanelOptions {
     pub layout: LayoutStyle,
@@ -5119,12 +3273,6 @@ impl ResourceDiagnosticsPanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceDiagnosticsPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -5163,12 +3311,6 @@ impl ResourceTimelinePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -5211,54 +3353,6 @@ impl NodeExplanationPanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeExplanationPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct InspectNodePanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_source_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for InspectNodePanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_source_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl InspectNodePanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InspectNodePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct NodeProvenancePanelOptions {
     pub layout: LayoutStyle,
@@ -5293,12 +3387,6 @@ impl NodeProvenancePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeProvenancePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -5341,54 +3429,6 @@ impl LayoutCausePanelOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutCausePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone)]
-pub struct LayoutAutopsyPanelOptions {
-    pub layout: LayoutStyle,
-    pub label_width: f32,
-    pub row_height: f32,
-    pub max_source_rows: usize,
-    pub action_prefix: Option<String>,
-}
-
-impl Default for LayoutAutopsyPanelOptions {
-    fn default() -> Self {
-        Self {
-            layout: LayoutStyle::from_taffy_style(Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            }),
-            label_width: 132.0,
-            row_height: 24.0,
-            max_source_rows: 8,
-            action_prefix: None,
-        }
-    }
-}
-
-impl LayoutAutopsyPanelOptions {
-    pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.action_prefix = Some(prefix.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutAutopsyPanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 #[derive(Debug, Clone)]
 pub struct FrameTracePanelOptions {
     pub layout: LayoutStyle,
@@ -5423,12 +3463,6 @@ impl FrameTracePanelOptions {
         self.action_prefix = Some(prefix.into());
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameTracePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
 }
 
 #[derive(Debug, Clone)]
@@ -5787,18 +3821,6 @@ pub struct PointAutopsyOverlayNodes {
 pub type InspectPointOverlayOptions = PointAutopsyOverlayOptions;
 pub type InspectPointOverlayNodes = PointAutopsyOverlayNodes;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccessibilityTreePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccessibilityTimelinePanelNodes {
-    pub root: UiNodeId,
-    pub rows: UiNodeId,
-}
-
 impl Default for AccessibilityOverlayPanelOptions {
     fn default() -> Self {
         Self {
@@ -6051,7 +4073,7 @@ pub fn debug_layout_tree_panel(
     name: impl Into<String>,
     tree: &DebugLayoutTree,
     options: DebugLayoutTreePanelOptions,
-) -> DebugLayoutTreePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6079,7 +4101,7 @@ pub fn debug_layout_tree_panel(
         ),
     );
 
-    DebugLayoutTreePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn node_search_panel(
@@ -6088,7 +4110,7 @@ pub fn node_search_panel(
     name: impl Into<String>,
     trace: &DebugNodeSearchTrace,
     options: NodeSearchPanelOptions,
-) -> NodeSearchPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6116,7 +4138,7 @@ pub fn node_search_panel(
         ),
     );
 
-    NodeSearchPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_cost_panel(
@@ -6125,7 +4147,7 @@ pub fn layout_cost_panel(
     name: impl Into<String>,
     trace: &DebugLayoutCostTrace,
     options: LayoutCostPanelOptions,
-) -> LayoutCostPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6153,7 +4175,7 @@ pub fn layout_cost_panel(
         ),
     );
 
-    LayoutCostPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_cost_timeline_panel(
@@ -6162,7 +4184,7 @@ pub fn layout_cost_timeline_panel(
     name: impl Into<String>,
     trace: &DebugLayoutCostTimelineTrace,
     options: LayoutCostTimelinePanelOptions,
-) -> LayoutCostTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6191,7 +4213,7 @@ pub fn layout_cost_timeline_panel(
         ),
     );
 
-    LayoutCostTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_pressure_panel(
@@ -6200,7 +4222,7 @@ pub fn layout_pressure_panel(
     name: impl Into<String>,
     trace: &DebugLayoutPressureTrace,
     options: LayoutPressurePanelOptions,
-) -> LayoutPressurePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6229,7 +4251,7 @@ pub fn layout_pressure_panel(
         ),
     );
 
-    LayoutPressurePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_pressure_timeline_panel(
@@ -6238,7 +4260,7 @@ pub fn layout_pressure_timeline_panel(
     name: impl Into<String>,
     trace: &DebugLayoutPressureTimelineTrace,
     options: LayoutPressureTimelinePanelOptions,
-) -> LayoutPressureTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6267,7 +4289,7 @@ pub fn layout_pressure_timeline_panel(
         ),
     );
 
-    LayoutPressureTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_cost_autopsy_panel(
@@ -6275,8 +4297,8 @@ pub fn layout_cost_autopsy_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugLayoutCostAutopsyTrace,
-    options: LayoutCostAutopsyPanelOptions,
-) -> LayoutCostAutopsyPanelNodes {
+    options: SourcePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6305,7 +4327,7 @@ pub fn layout_cost_autopsy_panel(
         ),
     );
 
-    LayoutCostAutopsyPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_autopsy_panel(
@@ -6313,8 +4335,8 @@ pub fn layout_autopsy_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugLayoutAutopsyTrace,
-    options: LayoutAutopsyPanelOptions,
-) -> LayoutAutopsyPanelNodes {
+    options: SourcePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6343,7 +4365,7 @@ pub fn layout_autopsy_panel(
         ),
     );
 
-    LayoutAutopsyPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn node_hotspots_panel(
@@ -6352,7 +4374,7 @@ pub fn node_hotspots_panel(
     name: impl Into<String>,
     trace: &DebugNodeHotspotTrace,
     options: NodeHotspotsPanelOptions,
-) -> NodeHotspotsPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6380,7 +4402,7 @@ pub fn node_hotspots_panel(
         ),
     );
 
-    NodeHotspotsPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn node_recommendation_panel(
@@ -6388,8 +4410,8 @@ pub fn node_recommendation_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugNodeRecommendationTrace,
-    options: NodeRecommendationPanelOptions,
-) -> NodeRecommendationPanelNodes {
+    options: NodeRowsPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6418,7 +4440,7 @@ pub fn node_recommendation_panel(
         ),
     );
 
-    NodeRecommendationPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn slow_nodes_panel(
@@ -6426,8 +4448,8 @@ pub fn slow_nodes_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugSlowNodeTrace,
-    options: SlowNodesPanelOptions,
-) -> SlowNodesPanelNodes {
+    options: NodeRowsPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6455,7 +4477,7 @@ pub fn slow_nodes_panel(
         ),
     );
 
-    SlowNodesPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn slow_node_timeline_panel(
@@ -6463,8 +4485,8 @@ pub fn slow_node_timeline_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugSlowNodeTimelineTrace,
-    options: SlowNodeTimelinePanelOptions,
-) -> SlowNodeTimelinePanelNodes {
+    options: NodeTimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6493,7 +4515,7 @@ pub fn slow_node_timeline_panel(
         ),
     );
 
-    SlowNodeTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn overlap_report_panel(
@@ -6502,7 +4524,7 @@ pub fn overlap_report_panel(
     name: impl Into<String>,
     report: &DebugOverlapReport,
     options: OverlapReportPanelOptions,
-) -> OverlapReportPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6530,7 +4552,7 @@ pub fn overlap_report_panel(
         ),
     );
 
-    OverlapReportPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn overlap_timeline_panel(
@@ -6538,8 +4560,8 @@ pub fn overlap_timeline_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugOverlapTimelineTrace,
-    options: OverlapTimelinePanelOptions,
-) -> OverlapTimelinePanelNodes {
+    options: TimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6568,7 +4590,7 @@ pub fn overlap_timeline_panel(
         ),
     );
 
-    OverlapTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn invariant_timeline_panel(
@@ -6576,8 +4598,8 @@ pub fn invariant_timeline_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugInvariantTimelineTrace,
-    options: InvariantTimelinePanelOptions,
-) -> InvariantTimelinePanelNodes {
+    options: TimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6606,7 +4628,7 @@ pub fn invariant_timeline_panel(
         ),
     );
 
-    InvariantTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn constraint_timeline_panel(
@@ -6614,8 +4636,8 @@ pub fn constraint_timeline_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugConstraintTimelineTrace,
-    options: ConstraintTimelinePanelOptions,
-) -> ConstraintTimelinePanelNodes {
+    options: TimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6644,7 +4666,7 @@ pub fn constraint_timeline_panel(
         ),
     );
 
-    ConstraintTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn overlap_autopsy_panel(
@@ -6652,8 +4674,8 @@ pub fn overlap_autopsy_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugOverlapAutopsyTrace,
-    options: OverlapAutopsyPanelOptions,
-) -> OverlapAutopsyPanelNodes {
+    options: SourcePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6682,7 +4704,7 @@ pub fn overlap_autopsy_panel(
         ),
     );
 
-    OverlapAutopsyPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn focus_navigation_panel(
@@ -6691,7 +4713,7 @@ pub fn focus_navigation_panel(
     name: impl Into<String>,
     trace: &DebugFocusNavigationTrace,
     options: FocusNavigationPanelOptions,
-) -> FocusNavigationPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6720,7 +4742,7 @@ pub fn focus_navigation_panel(
         ),
     );
 
-    FocusNavigationPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn focus_navigation_timeline_panel(
@@ -6729,7 +4751,7 @@ pub fn focus_navigation_timeline_panel(
     name: impl Into<String>,
     trace: &DebugFocusNavigationTimelineTrace,
     options: FocusNavigationTimelinePanelOptions,
-) -> FocusNavigationTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6758,7 +4780,7 @@ pub fn focus_navigation_timeline_panel(
         ),
     );
 
-    FocusNavigationTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn animation_activity_panel(
@@ -6767,7 +4789,7 @@ pub fn animation_activity_panel(
     name: impl Into<String>,
     trace: &DebugAnimationActivityTrace,
     options: AnimationActivityPanelOptions,
-) -> AnimationActivityPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6796,7 +4818,7 @@ pub fn animation_activity_panel(
         ),
     );
 
-    AnimationActivityPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn animation_activity_timeline_panel(
@@ -6805,7 +4827,7 @@ pub fn animation_activity_timeline_panel(
     name: impl Into<String>,
     trace: &DebugAnimationActivityTimelineTrace,
     options: AnimationActivityTimelinePanelOptions,
-) -> AnimationActivityTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -6834,7 +4856,7 @@ pub fn animation_activity_timeline_panel(
         ),
     );
 
-    AnimationActivityTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn animation_state_graph_panel(
@@ -7246,7 +5268,7 @@ pub fn frame_timing_panel(
     name: impl Into<String>,
     timing: &FrameTiming,
     options: FrameTimingPanelOptions,
-) -> FrameTimingPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7275,7 +5297,7 @@ pub fn frame_timing_panel(
         ),
     );
 
-    FrameTimingPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_budget_panel(
@@ -7284,7 +5306,7 @@ pub fn frame_budget_panel(
     name: impl Into<String>,
     trace: &DebugFrameBudgetTrace,
     options: FrameBudgetPanelOptions,
-) -> FrameBudgetPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7312,7 +5334,7 @@ pub fn frame_budget_panel(
         ),
     );
 
-    FrameBudgetPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_timing_waterfall_panel(
@@ -7321,7 +5343,7 @@ pub fn frame_timing_waterfall_panel(
     name: impl Into<String>,
     trace: &DebugFrameTimingWaterfallTrace,
     options: FrameTimingWaterfallPanelOptions,
-) -> FrameTimingWaterfallPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7350,7 +5372,7 @@ pub fn frame_timing_waterfall_panel(
         ),
     );
 
-    FrameTimingWaterfallPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn slow_frame_panel(
@@ -7358,8 +5380,8 @@ pub fn slow_frame_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugSlowFrameTrace,
-    options: SlowFramePanelOptions,
-) -> SlowFramePanelNodes {
+    options: RecordPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7387,7 +5409,7 @@ pub fn slow_frame_panel(
         ),
     );
 
-    SlowFramePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_bottleneck_panel(
@@ -7396,7 +5418,7 @@ pub fn frame_bottleneck_panel(
     name: impl Into<String>,
     trace: &DebugFrameBottleneckTrace,
     options: FrameBottleneckPanelOptions,
-) -> FrameBottleneckPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7425,7 +5447,7 @@ pub fn frame_bottleneck_panel(
         ),
     );
 
-    FrameBottleneckPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_autopsy_panel(
@@ -7434,7 +5456,7 @@ pub fn frame_autopsy_panel(
     name: impl Into<String>,
     trace: &DebugFrameAutopsyTrace,
     options: FrameAutopsyPanelOptions,
-) -> FrameAutopsyPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7462,7 +5484,7 @@ pub fn frame_autopsy_panel(
         ),
     );
 
-    FrameAutopsyPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_timeline_panel(
@@ -7470,8 +5492,8 @@ pub fn frame_timeline_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugFrameTimelineTrace,
-    options: FrameTimelinePanelOptions,
-) -> FrameTimelinePanelNodes {
+    options: TimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7500,7 +5522,7 @@ pub fn frame_timeline_panel(
         ),
     );
 
-    FrameTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_regression_panel(
@@ -7508,8 +5530,8 @@ pub fn frame_regression_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugFrameRegressionTrace,
-    options: FrameRegressionPanelOptions,
-) -> FrameRegressionPanelNodes {
+    options: RecordPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7538,7 +5560,7 @@ pub fn frame_regression_panel(
         ),
     );
 
-    FrameRegressionPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn fix_verification_panel(
@@ -7546,8 +5568,8 @@ pub fn fix_verification_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugFixVerificationTrace,
-    options: FixVerificationPanelOptions,
-) -> FixVerificationPanelNodes {
+    options: RecordPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7576,7 +5598,7 @@ pub fn fix_verification_panel(
         ),
     );
 
-    FixVerificationPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn performance_timeline_panel(
@@ -7585,7 +5607,7 @@ pub fn performance_timeline_panel(
     name: impl Into<String>,
     trace: &DebugPerformanceTimelineTrace,
     options: PerformanceTimelinePanelOptions,
-) -> PerformanceTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7614,7 +5636,7 @@ pub fn performance_timeline_panel(
         ),
     );
 
-    PerformanceTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_recorder_panel(
@@ -7622,8 +5644,8 @@ pub fn frame_recorder_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     recorder: &DebugFrameRecorder,
-    options: FrameRecorderPanelOptions,
-) -> FrameRecorderPanelNodes {
+    options: TimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7652,7 +5674,7 @@ pub fn frame_recorder_panel(
         ),
     );
 
-    FrameRecorderPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn node_frame_history_panel(
@@ -7660,8 +5682,8 @@ pub fn node_frame_history_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugNodeFrameHistoryTrace,
-    options: NodeFrameHistoryPanelOptions,
-) -> NodeFrameHistoryPanelNodes {
+    options: TimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7690,7 +5712,7 @@ pub fn node_frame_history_panel(
         ),
     );
 
-    NodeFrameHistoryPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn node_change_panel(
@@ -7698,8 +5720,8 @@ pub fn node_change_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugNodeChangeTrace,
-    options: NodeChangePanelOptions,
-) -> NodeChangePanelNodes {
+    options: ChangePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7727,7 +5749,7 @@ pub fn node_change_panel(
         ),
     );
 
-    NodeChangePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn cache_reuse_panel(
@@ -7736,7 +5758,7 @@ pub fn cache_reuse_panel(
     name: impl Into<String>,
     trace: &DebugCacheReuseTrace,
     options: CacheReusePanelOptions,
-) -> CacheReusePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7764,7 +5786,7 @@ pub fn cache_reuse_panel(
         ),
     );
 
-    CacheReusePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn debug_issue_panel(
@@ -7772,8 +5794,8 @@ pub fn debug_issue_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     report: &DebugIssueReport,
-    options: DebugIssuePanelOptions,
-) -> DebugIssuePanelNodes {
+    options: IssuePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7801,7 +5823,7 @@ pub fn debug_issue_panel(
         ),
     );
 
-    DebugIssuePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn issue_timeline_panel(
@@ -7810,7 +5832,7 @@ pub fn issue_timeline_panel(
     name: impl Into<String>,
     trace: &DebugIssueTimelineTrace,
     options: IssueTimelinePanelOptions,
-) -> IssueTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7839,7 +5861,7 @@ pub fn issue_timeline_panel(
         ),
     );
 
-    IssueTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn question_guide_panel(
@@ -7848,7 +5870,7 @@ pub fn question_guide_panel(
     name: impl Into<String>,
     trace: &DebugQuestionGuideTrace,
     options: QuestionGuidePanelOptions,
-) -> QuestionGuidePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7877,7 +5899,7 @@ pub fn question_guide_panel(
         ),
     );
 
-    QuestionGuidePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn why_trace_panel(
@@ -7886,7 +5908,7 @@ pub fn why_trace_panel(
     name: impl Into<String>,
     trace: &DebugWhyTrace,
     options: WhyTracePanelOptions,
-) -> WhyTracePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7914,7 +5936,7 @@ pub fn why_trace_panel(
         ),
     );
 
-    WhyTracePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn why_timeline_panel(
@@ -7922,8 +5944,8 @@ pub fn why_timeline_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugWhyTimelineTrace,
-    options: WhyTimelinePanelOptions,
-) -> WhyTimelinePanelNodes {
+    options: TimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7951,7 +5973,7 @@ pub fn why_timeline_panel(
         ),
     );
 
-    WhyTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn debug_contract_panel(
@@ -7960,7 +5982,7 @@ pub fn debug_contract_panel(
     name: impl Into<String>,
     report: &DebugContractReport,
     options: DebugContractPanelOptions,
-) -> DebugContractPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -7989,7 +6011,7 @@ pub fn debug_contract_panel(
         ),
     );
 
-    DebugContractPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn debug_invariant_panel(
@@ -7998,7 +6020,7 @@ pub fn debug_invariant_panel(
     name: impl Into<String>,
     trace: &DebugInvariantTrace,
     options: DebugInvariantPanelOptions,
-) -> DebugInvariantPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8027,7 +6049,7 @@ pub fn debug_invariant_panel(
         ),
     );
 
-    DebugInvariantPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn debug_panel_recommendation_panel(
@@ -8036,7 +6058,7 @@ pub fn debug_panel_recommendation_panel(
     name: impl Into<String>,
     trace: &DebugPanelRecommendationTrace,
     options: DebugPanelRecommendationPanelOptions,
-) -> DebugPanelRecommendationPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8065,7 +6087,7 @@ pub fn debug_panel_recommendation_panel(
         ),
     );
 
-    DebugPanelRecommendationPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn overlay_recommendation_panel(
@@ -8074,7 +6096,7 @@ pub fn overlay_recommendation_panel(
     name: impl Into<String>,
     trace: &DebugOverlayRecommendationTrace,
     options: OverlayRecommendationPanelOptions,
-) -> OverlayRecommendationPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8103,7 +6125,7 @@ pub fn overlay_recommendation_panel(
         ),
     );
 
-    OverlayRecommendationPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn diagnostics_coverage_panel(
@@ -8112,7 +6134,7 @@ pub fn diagnostics_coverage_panel(
     name: impl Into<String>,
     trace: &DebugDiagnosticsCoverageTrace,
     options: DiagnosticsCoveragePanelOptions,
-) -> DiagnosticsCoveragePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8141,7 +6163,7 @@ pub fn diagnostics_coverage_panel(
         ),
     );
 
-    DiagnosticsCoveragePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn investigation_plan_panel(
@@ -8150,7 +6172,7 @@ pub fn investigation_plan_panel(
     name: impl Into<String>,
     trace: &DebugInvestigationPlanTrace,
     options: InvestigationPlanPanelOptions,
-) -> InvestigationPlanPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8179,7 +6201,7 @@ pub fn investigation_plan_panel(
         ),
     );
 
-    InvestigationPlanPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn debug_finding_inbox_panel(
@@ -8188,7 +6210,7 @@ pub fn debug_finding_inbox_panel(
     name: impl Into<String>,
     trace: &DebugFindingInboxTrace,
     options: DebugFindingInboxPanelOptions,
-) -> DebugFindingInboxPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8216,7 +6238,7 @@ pub fn debug_finding_inbox_panel(
         ),
     );
 
-    DebugFindingInboxPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn debug_health_score_panel(
@@ -8225,7 +6247,7 @@ pub fn debug_health_score_panel(
     name: impl Into<String>,
     trace: &DebugHealthScoreTrace,
     options: DebugHealthScorePanelOptions,
-) -> DebugHealthScorePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8253,7 +6275,7 @@ pub fn debug_health_score_panel(
         ),
     );
 
-    DebugHealthScorePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn root_cause_cluster_panel(
@@ -8262,7 +6284,7 @@ pub fn root_cause_cluster_panel(
     name: impl Into<String>,
     trace: &DebugRootCauseClusterTrace,
     options: RootCauseClusterPanelOptions,
-) -> RootCauseClusterPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8291,7 +6313,7 @@ pub fn root_cause_cluster_panel(
         ),
     );
 
-    RootCauseClusterPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn root_cause_timeline_panel(
@@ -8300,7 +6322,7 @@ pub fn root_cause_timeline_panel(
     name: impl Into<String>,
     trace: &DebugRootCauseTimelineTrace,
     options: RootCauseTimelinePanelOptions,
-) -> RootCauseTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8329,7 +6351,7 @@ pub fn root_cause_timeline_panel(
         ),
     );
 
-    RootCauseTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn debug_session_narrative_panel(
@@ -8338,7 +6360,7 @@ pub fn debug_session_narrative_panel(
     name: impl Into<String>,
     trace: &DebugSessionNarrativeTrace,
     options: DebugSessionNarrativePanelOptions,
-) -> DebugSessionNarrativePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8367,7 +6389,7 @@ pub fn debug_session_narrative_panel(
         ),
     );
 
-    DebugSessionNarrativePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn debug_capture_report_panel(
@@ -8376,7 +6398,7 @@ pub fn debug_capture_report_panel(
     name: impl Into<String>,
     report: &DebugCaptureReport,
     options: DebugCaptureReportPanelOptions,
-) -> DebugCaptureReportPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8405,7 +6427,7 @@ pub fn debug_capture_report_panel(
         ),
     );
 
-    DebugCaptureReportPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn dirty_state_panel(
@@ -8414,7 +6436,7 @@ pub fn dirty_state_panel(
     name: impl Into<String>,
     explanation: &DirtyStateExplanation,
     options: DirtyStatePanelOptions,
-) -> DirtyStatePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8446,7 +6468,7 @@ pub fn dirty_state_panel(
         ),
     );
 
-    DirtyStatePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn widget_state_retention_panel(
@@ -8455,7 +6477,7 @@ pub fn widget_state_retention_panel(
     name: impl Into<String>,
     trace: &DebugWidgetStateRetentionTrace,
     options: WidgetStateRetentionPanelOptions,
-) -> WidgetStateRetentionPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8484,7 +6506,7 @@ pub fn widget_state_retention_panel(
         ),
     );
 
-    WidgetStateRetentionPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn invalidation_blame_panel(
@@ -8493,7 +6515,7 @@ pub fn invalidation_blame_panel(
     name: impl Into<String>,
     trace: &DebugInvalidationBlameTrace,
     options: InvalidationBlamePanelOptions,
-) -> InvalidationBlamePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8522,7 +6544,7 @@ pub fn invalidation_blame_panel(
         ),
     );
 
-    InvalidationBlamePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn invalidation_blast_panel(
@@ -8531,7 +6553,7 @@ pub fn invalidation_blast_panel(
     name: impl Into<String>,
     trace: &DebugInvalidationBlastTrace,
     options: InvalidationBlastPanelOptions,
-) -> InvalidationBlastPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8560,7 +6582,7 @@ pub fn invalidation_blast_panel(
         ),
     );
 
-    InvalidationBlastPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn invalidation_timeline_panel(
@@ -8569,7 +6591,7 @@ pub fn invalidation_timeline_panel(
     name: impl Into<String>,
     trace: &DebugInvalidationTimelineTrace,
     options: InvalidationTimelinePanelOptions,
-) -> InvalidationTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8598,7 +6620,7 @@ pub fn invalidation_timeline_panel(
         ),
     );
 
-    InvalidationTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn event_route_panel(
@@ -8606,8 +6628,8 @@ pub fn event_route_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugEventRouteTrace,
-    options: EventRoutePanelOptions,
-) -> EventRoutePanelNodes {
+    options: CandidatePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8635,7 +6657,7 @@ pub fn event_route_panel(
         ),
     );
 
-    EventRoutePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn pointer_probe_panel(
@@ -8643,8 +6665,8 @@ pub fn pointer_probe_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     probe: &DebugPointerProbe,
-    options: PointerProbePanelOptions,
-) -> PointerProbePanelNodes {
+    options: CandidatePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8672,7 +6694,7 @@ pub fn pointer_probe_panel(
         ),
     );
 
-    PointerProbePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn pointer_session_panel(
@@ -8681,7 +6703,7 @@ pub fn pointer_session_panel(
     name: impl Into<String>,
     trace: &DebugPointerSessionTrace,
     options: PointerSessionPanelOptions,
-) -> PointerSessionPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8710,7 +6732,7 @@ pub fn pointer_session_panel(
         ),
     );
 
-    PointerSessionPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn pointer_autopsy_panel(
@@ -8718,8 +6740,8 @@ pub fn pointer_autopsy_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugPointerAutopsyTrace,
-    options: PointerAutopsyPanelOptions,
-) -> PointerAutopsyPanelNodes {
+    options: SourcePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8748,7 +6770,7 @@ pub fn pointer_autopsy_panel(
         ),
     );
 
-    PointerAutopsyPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn point_autopsy_panel(
@@ -8756,8 +6778,8 @@ pub fn point_autopsy_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugPointAutopsyTrace,
-    options: PointAutopsyPanelOptions,
-) -> PointAutopsyPanelNodes {
+    options: SourcePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8785,7 +6807,7 @@ pub fn point_autopsy_panel(
         ),
     );
 
-    PointAutopsyPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn inspect_point_panel(
@@ -8831,7 +6853,7 @@ pub fn hit_target_panel(
     name: impl Into<String>,
     trace: &DebugHitTargetTrace,
     options: HitTargetPanelOptions,
-) -> HitTargetPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8859,7 +6881,7 @@ pub fn hit_target_panel(
         ),
     );
 
-    HitTargetPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn hitbox_map_panel(
@@ -8868,7 +6890,7 @@ pub fn hitbox_map_panel(
     name: impl Into<String>,
     trace: &DebugHitboxMapTrace,
     options: HitboxMapPanelOptions,
-) -> HitboxMapPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8896,7 +6918,7 @@ pub fn hitbox_map_panel(
         ),
     );
 
-    HitboxMapPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn hitbox_timeline_panel(
@@ -8904,8 +6926,8 @@ pub fn hitbox_timeline_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugHitboxTimelineTrace,
-    options: HitboxTimelinePanelOptions,
-) -> HitboxTimelinePanelNodes {
+    options: TimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8934,7 +6956,7 @@ pub fn hitbox_timeline_panel(
         ),
     );
 
-    HitboxTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn hitbox_occlusion_panel(
@@ -8943,7 +6965,7 @@ pub fn hitbox_occlusion_panel(
     name: impl Into<String>,
     trace: &DebugHitboxOcclusionTrace,
     options: HitboxOcclusionPanelOptions,
-) -> HitboxOcclusionPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -8972,7 +6994,7 @@ pub fn hitbox_occlusion_panel(
         ),
     );
 
-    HitboxOcclusionPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn hitbox_occlusion_timeline_panel(
@@ -8981,7 +7003,7 @@ pub fn hitbox_occlusion_timeline_panel(
     name: impl Into<String>,
     trace: &DebugHitboxOcclusionTimelineTrace,
     options: HitboxOcclusionTimelinePanelOptions,
-) -> HitboxOcclusionTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9010,7 +7032,7 @@ pub fn hitbox_occlusion_timeline_panel(
         ),
     );
 
-    HitboxOcclusionTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn paint_hit_mismatch_panel(
@@ -9019,7 +7041,7 @@ pub fn paint_hit_mismatch_panel(
     name: impl Into<String>,
     trace: &DebugPaintHitMismatchTrace,
     options: PaintHitMismatchPanelOptions,
-) -> PaintHitMismatchPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9048,7 +7070,7 @@ pub fn paint_hit_mismatch_panel(
         ),
     );
 
-    PaintHitMismatchPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn paint_hit_mismatch_timeline_panel(
@@ -9057,7 +7079,7 @@ pub fn paint_hit_mismatch_timeline_panel(
     name: impl Into<String>,
     trace: &DebugPaintHitMismatchTimelineTrace,
     options: PaintHitMismatchTimelinePanelOptions,
-) -> PaintHitMismatchTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9086,7 +7108,7 @@ pub fn paint_hit_mismatch_timeline_panel(
         ),
     );
 
-    PaintHitMismatchTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn visibility_panel(
@@ -9095,7 +7117,7 @@ pub fn visibility_panel(
     name: impl Into<String>,
     trace: &DebugVisibilityTrace,
     options: VisibilityPanelOptions,
-) -> VisibilityPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9123,7 +7145,7 @@ pub fn visibility_panel(
         ),
     );
 
-    VisibilityPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn visibility_timeline_panel(
@@ -9132,7 +7154,7 @@ pub fn visibility_timeline_panel(
     name: impl Into<String>,
     trace: &DebugVisibilityTimelineTrace,
     options: VisibilityTimelinePanelOptions,
-) -> VisibilityTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9161,7 +7183,7 @@ pub fn visibility_timeline_panel(
         ),
     );
 
-    VisibilityTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn responsive_layout_panel(
@@ -9170,7 +7192,7 @@ pub fn responsive_layout_panel(
     name: impl Into<String>,
     trace: &DebugResponsiveLayoutTrace,
     options: ResponsiveLayoutPanelOptions,
-) -> ResponsiveLayoutPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9199,7 +7221,7 @@ pub fn responsive_layout_panel(
         ),
     );
 
-    ResponsiveLayoutPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn interaction_state_panel(
@@ -9208,7 +7230,7 @@ pub fn interaction_state_panel(
     name: impl Into<String>,
     trace: &DebugInteractionStateTrace,
     options: InteractionStatePanelOptions,
-) -> InteractionStatePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9237,7 +7259,7 @@ pub fn interaction_state_panel(
         ),
     );
 
-    InteractionStatePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn interaction_state_timeline_panel(
@@ -9246,7 +7268,7 @@ pub fn interaction_state_timeline_panel(
     name: impl Into<String>,
     trace: &DebugInteractionStateTimelineTrace,
     options: InteractionStateTimelinePanelOptions,
-) -> InteractionStateTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9279,7 +7301,7 @@ pub fn interaction_state_timeline_panel(
         ),
     );
 
-    InteractionStateTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn shortcut_route_panel(
@@ -9288,7 +7310,7 @@ pub fn shortcut_route_panel(
     name: impl Into<String>,
     trace: &DebugShortcutRouteTrace,
     options: ShortcutRoutePanelOptions,
-) -> ShortcutRoutePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9317,7 +7339,7 @@ pub fn shortcut_route_panel(
         ),
     );
 
-    ShortcutRoutePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn action_map_panel(
@@ -9326,7 +7348,7 @@ pub fn action_map_panel(
     name: impl Into<String>,
     trace: &DebugActionMapTrace,
     options: ActionMapPanelOptions,
-) -> ActionMapPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9354,7 +7376,7 @@ pub fn action_map_panel(
         ),
     );
 
-    ActionMapPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn action_dispatch_panel(
@@ -9363,7 +7385,7 @@ pub fn action_dispatch_panel(
     name: impl Into<String>,
     trace: &DebugActionDispatchTrace,
     options: ActionDispatchPanelOptions,
-) -> ActionDispatchPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9392,7 +7414,7 @@ pub fn action_dispatch_panel(
         ),
     );
 
-    ActionDispatchPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn action_map_timeline_panel(
@@ -9401,7 +7423,7 @@ pub fn action_map_timeline_panel(
     name: impl Into<String>,
     trace: &DebugActionMapTimelineTrace,
     options: ActionMapTimelinePanelOptions,
-) -> ActionMapTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9430,7 +7452,7 @@ pub fn action_map_timeline_panel(
         ),
     );
 
-    ActionMapTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn drag_affordance_panel(
@@ -9439,7 +7461,7 @@ pub fn drag_affordance_panel(
     name: impl Into<String>,
     trace: &DebugDragAffordanceTrace,
     options: DragAffordancePanelOptions,
-) -> DragAffordancePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9468,7 +7490,7 @@ pub fn drag_affordance_panel(
         ),
     );
 
-    DragAffordancePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn interaction_affordance_panel(
@@ -9477,7 +7499,7 @@ pub fn interaction_affordance_panel(
     name: impl Into<String>,
     trace: &DebugInteractionAffordanceTrace,
     options: InteractionAffordancePanelOptions,
-) -> InteractionAffordancePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9506,7 +7528,7 @@ pub fn interaction_affordance_panel(
         ),
     );
 
-    InteractionAffordancePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn interaction_affordance_timeline_panel(
@@ -9515,7 +7537,7 @@ pub fn interaction_affordance_timeline_panel(
     name: impl Into<String>,
     trace: &DebugInteractionAffordanceTimelineTrace,
     options: InteractionAffordanceTimelinePanelOptions,
-) -> InteractionAffordanceTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9548,7 +7570,7 @@ pub fn interaction_affordance_timeline_panel(
         ),
     );
 
-    InteractionAffordanceTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn paint_order_panel(
@@ -9557,7 +7579,7 @@ pub fn paint_order_panel(
     name: impl Into<String>,
     trace: &DebugPaintOrderTrace,
     options: PaintOrderPanelOptions,
-) -> PaintOrderPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9585,7 +7607,7 @@ pub fn paint_order_panel(
         ),
     );
 
-    PaintOrderPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn stacking_order_panel(
@@ -9594,7 +7616,7 @@ pub fn stacking_order_panel(
     name: impl Into<String>,
     trace: &DebugStackingOrderTrace,
     options: StackingOrderPanelOptions,
-) -> StackingOrderPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9623,7 +7645,7 @@ pub fn stacking_order_panel(
         ),
     );
 
-    StackingOrderPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn stacking_order_timeline_panel(
@@ -9632,7 +7654,7 @@ pub fn stacking_order_timeline_panel(
     name: impl Into<String>,
     trace: &DebugStackingOrderTimelineTrace,
     options: StackingOrderTimelinePanelOptions,
-) -> StackingOrderTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9661,7 +7683,7 @@ pub fn stacking_order_timeline_panel(
         ),
     );
 
-    StackingOrderTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn paint_overdraw_panel(
@@ -9670,7 +7692,7 @@ pub fn paint_overdraw_panel(
     name: impl Into<String>,
     trace: &DebugPaintOverdrawTrace,
     options: PaintOverdrawPanelOptions,
-) -> PaintOverdrawPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9699,7 +7721,7 @@ pub fn paint_overdraw_panel(
         ),
     );
 
-    PaintOverdrawPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn paint_overdraw_timeline_panel(
@@ -9708,7 +7730,7 @@ pub fn paint_overdraw_timeline_panel(
     name: impl Into<String>,
     trace: &DebugPaintOverdrawTimelineTrace,
     options: PaintOverdrawTimelinePanelOptions,
-) -> PaintOverdrawTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9737,7 +7759,7 @@ pub fn paint_overdraw_timeline_panel(
         ),
     );
 
-    PaintOverdrawTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn paint_batches_panel(
@@ -9746,7 +7768,7 @@ pub fn paint_batches_panel(
     name: impl Into<String>,
     trace: &DebugPaintBatchTrace,
     options: PaintBatchesPanelOptions,
-) -> PaintBatchesPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9774,7 +7796,7 @@ pub fn paint_batches_panel(
         ),
     );
 
-    PaintBatchesPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn paint_batch_timeline_panel(
@@ -9783,7 +7805,7 @@ pub fn paint_batch_timeline_panel(
     name: impl Into<String>,
     trace: &DebugPaintBatchTimelineTrace,
     options: PaintBatchTimelinePanelOptions,
-) -> PaintBatchTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9812,7 +7834,7 @@ pub fn paint_batch_timeline_panel(
         ),
     );
 
-    PaintBatchTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn render_layers_panel(
@@ -9821,7 +7843,7 @@ pub fn render_layers_panel(
     name: impl Into<String>,
     trace: &DebugRenderLayerTrace,
     options: RenderLayersPanelOptions,
-) -> RenderLayersPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9849,7 +7871,7 @@ pub fn render_layers_panel(
         ),
     );
 
-    RenderLayersPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn render_layer_timeline_panel(
@@ -9858,7 +7880,7 @@ pub fn render_layer_timeline_panel(
     name: impl Into<String>,
     trace: &DebugRenderLayerTimelineTrace,
     options: RenderLayerTimelinePanelOptions,
-) -> RenderLayerTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9887,7 +7909,7 @@ pub fn render_layer_timeline_panel(
         ),
     );
 
-    RenderLayerTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn visual_effects_panel(
@@ -9896,7 +7918,7 @@ pub fn visual_effects_panel(
     name: impl Into<String>,
     trace: &DebugVisualEffectTrace,
     options: VisualEffectsPanelOptions,
-) -> VisualEffectsPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9925,7 +7947,7 @@ pub fn visual_effects_panel(
         ),
     );
 
-    VisualEffectsPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn visual_effect_timeline_panel(
@@ -9934,7 +7956,7 @@ pub fn visual_effect_timeline_panel(
     name: impl Into<String>,
     trace: &DebugVisualEffectTimelineTrace,
     options: VisualEffectTimelinePanelOptions,
-) -> VisualEffectTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -9963,7 +7985,7 @@ pub fn visual_effect_timeline_panel(
         ),
     );
 
-    VisualEffectTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn bounds_autopsy_panel(
@@ -9971,8 +7993,8 @@ pub fn bounds_autopsy_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugBoundsAutopsyTrace,
-    options: BoundsAutopsyPanelOptions,
-) -> BoundsAutopsyPanelNodes {
+    options: SourcePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10001,7 +8023,7 @@ pub fn bounds_autopsy_panel(
         ),
     );
 
-    BoundsAutopsyPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn text_fit_panel(
@@ -10009,8 +8031,8 @@ pub fn text_fit_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugTextFitTrace,
-    options: TextFitPanelOptions,
-) -> TextFitPanelNodes {
+    options: TextRowsPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10038,7 +8060,7 @@ pub fn text_fit_panel(
         ),
     );
 
-    TextFitPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn text_fit_timeline_panel(
@@ -10047,7 +8069,7 @@ pub fn text_fit_timeline_panel(
     name: impl Into<String>,
     trace: &DebugTextFitTimelineTrace,
     options: TextFitTimelinePanelOptions,
-) -> TextFitTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10076,7 +8098,7 @@ pub fn text_fit_timeline_panel(
         ),
     );
 
-    TextFitTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn text_layout_panel(
@@ -10084,8 +8106,8 @@ pub fn text_layout_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugTextLayoutTrace,
-    options: TextLayoutPanelOptions,
-) -> TextLayoutPanelNodes {
+    options: PropertyPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10113,7 +8135,7 @@ pub fn text_layout_panel(
         ),
     );
 
-    TextLayoutPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn text_style_panel(
@@ -10121,8 +8143,8 @@ pub fn text_style_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugTextStyleTrace,
-    options: TextStylePanelOptions,
-) -> TextStylePanelNodes {
+    options: PropertyPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10150,7 +8172,7 @@ pub fn text_style_panel(
         ),
     );
 
-    TextStylePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn text_input_state_panel(
@@ -10158,8 +8180,8 @@ pub fn text_input_state_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugTextInputStateTrace,
-    options: TextInputStatePanelOptions,
-) -> TextInputStatePanelNodes {
+    options: PropertyPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10188,7 +8210,7 @@ pub fn text_input_state_panel(
         ),
     );
 
-    TextInputStatePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn text_input_event_panel(
@@ -10197,7 +8219,7 @@ pub fn text_input_event_panel(
     name: impl Into<String>,
     trace: &DebugTextInputEventTrace,
     options: TextInputEventPanelOptions,
-) -> TextInputEventPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10226,7 +8248,7 @@ pub fn text_input_event_panel(
         ),
     );
 
-    TextInputEventPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn text_localization_panel(
@@ -10234,8 +8256,8 @@ pub fn text_localization_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugTextLocalizationTrace,
-    options: TextLocalizationPanelOptions,
-) -> TextLocalizationPanelNodes {
+    options: TextRowsPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10264,7 +8286,7 @@ pub fn text_localization_panel(
         ),
     );
 
-    TextLocalizationPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn text_contrast_panel(
@@ -10272,8 +8294,8 @@ pub fn text_contrast_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugTextContrastTrace,
-    options: TextContrastPanelOptions,
-) -> TextContrastPanelNodes {
+    options: TextRowsPanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10301,7 +8323,7 @@ pub fn text_contrast_panel(
         ),
     );
 
-    TextContrastPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn clip_scroll_panel(
@@ -10310,7 +8332,7 @@ pub fn clip_scroll_panel(
     name: impl Into<String>,
     trace: &DebugClipScrollTrace,
     options: ClipScrollPanelOptions,
-) -> ClipScrollPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10338,7 +8360,7 @@ pub fn clip_scroll_panel(
         ),
     );
 
-    ClipScrollPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn clip_chain_panel(
@@ -10347,7 +8369,7 @@ pub fn clip_chain_panel(
     name: impl Into<String>,
     trace: &DebugClipChainTrace,
     options: ClipChainPanelOptions,
-) -> ClipChainPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10375,7 +8397,7 @@ pub fn clip_chain_panel(
         ),
     );
 
-    ClipChainPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn clip_chain_timeline_panel(
@@ -10384,7 +8406,7 @@ pub fn clip_chain_timeline_panel(
     name: impl Into<String>,
     trace: &DebugClipChainTimelineTrace,
     options: ClipChainTimelinePanelOptions,
-) -> ClipChainTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10413,7 +8435,7 @@ pub fn clip_chain_timeline_panel(
         ),
     );
 
-    ClipChainTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn scroll_range_panel(
@@ -10422,7 +8444,7 @@ pub fn scroll_range_panel(
     name: impl Into<String>,
     trace: &DebugScrollRangeTrace,
     options: ScrollRangePanelOptions,
-) -> ScrollRangePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10450,7 +8472,7 @@ pub fn scroll_range_panel(
         ),
     );
 
-    ScrollRangePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn wheel_route_panel(
@@ -10458,8 +8480,8 @@ pub fn wheel_route_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugWheelRouteTrace,
-    options: WheelRoutePanelOptions,
-) -> WheelRoutePanelNodes {
+    options: CandidatePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10487,7 +8509,7 @@ pub fn wheel_route_panel(
         ),
     );
 
-    WheelRoutePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn scroll_timeline_panel(
@@ -10495,8 +8517,8 @@ pub fn scroll_timeline_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugScrollTimelineTrace,
-    options: ScrollTimelinePanelOptions,
-) -> ScrollTimelinePanelNodes {
+    options: NodeTimelinePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10525,7 +8547,7 @@ pub fn scroll_timeline_panel(
         ),
     );
 
-    ScrollTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_diff_panel(
@@ -10533,8 +8555,8 @@ pub fn frame_diff_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     diff: &DebugFrameDiff,
-    options: FrameDiffPanelOptions,
-) -> FrameDiffPanelNodes {
+    options: ChangePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10562,7 +8584,7 @@ pub fn frame_diff_panel(
         ),
     );
 
-    FrameDiffPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn node_style_compare_panel(
@@ -10571,7 +8593,7 @@ pub fn node_style_compare_panel(
     name: impl Into<String>,
     trace: &DebugNodeStyleCompareTrace,
     options: NodeStyleComparePanelOptions,
-) -> NodeStyleComparePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10600,7 +8622,7 @@ pub fn node_style_compare_panel(
         ),
     );
 
-    NodeStyleComparePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_movement_panel(
@@ -10609,7 +8631,7 @@ pub fn layout_movement_panel(
     name: impl Into<String>,
     trace: &DebugLayoutMovementTrace,
     options: LayoutMovementPanelOptions,
-) -> LayoutMovementPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10638,7 +8660,7 @@ pub fn layout_movement_panel(
         ),
     );
 
-    LayoutMovementPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_jank_timeline_panel(
@@ -10647,7 +8669,7 @@ pub fn layout_jank_timeline_panel(
     name: impl Into<String>,
     trace: &DebugLayoutJankTimelineTrace,
     options: LayoutJankTimelinePanelOptions,
-) -> LayoutJankTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10676,7 +8698,7 @@ pub fn layout_jank_timeline_panel(
         ),
     );
 
-    LayoutJankTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn constraint_issues_panel(
@@ -10684,8 +8706,8 @@ pub fn constraint_issues_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     report: &DebugConstraintReport,
-    options: ConstraintIssuesPanelOptions,
-) -> ConstraintIssuesPanelNodes {
+    options: IssuePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10714,7 +8736,7 @@ pub fn constraint_issues_panel(
         ),
     );
 
-    ConstraintIssuesPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn resource_diagnostics_panel(
@@ -10723,7 +8745,7 @@ pub fn resource_diagnostics_panel(
     name: impl Into<String>,
     report: &DebugResourceReport,
     options: ResourceDiagnosticsPanelOptions,
-) -> ResourceDiagnosticsPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10752,7 +8774,7 @@ pub fn resource_diagnostics_panel(
         ),
     );
 
-    ResourceDiagnosticsPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn resource_timeline_panel(
@@ -10761,7 +8783,7 @@ pub fn resource_timeline_panel(
     name: impl Into<String>,
     trace: &DebugResourceTimelineTrace,
     options: ResourceTimelinePanelOptions,
-) -> ResourceTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10790,7 +8812,7 @@ pub fn resource_timeline_panel(
         ),
     );
 
-    ResourceTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn node_explanation_panel(
@@ -10799,7 +8821,7 @@ pub fn node_explanation_panel(
     name: impl Into<String>,
     explanation: &DebugNodeExplanation,
     options: NodeExplanationPanelOptions,
-) -> NodeExplanationPanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10833,7 +8855,7 @@ pub fn node_explanation_panel(
         ),
     );
 
-    NodeExplanationPanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn inspect_node_panel(
@@ -10841,8 +8863,8 @@ pub fn inspect_node_panel(
     parent: UiNodeId,
     name: impl Into<String>,
     trace: &DebugInspectNodeTrace,
-    options: InspectNodePanelOptions,
-) -> InspectNodePanelNodes {
+    options: SourcePanelOptions,
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10870,7 +8892,7 @@ pub fn inspect_node_panel(
         ),
     );
 
-    InspectNodePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn node_provenance_panel(
@@ -10879,7 +8901,7 @@ pub fn node_provenance_panel(
     name: impl Into<String>,
     trace: &DebugNodeProvenanceTrace,
     options: NodeProvenancePanelOptions,
-) -> NodeProvenancePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10908,7 +8930,7 @@ pub fn node_provenance_panel(
         ),
     );
 
-    NodeProvenancePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn layout_cause_panel(
@@ -10917,7 +8939,7 @@ pub fn layout_cause_panel(
     name: impl Into<String>,
     trace: &DebugLayoutCauseTrace,
     options: LayoutCausePanelOptions,
-) -> LayoutCausePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10950,7 +8972,7 @@ pub fn layout_cause_panel(
         ),
     );
 
-    LayoutCausePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn frame_trace_panel(
@@ -10959,7 +8981,7 @@ pub fn frame_trace_panel(
     name: impl Into<String>,
     trace: &DebugFrameTrace,
     options: FrameTracePanelOptions,
-) -> FrameTracePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -10987,7 +9009,7 @@ pub fn frame_trace_panel(
         ),
     );
 
-    FrameTracePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn accessibility_overlay_panel(
@@ -11032,7 +9054,7 @@ pub fn accessibility_tree_panel(
     name: impl Into<String>,
     trace: &DebugAccessibilityTreeTrace,
     options: AccessibilityTreePanelOptions,
-) -> AccessibilityTreePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -11061,7 +9083,7 @@ pub fn accessibility_tree_panel(
         ),
     );
 
-    AccessibilityTreePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn accessibility_timeline_panel(
@@ -11070,7 +9092,7 @@ pub fn accessibility_timeline_panel(
     name: impl Into<String>,
     trace: &DebugAccessibilityTimelineTrace,
     options: AccessibilityTimelinePanelOptions,
-) -> AccessibilityTimelinePanelNodes {
+) -> DiagnosticPanelNodes {
     let name = name.into();
     let root = document.add_child(
         parent,
@@ -11099,7 +9121,7 @@ pub fn accessibility_timeline_panel(
         ),
     );
 
-    AccessibilityTimelinePanelNodes { root, rows }
+    DiagnosticPanelNodes { root, rows }
 }
 
 pub fn accessibility_debug_overlay(
@@ -25077,8 +23099,7 @@ mod tests {
             root,
             "debug.layout_cost_autopsy",
             &trace,
-            LayoutCostAutopsyPanelOptions::default()
-                .with_action_prefix("debug.layout_cost_autopsy"),
+            SourcePanelOptions::default().with_action_prefix("debug.layout_cost_autopsy"),
         );
         doc.compute_layout(UiSize::new(420.0, 260.0), &mut ApproxTextMeasurer)
             .expect("layout cost autopsy panel layout");
@@ -25214,7 +23235,7 @@ mod tests {
             root,
             "debug.slow",
             &trace,
-            SlowNodesPanelOptions::default().with_action_prefix("debug.slow"),
+            NodeRowsPanelOptions::default().with_action_prefix("debug.slow"),
         );
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("slow nodes panel layout");
@@ -25321,7 +23342,7 @@ mod tests {
             root,
             "debug.slow.timeline",
             &trace,
-            SlowNodeTimelinePanelOptions::default().with_action_prefix("debug.slow.timeline"),
+            NodeTimelinePanelOptions::default().with_action_prefix("debug.slow.timeline"),
         );
         doc.compute_layout(UiSize::new(480.0, 260.0), &mut ApproxTextMeasurer)
             .expect("slow node timeline panel layout");
@@ -25479,7 +23500,7 @@ mod tests {
             root,
             "debug.overlap_timeline",
             &trace,
-            OverlapTimelinePanelOptions::default().with_action_prefix("debug.overlap_timeline"),
+            TimelinePanelOptions::default().with_action_prefix("debug.overlap_timeline"),
         );
         doc.compute_layout(UiSize::new(470.0, 220.0), &mut ApproxTextMeasurer)
             .expect("overlap timeline panel layout");
@@ -25538,7 +23559,7 @@ mod tests {
             root,
             "debug.overlap_autopsy",
             &trace,
-            OverlapAutopsyPanelOptions::default().with_action_prefix("debug.overlap_autopsy"),
+            SourcePanelOptions::default().with_action_prefix("debug.overlap_autopsy"),
         );
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("overlap autopsy panel layout");
@@ -26169,7 +24190,7 @@ mod tests {
             root,
             "debug.slow_frame",
             &trace,
-            SlowFramePanelOptions::default().with_action_prefix("debug.slow_frame"),
+            RecordPanelOptions::default().with_action_prefix("debug.slow_frame"),
         );
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("slow frame panel layout");
@@ -26425,7 +24446,7 @@ mod tests {
             root,
             "debug.timeline",
             &trace,
-            FrameTimelinePanelOptions::default().with_action_prefix("debug.timeline"),
+            TimelinePanelOptions::default().with_action_prefix("debug.timeline"),
         );
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("frame timeline panel layout");
@@ -26504,7 +24525,7 @@ mod tests {
             root,
             "debug.regression",
             &trace,
-            FrameRegressionPanelOptions::default().with_action_prefix("debug.regression"),
+            RecordPanelOptions::default().with_action_prefix("debug.regression"),
         );
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("frame regression panel layout");
@@ -26680,7 +24701,7 @@ mod tests {
             root,
             "debug.recorder",
             &recorder,
-            FrameRecorderPanelOptions::default().with_action_prefix("debug.recorder"),
+            TimelinePanelOptions::default().with_action_prefix("debug.recorder"),
         );
         doc.compute_layout(UiSize::new(440.0, 260.0), &mut ApproxTextMeasurer)
             .expect("frame recorder panel layout");
@@ -26757,7 +24778,7 @@ mod tests {
             root,
             "debug.history",
             &trace,
-            NodeFrameHistoryPanelOptions::default().with_action_prefix("debug.history"),
+            TimelinePanelOptions::default().with_action_prefix("debug.history"),
         );
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("node frame history panel layout");
@@ -26837,7 +24858,7 @@ mod tests {
             root,
             "debug.change",
             &trace,
-            NodeChangePanelOptions::default().with_action_prefix("debug.change"),
+            ChangePanelOptions::default().with_action_prefix("debug.change"),
         );
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("node change panel layout");
@@ -26962,7 +24983,7 @@ mod tests {
             root,
             "debug.issues",
             &report,
-            DebugIssuePanelOptions::default().with_action_prefix("debug.issues"),
+            IssuePanelOptions::default().with_action_prefix("debug.issues"),
         );
         doc.compute_layout(UiSize::new(420.0, 180.0), &mut ApproxTextMeasurer)
             .expect("debug issue panel layout");
@@ -27366,7 +25387,7 @@ mod tests {
             root,
             "debug.why_timeline",
             &trace,
-            WhyTimelinePanelOptions::default().with_action_prefix("debug.why_timeline"),
+            TimelinePanelOptions::default().with_action_prefix("debug.why_timeline"),
         );
         doc.compute_layout(UiSize::new(500.0, 190.0), &mut ApproxTextMeasurer)
             .expect("why timeline panel layout");
@@ -27659,7 +25680,7 @@ mod tests {
             root,
             "debug.invariant_timeline",
             &trace,
-            InvariantTimelinePanelOptions::default().with_action_prefix("debug.invariant_timeline"),
+            TimelinePanelOptions::default().with_action_prefix("debug.invariant_timeline"),
         );
         doc.compute_layout(UiSize::new(420.0, 190.0), &mut ApproxTextMeasurer)
             .expect("invariant timeline panel layout");
@@ -27753,8 +25774,7 @@ mod tests {
             root,
             "debug.constraint_timeline",
             &trace,
-            ConstraintTimelinePanelOptions::default()
-                .with_action_prefix("debug.constraint_timeline"),
+            TimelinePanelOptions::default().with_action_prefix("debug.constraint_timeline"),
         );
         doc.compute_layout(UiSize::new(440.0, 210.0), &mut ApproxTextMeasurer)
             .expect("constraint timeline panel layout");
@@ -28434,7 +26454,7 @@ mod tests {
             root,
             "debug.route",
             &trace,
-            EventRoutePanelOptions::default().with_action_prefix("debug.route"),
+            CandidatePanelOptions::default().with_action_prefix("debug.route"),
         );
         doc.compute_layout(UiSize::new(380.0, 180.0), &mut ApproxTextMeasurer)
             .expect("route panel layout");
@@ -28487,7 +26507,7 @@ mod tests {
             root,
             "debug.probe",
             &probe,
-            PointerProbePanelOptions::default().with_action_prefix("debug.probe"),
+            CandidatePanelOptions::default().with_action_prefix("debug.probe"),
         );
         doc.compute_layout(UiSize::new(420.0, 200.0), &mut ApproxTextMeasurer)
             .expect("probe panel layout");
@@ -28649,7 +26669,7 @@ mod tests {
             root,
             "debug.pointer",
             &autopsy,
-            PointerAutopsyPanelOptions::default().with_action_prefix("debug.pointer"),
+            SourcePanelOptions::default().with_action_prefix("debug.pointer"),
         );
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("pointer autopsy panel layout");
@@ -28708,7 +26728,7 @@ mod tests {
             root,
             "debug.point",
             &autopsy,
-            PointAutopsyPanelOptions::default().with_action_prefix("debug.point"),
+            SourcePanelOptions::default().with_action_prefix("debug.point"),
         );
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("point autopsy panel layout");
@@ -28837,7 +26857,7 @@ mod tests {
             root,
             "debug.point.visibility",
             &autopsy,
-            PointAutopsyPanelOptions::default().with_action_prefix("debug.point.visibility"),
+            SourcePanelOptions::default().with_action_prefix("debug.point.visibility"),
         );
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("point autopsy visibility panel layout");
@@ -29055,7 +27075,7 @@ mod tests {
             root,
             "debug.hitbox_timeline",
             &trace,
-            HitboxTimelinePanelOptions::default().with_action_prefix("debug.hitbox_timeline"),
+            TimelinePanelOptions::default().with_action_prefix("debug.hitbox_timeline"),
         );
         doc.compute_layout(UiSize::new(470.0, 240.0), &mut ApproxTextMeasurer)
             .expect("hitbox timeline panel layout");
@@ -31499,7 +29519,7 @@ mod tests {
             root,
             "debug.bounds",
             &trace,
-            BoundsAutopsyPanelOptions::default().with_action_prefix("debug.bounds"),
+            SourcePanelOptions::default().with_action_prefix("debug.bounds"),
         );
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("bounds autopsy panel layout");
@@ -31553,7 +29573,7 @@ mod tests {
             root,
             "debug.text",
             &trace,
-            TextLayoutPanelOptions::default().with_action_prefix("debug.text"),
+            PropertyPanelOptions::default().with_action_prefix("debug.text"),
         );
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("text layout panel layout");
@@ -31593,7 +29613,7 @@ mod tests {
             root,
             "debug.text_style",
             &trace,
-            TextStylePanelOptions::default().with_action_prefix("debug.text_style"),
+            PropertyPanelOptions::default().with_action_prefix("debug.text_style"),
         );
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("text style panel layout");
@@ -31642,7 +29662,7 @@ mod tests {
             root,
             "debug.text_input_state",
             &trace,
-            TextInputStatePanelOptions::default().with_action_prefix("debug.text_input_state"),
+            PropertyPanelOptions::default().with_action_prefix("debug.text_input_state"),
         );
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("text input state panel layout");
@@ -31845,7 +29865,7 @@ mod tests {
             root,
             "debug.text_localization",
             &trace,
-            TextLocalizationPanelOptions::default().with_action_prefix("debug.text_localization"),
+            TextRowsPanelOptions::default().with_action_prefix("debug.text_localization"),
         );
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("text localization panel layout");
@@ -31931,7 +29951,7 @@ mod tests {
             root,
             "debug.text_contrast",
             &trace,
-            TextContrastPanelOptions::default().with_action_prefix("debug.text_contrast"),
+            TextRowsPanelOptions::default().with_action_prefix("debug.text_contrast"),
         );
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("text contrast panel layout");
@@ -31990,7 +30010,7 @@ mod tests {
             root,
             "debug.text_fit",
             &trace,
-            TextFitPanelOptions::default().with_action_prefix("debug.text_fit"),
+            TextRowsPanelOptions::default().with_action_prefix("debug.text_fit"),
         );
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("text fit panel layout");
@@ -32201,7 +30221,7 @@ mod tests {
             root,
             "debug.diff",
             &diff,
-            FrameDiffPanelOptions::default().with_action_prefix("debug.diff"),
+            ChangePanelOptions::default().with_action_prefix("debug.diff"),
         );
         doc.compute_layout(UiSize::new(380.0, 180.0), &mut ApproxTextMeasurer)
             .expect("diff panel layout");
@@ -32376,7 +30396,7 @@ mod tests {
             root,
             "debug.constraints",
             &report,
-            ConstraintIssuesPanelOptions::default().with_action_prefix("debug.constraints"),
+            IssuePanelOptions::default().with_action_prefix("debug.constraints"),
         );
         doc.compute_layout(UiSize::new(380.0, 180.0), &mut ApproxTextMeasurer)
             .expect("constraint panel layout");
@@ -32747,7 +30767,7 @@ mod tests {
             root,
             "debug.inspect_node",
             &trace,
-            InspectNodePanelOptions::default().with_action_prefix("debug.inspect_node"),
+            SourcePanelOptions::default().with_action_prefix("debug.inspect_node"),
         );
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("inspect node panel layout");
@@ -32944,7 +30964,7 @@ mod tests {
             root,
             "debug.layout_autopsy",
             &trace,
-            LayoutAutopsyPanelOptions::default().with_action_prefix("debug.layout_autopsy"),
+            SourcePanelOptions::default().with_action_prefix("debug.layout_autopsy"),
         );
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("layout autopsy panel layout");
@@ -33327,7 +31347,7 @@ mod tests {
             root,
             "debug.wheel",
             &trace,
-            WheelRoutePanelOptions::default().with_action_prefix("debug.wheel"),
+            CandidatePanelOptions::default().with_action_prefix("debug.wheel"),
         );
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("wheel route panel layout");
@@ -33445,7 +31465,7 @@ mod tests {
             root,
             "debug.scroll_timeline",
             &trace,
-            ScrollTimelinePanelOptions::default().with_action_prefix("debug.scroll_timeline"),
+            NodeTimelinePanelOptions::default().with_action_prefix("debug.scroll_timeline"),
         );
         doc.compute_layout(UiSize::new(470.0, 250.0), &mut ApproxTextMeasurer)
             .expect("scroll timeline panel layout");

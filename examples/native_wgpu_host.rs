@@ -17,7 +17,7 @@ use operad::{
 use operad::accesskit_winit_adapter::{AccessKitTreeOptions, AccessKitWinitAdapter};
 
 #[cfg(feature = "wgpu")]
-use operad::testing::EmptyResourceResolver;
+use operad::renderer::EmptyResourceResolver;
 #[cfg(feature = "wgpu")]
 use operad::wgpu_renderer::WgpuRenderer;
 
