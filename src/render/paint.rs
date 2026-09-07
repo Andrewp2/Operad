@@ -900,7 +900,7 @@ impl PaintPath {
             .tessellate_path(&path, &options, &mut simple_builder(&mut buffers))
             .is_err()
         {
-            return tessellate_polygon(&self.flattened_points(tolerance));
+            return tessellate_polygon_points(&self.flattened_points(tolerance));
         }
         vertex_buffers_to_triangles(buffers)
     }
@@ -1011,7 +1011,7 @@ fn vertex_buffers_to_triangles(
         .collect()
 }
 
-fn tessellate_polygon(points: &[UiPoint]) -> Vec<[UiPoint; 3]> {
+pub(crate) fn tessellate_polygon_points(points: &[UiPoint]) -> Vec<[UiPoint; 3]> {
     let mut polygon = sanitize_polygon(points);
     if polygon.len() < 3 {
         return Vec::new();
@@ -1579,7 +1579,7 @@ mod tests {
             UiPoint::new(8.0, 8.0),
             UiPoint::new(0.0, 16.0),
         ];
-        assert!(tessellate_polygon(&polygon).len() >= 3);
+        assert!(tessellate_polygon_points(&polygon).len() >= 3);
 
         let polyline = [
             UiPoint::new(0.0, 0.0),

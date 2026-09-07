@@ -390,7 +390,7 @@ pub fn slider(
                 ..Default::default()
             })
             .style,
-            z_index: 3,
+            z_index: 3.0,
             ..Default::default()
         },
     )

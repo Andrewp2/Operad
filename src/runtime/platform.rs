@@ -1,7 +1,7 @@
 //! Backend-neutral platform contracts for Operad adapters.
 //!
 //! This module is intentionally data-only. Backends translate these contracts
-//! to egui, wgpu, host operating-system APIs, test adapters, or
+//! to wgpu, host operating-system APIs, test adapters, or
 //! app-owned renderers without leaking backend types into application state.
 
 use std::cmp::Ordering;
@@ -313,8 +313,8 @@ impl From<ThumbnailHandle> for ResourceHandle {
     }
 }
 
-pub const LAYER_LOCAL_Z_MIN: i16 = -999;
-pub const LAYER_LOCAL_Z_MAX: i16 = 999;
+pub const LAYER_LOCAL_Z_MIN: f32 = -999.0;
+pub const LAYER_LOCAL_Z_MAX: f32 = 999.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UiLayer {
@@ -328,15 +328,15 @@ pub enum UiLayer {
 }
 
 impl UiLayer {
-    pub const fn base_z(self) -> i32 {
+    pub const fn base_z(self) -> f32 {
         match self {
-            Self::HostBackground => -30_000,
-            Self::AppBackground => -20_000,
-            Self::AppContent => 0,
-            Self::AppOverlay => 10_000,
-            Self::HostOverlay => 20_000,
-            Self::DebugOverlay => 30_000,
-            Self::SystemOverlay => 40_000,
+            Self::HostBackground => -30_000.0,
+            Self::AppBackground => -20_000.0,
+            Self::AppContent => 0.0,
+            Self::AppOverlay => 10_000.0,
+            Self::HostOverlay => 20_000.0,
+            Self::DebugOverlay => 30_000.0,
+            Self::SystemOverlay => 40_000.0,
         }
     }
 
@@ -355,24 +355,24 @@ impl UiLayer {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub struct LayerOrder {
     pub layer: UiLayer,
-    pub local_z: i16,
+    pub local_z: f32,
 }
 
 impl LayerOrder {
-    pub const DEFAULT: Self = Self::new(UiLayer::AppContent, 0);
+    pub const DEFAULT: Self = Self::new(UiLayer::AppContent, 0.0);
 
-    pub const fn new(layer: UiLayer, local_z: i16) -> Self {
+    pub const fn new(layer: UiLayer, local_z: f32) -> Self {
         Self {
             layer,
             local_z: clamp_local_z(local_z),
         }
     }
 
-    pub const fn resolved_z(self) -> i32 {
-        self.layer.base_z() + self.local_z as i32
+    pub const fn resolved_z(self) -> f32 {
+        self.layer.base_z() + self.local_z
     }
 }
 
@@ -382,9 +382,26 @@ impl Default for LayerOrder {
     }
 }
 
+impl PartialEq for LayerOrder {
+    fn eq(&self, other: &Self) -> bool {
+        self.layer == other.layer && self.local_z.total_cmp(&other.local_z).is_eq()
+    }
+}
+
+impl Eq for LayerOrder {}
+
+impl std::hash::Hash for LayerOrder {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.layer.hash(state);
+        self.local_z.to_bits().hash(state);
+    }
+}
+
 impl Ord for LayerOrder {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.resolved_z().cmp(&other.resolved_z())
+        self.layer
+            .cmp(&other.layer)
+            .then_with(|| self.local_z.total_cmp(&other.local_z))
     }
 }
 
@@ -394,11 +411,15 @@ impl PartialOrd for LayerOrder {
     }
 }
 
-pub const fn clamp_local_z(local_z: i16) -> i16 {
-    if local_z < LAYER_LOCAL_Z_MIN {
+pub const fn clamp_local_z(local_z: f32) -> f32 {
+    if local_z.is_nan() {
+        0.0
+    } else if local_z < LAYER_LOCAL_Z_MIN {
         LAYER_LOCAL_Z_MIN
     } else if local_z > LAYER_LOCAL_Z_MAX {
         LAYER_LOCAL_Z_MAX
+    } else if local_z == 0.0 {
+        0.0
     } else {
         local_z
     }
@@ -1556,12 +1577,12 @@ impl ResourceCapabilities {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerCapabilities {
     pub honors_layer_order: bool,
     pub supports_host_layers: bool,
     pub supports_debug_layers: bool,
-    pub max_local_z: i16,
+    pub max_local_z: f32,
 }
 
 impl LayerCapabilities {
@@ -1569,7 +1590,7 @@ impl LayerCapabilities {
         honors_layer_order: false,
         supports_host_layers: false,
         supports_debug_layers: false,
-        max_local_z: 0,
+        max_local_z: 0.0,
     };
 
     pub const STANDARD: Self = Self {
@@ -2030,7 +2051,7 @@ impl BackendCapabilityDiagnostic {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BackendCapabilities {
     pub name: String,
     pub adapter: BackendAdapterKind,
@@ -2333,12 +2354,16 @@ mod tests {
     fn layer_order_keeps_debug_above_app_ui() {
         let app_high = LayerOrder::new(UiLayer::AppOverlay, LAYER_LOCAL_Z_MAX);
         let debug_low = LayerOrder::new(UiLayer::DebugOverlay, LAYER_LOCAL_Z_MIN);
-        let host_background = LayerOrder::new(UiLayer::HostBackground, 0);
+        let host_background = LayerOrder::new(UiLayer::HostBackground, 0.0);
 
         assert!(debug_low > app_high);
-        assert!(host_background < LayerOrder::new(UiLayer::AppBackground, 0));
+        assert!(host_background < LayerOrder::new(UiLayer::AppBackground, 0.0));
+        assert!(
+            LayerOrder::new(UiLayer::AppContent, 1.5) > LayerOrder::new(UiLayer::AppContent, 1.25)
+        );
+        assert_eq!(LayerOrder::new(UiLayer::AppContent, f32::NAN).local_z, 0.0);
         assert_eq!(
-            LayerOrder::new(UiLayer::AppContent, i16::MAX).local_z,
+            LayerOrder::new(UiLayer::AppContent, f32::MAX).local_z,
             LAYER_LOCAL_Z_MAX
         );
     }

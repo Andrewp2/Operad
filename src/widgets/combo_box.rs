@@ -129,7 +129,7 @@ pub fn combo_box(
     }
     document.node_mut(root).accessibility = Some(accessibility);
     if open {
-        document.node_mut(root).style.z_index = 20;
+        document.node_mut(root).style.z_index = 20.0;
     }
     root
 }

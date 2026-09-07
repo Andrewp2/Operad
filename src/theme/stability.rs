@@ -155,10 +155,6 @@ pub const THEME_FEATURE_STABILITY: &[FeatureStability] = &[
         "wgpu",
         "GPU rendering may differ in antialiasing, effect approximation, and text integration.",
     ),
-    FeatureStability::migration_only(
-        "egui-renderer-compat",
-        "Legacy renderer compatibility exists to aid migration, not as the preferred v5 path.",
-    ),
     FeatureStability::experimental(
         "debug-theme-inspection",
         "5.0.0",
@@ -226,11 +222,9 @@ mod tests {
     fn feature_records_link_to_versioning_categories() {
         let theme = theme_feature_stability("theme").unwrap();
         let wgpu = theme_feature_stability("wgpu").unwrap();
-        let compat = theme_feature_stability("egui-renderer-compat").unwrap();
 
         assert!(theme.is_semver_protected());
         assert_eq!(wgpu.stability, ApiStability::BackendSpecific);
-        assert_eq!(compat.stability, ApiStability::MigrationOnly);
         assert!(theme_feature_stability("unknown").is_none());
     }
 }

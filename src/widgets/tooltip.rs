@@ -12,7 +12,7 @@ pub struct TooltipBoxOptions {
     pub body_text_style: TextStyle,
     pub shortcut_text_style: TextStyle,
     pub animation: Option<AnimationMachine>,
-    pub z_index: i16,
+    pub z_index: f32,
     pub layer: crate::platform::UiLayer,
     pub clip_scope: ClipScope,
     pub portal: UiPortalTarget,
@@ -50,7 +50,7 @@ impl Default for TooltipBoxOptions {
                 ..Default::default()
             },
             animation: Some(tooltip_fade_slide_animation(true, false)),
-            z_index: 100,
+            z_index: 100.0,
             layer: crate::platform::UiLayer::AppOverlay,
             clip_scope: ClipScope::Viewport,
             portal: UiPortalTarget::Parent,
@@ -561,7 +561,7 @@ mod tests {
         );
 
         let node = document.node(tooltip);
-        assert_eq!(node.style.z_index, 100);
+        assert_eq!(node.style.z_index, 100.0);
         assert_eq!(node.layer, Some(crate::platform::UiLayer::AppOverlay));
         assert_eq!(node.clip_scope, ClipScope::Viewport);
         assert_eq!(

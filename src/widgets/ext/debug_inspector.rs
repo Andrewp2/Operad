@@ -5467,7 +5467,7 @@ pub struct AccessibilityDebugOverlayOptions {
     pub label_style: TextStyle,
     pub show_labels: bool,
     pub action_prefix: Option<String>,
-    pub z_index: i16,
+    pub z_index: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -5486,7 +5486,7 @@ pub struct HitboxDebugOverlayOptions {
     pub max_nodes: usize,
     pub max_overlaps: usize,
     pub action_prefix: Option<String>,
-    pub z_index: i16,
+    pub z_index: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -5502,7 +5502,7 @@ pub struct BoundsAutopsyOverlayOptions {
     pub label_style: TextStyle,
     pub show_labels: bool,
     pub action_prefix: Option<String>,
-    pub z_index: i16,
+    pub z_index: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -5518,7 +5518,7 @@ pub struct PointAutopsyOverlayOptions {
     pub show_labels: bool,
     pub point_radius: f32,
     pub action_prefix: Option<String>,
-    pub z_index: i16,
+    pub z_index: f32,
 }
 
 impl Default for AccessibilityDebugOverlayOptions {
@@ -5550,7 +5550,7 @@ impl Default for AccessibilityDebugOverlayOptions {
             },
             show_labels: true,
             action_prefix: None,
-            z_index: 900,
+            z_index: 900.0,
         }
     }
 }
@@ -5600,7 +5600,7 @@ impl Default for HitboxDebugOverlayOptions {
             max_nodes: usize::MAX,
             max_overlaps: usize::MAX,
             action_prefix: None,
-            z_index: 920,
+            z_index: 920.0,
         }
     }
 }
@@ -5659,7 +5659,7 @@ impl Default for BoundsAutopsyOverlayOptions {
             },
             show_labels: true,
             action_prefix: None,
-            z_index: 940,
+            z_index: 940.0,
         }
     }
 }
@@ -5714,7 +5714,7 @@ impl Default for PointAutopsyOverlayOptions {
             show_labels: true,
             point_radius: 4.0,
             action_prefix: None,
-            z_index: 960,
+            z_index: 960.0,
         }
     }
 }
@@ -11253,7 +11253,7 @@ pub fn hitbox_debug_overlay(
                     format!("{name}.paint.{}", hitbox.id.0),
                     UiNodeStyle {
                         layout: absolute_rect_style(rect).style,
-                        z_index: options.z_index + 1,
+                        z_index: options.z_index + 1.0,
                         ..Default::default()
                     },
                 )
@@ -11274,7 +11274,7 @@ pub fn hitbox_debug_overlay(
                 overlap_name.clone(),
                 UiNodeStyle {
                     layout: absolute_rect_style(overlap.overlap_rect).style,
-                    z_index: options.z_index + 2,
+                    z_index: options.z_index + 2.0,
                     ..Default::default()
                 },
             )
@@ -11411,7 +11411,7 @@ pub fn point_autopsy_overlay(
                 options.point_radius,
             ))
             .style,
-            z_index: options.z_index + 10,
+            z_index: options.z_index + 10.0,
             ..Default::default()
         },
     )
@@ -11490,7 +11490,7 @@ pub fn point_autopsy_overlay(
             overlap_name.clone(),
             UiNodeStyle {
                 layout: absolute_rect_style(overlap.overlap_rect).style,
-                z_index: options.z_index + 8,
+                z_index: options.z_index + 8.0,
                 ..Default::default()
             },
         )
@@ -20121,7 +20121,7 @@ fn stacking_order_record_value(record: &DebugStackingOrderRecord) -> String {
     parts.join("; ")
 }
 
-fn stacking_order_z_range(min_z: Option<i32>, max_z: Option<i32>) -> String {
+fn stacking_order_z_range(min_z: Option<f32>, max_z: Option<f32>) -> String {
     match (min_z, max_z) {
         (Some(min_z), Some(max_z)) if min_z == max_z => min_z.to_string(),
         (Some(min_z), Some(max_z)) => format!("{min_z}..{max_z}"),
@@ -24205,15 +24205,15 @@ fn bounds_autopsy_overlay_visual(
     }
 }
 
-fn bounds_autopsy_overlay_source_z(source: DebugBoundsAutopsySource) -> i16 {
+fn bounds_autopsy_overlay_source_z(source: DebugBoundsAutopsySource) -> f32 {
     match source {
-        DebugBoundsAutopsySource::Layout => 0,
-        DebugBoundsAutopsySource::TransformedLayout => 1,
-        DebugBoundsAutopsySource::Clip => 2,
-        DebugBoundsAutopsySource::Visible => 3,
-        DebugBoundsAutopsySource::Paint => 4,
-        DebugBoundsAutopsySource::Hit => 5,
-        DebugBoundsAutopsySource::EffectOutset => 6,
+        DebugBoundsAutopsySource::Layout => 0.0,
+        DebugBoundsAutopsySource::TransformedLayout => 1.0,
+        DebugBoundsAutopsySource::Clip => 2.0,
+        DebugBoundsAutopsySource::Visible => 3.0,
+        DebugBoundsAutopsySource::Paint => 4.0,
+        DebugBoundsAutopsySource::Hit => 5.0,
+        DebugBoundsAutopsySource::EffectOutset => 6.0,
     }
 }
 
@@ -24264,15 +24264,15 @@ fn point_autopsy_overlay_bound_visual(
     }
 }
 
-fn point_autopsy_overlay_bound_z(source: DebugBoundsAutopsySource) -> i16 {
+fn point_autopsy_overlay_bound_z(source: DebugBoundsAutopsySource) -> f32 {
     match source {
-        DebugBoundsAutopsySource::Layout => 1,
-        DebugBoundsAutopsySource::Paint => 2,
-        DebugBoundsAutopsySource::Hit => 3,
-        DebugBoundsAutopsySource::EffectOutset => 4,
+        DebugBoundsAutopsySource::Layout => 1.0,
+        DebugBoundsAutopsySource::Paint => 2.0,
+        DebugBoundsAutopsySource::Hit => 3.0,
+        DebugBoundsAutopsySource::EffectOutset => 4.0,
         DebugBoundsAutopsySource::TransformedLayout
         | DebugBoundsAutopsySource::Clip
-        | DebugBoundsAutopsySource::Visible => 1,
+        | DebugBoundsAutopsySource::Visible => 1.0,
     }
 }
 
@@ -24472,7 +24472,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(
@@ -24537,7 +24537,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(
@@ -25125,7 +25125,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(
@@ -25197,7 +25197,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(10.0, 0.0, 90.0, 40.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(10.0, 0.0, 90.0, 40.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
@@ -25359,7 +25359,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
@@ -25520,7 +25520,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
@@ -25716,7 +25716,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(
@@ -25851,7 +25851,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("front.activate")
@@ -25918,7 +25918,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("front.activate")
@@ -26133,7 +26133,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(10.0, 0.0, 90.0, 40.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(10.0, 0.0, 90.0, 40.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("cover.activate")
@@ -26306,7 +26306,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(0.0, 0.0, 40.0, 24.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(0.0, 0.0, 40.0, 24.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("cover.activate")
@@ -28416,7 +28416,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("front.activate")
@@ -28469,7 +28469,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("front.activate")
@@ -28631,7 +28631,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("front.activate")
@@ -28686,7 +28686,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("front.activate")
@@ -28756,7 +28756,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("front.activate")
@@ -29095,7 +29095,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 96.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 96.0, 36.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -29705,7 +29705,7 @@ mod tests {
             narrow.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(6.0, 0.0, 44.0, 24.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(6.0, 0.0, 44.0, 24.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
@@ -30514,7 +30514,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
         );
@@ -30564,7 +30564,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(20.0, 0.0, 92.0, 36.0)).with_z_index(8.0),
             )
             .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
         );
@@ -30620,8 +30620,8 @@ mod tests {
             interactive_count: 3,
             paint_count: 6,
             max_layer_count: 1,
-            min_resolved_z: Some(-2),
-            max_resolved_z: Some(8),
+            min_resolved_z: Some(-2.0),
+            max_resolved_z: Some(8.0),
             overlap_pair_count: 3,
             covered_interactive_count: 1,
             changed_node_count: 4,
@@ -30643,10 +30643,10 @@ mod tests {
                 latest_front_index: 0,
                 latest_layer: crate::platform::UiLayer::AppContent,
                 latest_layer_order: crate::platform::LayerOrder::DEFAULT,
-                min_resolved_z: 0,
-                max_resolved_z: 0,
-                latest_resolved_z: 0,
-                latest_local_z: 0,
+                min_resolved_z: 0.0,
+                max_resolved_z: 0.0,
+                latest_resolved_z: 0.0,
+                latest_local_z: 0.0,
                 latest_order: 1,
                 max_overlaps_in_front: 1,
                 max_overlaps_behind: 1,
@@ -30667,8 +30667,8 @@ mod tests {
                     interactive_count: 1,
                     paint_count: 2,
                     layer_count: 1,
-                    min_resolved_z: Some(0),
-                    max_resolved_z: Some(8),
+                    min_resolved_z: Some(0.0),
+                    max_resolved_z: Some(8.0),
                     overlap_pair_count: 1,
                     covered_interactive_count: 1,
                     changed_node_count: 2,
@@ -30689,8 +30689,8 @@ mod tests {
                     interactive_count: 1,
                     paint_count: 2,
                     layer_count: 1,
-                    min_resolved_z: Some(-2),
-                    max_resolved_z: Some(0),
+                    min_resolved_z: Some(-2.0),
+                    max_resolved_z: Some(0.0),
                     overlap_pair_count: 1,
                     covered_interactive_count: 0,
                     changed_node_count: 2,
@@ -30760,7 +30760,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "front",
-                UiNodeStyle::new(crate::layout::absolute(10.0, 0.0, 90.0, 40.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(10.0, 0.0, 90.0, 40.0)).with_z_index(8.0),
             )
             .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
         );
@@ -31202,10 +31202,10 @@ mod tests {
                 latest_clipped_count: 0,
                 max_offscreen_count: 0,
                 latest_offscreen_count: 0,
-                min_resolved_z: 0,
-                max_resolved_z: 0,
-                latest_min_resolved_z: 0,
-                latest_max_resolved_z: 0,
+                min_resolved_z: 0.0,
+                max_resolved_z: 0.0,
+                latest_min_resolved_z: 0.0,
+                latest_max_resolved_z: 0.0,
                 summary: "info render layer timeline for AppContent".to_owned(),
                 cause: "shader appeared".to_owned(),
                 fix: "open render_layers_panel for AppContent".to_owned(),
@@ -32232,7 +32232,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "secondary",
-                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 28.0)).with_z_index(7),
+                UiNodeStyle::new(crate::layout::absolute(24.0, 0.0, 72.0, 28.0)).with_z_index(7.0),
             )
             .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
         );
@@ -32416,7 +32416,7 @@ mod tests {
                     node: UiNodeId(1),
                     rect: crate::UiRect::new(0.0, 0.0, 24.0, 24.0),
                     clip_rect: crate::UiRect::new(0.0, 0.0, 120.0, 80.0),
-                    z_index: 0,
+                    z_index: 0.0,
                     layer_order: crate::platform::LayerOrder::DEFAULT,
                     opacity: 1.0,
                     transform: crate::PaintTransform::default(),
@@ -32431,7 +32431,7 @@ mod tests {
                     node: UiNodeId(2),
                     rect: crate::UiRect::new(30.0, 0.0, 24.0, 24.0),
                     clip_rect: crate::UiRect::new(0.0, 0.0, 120.0, 80.0),
-                    z_index: 0,
+                    z_index: 0.0,
                     layer_order: crate::platform::LayerOrder::DEFAULT,
                     opacity: 1.0,
                     transform: crate::PaintTransform::default(),
@@ -32654,7 +32654,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(8.0, 0.0, 40.0, 24.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(8.0, 0.0, 40.0, 24.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("cover.activate")
@@ -32720,7 +32720,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(8.0, 0.0, 40.0, 24.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(8.0, 0.0, 40.0, 24.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("cover.activate")
@@ -32796,7 +32796,7 @@ mod tests {
             source.root,
             UiNode::container(
                 "cover",
-                UiNodeStyle::new(crate::layout::absolute(0.0, 0.0, 40.0, 24.0)).with_z_index(8),
+                UiNodeStyle::new(crate::layout::absolute(0.0, 0.0, 40.0, 24.0)).with_z_index(8.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("cover.activate")

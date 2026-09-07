@@ -4,6 +4,7 @@
 //! timing state into plain data. Backends can render the data as overlays,
 //! logs, or inspector panels without Operad depending on a debug UI renderer.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
@@ -163,13 +164,13 @@ impl From<&GestureEvent> for DebugGestureState {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DebugPaintStats {
     pub count: usize,
-    pub min_z: Option<i16>,
-    pub max_z: Option<i16>,
-    pub min_resolved_z: Option<i32>,
-    pub max_resolved_z: Option<i32>,
+    pub min_z: Option<f32>,
+    pub max_z: Option<f32>,
+    pub min_resolved_z: Option<f32>,
+    pub max_resolved_z: Option<f32>,
 }
 
 impl DebugPaintStats {
@@ -187,6 +188,15 @@ impl DebugPaintStats {
             self.max_resolved_z
                 .map_or(resolved_z, |z| z.max(resolved_z)),
         );
+    }
+}
+
+fn cmp_optional_z(left: Option<f32>, right: Option<f32>) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.total_cmp(&right),
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
+        (None, None) => Ordering::Equal,
     }
 }
 
@@ -662,7 +672,7 @@ pub enum DebugNodeContentKind {
     Scene,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DebugLayoutStyleSummary {
     pub display: String,
     pub flex_direction: String,
@@ -680,7 +690,7 @@ pub struct DebugLayoutStyleSummary {
     pub clip: String,
     pub clip_scope: String,
     pub layer: Option<String>,
-    pub z_index: i16,
+    pub z_index: f32,
     pub opacity: String,
     pub layout_constraint: Option<String>,
 }
@@ -1364,7 +1374,7 @@ pub struct DebugVisualEffectRecord {
     pub hit_outside_paint: bool,
     pub clipped: bool,
     pub layer: UiLayer,
-    pub resolved_z: i32,
+    pub resolved_z: f32,
     pub order: usize,
     pub status: DebugFrameTraceStatus,
     pub summary: String,
@@ -10560,7 +10570,7 @@ pub struct DebugNodeGeometryExplanation {
     pub hit_rejections: Vec<EffectiveHitRejection>,
     pub clip_chain_len: usize,
     pub layer: Option<UiLayer>,
-    pub resolved_z: Option<i32>,
+    pub resolved_z: Option<f32>,
     pub order: Option<usize>,
     pub cause: String,
     pub fix: String,
@@ -11402,9 +11412,9 @@ pub struct DebugPaintItem {
     pub kind: String,
     pub rect: UiRect,
     pub clip_rect: UiRect,
-    pub z_index: i16,
+    pub z_index: f32,
     pub layer: UiLayer,
-    pub resolved_z: i32,
+    pub resolved_z: f32,
     pub opacity: f32,
     pub shader_key: Option<String>,
 }
@@ -11462,10 +11472,10 @@ pub struct DebugRenderLayerRecord {
     pub layer: UiLayer,
     pub item_count: usize,
     pub node_count: usize,
-    pub min_z_index: i16,
-    pub max_z_index: i16,
-    pub min_resolved_z: i32,
-    pub max_resolved_z: i32,
+    pub min_z_index: f32,
+    pub max_z_index: f32,
+    pub min_resolved_z: f32,
+    pub max_resolved_z: f32,
     pub shader_count: usize,
     pub transparent_count: usize,
     pub clipped_count: usize,
@@ -11484,8 +11494,8 @@ pub struct DebugRenderLayerItemRecord {
     pub node_name: Option<String>,
     pub kind: String,
     pub layer: UiLayer,
-    pub z_index: i16,
-    pub resolved_z: i32,
+    pub z_index: f32,
+    pub resolved_z: f32,
     pub rect: UiRect,
     pub clip_rect: UiRect,
     pub opacity: f32,
@@ -11542,7 +11552,7 @@ impl DebugRenderLayerTrace {
         featured_items.sort_by(|left, right| {
             debug_render_layer_status_rank(left.status)
                 .cmp(&debug_render_layer_status_rank(right.status))
-                .then_with(|| right.resolved_z.cmp(&left.resolved_z))
+                .then_with(|| right.resolved_z.total_cmp(&left.resolved_z))
                 .then_with(|| left.index.cmp(&right.index))
         });
 
@@ -11598,10 +11608,10 @@ pub struct DebugRenderLayerTimelineLayerRecord {
     pub latest_clipped_count: usize,
     pub max_offscreen_count: usize,
     pub latest_offscreen_count: usize,
-    pub min_resolved_z: i32,
-    pub max_resolved_z: i32,
-    pub latest_min_resolved_z: i32,
-    pub latest_max_resolved_z: i32,
+    pub min_resolved_z: f32,
+    pub max_resolved_z: f32,
+    pub latest_min_resolved_z: f32,
+    pub latest_max_resolved_z: f32,
     pub summary: String,
     pub cause: String,
     pub fix: String,
@@ -11674,8 +11684,8 @@ pub struct DebugPaintOverdrawRecord {
     pub node_name: Option<String>,
     pub kind: String,
     pub layer: UiLayer,
-    pub z_index: i16,
-    pub resolved_z: i32,
+    pub z_index: f32,
+    pub resolved_z: f32,
     pub visible_rect: UiRect,
     pub covered_area: f32,
     pub covered_ratio: f32,
@@ -11719,7 +11729,7 @@ pub struct DebugPaintOverdrawTimelineRecord {
     pub latest_covering_count: usize,
     pub latest_covering_name: Option<String>,
     pub latest_layer: UiLayer,
-    pub latest_resolved_z: i32,
+    pub latest_resolved_z: f32,
     pub summary: String,
     pub cause: String,
     pub fix: String,
@@ -11849,8 +11859,8 @@ pub struct DebugPaintBatchRecord {
     pub batch_index: usize,
     pub kind: String,
     pub layer: UiLayer,
-    pub z_index: i16,
-    pub resolved_z: i32,
+    pub z_index: f32,
+    pub resolved_z: f32,
     pub clip_rect: UiRect,
     pub shader_key: Option<String>,
     pub item_count: usize,
@@ -12051,10 +12061,10 @@ struct DebugRenderLayerAccumulator {
     layer: UiLayer,
     item_count: usize,
     nodes: HashSet<UiNodeId>,
-    min_z_index: i16,
-    max_z_index: i16,
-    min_resolved_z: i32,
-    max_resolved_z: i32,
+    min_z_index: f32,
+    max_z_index: f32,
+    min_resolved_z: f32,
+    max_resolved_z: f32,
     shader_count: usize,
     transparent_count: usize,
     clipped_count: usize,
@@ -12068,10 +12078,10 @@ impl DebugRenderLayerAccumulator {
             layer,
             item_count: 0,
             nodes: HashSet::new(),
-            min_z_index: i16::MAX,
-            max_z_index: i16::MIN,
-            min_resolved_z: i32::MAX,
-            max_resolved_z: i32::MIN,
+            min_z_index: f32::MAX,
+            max_z_index: f32::MIN,
+            min_resolved_z: f32::MAX,
+            max_resolved_z: f32::MIN,
             shader_count: 0,
             transparent_count: 0,
             clipped_count: 0,
@@ -12173,9 +12183,9 @@ pub struct DebugPaintStackItem {
     pub rect: UiRect,
     pub debug_bounds: UiRect,
     pub clip_rect: UiRect,
-    pub z_index: i16,
+    pub z_index: f32,
     pub layer: UiLayer,
-    pub resolved_z: i32,
+    pub resolved_z: f32,
     pub opacity: f32,
     pub shader_key: Option<String>,
     pub material: Option<String>,
@@ -12217,8 +12227,8 @@ impl DebugPaintOrderTrace {
         stack.sort_by(|left, right| {
             right
                 .resolved_z
-                .cmp(&left.resolved_z)
-                .then_with(|| right.z_index.cmp(&left.z_index))
+                .total_cmp(&left.resolved_z)
+                .then_with(|| right.z_index.total_cmp(&left.z_index))
                 .then_with(|| right.index.cmp(&left.index))
         });
         let top_visible = stack.iter().find(|item| item.visible_at_point);
@@ -12401,8 +12411,8 @@ impl DebugHitTrace {
                 .contains_rect
                 .cmp(&left.contains_rect)
                 .then_with(|| right.contains_clip.cmp(&left.contains_clip))
-                .then_with(|| right.paint.max_resolved_z.cmp(&left.paint.max_resolved_z))
-                .then_with(|| right.paint.max_z.cmp(&left.paint.max_z))
+                .then_with(|| cmp_optional_z(right.paint.max_resolved_z, left.paint.max_resolved_z))
+                .then_with(|| cmp_optional_z(right.paint.max_z, left.paint.max_z))
                 .then_with(|| left.id.0.cmp(&right.id.0))
         });
         Self {
@@ -12451,7 +12461,7 @@ pub struct DebugEventRouteCandidate {
     pub action_mode: WidgetActionMode,
     pub hit_shape: ElementShape,
     pub layer: UiLayer,
-    pub resolved_z: i32,
+    pub resolved_z: f32,
     pub order: usize,
     pub point_hit: bool,
     pub selected: bool,
@@ -12611,8 +12621,8 @@ pub struct DebugHitboxNode {
     pub clip_chain: Vec<EffectiveClip>,
     pub layer_order: LayerOrder,
     pub layer: UiLayer,
-    pub local_z: i16,
-    pub resolved_z: i32,
+    pub local_z: f32,
+    pub resolved_z: f32,
     pub order: usize,
 }
 
@@ -12686,8 +12696,8 @@ pub struct DebugStackingOrderRecord {
     pub front_index: usize,
     pub layer: UiLayer,
     pub layer_order: LayerOrder,
-    pub local_z: i16,
-    pub resolved_z: i32,
+    pub local_z: f32,
+    pub resolved_z: f32,
     pub order: usize,
     pub pointer: bool,
     pub focusable: bool,
@@ -12716,8 +12726,8 @@ pub struct DebugStackingOrderTrace {
     pub interactive_count: usize,
     pub paint_count: usize,
     pub layer_count: usize,
-    pub min_resolved_z: Option<i32>,
-    pub max_resolved_z: Option<i32>,
+    pub min_resolved_z: Option<f32>,
+    pub max_resolved_z: Option<f32>,
     pub overlap_pair_count: usize,
     pub covered_interactive_count: usize,
     pub records: Vec<DebugStackingOrderRecord>,
@@ -12739,10 +12749,10 @@ pub struct DebugStackingOrderTimelineRecord {
     pub latest_front_index: usize,
     pub latest_layer: UiLayer,
     pub latest_layer_order: LayerOrder,
-    pub min_resolved_z: i32,
-    pub max_resolved_z: i32,
-    pub latest_resolved_z: i32,
-    pub latest_local_z: i16,
+    pub min_resolved_z: f32,
+    pub max_resolved_z: f32,
+    pub latest_resolved_z: f32,
+    pub latest_local_z: f32,
     pub latest_order: usize,
     pub max_overlaps_in_front: usize,
     pub max_overlaps_behind: usize,
@@ -12764,8 +12774,8 @@ pub struct DebugStackingOrderTimelineFrameRecord {
     pub interactive_count: usize,
     pub paint_count: usize,
     pub layer_count: usize,
-    pub min_resolved_z: Option<i32>,
-    pub max_resolved_z: Option<i32>,
+    pub min_resolved_z: Option<f32>,
+    pub max_resolved_z: Option<f32>,
     pub overlap_pair_count: usize,
     pub covered_interactive_count: usize,
     pub changed_node_count: usize,
@@ -12789,8 +12799,8 @@ pub struct DebugStackingOrderTimelineTrace {
     pub interactive_count: usize,
     pub paint_count: usize,
     pub max_layer_count: usize,
-    pub min_resolved_z: Option<i32>,
-    pub max_resolved_z: Option<i32>,
+    pub min_resolved_z: Option<f32>,
+    pub max_resolved_z: Option<f32>,
     pub overlap_pair_count: usize,
     pub covered_interactive_count: usize,
     pub changed_node_count: usize,
@@ -12824,7 +12834,7 @@ pub struct DebugHitboxMapRecord {
     pub hit_shape: ElementShape,
     pub clip_chain_len: usize,
     pub layer: UiLayer,
-    pub resolved_z: i32,
+    pub resolved_z: f32,
     pub order: usize,
     pub rejection_count: usize,
     pub rejections: Vec<EffectiveHitRejection>,
@@ -13199,8 +13209,14 @@ impl DebugStackingOrderTrace {
             .map(|record| record.layer)
             .collect::<BTreeSet<_>>()
             .len();
-        let min_resolved_z = records.iter().map(|record| record.resolved_z).min();
-        let max_resolved_z = records.iter().map(|record| record.resolved_z).max();
+        let min_resolved_z = records
+            .iter()
+            .map(|record| record.resolved_z)
+            .min_by(|left, right| left.total_cmp(right));
+        let max_resolved_z = records
+            .iter()
+            .map(|record| record.resolved_z)
+            .max_by(|left, right| left.total_cmp(right));
         let covered_interactive_count = records
             .iter()
             .filter(|record| {
@@ -13303,7 +13319,7 @@ impl DebugHitboxMapTrace {
                         .cmp(&debug_bool_rank(left.pointer || left.focusable))
                 })
                 .then_with(|| right.layer.cmp(&left.layer))
-                .then_with(|| right.resolved_z.cmp(&left.resolved_z))
+                .then_with(|| right.resolved_z.total_cmp(&left.resolved_z))
                 .then_with(|| right.order.cmp(&left.order))
                 .then_with(|| left.name.cmp(&right.name))
         });
@@ -13799,7 +13815,7 @@ pub struct DebugPointerProbeCandidate {
     pub hit_rect: Option<UiRect>,
     pub paint_rect: Option<UiRect>,
     pub layer: Option<UiLayer>,
-    pub resolved_z: Option<i32>,
+    pub resolved_z: Option<f32>,
     pub order: Option<usize>,
     pub rejections: Vec<DebugEventRouteRejection>,
     pub cause: String,
@@ -13983,7 +13999,7 @@ pub struct DebugActionMapRecord {
     pub rect: UiRect,
     pub visible_rect: Option<UiRect>,
     pub layer: Option<UiLayer>,
-    pub resolved_z: Option<i32>,
+    pub resolved_z: Option<f32>,
     pub order: Option<usize>,
     pub status: DebugFrameTraceStatus,
     pub summary: String,
@@ -14462,7 +14478,7 @@ pub enum DebugOverlapKind {
     Layout,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DebugOverlapReason {
     SharedParent {
         parent: UiNodeId,
@@ -14483,8 +14499,8 @@ pub enum DebugOverlapReason {
         front_layer: UiLayer,
     },
     ZOrdering {
-        back_resolved_z: i32,
-        front_resolved_z: i32,
+        back_resolved_z: f32,
+        front_resolved_z: f32,
     },
     BothPointerInteractive,
     PaintExtendsOutsideLayout {
@@ -18623,7 +18639,7 @@ fn debug_event_route_candidates(
     candidates.sort_by(|left, right| {
         right
             .resolved_z
-            .cmp(&left.resolved_z)
+            .total_cmp(&left.resolved_z)
             .then_with(|| right.order.cmp(&left.order))
             .then_with(|| right.id.0.cmp(&left.id.0))
     });
@@ -18667,7 +18683,7 @@ fn debug_pointer_probe_from_parts(
             .target
             .cmp(&left.target)
             .then_with(|| right.effective_hit.cmp(&left.effective_hit))
-            .then_with(|| right.resolved_z.cmp(&left.resolved_z))
+            .then_with(|| cmp_optional_z(right.resolved_z, left.resolved_z))
             .then_with(|| right.order.cmp(&left.order))
             .then_with(|| right.id.0.cmp(&left.id.0))
     });
@@ -43418,9 +43434,7 @@ fn debug_point_resolution_trace(
         .iter()
         .filter(|candidate| candidate.effective_hit)
         .max_by(|left, right| {
-            left.resolved_z
-                .unwrap_or(i32::MIN)
-                .cmp(&right.resolved_z.unwrap_or(i32::MIN))
+            cmp_optional_z(left.resolved_z, right.resolved_z)
                 .then_with(|| left.order.unwrap_or(0).cmp(&right.order.unwrap_or(0)))
                 .then_with(|| left.id.0.cmp(&right.id.0))
         });
@@ -54364,8 +54378,8 @@ fn debug_render_layer_record_summary(
     layer: UiLayer,
     item_count: usize,
     node_count: usize,
-    min_resolved_z: i32,
-    max_resolved_z: i32,
+    min_resolved_z: f32,
+    max_resolved_z: f32,
     shader_count: usize,
     transparent_count: usize,
     clipped_count: usize,
@@ -54400,8 +54414,8 @@ fn debug_render_layer_record_cause(
     transparent_count: usize,
     clipped_count: usize,
     offscreen_count: usize,
-    min_resolved_z: i32,
-    max_resolved_z: i32,
+    min_resolved_z: f32,
+    max_resolved_z: f32,
 ) -> String {
     if offscreen_count > 0 {
         return "composited paint creates isolated offscreen work before final composition"
@@ -54637,10 +54651,10 @@ struct DebugRenderLayerTimelineAccumulator {
     latest_clipped_count: usize,
     max_offscreen_count: usize,
     latest_offscreen_count: usize,
-    min_resolved_z: i32,
-    max_resolved_z: i32,
-    latest_min_resolved_z: i32,
-    latest_max_resolved_z: i32,
+    min_resolved_z: f32,
+    max_resolved_z: f32,
+    latest_min_resolved_z: f32,
+    latest_max_resolved_z: f32,
     latest_cause: String,
     latest_fix: String,
 }
@@ -55283,8 +55297,8 @@ fn debug_paint_items_bottom_to_top(dump: &DebugPaintDump) -> Vec<(usize, &DebugP
     let mut items = dump.items.iter().enumerate().collect::<Vec<_>>();
     items.sort_by(|(left_index, left), (right_index, right)| {
         left.resolved_z
-            .cmp(&right.resolved_z)
-            .then_with(|| left.z_index.cmp(&right.z_index))
+            .total_cmp(&right.resolved_z)
+            .then_with(|| left.z_index.total_cmp(&right.z_index))
             .then_with(|| left_index.cmp(right_index))
     });
     items
@@ -55461,7 +55475,7 @@ struct DebugPaintOverdrawTimelineAccumulator {
     latest_covering_count: usize,
     latest_covering_name: Option<String>,
     latest_layer: UiLayer,
-    latest_resolved_z: i32,
+    latest_resolved_z: f32,
     latest_cause: String,
     latest_fix: String,
 }
@@ -57332,8 +57346,8 @@ fn debug_stacking_order_trace_summary(
     interactive_count: usize,
     paint_count: usize,
     layer_count: usize,
-    min_resolved_z: Option<i32>,
-    max_resolved_z: Option<i32>,
+    min_resolved_z: Option<f32>,
+    max_resolved_z: Option<f32>,
     overlap_pair_count: usize,
     covered_interactive_count: usize,
 ) -> String {
@@ -57378,10 +57392,10 @@ struct DebugStackingOrderTimelineAccumulator {
     latest_front_index: usize,
     latest_layer: UiLayer,
     latest_layer_order: LayerOrder,
-    min_resolved_z: i32,
-    max_resolved_z: i32,
-    latest_resolved_z: i32,
-    latest_local_z: i16,
+    min_resolved_z: f32,
+    max_resolved_z: f32,
+    latest_resolved_z: f32,
+    latest_local_z: f32,
     latest_order: usize,
     max_overlaps_in_front: usize,
     max_overlaps_behind: usize,
@@ -57476,8 +57490,14 @@ fn debug_stacking_order_timeline_trace<'a>(
         .map(|frame| frame.layer_count)
         .max()
         .unwrap_or_default();
-    let min_resolved_z = frames.iter().filter_map(|frame| frame.min_resolved_z).min();
-    let max_resolved_z = frames.iter().filter_map(|frame| frame.max_resolved_z).max();
+    let min_resolved_z = frames
+        .iter()
+        .filter_map(|frame| frame.min_resolved_z)
+        .min_by(|left, right| left.total_cmp(right));
+    let max_resolved_z = frames
+        .iter()
+        .filter_map(|frame| frame.max_resolved_z)
+        .max_by(|left, right| left.total_cmp(right));
     let overlap_pair_count = frames.iter().map(|frame| frame.overlap_pair_count).sum();
     let covered_interactive_count = frames
         .iter()
@@ -57863,8 +57883,8 @@ fn debug_stacking_order_timeline_summary(
     changed_node_count: usize,
     new_covered_count: usize,
     resolved_covered_count: usize,
-    min_resolved_z: Option<i32>,
-    max_resolved_z: Option<i32>,
+    min_resolved_z: Option<f32>,
+    max_resolved_z: Option<f32>,
     top_node_name: Option<&str>,
 ) -> String {
     let mut parts = vec![format!("{} stacking order timeline", status.label())];
@@ -57923,8 +57943,8 @@ fn debug_stacking_order_timeline_record_summary(
     warning_frame_count: usize,
     min_front_index: usize,
     max_front_index: usize,
-    min_resolved_z: i32,
-    max_resolved_z: i32,
+    min_resolved_z: f32,
+    max_resolved_z: f32,
 ) -> String {
     let mut parts = vec![format!("{} stack {name}", status.label())];
     parts.push(format!(
@@ -62322,7 +62342,7 @@ mod tests {
         }
     }
 
-    fn layered_absolute_style(z_index: i16, width: f32, height: f32) -> UiNodeStyle {
+    fn layered_absolute_style(z_index: f32, width: f32, height: f32) -> UiNodeStyle {
         absolute_style_at(0.0, 0.0, z_index, width, height)
     }
 
@@ -62342,7 +62362,7 @@ mod tests {
         })
     }
 
-    fn absolute_style_at(x: f32, y: f32, z_index: i16, width: f32, height: f32) -> UiNodeStyle {
+    fn absolute_style_at(x: f32, y: f32, z_index: f32, width: f32, height: f32) -> UiNodeStyle {
         UiNodeStyle {
             layout: absolute_layout_at(x, y, width, height).style,
             z_index,
@@ -62922,12 +62942,12 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         let back = doc.add_child(
             doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", absolute_style_at(20.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("front", absolute_style_at(20.0, 0.0, 8.0, 90.0, 40.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
@@ -62950,12 +62970,12 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("front", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("front", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
@@ -62980,13 +63000,13 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+                UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
             if front {
                 doc.add_child(
                     doc.root,
-                    UiNode::container("front", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+                    UiNode::container("front", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                         .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
                 );
             }
@@ -63036,17 +63056,17 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("left", absolute_style_at(0.0, 0.0, 0, 20.0, 20.0))
+            UiNode::container("left", absolute_style_at(0.0, 0.0, 0.0, 20.0, 20.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("right", absolute_style_at(24.0, 0.0, 0, 20.0, 20.0))
+            UiNode::container("right", absolute_style_at(24.0, 0.0, 0.0, 20.0, 20.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("glow", absolute_style_at(48.0, 0.0, 0, 20.0, 20.0))
+            UiNode::container("glow", absolute_style_at(48.0, 0.0, 0.0, 20.0, 20.0))
                 .with_shader(crate::ShaderEffect::new("debug.glow"))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
@@ -63078,15 +63098,15 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("left", absolute_style_at(0.0, 0.0, 0, 20.0, 20.0))
+                UiNode::container("left", absolute_style_at(0.0, 0.0, 0.0, 20.0, 20.0))
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
             doc.add_child(
                 doc.root,
-                UiNode::container("middle", absolute_style_at(24.0, 0.0, 0, 20.0, 20.0))
+                UiNode::container("middle", absolute_style_at(24.0, 0.0, 0.0, 20.0, 20.0))
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
-            let mut glow = UiNode::container("glow", absolute_style_at(48.0, 0.0, 0, 20.0, 20.0))
+            let mut glow = UiNode::container("glow", absolute_style_at(48.0, 0.0, 0.0, 20.0, 20.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0));
             if shader {
                 glow = glow.with_shader(crate::ShaderEffect::new("debug.glow"));
@@ -63138,14 +63158,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         doc.add_child(
             doc.root,
-            UiNode::container("button", absolute_style_at(0.0, 0.0, 0, 60.0, 24.0))
+            UiNode::container("button", absolute_style_at(0.0, 0.0, 0.0, 60.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("button.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("command", absolute_style_at(0.0, 30.0, 0, 60.0, 24.0))
+            UiNode::container("command", absolute_style_at(0.0, 30.0, 0.0, 60.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action(WidgetActionBinding::command(CommandId::new(
                     "debug.command",
@@ -63156,14 +63176,14 @@ mod tests {
             doc.root,
             UiNode::container(
                 "passive_action",
-                absolute_style_at(0.0, 60.0, 0, 60.0, 24.0),
+                absolute_style_at(0.0, 60.0, 0.0, 60.0, 24.0),
             )
             .with_action("passive.activate")
             .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("unbound", absolute_style_at(0.0, 90.0, 0, 60.0, 24.0))
+            UiNode::container("unbound", absolute_style_at(0.0, 90.0, 0.0, 60.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
@@ -63303,13 +63323,13 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("primary", absolute_style_at(0.0, 0.0, 0, 72.0, 24.0))
+                UiNode::container("primary", absolute_style_at(0.0, 0.0, 0.0, 72.0, 24.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_action("primary.activate")
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
             let mut secondary =
-                UiNode::container("secondary", absolute_style_at(0.0, 32.0, 0, 72.0, 24.0))
+                UiNode::container("secondary", absolute_style_at(0.0, 32.0, 0.0, 72.0, 24.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0));
             if bind_secondary {
@@ -63352,7 +63372,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(260.0, 160.0));
         doc.add_child(
             doc.root,
-            UiNode::container("good", absolute_style_at(0.0, 0.0, 0, 78.0, 30.0))
+            UiNode::container("good", absolute_style_at(0.0, 0.0, 0.0, 78.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("good.activate")
                 .with_visual(UiVisual::panel(
@@ -63368,7 +63388,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("blank", absolute_style_at(0.0, 42.0, 0, 78.0, 30.0))
+            UiNode::container("blank", absolute_style_at(0.0, 42.0, 0.0, 78.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("blank.activate"),
         );
@@ -63376,14 +63396,14 @@ mod tests {
             doc.root,
             UiNode::container(
                 "passive_action",
-                absolute_style_at(92.0, 0.0, 0, 78.0, 30.0),
+                absolute_style_at(92.0, 0.0, 0.0, 78.0, 30.0),
             )
             .with_action("passive.activate")
             .with_visual(UiVisual::panel(ColorRgba::new(70, 120, 86, 255), None, 4.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("tiny", absolute_style_at(92.0, 42.0, 0, 12.0, 12.0))
+            UiNode::container("tiny", absolute_style_at(92.0, 42.0, 0.0, 12.0, 12.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 72, 84, 255), None, 3.0)),
         );
@@ -63429,7 +63449,7 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(260.0, 160.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("good", absolute_style_at(0.0, 0.0, 0, 78.0, 30.0))
+                UiNode::container("good", absolute_style_at(0.0, 0.0, 0.0, 78.0, 30.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_action("good.activate")
                     .with_visual(UiVisual::panel(
@@ -63446,13 +63466,13 @@ mod tests {
             if with_gaps {
                 doc.add_child(
                     doc.root,
-                    UiNode::container("blank", absolute_style_at(0.0, 42.0, 0, 78.0, 30.0))
+                    UiNode::container("blank", absolute_style_at(0.0, 42.0, 0.0, 78.0, 30.0))
                         .with_input(InputBehavior::BUTTON)
                         .with_action("blank.activate"),
                 );
                 doc.add_child(
                     doc.root,
-                    UiNode::container("tiny", absolute_style_at(92.0, 42.0, 0, 12.0, 12.0))
+                    UiNode::container("tiny", absolute_style_at(92.0, 42.0, 0.0, 12.0, 12.0))
                         .with_input(InputBehavior::BUTTON)
                         .with_visual(UiVisual::panel(ColorRgba::new(180, 72, 84, 255), None, 3.0)),
                 );
@@ -63504,12 +63524,15 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 120.0));
         let host = doc.add_child(
             doc.root,
-            UiNode::container("split.host", absolute_style_at(12.0, 10.0, 0, 160.0, 80.0))
-                .with_visual(UiVisual::panel(ColorRgba::new(18, 26, 36, 255), None, 0.0)),
+            UiNode::container(
+                "split.host",
+                absolute_style_at(12.0, 10.0, 0.0, 160.0, 80.0),
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(18, 26, 36, 255), None, 0.0)),
         );
         doc.add_child(
             host,
-            UiNode::container("split.edge", absolute_style_at(80.0, 0.0, 1, 2.0, 80.0))
+            UiNode::container("split.edge", absolute_style_at(80.0, 0.0, 1.0, 2.0, 80.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("split.edge.resize")
                 .with_action_mode(WidgetActionMode::PointerEditParentRect)
@@ -63521,11 +63544,14 @@ mod tests {
         );
         doc.add_child(
             host,
-            UiNode::container("split.gutter", absolute_style_at(118.0, 8.0, 1, 6.0, 64.0))
-                .with_input(InputBehavior::BUTTON)
-                .with_action("split.gutter.resize")
-                .with_action_mode(WidgetActionMode::PointerEditParentRect)
-                .with_visual(UiVisual::panel(ColorRgba::new(72, 138, 92, 255), None, 0.0)),
+            UiNode::container(
+                "split.gutter",
+                absolute_style_at(118.0, 8.0, 1.0, 6.0, 64.0),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_action("split.gutter.resize")
+            .with_action_mode(WidgetActionMode::PointerEditParentRect)
+            .with_visual(UiVisual::panel(ColorRgba::new(72, 138, 92, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(220.0, 120.0), &mut ApproxTextMeasurer)
             .expect("layout");
@@ -64072,7 +64098,7 @@ mod tests {
             UiNode::container(
                 "debug_overlay",
                 UiNodeStyle {
-                    z_index: -10,
+                    z_index: -10.0,
                     ..fixed_style(80.0, 40.0)
                 },
             )
@@ -64090,8 +64116,8 @@ mod tests {
             .expect("overlay paint item");
 
         assert_eq!(item.layer, UiLayer::DebugOverlay);
-        assert_eq!(item.z_index, -10);
-        assert_eq!(item.resolved_z, UiLayer::DebugOverlay.base_z() - 10);
+        assert_eq!(item.z_index, -10.0);
+        assert_eq!(item.resolved_z, UiLayer::DebugOverlay.base_z() - 10.0);
     }
 
     #[test]
@@ -64149,10 +64175,10 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("base", absolute_style_at(0.0, 0.0, 0, 64.0, 28.0))
+                UiNode::container("base", absolute_style_at(0.0, 0.0, 0.0, 64.0, 28.0))
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
-            let mut accent_style = absolute_style_at(72.0, 0.0, 0, 64.0, 28.0);
+            let mut accent_style = absolute_style_at(72.0, 0.0, 0.0, 64.0, 28.0);
             if effect {
                 accent_style = accent_style.with_opacity(0.5);
             }
@@ -64321,14 +64347,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         let back = doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(8, 90.0, 40.0))
+            UiNode::container("front", layered_absolute_style(8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -64360,7 +64386,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         let passive_id = doc.add_child(
             doc.root,
-            UiNode::container("passive", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("passive", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
@@ -64384,7 +64410,7 @@ mod tests {
         let mut first_doc = UiDocument::new(fixed_style(200.0, 120.0));
         first_doc.add_child(
             first_doc.root,
-            UiNode::container("back", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
@@ -64404,14 +64430,14 @@ mod tests {
         let mut second_doc = UiDocument::new(fixed_style(200.0, 120.0));
         second_doc.add_child(
             second_doc.root,
-            UiNode::container("back", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         second_doc.add_child(
             second_doc.root,
-            UiNode::container("front", layered_absolute_style(8, 90.0, 40.0))
+            UiNode::container("front", layered_absolute_style(8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -64460,14 +64486,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(8, 90.0, 40.0))
+            UiNode::container("front", layered_absolute_style(8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -64500,14 +64526,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(8, 90.0, 40.0))
+            UiNode::container("front", layered_absolute_style(8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -64543,14 +64569,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(8, 90.0, 40.0))
+            UiNode::container("front", layered_absolute_style(8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -64585,14 +64611,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(8, 90.0, 40.0))
+            UiNode::container("front", layered_absolute_style(8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -64715,14 +64741,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 90.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(8, 90.0, 40.0))
+            UiNode::container("front", layered_absolute_style(8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -64761,7 +64787,7 @@ mod tests {
             doc.root,
             UiNode::container(
                 "transparent",
-                layered_absolute_style(0, 90.0, 40.0).with_opacity(0.0),
+                layered_absolute_style(0.0, 90.0, 40.0).with_opacity(0.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_action("transparent.activate")
@@ -64809,12 +64835,12 @@ mod tests {
         );
         let target = doc.add_child(
             stack,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 80.0, 32.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 80.0, 32.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             stack,
-            UiNode::container("cover", absolute_style_at(24.0, 0.0, 1, 80.0, 32.0))
+            UiNode::container("cover", absolute_style_at(24.0, 0.0, 1.0, 80.0, 32.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(240.0, 140.0), &mut ApproxTextMeasurer)
@@ -64858,14 +64884,14 @@ mod tests {
         );
         let target = doc.add_child(
             stack,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 80.0, 32.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 80.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             stack,
-            UiNode::container("cover", absolute_style_at(24.0, 0.0, 1, 80.0, 32.0))
+            UiNode::container("cover", absolute_style_at(24.0, 0.0, 1.0, 80.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -64917,7 +64943,7 @@ mod tests {
         );
         let target = doc.add_child(
             viewport,
-            UiNode::container("target", absolute_style_at(60.0, 24.0, 0, 48.0, 28.0))
+            UiNode::container("target", absolute_style_at(60.0, 24.0, 0.0, 48.0, 28.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
@@ -64946,13 +64972,13 @@ mod tests {
         let clipper = doc.add_child(doc.root, UiNode::container("clipper", clip_style));
         doc.add_child(
             clipper,
-            UiNode::container("partial", absolute_style_at(24.0, 0.0, 0, 72.0, 24.0))
+            UiNode::container("partial", absolute_style_at(24.0, 0.0, 0.0, 72.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("paint", absolute_style_at(80.0, 0.0, 0, 40.0, 24.0))
+            UiNode::container("paint", absolute_style_at(80.0, 0.0, 0.0, 40.0, 24.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(220.0, 140.0), &mut ApproxTextMeasurer)
@@ -64982,7 +65008,7 @@ mod tests {
             let clipper = doc.add_child(doc.root, UiNode::container("clipper", clip_style));
             doc.add_child(
                 clipper,
-                UiNode::container("target", absolute_style_at(target_x, 6.0, 0, 48.0, 24.0))
+                UiNode::container("target", absolute_style_at(target_x, 6.0, 0.0, 48.0, 24.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
@@ -65069,7 +65095,7 @@ mod tests {
 
     #[test]
     fn debug_wheel_route_trace_explains_blocked_scroll_scope() {
-        let mut back_style = absolute_style_at(20.0, 20.0, 1, 100.0, 60.0);
+        let mut back_style = absolute_style_at(20.0, 20.0, 1.0, 100.0, 60.0);
         back_style.set_clip(ClipBehavior::Clip);
         let mut doc = UiDocument::new(fixed_style(160.0, 140.0));
         let back_scroll = doc.add_child(
@@ -65080,7 +65106,7 @@ mod tests {
             back_scroll,
             UiNode::container("back.content", fixed_style(100.0, 140.0)),
         );
-        let mut front_style = absolute_style_at(10.0, 10.0, 10, 120.0, 90.0);
+        let mut front_style = absolute_style_at(10.0, 10.0, 10.0, 120.0, 90.0);
         front_style.set_clip(ClipBehavior::Clip);
         let front = doc.add_child(
             doc.root,
@@ -65120,7 +65146,7 @@ mod tests {
     #[test]
     fn debug_wheel_route_trace_finds_scoped_scroll_target() {
         let mut doc = UiDocument::new(fixed_style(180.0, 150.0));
-        let mut front_style = absolute_style_at(10.0, 10.0, 10, 140.0, 110.0);
+        let mut front_style = absolute_style_at(10.0, 10.0, 10.0, 140.0, 110.0);
         front_style.set_clip(ClipBehavior::Clip);
         let front = doc.add_child(
             doc.root,
@@ -65130,7 +65156,7 @@ mod tests {
                 keyboard: false,
             }),
         );
-        let mut scroll_style = absolute_style_at(10.0, 10.0, 0, 90.0, 50.0);
+        let mut scroll_style = absolute_style_at(10.0, 10.0, 0.0, 90.0, 50.0);
         scroll_style.set_clip(ClipBehavior::Clip);
         let front_scroll = doc.add_child(
             front,
@@ -65234,7 +65260,7 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("target", absolute_style_at(x, 0.0, 0, 90.0, 40.0))
+                UiNode::container("target", absolute_style_at(x, 0.0, 0.0, 90.0, 40.0))
                     .with_input(input)
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0))
                     .with_accessibility(
@@ -65310,7 +65336,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("secondary", absolute_style_at(24.0, 0.0, 7, 72.0, 28.0))
+            UiNode::container("secondary", absolute_style_at(24.0, 0.0, 7.0, 72.0, 28.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(220.0, 140.0), &mut ApproxTextMeasurer)
@@ -65469,14 +65495,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(160.0, 100.0));
         let glow = doc.add_child(
             doc.root,
-            UiNode::container("glow", layered_absolute_style(0, 40.0, 24.0))
+            UiNode::container("glow", layered_absolute_style(0.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_material(ElementMaterial::new().with_paint_outset(LayoutInsets::points(8.0)))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let cover = doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(20.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(20.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
@@ -65500,7 +65526,7 @@ mod tests {
         let mut clean_doc = UiDocument::new(fixed_style(220.0, 120.0));
         clean_doc.add_child(
             clean_doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 72.0, 32.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 72.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_accessibility(
@@ -65513,7 +65539,7 @@ mod tests {
         );
         clean_doc.add_child(
             clean_doc.root,
-            UiNode::container("front", absolute_style_at(120.0, 0.0, 8, 72.0, 32.0))
+            UiNode::container("front", absolute_style_at(120.0, 0.0, 8.0, 72.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_accessibility(
@@ -65536,7 +65562,7 @@ mod tests {
         let mut bad_doc = UiDocument::new(fixed_style(220.0, 120.0));
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 72.0, 32.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 72.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_accessibility(
@@ -65549,7 +65575,7 @@ mod tests {
         );
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("front", absolute_style_at(24.0, 4.0, 8, 72.0, 32.0))
+            UiNode::container("front", absolute_style_at(24.0, 4.0, 8.0, 72.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_accessibility(
@@ -65607,7 +65633,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(180.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("glow", absolute_style_at(16.0, 16.0, 0, 56.0, 28.0))
+            UiNode::container("glow", absolute_style_at(16.0, 16.0, 0.0, 56.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_material(
                     ElementMaterial::shader(ShaderEffect::glow(
@@ -65643,9 +65669,10 @@ mod tests {
     fn debug_visual_effect_timeline_tracks_new_and_resolved_effect_bounds() {
         fn frame(with_effect: bool, frame_index: u64) -> DebugFrameTrace {
             let mut doc = UiDocument::new(fixed_style(180.0, 120.0));
-            let mut node = UiNode::container("glow", absolute_style_at(16.0, 16.0, 0, 56.0, 28.0))
-                .with_input(InputBehavior::BUTTON)
-                .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0));
+            let mut node =
+                UiNode::container("glow", absolute_style_at(16.0, 16.0, 0.0, 56.0, 28.0))
+                    .with_input(InputBehavior::BUTTON)
+                    .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0));
             if with_effect {
                 node = node.with_material(
                     ElementMaterial::shader(ShaderEffect::glow(
@@ -65705,7 +65732,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(180.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("glow", absolute_style_at(16.0, 16.0, 0, 56.0, 28.0))
+            UiNode::container("glow", absolute_style_at(16.0, 16.0, 0.0, 56.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_material(
                     ElementMaterial::shader(ShaderEffect::glow(
@@ -65761,7 +65788,7 @@ mod tests {
             node: UiNodeId(1),
             rect: UiRect::new(0.0, 0.0, 24.0, 24.0),
             clip_rect: UiRect::new(0.0, 0.0, 120.0, 80.0),
-            z_index: 0,
+            z_index: 0.0,
             layer_order: LayerOrder::DEFAULT,
             opacity: 1.0,
             transform: crate::PaintTransform::default(),
@@ -65776,7 +65803,7 @@ mod tests {
             node: UiNodeId(2),
             rect: UiRect::new(30.0, 0.0, 24.0, 24.0),
             clip_rect: UiRect::new(0.0, 0.0, 120.0, 80.0),
-            z_index: 0,
+            z_index: 0.0,
             layer_order: LayerOrder::DEFAULT,
             opacity: 1.0,
             transform: crate::PaintTransform::default(),
@@ -65856,7 +65883,7 @@ mod tests {
                 node: UiNodeId(1),
                 rect: UiRect::new(0.0, 0.0, 24.0, 24.0),
                 clip_rect: UiRect::new(0.0, 0.0, 120.0, 80.0),
-                z_index: 0,
+                z_index: 0.0,
                 layer_order: LayerOrder::DEFAULT,
                 opacity: 1.0,
                 transform: crate::PaintTransform::default(),
@@ -65893,7 +65920,7 @@ mod tests {
                     node: UiNodeId(1),
                     rect: UiRect::new(0.0, 0.0, 24.0, 24.0),
                     clip_rect: UiRect::new(0.0, 0.0, 120.0, 80.0),
-                    z_index: 0,
+                    z_index: 0.0,
                     layer_order: LayerOrder::DEFAULT,
                     opacity: 1.0,
                     transform: crate::PaintTransform::default(),
@@ -65988,7 +66015,7 @@ mod tests {
         );
         let cover = doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -66045,14 +66072,14 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("glow", absolute_style_at(72.0, 8.0, 1, 40.0, 24.0))
+            UiNode::container("glow", absolute_style_at(72.0, 8.0, 1.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("glow.activate")
                 .with_material(ElementMaterial::new().with_paint_outset(LayoutInsets::points(8.0)))
@@ -66112,7 +66139,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -66128,7 +66155,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -66245,7 +66272,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -66645,14 +66672,14 @@ mod tests {
         let mut bad_doc = UiDocument::new(fixed_style(180.0, 120.0));
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("target", layered_absolute_style(0, 88.0, 36.0))
+            UiNode::container("target", layered_absolute_style(0.0, 88.0, 36.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("cover", absolute_style_at(20.0, 0.0, 5, 72.0, 36.0))
+            UiNode::container("cover", absolute_style_at(20.0, 0.0, 5.0, 72.0, 36.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -66711,14 +66738,14 @@ mod tests {
         let mut bad_doc = UiDocument::new(fixed_style(180.0, 120.0));
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("target", layered_absolute_style(0, 88.0, 36.0))
+            UiNode::container("target", layered_absolute_style(0.0, 88.0, 36.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("cover", absolute_style_at(20.0, 0.0, 5, 72.0, 36.0))
+            UiNode::container("cover", absolute_style_at(20.0, 0.0, 5.0, 72.0, 36.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -66743,7 +66770,7 @@ mod tests {
         let mut fixed_doc = UiDocument::new(fixed_style(180.0, 120.0));
         fixed_doc.add_child(
             fixed_doc.root,
-            UiNode::container("target", layered_absolute_style(0, 88.0, 36.0))
+            UiNode::container("target", layered_absolute_style(0.0, 88.0, 36.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
@@ -66858,7 +66885,7 @@ mod tests {
         let mut slow_doc = UiDocument::new(fixed_style(160.0, 100.0));
         slow_doc.add_child(
             slow_doc.root,
-            UiNode::container("target", layered_absolute_style(0, 40.0, 24.0))
+            UiNode::container("target", layered_absolute_style(0.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_material(ElementMaterial::new().with_paint_outset(LayoutInsets::points(8.0)))
@@ -66866,7 +66893,7 @@ mod tests {
         );
         slow_doc.add_child(
             slow_doc.root,
-            UiNode::container("cover", absolute_style_at(20.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(20.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -67029,7 +67056,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -67135,7 +67162,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -67196,7 +67223,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -67212,7 +67239,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -67270,7 +67297,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -67593,7 +67620,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -67722,7 +67749,7 @@ mod tests {
         );
         issue_doc.add_child(
             issue_doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -67803,7 +67830,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -67921,7 +67948,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8, 40.0, 24.0))
+            UiNode::container("cover", absolute_style_at(0.0, 0.0, 8.0, 40.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68013,7 +68040,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -68034,7 +68061,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68090,7 +68117,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -68111,7 +68138,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68163,7 +68190,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -68184,7 +68211,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68241,13 +68268,13 @@ mod tests {
         );
         doc.add_child(
             parent,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 50.0, 30.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 50.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate"),
         );
         doc.add_child(
             parent,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 50.0, 30.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 50.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68275,7 +68302,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(180.0, 100.0));
         doc.add_child(
             doc.root,
-            UiNode::container("save.button", absolute_style_at(0.0, 0.0, 0, 72.0, 28.0))
+            UiNode::container("save.button", absolute_style_at(0.0, 0.0, 0.0, 72.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("save.activate")
                 .with_accessibility(
@@ -68465,18 +68492,21 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("tiny", absolute_style_at(104.0, 0.0, 0, 4.0, 4.0))
+            UiNode::container("tiny", absolute_style_at(104.0, 0.0, 0.0, 4.0, 4.0))
                 .with_input(InputBehavior::BUTTON),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("paint.back", absolute_style_at(0.0, 72.0, 0, 70.0, 32.0))
+            UiNode::container("paint.back", absolute_style_at(0.0, 72.0, 0.0, 70.0, 32.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("paint.front", absolute_style_at(24.0, 72.0, 4, 70.0, 32.0))
-                .with_visual(UiVisual::panel(ColorRgba::new(180, 50, 40, 255), None, 0.0)),
+            UiNode::container(
+                "paint.front",
+                absolute_style_at(24.0, 72.0, 4.0, 70.0, 32.0),
+            )
+            .with_visual(UiVisual::panel(ColorRgba::new(180, 50, 40, 255), None, 0.0)),
         );
         doc.compute_layout(UiSize::new(220.0, 140.0), &mut ApproxTextMeasurer)
             .expect("layout");
@@ -68528,7 +68558,7 @@ mod tests {
                 );
                 doc.add_child(
                     doc.root,
-                    UiNode::container("tiny", absolute_style_at(104.0, 0.0, 0, 4.0, 4.0))
+                    UiNode::container("tiny", absolute_style_at(104.0, 0.0, 0.0, 4.0, 4.0))
                         .with_input(InputBehavior::BUTTON),
                 );
             } else {
@@ -68652,14 +68682,14 @@ mod tests {
         );
         let target = doc.add_child(
             parent,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 70.0, 36.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 70.0, 36.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
         );
         doc.add_child(
             parent,
-            UiNode::container("cover", absolute_style_at(12.0, 0.0, 8, 70.0, 36.0))
+            UiNode::container("cover", absolute_style_at(12.0, 0.0, 8.0, 70.0, 36.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 50, 40, 255), None, 0.0)),
@@ -68706,7 +68736,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -68722,7 +68752,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68751,7 +68781,7 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+                UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_action("target.activate")
                     .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -68759,7 +68789,7 @@ mod tests {
             if with_cover {
                 doc.add_child(
                     doc.root,
-                    UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+                    UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                         .with_input(InputBehavior::BUTTON)
                         .with_action("cover.activate")
                         .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68811,7 +68841,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -68832,7 +68862,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68882,7 +68912,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 90.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(30, 90, 150, 255), None, 0.0)),
@@ -68903,7 +68933,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8, 90.0, 40.0))
+            UiNode::container("cover", absolute_style_at(10.0, 0.0, 8.0, 90.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("cover.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -68962,7 +68992,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(180.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("late", absolute_style_at(0.0, 0.0, 0, 50.0, 24.0))
+            UiNode::container("late", absolute_style_at(0.0, 0.0, 0.0, 50.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
                     AccessibilityMeta::new(AccessibilityRole::Button)
@@ -68973,12 +69003,12 @@ mod tests {
         );
         let fallback = doc.add_child(
             doc.root,
-            UiNode::container("fallback", absolute_style_at(0.0, 32.0, 0, 50.0, 24.0))
+            UiNode::container("fallback", absolute_style_at(0.0, 32.0, 0.0, 50.0, 24.0))
                 .with_input(InputBehavior::BUTTON),
         );
         let first = doc.add_child(
             doc.root,
-            UiNode::container("first", absolute_style_at(0.0, 64.0, 0, 50.0, 24.0))
+            UiNode::container("first", absolute_style_at(0.0, 64.0, 0.0, 50.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
                     AccessibilityMeta::new(AccessibilityRole::Button)
@@ -69019,7 +69049,7 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(180.0, 120.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("first", absolute_style_at(0.0, 0.0, 0, 50.0, 24.0))
+                UiNode::container("first", absolute_style_at(0.0, 0.0, 0.0, 50.0, 24.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_accessibility(
                         AccessibilityMeta::new(AccessibilityRole::Button)
@@ -69029,7 +69059,7 @@ mod tests {
                     ),
             );
             let mut fallback =
-                UiNode::container("fallback", absolute_style_at(0.0, 32.0, 0, 50.0, 24.0))
+                UiNode::container("fallback", absolute_style_at(0.0, 32.0, 0.0, 50.0, 24.0))
                     .with_input(InputBehavior::BUTTON);
             if include_fallback_accessibility {
                 fallback = fallback.with_accessibility(
@@ -69081,7 +69111,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(180.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("good", absolute_style_at(0.0, 0.0, 0, 60.0, 24.0))
+            UiNode::container("good", absolute_style_at(0.0, 0.0, 0.0, 60.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_accessibility(
                     AccessibilityMeta::new(AccessibilityRole::Button)
@@ -69093,7 +69123,7 @@ mod tests {
         );
         doc.add_child(
             doc.root,
-            UiNode::container("missing", absolute_style_at(0.0, 32.0, 0, 60.0, 24.0))
+            UiNode::container("missing", absolute_style_at(0.0, 32.0, 0.0, 60.0, 24.0))
                 .with_input(InputBehavior::BUTTON),
         );
         doc.compute_layout(UiSize::new(180.0, 120.0), &mut ApproxTextMeasurer)
@@ -69120,7 +69150,7 @@ mod tests {
         fn accessibility_frame(accessible: bool, frame_index: u64) -> DebugFrameTrace {
             let mut doc = UiDocument::new(fixed_style(180.0, 120.0));
             let mut target =
-                UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 72.0, 28.0))
+                UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 72.0, 28.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_action("target.activate");
             if accessible {
@@ -69186,13 +69216,13 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         let base = doc.add_child(
             doc.root,
-            UiNode::container("base", layered_absolute_style(0, 80.0, 40.0))
+            UiNode::container("base", layered_absolute_style(0.0, 80.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(10, 80.0, 40.0))
+            UiNode::container("front", layered_absolute_style(10.0, 80.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
@@ -69220,7 +69250,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         doc.add_child(
             doc.root,
-            UiNode::container("good", layered_absolute_style(0, 72.0, 32.0))
+            UiNode::container("good", layered_absolute_style(0.0, 72.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("good.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
@@ -69231,13 +69261,13 @@ mod tests {
         let clipper = doc.add_child(doc.root, UiNode::container("clipper", clip_style));
         doc.add_child(
             clipper,
-            UiNode::container("clipped", absolute_style_at(0.0, 0.0, 0, 80.0, 24.0))
+            UiNode::container("clipped", absolute_style_at(0.0, 0.0, 0.0, 80.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("paint.only", absolute_style_at(96.0, 0.0, 0, 48.0, 24.0))
+            UiNode::container("paint.only", absolute_style_at(96.0, 0.0, 0.0, 48.0, 24.0))
                 .with_visual(UiVisual::panel(
                     ColorRgba::new(70, 100, 130, 255),
                     None,
@@ -69279,7 +69309,7 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 88.0, 40.0))
+                UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 88.0, 40.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_action("target.activate")
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
@@ -69287,7 +69317,7 @@ mod tests {
             if with_cover {
                 doc.add_child(
                     doc.root,
-                    UiNode::container("cover", absolute_style_at(12.0, 0.0, 12, 88.0, 40.0))
+                    UiNode::container("cover", absolute_style_at(12.0, 0.0, 12.0, 88.0, 40.0))
                         .with_input(InputBehavior::BUTTON)
                         .with_action("cover.activate")
                         .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
@@ -69338,18 +69368,18 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 80.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 80.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(10, 80.0, 40.0))
+            UiNode::container("front", layered_absolute_style(10.0, 80.0, 40.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("side", absolute_style_at(100.0, 0.0, 0, 60.0, 28.0))
+            UiNode::container("side", absolute_style_at(100.0, 0.0, 0.0, 60.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(40, 130, 80, 255), None, 0.0)),
         );
@@ -69376,11 +69406,11 @@ mod tests {
 
     #[test]
     fn debug_stacking_order_timeline_tracks_z_changes_and_resolved_coverage() {
-        fn frame(cover_z: i16, frame_index: u64) -> DebugFrameTrace {
+        fn frame(cover_z: f32, frame_index: u64) -> DebugFrameTrace {
             let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("target", layered_absolute_style(0, 92.0, 36.0))
+                UiNode::container("target", layered_absolute_style(0.0, 92.0, 36.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
@@ -69399,9 +69429,9 @@ mod tests {
             )
         }
 
-        let target_front = frame(-2, 1);
-        let covered = frame(8, 2);
-        let restored = frame(-2, 3);
+        let target_front = frame(-2.0, 1);
+        let covered = frame(8.0, 2);
+        let restored = frame(-2.0, 3);
         let trace =
             DebugStackingOrderTimelineTrace::from_traces([&target_front, &covered, &restored]);
         let target = trace.record("target").expect("target stack timeline");
@@ -69415,8 +69445,8 @@ mod tests {
         assert_eq!(target.covered_frame_count, 1);
         assert!(target.changed_frame_count >= 2);
         assert!(target.max_overlaps_in_front >= 1);
-        assert_eq!(cover.min_resolved_z, -2);
-        assert_eq!(cover.max_resolved_z, 8);
+        assert_eq!(cover.min_resolved_z, -2.0);
+        assert_eq!(cover.max_resolved_z, 8.0);
         assert_eq!(trace.frame(1).map(|frame| frame.new_covered_count), Some(1));
         assert_eq!(
             trace.frame(2).map(|frame| frame.resolved_covered_count),
@@ -69435,13 +69465,13 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("good", layered_absolute_style(0, 64.0, 32.0))
+            UiNode::container("good", layered_absolute_style(0.0, 64.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("tiny", layered_absolute_style(0, 12.0, 12.0))
+            UiNode::container("tiny", layered_absolute_style(0.0, 12.0, 12.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
@@ -69468,12 +69498,12 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 120.0));
         doc.add_child(
             doc.root,
-            UiNode::container("blank", absolute_style_at(0.0, 0.0, 0, 72.0, 28.0))
+            UiNode::container("blank", absolute_style_at(0.0, 0.0, 0.0, 72.0, 28.0))
                 .with_input(InputBehavior::BUTTON),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("glow", absolute_style_at(92.0, 8.0, 0, 64.0, 28.0))
+            UiNode::container("glow", absolute_style_at(92.0, 8.0, 0.0, 64.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_material(
                     ElementMaterial::new()
@@ -69513,7 +69543,7 @@ mod tests {
     fn debug_paint_hit_mismatch_timeline_tracks_new_and_resolved_geometry_gaps() {
         fn frame(mismatch: bool, frame_index: u64) -> DebugFrameTrace {
             let mut doc = UiDocument::new(fixed_style(220.0, 120.0));
-            let blank = UiNode::container("blank", absolute_style_at(0.0, 0.0, 0, 72.0, 28.0))
+            let blank = UiNode::container("blank", absolute_style_at(0.0, 0.0, 0.0, 72.0, 28.0))
                 .with_input(InputBehavior::BUTTON);
             let blank = if mismatch {
                 blank
@@ -69521,7 +69551,7 @@ mod tests {
                 blank.with_visual(UiVisual::panel(ColorRgba::new(30, 110, 82, 255), None, 0.0))
             };
             doc.add_child(doc.root, blank);
-            let glow = UiNode::container("glow", absolute_style_at(92.0, 8.0, 0, 64.0, 28.0))
+            let glow = UiNode::container("glow", absolute_style_at(92.0, 8.0, 0.0, 64.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0));
             let glow = if mismatch {
@@ -69586,27 +69616,27 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(260.0, 160.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 92.0, 30.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("front", absolute_style_at(44.0, 8.0, 8, 92.0, 30.0))
+            UiNode::container("front", absolute_style_at(44.0, 8.0, 8.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(140, 80, 30, 255), None, 4.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("blank", absolute_style_at(0.0, 48.0, 0, 72.0, 28.0))
+            UiNode::container("blank", absolute_style_at(0.0, 48.0, 0.0, 72.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("blank.activate"),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("zero", absolute_style_at(84.0, 48.0, 0, 0.0, 24.0))
+            UiNode::container("zero", absolute_style_at(84.0, 48.0, 0.0, 0.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("zero.activate"),
         );
@@ -69614,7 +69644,7 @@ mod tests {
             doc.root,
             UiNode::container(
                 "passive_action",
-                absolute_style_at(112.0, 48.0, 0, 72.0, 28.0),
+                absolute_style_at(112.0, 48.0, 0.0, 72.0, 28.0),
             )
             .with_action("passive.activate")
             .with_visual(UiVisual::panel(ColorRgba::new(50, 95, 70, 255), None, 4.0)),
@@ -69660,7 +69690,7 @@ mod tests {
         let mut clean_doc = UiDocument::new(fixed_style(180.0, 120.0));
         clean_doc.add_child(
             clean_doc.root,
-            UiNode::container("button", absolute_style_at(0.0, 0.0, 0, 72.0, 28.0))
+            UiNode::container("button", absolute_style_at(0.0, 0.0, 0.0, 72.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("button.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
@@ -69677,21 +69707,21 @@ mod tests {
         let mut bad_doc = UiDocument::new(fixed_style(180.0, 120.0));
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 72.0, 28.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 72.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
         );
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("front", absolute_style_at(24.0, 4.0, 8, 72.0, 28.0))
+            UiNode::container("front", absolute_style_at(24.0, 4.0, 8.0, 72.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(140, 80, 30, 255), None, 4.0)),
         );
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("blank", absolute_style_at(0.0, 42.0, 0, 72.0, 28.0))
+            UiNode::container("blank", absolute_style_at(0.0, 42.0, 0.0, 72.0, 28.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("blank.activate"),
         );
@@ -69731,14 +69761,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 92.0, 30.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("front", absolute_style_at(40.0, 6.0, 8, 92.0, 30.0))
+            UiNode::container("front", absolute_style_at(40.0, 6.0, 8.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(140, 80, 30, 255), None, 4.0)),
@@ -69817,7 +69847,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 120.0, 48.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 120.0, 48.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("target.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
@@ -69890,14 +69920,14 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
         doc.add_child(
             doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 92.0, 30.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("front", absolute_style_at(40.0, 6.0, 8, 92.0, 30.0))
+            UiNode::container("front", absolute_style_at(40.0, 6.0, 8.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(140, 80, 30, 255), None, 4.0)),
@@ -69958,14 +69988,14 @@ mod tests {
         let mut clean_doc = UiDocument::new(fixed_style(240.0, 140.0));
         clean_doc.add_child(
             clean_doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 92.0, 30.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
         );
         clean_doc.add_child(
             clean_doc.root,
-            UiNode::container("front", absolute_style_at(120.0, 0.0, 8, 92.0, 30.0))
+            UiNode::container("front", absolute_style_at(120.0, 0.0, 8.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(140, 80, 30, 255), None, 4.0)),
@@ -69989,14 +70019,14 @@ mod tests {
         let mut bad_doc = UiDocument::new(fixed_style(240.0, 140.0));
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 92.0, 30.0))
+            UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("back.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 4.0)),
         );
         bad_doc.add_child(
             bad_doc.root,
-            UiNode::container("front", absolute_style_at(40.0, 6.0, 8, 92.0, 30.0))
+            UiNode::container("front", absolute_style_at(40.0, 6.0, 8.0, 92.0, 30.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_action("front.activate")
                 .with_visual(UiVisual::panel(ColorRgba::new(140, 80, 30, 255), None, 4.0)),
@@ -70056,7 +70086,7 @@ mod tests {
             doc.root,
             UiNode::container(
                 "transparent",
-                absolute_style_at(0.0, 0.0, 0, 80.0, 28.0).with_opacity(0.0),
+                absolute_style_at(0.0, 0.0, 0.0, 80.0, 28.0).with_opacity(0.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
@@ -70071,12 +70101,12 @@ mod tests {
         );
         doc.add_child(
             clipper,
-            UiNode::container("clipped", absolute_style_at(0.0, 0.0, 0, 90.0, 24.0))
+            UiNode::container("clipped", absolute_style_at(0.0, 0.0, 0.0, 90.0, 24.0))
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("no_paint", absolute_style_at(0.0, 72.0, 0, 80.0, 24.0))
+            UiNode::container("no_paint", absolute_style_at(0.0, 72.0, 0.0, 80.0, 24.0))
                 .with_input(InputBehavior::BUTTON),
         );
         doc.compute_layout(UiSize::new(220.0, 140.0), &mut ApproxTextMeasurer)
@@ -70113,9 +70143,9 @@ mod tests {
         ) -> DebugFrameTrace {
             let mut doc = UiDocument::new(fixed_style(220.0, 140.0));
             let transparent_style = if transparent {
-                absolute_style_at(0.0, 0.0, 0, 80.0, 28.0).with_opacity(0.0)
+                absolute_style_at(0.0, 0.0, 0.0, 80.0, 28.0).with_opacity(0.0)
             } else {
-                absolute_style_at(0.0, 0.0, 0, 80.0, 28.0)
+                absolute_style_at(0.0, 0.0, 0.0, 80.0, 28.0)
             };
             doc.add_child(
                 doc.root,
@@ -70126,7 +70156,7 @@ mod tests {
             if include_no_paint {
                 doc.add_child(
                     doc.root,
-                    UiNode::container("no_paint", absolute_style_at(0.0, 40.0, 0, 80.0, 24.0))
+                    UiNode::container("no_paint", absolute_style_at(0.0, 40.0, 0.0, 80.0, 24.0))
                         .with_input(InputBehavior::BUTTON),
                 );
             }
@@ -70185,13 +70215,13 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(220.0, 120.0));
         let target = doc.add_child(
             doc.root,
-            UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 100.0, 40.0))
+            UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 100.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         doc.add_child(
             doc.root,
-            UiNode::container("cover", absolute_style_at(20.0, 0.0, 8, 100.0, 40.0))
+            UiNode::container("cover", absolute_style_at(20.0, 0.0, 8.0, 100.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
@@ -70199,7 +70229,7 @@ mod tests {
             doc.root,
             UiNode::container(
                 "duplicate.cover",
-                absolute_style_at(40.0, 0.0, 9, 60.0, 40.0),
+                absolute_style_at(40.0, 0.0, 9.0, 60.0, 40.0),
             )
             .with_input(InputBehavior::BUTTON)
             .with_visual(UiVisual::panel(ColorRgba::new(120, 70, 35, 255), None, 0.0)),
@@ -70229,14 +70259,14 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(220.0, 120.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("target", absolute_style_at(0.0, 0.0, 0, 100.0, 40.0))
+                UiNode::container("target", absolute_style_at(0.0, 0.0, 0.0, 100.0, 40.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
             if with_cover {
                 doc.add_child(
                     doc.root,
-                    UiNode::container("cover", absolute_style_at(20.0, 0.0, 8, 100.0, 40.0))
+                    UiNode::container("cover", absolute_style_at(20.0, 0.0, 8.0, 100.0, 40.0))
                         .with_input(InputBehavior::BUTTON)
                         .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
                 );
@@ -70288,7 +70318,7 @@ mod tests {
         let mut wide = UiDocument::new(fixed_style(320.0, 180.0));
         wide.add_child(
             wide.root,
-            UiNode::container("wide.button", layered_absolute_style(0, 80.0, 32.0))
+            UiNode::container("wide.button", layered_absolute_style(0.0, 80.0, 32.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
@@ -70299,13 +70329,13 @@ mod tests {
         let mut narrow = UiDocument::new(fixed_style(180.0, 120.0));
         narrow.add_child(
             narrow.root,
-            UiNode::container("narrow.tiny", absolute_style_at(0.0, 0.0, 0, 12.0, 12.0))
+            UiNode::container("narrow.tiny", absolute_style_at(0.0, 0.0, 0.0, 12.0, 12.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
         narrow.add_child(
             narrow.root,
-            UiNode::container("narrow.cover", absolute_style_at(6.0, 0.0, 8, 44.0, 24.0))
+            UiNode::container("narrow.cover", absolute_style_at(6.0, 0.0, 8.0, 44.0, 24.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
@@ -70342,7 +70372,7 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(120.0, 80.0));
         let round = doc.add_child(
             doc.root,
-            UiNode::container("round", layered_absolute_style(0, 40.0, 40.0))
+            UiNode::container("round", layered_absolute_style(0.0, 40.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_material(ElementMaterial::new().with_hit_shape(ElementShape::circle()))
                 .with_visual(UiVisual::panel(
@@ -70370,13 +70400,13 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         let back = doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 80.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 80.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(10, 80.0, 40.0))
+            UiNode::container("front", layered_absolute_style(10.0, 80.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
@@ -70408,7 +70438,7 @@ mod tests {
             .contains(&DebugOverlapReason::BothPointerInteractive));
         assert!(overlap.reasons.contains(&DebugOverlapReason::ZOrdering {
             back_resolved_z: UiLayer::AppContent.base_z(),
-            front_resolved_z: UiLayer::AppContent.base_z() + 10,
+            front_resolved_z: UiLayer::AppContent.base_z() + 10.0,
         }));
     }
 
@@ -70417,13 +70447,13 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         let back = doc.add_child(
             doc.root,
-            UiNode::container("back", layered_absolute_style(0, 80.0, 40.0))
+            UiNode::container("back", layered_absolute_style(0.0, 80.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
         );
         let front = doc.add_child(
             doc.root,
-            UiNode::container("front", layered_absolute_style(10, 80.0, 40.0))
+            UiNode::container("front", layered_absolute_style(10.0, 80.0, 40.0))
                 .with_input(InputBehavior::BUTTON)
                 .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
         );
@@ -70519,11 +70549,11 @@ mod tests {
         let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
         let first = doc.add_child(
             doc.root,
-            UiNode::container("first", absolute_style_at(0.0, 0.0, 0, 40.0, 20.0)),
+            UiNode::container("first", absolute_style_at(0.0, 0.0, 0.0, 40.0, 20.0)),
         );
         let second = doc.add_child(
             doc.root,
-            UiNode::container("second", absolute_style_at(20.0, 0.0, 0, 40.0, 20.0)),
+            UiNode::container("second", absolute_style_at(20.0, 0.0, 0.0, 40.0, 20.0)),
         );
         doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
             .expect("layout");
@@ -70556,13 +70586,13 @@ mod tests {
             let mut doc = UiDocument::new(fixed_style(200.0, 120.0));
             doc.add_child(
                 doc.root,
-                UiNode::container("back", absolute_style_at(0.0, 0.0, 0, 80.0, 40.0))
+                UiNode::container("back", absolute_style_at(0.0, 0.0, 0.0, 80.0, 40.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_visual(UiVisual::panel(ColorRgba::new(20, 80, 140, 255), None, 0.0)),
             );
             doc.add_child(
                 doc.root,
-                UiNode::container("front", absolute_style_at(front_x, 0.0, 10, 80.0, 40.0))
+                UiNode::container("front", absolute_style_at(front_x, 0.0, 10.0, 80.0, 40.0))
                     .with_input(InputBehavior::BUTTON)
                     .with_visual(UiVisual::panel(ColorRgba::new(180, 40, 40, 255), None, 0.0)),
             );

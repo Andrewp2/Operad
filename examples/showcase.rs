@@ -86,9 +86,9 @@ use operad::{
     ANIMATION_INPUT_POINTER_NORM_X,
 };
 const RIGHT_PANEL_WIDTH: f32 = 300.0;
-const SHOWCASE_WINDOW_Z_BASE: i16 = 64;
-const SHOWCASE_WINDOW_Z_STRIDE: i16 = 32;
-const SHOWCASE_WINDOW_Z_MAX: i16 = 960;
+const SHOWCASE_WINDOW_Z_BASE: f32 = 64.0;
+const SHOWCASE_WINDOW_Z_STRIDE: f32 = 32.0;
+const SHOWCASE_WINDOW_Z_MAX: f32 = 960.0;
 const SHOWCASE_TICK_RATE_HZ: f32 = 120.0;
 const SHOWCASE_FPS_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 const SHOWCASE_ORGANIZE_BUTTON_RESERVED_HEIGHT: f32 = 44.0;
@@ -4190,7 +4190,7 @@ fn organize_windows_button(ui: &mut UiDocument, desktop: UiNodeId, theme: &Theme
     );
     ui.node_mut(button)
         .style_mut()
-        .set_z_index(SHOWCASE_WINDOW_Z_MAX.saturating_add(20));
+        .set_z_index(SHOWCASE_WINDOW_Z_MAX + 20.0);
 }
 
 fn fps_counter(
@@ -4206,7 +4206,7 @@ fn fps_counter(
         92.0,
         24.0,
     ));
-    counter_style.set_z_index(SHOWCASE_WINDOW_Z_MAX.saturating_add(16));
+    counter_style.set_z_index(SHOWCASE_WINDOW_Z_MAX + 16.0);
     let counter = ui.add_child(
         desktop,
         UiNode::container("showcase.fps", counter_style)
@@ -4318,7 +4318,7 @@ fn showcase_overlays(
             180.0,
         ));
         overlay_style.set_clip(ClipBehavior::None);
-        overlay_style.set_z_index(6000);
+        overlay_style.set_z_index(6000.0);
         let overlay = ui.add_child(
             desktop,
             UiNode::container("showcase.toast_overlay", overlay_style),
@@ -4341,7 +4341,7 @@ fn showcase_overlays(
             None,
         );
         let mut options = ext_widgets::ToastStackOptions::default();
-        options.z_index = 6100;
+        options.z_index = 6100.0;
         ext_widgets::toast_stack(ui, overlay, "showcase.toast_overlay.stack", &stack, options);
     }
 }
@@ -7170,7 +7170,7 @@ fn command_palette(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
         options.max_visible_rows = 5;
         options.text_style = text(13.0, color(238, 244, 252));
         options.muted_text_style = text(12.0, color(166, 178, 196));
-        options.z_index = SHOWCASE_WINDOW_Z_MAX.saturating_add(40);
+        options.z_index = SHOWCASE_WINDOW_Z_MAX + 40.0;
         ext_widgets::command_palette(
             ui,
             body,
@@ -9409,7 +9409,7 @@ fn diagnostics_invariant_sample_document() -> UiDocument {
         sample.root(),
         UiNode::container(
             "diagnostics.invariants.front",
-            UiNodeStyle::new(operad::layout::absolute(44.0, 8.0, 92.0, 30.0)).with_z_index(8),
+            UiNodeStyle::new(operad::layout::absolute(44.0, 8.0, 92.0, 30.0)).with_z_index(8.0),
         )
         .with_input(InputBehavior::BUTTON)
         .with_action("diagnostics.invariants.front.activate")
@@ -10080,7 +10080,7 @@ fn diagnostics_wheel_route_panel(ui: &mut UiDocument, parent: UiNodeId) {
 fn diagnostics_wheel_route_sample_document() -> UiDocument {
     let mut sample = UiDocument::new(root_style(220.0, 130.0));
     let mut back_style =
-        UiNodeStyle::new(operad::layout::absolute(24.0, 20.0, 116.0, 64.0)).with_z_index(1);
+        UiNodeStyle::new(operad::layout::absolute(24.0, 20.0, 116.0, 64.0)).with_z_index(1.0);
     back_style.set_clip(ClipBehavior::Clip);
     let back_scroll = sample.add_child(
         sample.root(),
@@ -10101,7 +10101,7 @@ fn diagnostics_wheel_route_sample_document() -> UiDocument {
     );
     let front = UiNode::container(
         "diagnostics.wheel.front_panel",
-        UiNodeStyle::new(operad::layout::absolute(12.0, 12.0, 148.0, 88.0)).with_z_index(10),
+        UiNodeStyle::new(operad::layout::absolute(12.0, 12.0, 148.0, 88.0)).with_z_index(10.0),
     )
     .with_visual(UiVisual::panel(
         color(44, 50, 58),
@@ -11618,7 +11618,7 @@ fn diagnostics_stacking_order_timeline_panel(ui: &mut UiDocument, parent: UiNode
 }
 
 fn diagnostics_stacking_order_timeline_sample() -> DebugStackingOrderTimelineTrace {
-    fn frame(cover_z: i16, label: &str, frame_index: u64) -> DebugFrameTrace {
+    fn frame(cover_z: f32, label: &str, frame_index: u64) -> DebugFrameTrace {
         let mut sample = UiDocument::new(root_style(220.0, 120.0));
         sample.add_child(
             sample.root(),
@@ -11648,9 +11648,9 @@ fn diagnostics_stacking_order_timeline_sample() -> DebugStackingOrderTimelineTra
         )
     }
 
-    let behind = frame(-2, "stack target front", 40);
-    let covered = frame(8, "stack cover front", 41);
-    let restored = frame(-2, "stack restored", 42);
+    let behind = frame(-2.0, "stack target front", 40);
+    let covered = frame(8.0, "stack cover front", 41);
+    let restored = frame(-2.0, "stack restored", 42);
     DebugStackingOrderTimelineTrace::from_traces([&behind, &covered, &restored])
 }
 
@@ -12617,7 +12617,7 @@ fn diagnostics_resource_paint_item(node: UiNodeId, key: String, x: f32) -> Paint
         node,
         rect: UiRect::new(x, 0.0, 28.0, 28.0),
         clip_rect: UiRect::new(0.0, 0.0, 120.0, 48.0),
-        z_index: 0,
+        z_index: 0.0,
         layer_order: operad::platform::LayerOrder::DEFAULT,
         opacity: 1.0,
         transform: PaintTransform::default(),
@@ -13391,7 +13391,7 @@ fn diagnostics_hitbox_occlusion_sample_document() -> UiDocument {
         sample.root(),
         UiNode::container(
             "diagnostics.hitbox_occlusion.cover",
-            UiNodeStyle::new(operad::layout::absolute(24.0, 0.0, 96.0, 36.0)).with_z_index(8),
+            UiNodeStyle::new(operad::layout::absolute(24.0, 0.0, 96.0, 36.0)).with_z_index(8.0),
         )
         .with_input(InputBehavior::BUTTON)
         .with_visual(UiVisual::panel(
@@ -14319,7 +14319,7 @@ fn diagnostics_sample_document_with_preview_size(
         card,
         UiNode::container(
             "diagnostics.sample.hotspot",
-            UiNodeStyle::new(operad::layout::absolute(126.0, 10.0, 82.0, 34.0)).with_z_index(8),
+            UiNodeStyle::new(operad::layout::absolute(126.0, 10.0, 82.0, 34.0)).with_z_index(8.0),
         )
         .with_input(InputBehavior::BUTTON)
         .with_action("diagnostics.hotspot.activate")
@@ -15679,7 +15679,7 @@ fn overlay_widgets(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
             "overlays.popup_panel",
             UiRect::new(10.0, 10.0, 220.0, 104.0),
             ext_widgets::PopupOptions {
-                z_index: 4,
+                z_index: 4.0,
                 portal: UiPortalTarget::Parent,
                 accessibility: Some(
                     AccessibilityMeta::new(AccessibilityRole::Dialog).label("Popup preview"),
@@ -16958,7 +16958,7 @@ fn shader_lab_preview(
                     text(14.0, color(246, 249, 252)),
                     LayoutStyle::new().with_flex_shrink(0.0),
                 );
-                ui.node_mut(label).style_mut().set_z_index(1);
+                ui.node_mut(label).style_mut().set_z_index(1.0);
             }
         }
         ShaderLabTarget::Button => {
@@ -17014,7 +17014,7 @@ fn shader_lab_preview(
                 },
                 options,
             );
-            ui.node_mut(button).style_mut().set_z_index(1);
+            ui.node_mut(button).style_mut().set_z_index(1.0);
         }
     }
 }
@@ -17049,7 +17049,7 @@ fn shader_lab_canvas_layer_fill(
         CanvasContent::new(name).program(shader_lab_canvas_program(state, source_valid)),
         options,
     );
-    ui.node_mut(canvas).style_mut().set_z_index(0);
+    ui.node_mut(canvas).style_mut().set_z_index(0.0);
     canvas
 }
 

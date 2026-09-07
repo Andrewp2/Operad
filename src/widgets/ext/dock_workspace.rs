@@ -666,14 +666,14 @@ impl DockDropPlacement {
         }
     }
 
-    pub const fn z_index(self) -> i16 {
+    pub const fn z_index(self) -> f32 {
         match self {
             Self::Dock(DockSide::Top)
             | Self::Dock(DockSide::Bottom)
             | Self::Dock(DockSide::Left)
-            | Self::Dock(DockSide::Right) => 30,
-            Self::Dock(DockSide::Center) => 20,
-            Self::Floating => 10,
+            | Self::Dock(DockSide::Right) => 30.0,
+            Self::Dock(DockSide::Center) => 20.0,
+            Self::Floating => 10.0,
         }
     }
 
@@ -919,7 +919,7 @@ fn dock_panel_reorder_target(
         DragDropSurfaceKind::DockTarget,
         bounds,
     )
-    .z_index(40)
+    .z_index(40.0)
     .accepted_payload(DropPayloadFilter::empty().text())
     .accepted_operations(operations.iter().copied())
     .label(format!("{} {}", placement.label(), panel.title))
@@ -1573,7 +1573,7 @@ fn add_dock_resize_handle(
                     ..Default::default()
                 })
                 .style,
-                z_index: 1,
+                z_index: 1.0,
                 ..Default::default()
             },
         )

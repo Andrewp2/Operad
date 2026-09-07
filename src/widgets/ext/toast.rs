@@ -229,7 +229,7 @@ impl Default for ToastStack {
 #[derive(Debug, Clone)]
 pub struct ToastStackOptions {
     pub layout: LayoutStyle,
-    pub z_index: i16,
+    pub z_index: f32,
     pub info_visual: UiVisual,
     pub success_visual: UiVisual,
     pub warning_visual: UiVisual,
@@ -260,7 +260,7 @@ impl Default for ToastStackOptions {
                 },
                 ..Default::default()
             }),
-            z_index: 60,
+            z_index: 60.0,
             info_visual: UiVisual::panel(
                 ColorRgba::new(31, 39, 50, 245),
                 Some(StrokeStyle::new(DEFAULT_SURFACE_STROKE, 1.0)),

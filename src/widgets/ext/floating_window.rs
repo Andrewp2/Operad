@@ -32,7 +32,7 @@ pub struct FloatingWindowDescriptor {
     pub visible: bool,
     pub collapsed: bool,
     pub position: Option<UiPoint>,
-    pub z_index: Option<i16>,
+    pub z_index: Option<f32>,
     pub activate_action: Option<WidgetActionBinding>,
     pub title_action: Option<WidgetActionBinding>,
     pub drag_action: Option<WidgetActionBinding>,
@@ -93,7 +93,7 @@ impl FloatingWindowDescriptor {
         self
     }
 
-    pub fn with_z_index(mut self, z_index: i16) -> Self {
+    pub fn with_z_index(mut self, z_index: f32) -> Self {
         self.z_index = Some(z_index);
         self
     }
@@ -217,13 +217,13 @@ pub enum FloatingWindowOrganizeOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FloatingDesktopZPolicy {
-    pub base_z_index: i16,
-    pub window_z_stride: i16,
-    pub max_z_index: i16,
+    pub base_z_index: f32,
+    pub window_z_stride: f32,
+    pub max_z_index: f32,
 }
 
 impl FloatingDesktopZPolicy {
-    pub const fn new(base_z_index: i16, window_z_stride: i16, max_z_index: i16) -> Self {
+    pub const fn new(base_z_index: f32, window_z_stride: f32, max_z_index: f32) -> Self {
         Self {
             base_z_index,
             window_z_stride,
@@ -234,7 +234,7 @@ impl FloatingDesktopZPolicy {
 
 impl Default for FloatingDesktopZPolicy {
     fn default() -> Self {
-        Self::new(1, 32, i16::MAX - 32)
+        Self::new(1.0, 32.0, crate::platform::LAYER_LOCAL_Z_MAX)
     }
 }
 
@@ -259,8 +259,8 @@ pub struct FloatingDesktopState {
     pub drag: HashMap<String, FloatingWindowDragState>,
     pub resize: HashMap<String, FloatingWindowResizeState>,
     pub collapsed: HashSet<String>,
-    pub z_order: HashMap<String, i16>,
-    pub next_z_index: i16,
+    pub z_order: HashMap<String, f32>,
+    pub next_z_index: f32,
     pub z_policy: FloatingDesktopZPolicy,
 }
 
@@ -284,14 +284,11 @@ impl FloatingDesktopState {
         z_policy: FloatingDesktopZPolicy,
     ) -> Self {
         let mut state = Self::new(z_policy);
-        let stride = z_policy.window_z_stride.max(1);
-        let max_before_stride = z_policy.max_z_index.saturating_sub(stride);
+        let stride = z_policy_stride(z_policy);
+        let max_before_stride = z_policy_max_before_stride(z_policy, stride);
         for id in visible_ids {
             state.z_order.insert(id.into(), state.next_z_index);
-            state.next_z_index = state
-                .next_z_index
-                .saturating_add(stride)
-                .min(max_before_stride);
+            state.next_z_index = (state.next_z_index + stride).min(max_before_stride);
         }
         state
     }
@@ -310,7 +307,7 @@ impl FloatingDesktopState {
         self.sizes.get(id).copied().unwrap_or(fallback)
     }
 
-    pub fn z_index(&self, id: &str) -> Option<i16> {
+    pub fn z_index(&self, id: &str) -> Option<f32> {
         self.z_order.get(id).copied()
     }
 
@@ -334,30 +331,21 @@ impl FloatingDesktopState {
     }
 
     pub fn bring_to_front(&mut self, id: &str) {
-        let stride = self.z_policy.window_z_stride.max(1);
-        if self.next_z_index > self.z_policy.max_z_index.saturating_sub(stride) {
+        let stride = z_policy_stride(self.z_policy);
+        let max_before_stride = z_policy_max_before_stride(self.z_policy, stride);
+        if self.next_z_index > max_before_stride {
             self.compact_z_order();
         }
-        let current_max = self
-            .z_order
-            .values()
-            .copied()
-            .max()
+        let current_max = max_z_order(self.z_order.values().copied())
             .unwrap_or(self.next_z_index)
             .max(self.next_z_index);
-        if current_max > self.z_policy.max_z_index.saturating_sub(stride) {
+        if current_max > max_before_stride {
             self.compact_z_order();
         }
-        let current_max = self
-            .z_order
-            .values()
-            .copied()
-            .max()
+        let current_max = max_z_order(self.z_order.values().copied())
             .unwrap_or(self.next_z_index)
             .max(self.next_z_index);
-        self.next_z_index = current_max
-            .saturating_add(stride)
-            .min(self.z_policy.max_z_index);
+        self.next_z_index = (current_max + stride).min(z_policy_max(self.z_policy));
         self.z_order.insert(id.to_string(), self.next_z_index);
     }
 
@@ -367,23 +355,20 @@ impl FloatingDesktopState {
             .iter()
             .map(|(id, z)| (id.clone(), *z))
             .collect::<Vec<_>>();
-        entries.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+        entries.sort_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| left.0.cmp(&right.0))
+        });
         self.z_order.clear();
-        let stride = self.z_policy.window_z_stride.max(1);
+        let stride = z_policy_stride(self.z_policy);
+        let max_before_stride = z_policy_max_before_stride(self.z_policy, stride);
         for (index, (id, _)) in entries.into_iter().enumerate() {
-            let z = self
-                .z_policy
-                .base_z_index
-                .saturating_add((index as i16).saturating_mul(stride))
-                .min(self.z_policy.max_z_index.saturating_sub(stride));
+            let z = (z_policy_base(self.z_policy) + index as f32 * stride).min(max_before_stride);
             self.z_order.insert(id, z);
         }
-        self.next_z_index = self
-            .z_order
-            .values()
-            .copied()
-            .max()
-            .unwrap_or(self.z_policy.base_z_index);
+        self.next_z_index = max_z_order(self.z_order.values().copied())
+            .unwrap_or_else(|| z_policy_base(self.z_policy));
     }
 
     pub fn organize_windows<'a>(
@@ -431,9 +416,9 @@ impl FloatingDesktopState {
             finite_or(bounds_rect.height, 0.0).max(0.0),
         );
         let inner_bounds = layout::inset_rect(bounds_rect, margin);
-        let stride = self.z_policy.window_z_stride.max(1);
-        let max_before_stride = self.z_policy.max_z_index.saturating_sub(stride);
-        let mut last_z = self.z_policy.base_z_index;
+        let stride = z_policy_stride(self.z_policy);
+        let max_before_stride = z_policy_max_before_stride(self.z_policy, stride);
+        let mut last_z = z_policy_base(self.z_policy);
         let mut items = Vec::new();
 
         for spec in windows.into_iter() {
@@ -484,11 +469,7 @@ impl FloatingDesktopState {
             self.sizes
                 .insert(item.id.clone(), UiSize::new(rect.width, rect.height));
             self.user_sized.insert(item.id.clone());
-            let z = self
-                .z_policy
-                .base_z_index
-                .saturating_add((index as i16).saturating_mul(stride))
-                .min(max_before_stride);
+            let z = (z_policy_base(self.z_policy) + index as f32 * stride).min(max_before_stride);
             self.z_order.insert(item.id.clone(), z);
             last_z = z;
             if collapsed {
@@ -655,8 +636,8 @@ pub struct FloatingDesktopOptions {
     pub margin: f32,
     pub gap: f32,
     pub cascade_offset: f32,
-    pub base_z_index: i16,
-    pub window_z_stride: i16,
+    pub base_z_index: f32,
+    pub window_z_stride: f32,
     pub window_visual: UiVisual,
     pub title_bar_visual: UiVisual,
     pub content_visual: UiVisual,
@@ -735,8 +716,8 @@ impl Default for FloatingDesktopOptions {
             margin: 18.0,
             gap: 14.0,
             cascade_offset: 28.0,
-            base_z_index: 1,
-            window_z_stride: 32,
+            base_z_index: 1.0,
+            window_z_stride: 32.0,
             window_visual: UiVisual::panel(
                 DEFAULT_SURFACE_BG,
                 Some(StrokeStyle::new(DEFAULT_SURFACE_STROKE, 1.0)),
@@ -786,7 +767,7 @@ pub struct FloatingWindowPlacement {
     pub source_index: usize,
     pub id: String,
     pub rect: UiRect,
-    pub z_index: i16,
+    pub z_index: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -863,10 +844,8 @@ pub fn floating_window_layout(
             )
         };
         let z_index = window.z_index.unwrap_or_else(|| {
-            options.base_z_index.saturating_add(
-                (placements.len().min(i16::MAX as usize) as i16)
-                    .saturating_mul(options.window_z_stride.max(1)),
-            )
+            finite_or(options.base_z_index, 0.0)
+                + placements.len() as f32 * finite_or(options.window_z_stride, 1.0).max(1.0)
         });
         let rect = if let Some(position) = window.position {
             layout::contain_rect_from_origin(
@@ -1481,7 +1460,7 @@ fn add_resize_handle(
                     ..Default::default()
                 })
                 .style,
-                z_index: 2,
+                z_index: 2.0,
                 ..Default::default()
             },
         )
@@ -1528,10 +1507,11 @@ fn add_resize_handle(
 fn normalize_window_subtree_z(
     document: &mut UiDocument,
     root: UiNodeId,
-    window_z: i16,
-    window_z_stride: i16,
+    window_z: f32,
+    window_z_stride: f32,
 ) {
-    let band_max = window_z.saturating_add(window_z_stride.max(1).saturating_sub(1));
+    let stride = finite_or(window_z_stride, 1.0).max(1.0);
+    let band_max = finite_or(window_z, 0.0) + (stride - 1.0).max(0.0);
     document.node_mut(root).style.z_index = window_z;
     let children = document.node(root).children.clone();
     for child in children {
@@ -1542,9 +1522,9 @@ fn normalize_window_subtree_z(
 fn normalize_window_child_z(
     document: &mut UiDocument,
     node: UiNodeId,
-    window_z: i16,
-    parent_z: i16,
-    band_max: i16,
+    window_z: f32,
+    parent_z: f32,
+    band_max: f32,
 ) {
     let local_z = document.node(node).style.z_index;
     let child_z = normalized_child_z(local_z, window_z, parent_z, band_max);
@@ -1555,12 +1535,11 @@ fn normalize_window_child_z(
     }
 }
 
-fn normalized_child_z(local_z: i16, window_z: i16, parent_z: i16, band_max: i16) -> i16 {
-    let relative_z = local_z.max(1);
-    parent_z
-        .saturating_add(relative_z)
-        .max(window_z)
-        .min(band_max)
+fn normalized_child_z(local_z: f32, window_z: f32, parent_z: f32, band_max: f32) -> f32 {
+    let relative_z = finite_or(local_z, 0.0).max(1.0);
+    (finite_or(parent_z, window_z) + relative_z)
+        .max(finite_or(window_z, 0.0))
+        .min(finite_or(band_max, crate::platform::LAYER_LOCAL_Z_MAX))
 }
 
 fn resolved_size(
@@ -1665,6 +1644,26 @@ fn approximate_title_width(title: &str, style: &TextStyle) -> f32 {
     (title.chars().count() as f32 * font_size * 0.55).max(font_size)
 }
 
+fn z_policy_base(policy: FloatingDesktopZPolicy) -> f32 {
+    finite_or(policy.base_z_index, 0.0)
+}
+
+fn z_policy_stride(policy: FloatingDesktopZPolicy) -> f32 {
+    finite_or(policy.window_z_stride, 1.0).max(1.0)
+}
+
+fn z_policy_max(policy: FloatingDesktopZPolicy) -> f32 {
+    finite_or(policy.max_z_index, crate::platform::LAYER_LOCAL_Z_MAX).max(z_policy_base(policy))
+}
+
+fn z_policy_max_before_stride(policy: FloatingDesktopZPolicy, stride: f32) -> f32 {
+    (z_policy_max(policy) - finite_or(stride, 1.0).max(1.0)).max(z_policy_base(policy))
+}
+
+fn max_z_order(values: impl Iterator<Item = f32>) -> Option<f32> {
+    values.max_by(|left, right| left.total_cmp(right))
+}
+
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value
@@ -1686,7 +1685,7 @@ mod tests {
             UiSize::new(240.0, 180.0),
             UiSize::new(120.0, 90.0),
         );
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
 
         state.ensure_window("inspector", defaults);
         state.bring_to_front("inspector");
@@ -1699,7 +1698,7 @@ mod tests {
         assert_eq!(descriptor.position, Some(defaults.position));
         assert_eq!(descriptor.preferred_size, defaults.size);
         assert!(descriptor.collapsed);
-        assert_eq!(descriptor.z_index, Some(20));
+        assert_eq!(descriptor.z_index, Some(20.0));
     }
 
     #[test]
@@ -1722,7 +1721,7 @@ mod tests {
         let options = FloatingDesktopOptions::new(UiSize::new(330.0, 220.0))
             .with_margin(10.0)
             .with_gap(8.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
 
         let outcome = state.organize_windows(
             [("a", defaults_a), ("b", defaults_b), ("c", defaults_c)],
@@ -1759,9 +1758,9 @@ mod tests {
         assert_eq!(state.size("a", UiSize::ZERO), defaults_a.size);
         assert_eq!(state.size("b", UiSize::ZERO), defaults_b.size);
         assert_eq!(state.size("c", UiSize::ZERO), defaults_c.size);
-        assert_eq!(state.z_index("a"), Some(10));
-        assert_eq!(state.z_index("b"), Some(15));
-        assert_eq!(state.z_index("c"), Some(20));
+        assert_eq!(state.z_index("a"), Some(10.0));
+        assert_eq!(state.z_index("b"), Some(15.0));
+        assert_eq!(state.z_index("c"), Some(20.0));
         assert!(state.user_sized.contains("a"));
     }
 
@@ -1780,7 +1779,7 @@ mod tests {
         let options = FloatingDesktopOptions::new(UiSize::new(260.0, 160.0))
             .with_margin(0.0)
             .with_gap(0.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
 
         let outcome = state.organize_windows(
             [("tall", tall), ("wide-a", wide), ("wide-b", wide)],
@@ -1827,7 +1826,7 @@ mod tests {
         let options = FloatingDesktopOptions::new(UiSize::new(100.0, 120.0))
             .with_margin(10.0)
             .with_gap(8.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
         state.ensure_window("a", defaults_a);
         state.ensure_window("b", defaults_b);
         state
@@ -1835,9 +1834,9 @@ mod tests {
             .insert("a".to_string(), UiSize::new(190.0, 120.0));
         state.user_sized.insert("a".to_string());
         state.collapsed.insert("b".to_string());
-        state.z_order.insert("a".to_string(), 35);
-        state.z_order.insert("b".to_string(), 20);
-        state.next_z_index = 35;
+        state.z_order.insert("a".to_string(), 35.0);
+        state.z_order.insert("b".to_string(), 20.0);
+        state.next_z_index = 35.0;
         let before = state.clone();
 
         let outcome = state.organize_windows(
@@ -1860,7 +1859,7 @@ mod tests {
         let options = FloatingDesktopOptions::new(UiSize::new(340.0, 160.0))
             .with_margin(10.0)
             .with_gap(8.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
 
         let outcome = state.organize_windows(
             [
@@ -1905,7 +1904,7 @@ mod tests {
         let options = FloatingDesktopOptions::new(UiSize::new(340.0, 100.0))
             .with_margin(10.0)
             .with_gap(8.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
 
         let outcome = state.organize_windows(
             [
@@ -1943,7 +1942,7 @@ mod tests {
         let options = FloatingDesktopOptions::new(UiSize::new(440.0, 190.0))
             .with_margin(10.0)
             .with_gap(8.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
         state.collapsed.insert("a".to_string());
         state.sizes.insert(
             "a".to_string(),
@@ -1976,7 +1975,7 @@ mod tests {
         let roomy_options = FloatingDesktopOptions::new(UiSize::new(760.0, 240.0))
             .with_margin(10.0)
             .with_gap(8.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
         let windows = [
             ("a", defaults),
             ("b", defaults),
@@ -2021,7 +2020,7 @@ mod tests {
         let options = FloatingDesktopOptions::new(UiSize::new(200.0, 180.0))
             .with_margin(10.0)
             .with_gap(8.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10, 5, 100));
+        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
         state.ensure_window("wide", defaults);
         let before = state.clone();
 
@@ -2129,8 +2128,8 @@ mod tests {
             .expect("layout");
 
         assert_eq!(nodes.windows.len(), 2);
-        assert_eq!(document.node(nodes.windows[0].root).style.z_index, 1);
-        assert_eq!(document.node(nodes.windows[1].root).style.z_index, 33);
+        assert_eq!(document.node(nodes.windows[0].root).style.z_index, 1.0);
+        assert_eq!(document.node(nodes.windows[1].root).style.z_index, 33.0);
         assert_eq!(
             document.node(nodes.windows[1].title_bar).action.as_ref(),
             Some(&WidgetActionBinding::action("window.two.activate"))
@@ -2233,7 +2232,7 @@ mod tests {
                         format!("{}.high_child", window.id),
                         UiNodeStyle {
                             layout: style.style,
-                            z_index: 120,
+                            z_index: 120.0,
                             ..Default::default()
                         },
                     )
@@ -2256,9 +2255,9 @@ mod tests {
             .style
             .z_index;
 
-        assert_eq!(back_root_z, 1);
-        assert_eq!(front_root_z, 33);
-        assert_eq!(back_child_z, 32);
+        assert_eq!(back_root_z, 1.0);
+        assert_eq!(front_root_z, 33.0);
+        assert_eq!(back_child_z, 32.0);
         assert!(back_child_z < front_root_z);
     }
 
@@ -2316,7 +2315,7 @@ mod tests {
                         "slider.thumb",
                         UiNodeStyle {
                             layout: LayoutStyle::new().with_width(12.0).with_height(12.0).style,
-                            z_index: 3,
+                            z_index: 3.0,
                             ..Default::default()
                         },
                     ),

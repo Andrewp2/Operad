@@ -77,8 +77,7 @@ WGPU command buffers and render passes before Operad composites the UI.
 
 Apps that already own a WGPU swapchain or render graph can render Operad into an
 existing `TextureView` with `WgpuRenderer::render_frame_into_view_with_encoder`
-and `WgpuRenderTargetView::load()`. See
-[docs/app_owned_wgpu_compositor.md](docs/app_owned_wgpu_compositor.md).
+and `WgpuRenderTargetView::load()`.
 
 ## Install
 
@@ -96,8 +95,6 @@ cargo add operad
 - `wgpu`: WGPU rendering.
 - `accesskit-winit`: AccessKit support for winit hosts.
 - `text-cosmic`: cosmic-text measurement and shaping.
-- `egui`: egui host/input compatibility.
-- `egui-renderer-compat`: egui renderer compatibility.
 - `audit`: audit helpers.
 
 ## Examples
@@ -108,12 +105,10 @@ Open a native window:
 cargo run --example showcase
 ```
 
-Starter templates are checked as ordinary examples:
+The starter native template is checked as an ordinary example:
 
 ```bash
 cargo run --example minimal_native
-cargo run --example simple_form
-cargo run --example docked_workspace
 ```
 
 For the web template, build `minimal_web` for `wasm32-unknown-unknown`, run
@@ -149,11 +144,7 @@ scripts/test-full.sh
 That adds the full all-feature test suite and the supported WASM showcase check
 for `wasm32-unknown-unknown`.
 
-The release flow lives in [docs/release_process.md](docs/release_process.md).
-
 ## Learn More
 
 - [API documentation](https://docs.rs/operad)
-- [Getting started](docs/getting_started.md)
 - [Examples](examples)
-- [Documentation](docs)

@@ -1,7 +1,7 @@
 //! Renderer/backend adapter contracts for Operad paint lists.
 //!
-//! This module sits between `PaintList` and concrete backends such as egui,
-//! wgpu, app-owned renderers, or test adapters. It keeps batching,
+//! This module sits between `PaintList` and concrete backends such as wgpu,
+//! app-owned renderers, or test adapters. It keeps batching,
 //! resource updates, dirty regions, deterministic snapshots, and adapter
 //! capabilities out of product state.
 
@@ -488,7 +488,7 @@ pub struct CanvasRenderRequest {
     pub canvas: CanvasContent,
     pub rect: UiRect,
     pub clip_rect: UiRect,
-    pub z_index: i16,
+    pub z_index: f32,
     pub layer_order: LayerOrder,
     pub opacity: f32,
     pub transform: PaintTransform,
@@ -1131,7 +1131,7 @@ pub struct CanvasHitTarget {
     pub label: Option<String>,
     pub value: Option<String>,
     pub metadata: Vec<(String, String)>,
-    pub z_index: i16,
+    pub z_index: f32,
     pub disabled: bool,
 }
 
@@ -1143,7 +1143,7 @@ impl CanvasHitTarget {
             label: None,
             value: None,
             metadata: Vec::new(),
-            z_index: 0,
+            z_index: 0.0,
             disabled: false,
         }
     }
@@ -1163,7 +1163,7 @@ impl CanvasHitTarget {
         self
     }
 
-    pub const fn z_index(mut self, z_index: i16) -> Self {
+    pub const fn z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -1267,7 +1267,7 @@ impl CanvasHitCollection {
             .max_by(|left, right| {
                 left.1
                     .z_index
-                    .cmp(&right.1.z_index)
+                    .total_cmp(&right.1.z_index)
                     .then_with(|| left.0.cmp(&right.0))
             })
             .map(|(_, target)| target)
@@ -1617,7 +1617,7 @@ pub struct ImageRenderRequest {
     pub kind: ImageRenderKind,
     pub image: PaintImage,
     pub clip_rect: UiRect,
-    pub z_index: i16,
+    pub z_index: f32,
     pub layer_order: LayerOrder,
     pub opacity: f32,
     pub transform: PaintTransform,
@@ -1964,7 +1964,7 @@ impl PaintBatchKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaintBatchKey {
     pub kind: PaintBatchKind,
-    pub z_index: i16,
+    pub z_index: f32,
     pub layer_order: LayerOrder,
     pub clip_rect: UiRect,
     pub shader: Option<ShaderEffect>,
@@ -2172,7 +2172,7 @@ mod tests {
             node: UiNodeId(index),
             rect,
             clip_rect: UiRect::new(0.0, 0.0, 200.0, 100.0),
-            z_index: 0,
+            z_index: 0.0,
             layer_order: LayerOrder::DEFAULT,
             opacity: 1.0,
             transform: PaintTransform::default(),
@@ -2323,7 +2323,8 @@ mod tests {
             rect.clone(),
         ));
         let mut debug_overlay_item = paint_item(3, UiRect::new(24.0, 0.0, 20.0, 20.0), rect);
-        debug_overlay_item.layer_order = LayerOrder::new(crate::platform::UiLayer::DebugOverlay, 0);
+        debug_overlay_item.layer_order =
+            LayerOrder::new(crate::platform::UiLayer::DebugOverlay, 0.0);
         paint.items.push(debug_overlay_item);
         let mut shader_item = paint_item(
             2,
@@ -2341,7 +2342,7 @@ mod tests {
         assert_eq!(batches[0].bounds, UiRect::new(0.0, 0.0, 36.0, 20.0));
         assert_eq!(
             batches[1].key.layer_order,
-            LayerOrder::new(crate::platform::UiLayer::DebugOverlay, 0)
+            LayerOrder::new(crate::platform::UiLayer::DebugOverlay, 0.0)
         );
         assert_eq!(batches[2].key.kind, PaintBatchKind::Text);
         assert_eq!(batches[2].key.shader.as_ref().unwrap().key, "text.glow");
@@ -2811,16 +2812,16 @@ mod tests {
                 output = output.hit_targets([
                     CanvasHitTarget::new("background", context.request.rect)
                         .label("Background")
-                        .z_index(1),
+                        .z_index(1.0),
                     CanvasHitTarget::new("disabled-overlay", context.request.rect)
                         .label("Disabled overlay")
                         .disabled(true)
-                        .z_index(10),
+                        .z_index(10.0),
                     CanvasHitTarget::new("primary-range", context.request.rect)
                         .label("Primary range")
                         .value("active")
                         .metadata("kind", "range")
-                        .z_index(4),
+                        .z_index(4.0),
                 ]);
             }
             Ok(output)
@@ -2926,7 +2927,7 @@ mod tests {
             .label("Selected item")
             .value("ready")
             .metadata("Layer", "foreground")
-            .z_index(2);
+            .z_index(2.0);
         let disabled =
             CanvasHitTarget::new("disabled", UiRect::new(0.0, 0.0, 80.0, 80.0)).disabled(true);
         let collection = CanvasHitCollection::new(UiNodeId(5), "editor.viewport")
@@ -2964,11 +2965,11 @@ mod tests {
 
     #[test]
     fn canvas_hit_topmost_prefers_later_targets_for_equal_z() {
-        let first = CanvasHitTarget::new("first", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(2);
-        let second = CanvasHitTarget::new("second", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(2);
-        let lower = CanvasHitTarget::new("lower", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(1);
+        let first = CanvasHitTarget::new("first", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(2.0);
+        let second = CanvasHitTarget::new("second", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(2.0);
+        let lower = CanvasHitTarget::new("lower", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(1.0);
         let disabled_top = CanvasHitTarget::new("disabled-top", UiRect::new(0.0, 0.0, 40.0, 40.0))
-            .z_index(100)
+            .z_index(100.0)
             .disabled(true);
         let collection = CanvasHitCollection::new(UiNodeId(2), "editor.viewport")
             .target(first)
@@ -2979,6 +2980,21 @@ mod tests {
         assert_eq!(
             collection.topmost_at(UiPoint::new(12.0, 12.0)),
             Some(&second)
+        );
+    }
+
+    #[test]
+    fn canvas_hit_topmost_respects_fractional_z() {
+        let lower = CanvasHitTarget::new("lower", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(2.0);
+        let higher =
+            CanvasHitTarget::new("higher", UiRect::new(0.0, 0.0, 40.0, 40.0)).z_index(2.25);
+        let collection = CanvasHitCollection::new(UiNodeId(2), "editor.viewport")
+            .target(higher.clone())
+            .target(lower);
+
+        assert_eq!(
+            collection.topmost_at(UiPoint::new(12.0, 12.0)),
+            Some(&higher)
         );
     }
 

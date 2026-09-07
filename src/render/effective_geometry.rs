@@ -378,8 +378,8 @@ pub struct EffectiveGeometryRecord {
     pub clip_chain: Vec<EffectiveClip>,
     pub layer_order: LayerOrder,
     pub layer: UiLayer,
-    pub local_z: i16,
-    pub resolved_z: i32,
+    pub local_z: f32,
+    pub resolved_z: f32,
     pub order: usize,
     pub hit_testable: bool,
     pub visible: bool,
@@ -533,7 +533,7 @@ mod tests {
             node,
             rect: UiRect::new(0.0, 0.0, 80.0, 24.0),
             clip_rect: UiRect::new(0.0, 0.0, 120.0, 40.0),
-            z_index: 0,
+            z_index: 0.0,
             layer_order: LayerOrder::DEFAULT,
             opacity: 1.0,
             transform: PaintTransform::default(),
@@ -613,13 +613,13 @@ mod tests {
     #[test]
     fn topmost_effective_hit_respects_layer_z_and_order() {
         let base = EffectiveGeometry::new(UiNodeId(1), UiRect::new(0.0, 0.0, 50.0, 50.0))
-            .layer_order(LayerOrder::new(UiLayer::AppContent, 10))
+            .layer_order(LayerOrder::new(UiLayer::AppContent, 10.0))
             .order(10);
         let higher_local_z = EffectiveGeometry::new(UiNodeId(2), UiRect::new(0.0, 0.0, 50.0, 50.0))
-            .layer_order(LayerOrder::new(UiLayer::AppContent, 20))
+            .layer_order(LayerOrder::new(UiLayer::AppContent, 10.5))
             .order(1);
         let overlay = EffectiveGeometry::new(UiNodeId(3), UiRect::new(0.0, 0.0, 50.0, 50.0))
-            .layer_order(LayerOrder::new(UiLayer::AppOverlay, -999))
+            .layer_order(LayerOrder::new(UiLayer::AppOverlay, -999.0))
             .order(0);
 
         let point = UiPoint::new(25.0, 25.0);
@@ -699,7 +699,7 @@ mod tests {
                 UiNodeId(7),
                 UiRect::new(0.0, 0.0, 24.0, 18.0),
             ))
-            .layer_order(LayerOrder::new(UiLayer::DebugOverlay, -10))
+            .layer_order(LayerOrder::new(UiLayer::DebugOverlay, -10.0))
             .order(12)
             .hit_testable(false);
 
@@ -710,8 +710,8 @@ mod tests {
         assert_eq!(record.visible_rect, Some(UiRect::new(8.0, 10.0, 16.0, 8.0)));
         assert_eq!(record.clip_chain.len(), 1);
         assert_eq!(record.layer, UiLayer::DebugOverlay);
-        assert_eq!(record.local_z, -10);
-        assert_eq!(record.resolved_z, UiLayer::DebugOverlay.base_z() - 10);
+        assert_eq!(record.local_z, -10.0);
+        assert_eq!(record.resolved_z, UiLayer::DebugOverlay.base_z() - 10.0);
         assert!(!record.hit_eligibility.eligible);
         assert!(record
             .hit_eligibility

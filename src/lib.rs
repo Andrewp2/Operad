@@ -58,9 +58,6 @@ pub mod drag_drop;
 pub mod editor;
 #[path = "render/effective_geometry.rs"]
 pub mod effective_geometry;
-#[cfg(feature = "egui")]
-#[path = "adapters/egui_host.rs"]
-pub mod egui_host;
 #[path = "diagnostics/errors.rs"]
 pub mod errors;
 #[path = "render/fonts.rs"]

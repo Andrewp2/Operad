@@ -243,7 +243,7 @@ fn layout_style_keeps_raw_taffy_escape_hatches_module_scoped() {
     for raw_field in [
         "pub clip: ClipBehavior",
         "pub opacity: f32",
-        "pub z_index: i16",
+        "pub z_index: f32",
     ] {
         assert!(
             !ui_node_style_block.contains(raw_field),
@@ -255,10 +255,10 @@ fn layout_style_keeps_raw_taffy_escape_hatches_module_scoped() {
         "pub fn layout(&self)",
         "pub const fn clip(&self)",
         "pub const fn opacity(&self)",
-        "pub const fn z_index(&self)",
+        "pub const fn z_index(&self) -> f32",
         "pub fn with_clip",
-        "pub const fn with_z_index",
-        "pub fn set_z_index",
+        "pub const fn with_z_index(mut self, z_index: f32)",
+        "pub fn set_z_index(&mut self, z_index: f32)",
     ] {
         assert!(
             document.contains(accessor),
@@ -2162,9 +2162,8 @@ fn crate_root_keeps_backend_adapters_module_scoped() {
     let root = include_str!("../src/lib.rs");
 
     assert!(root.contains("pub mod accesskit_winit_adapter;"));
-    assert!(root.contains("pub mod egui_host;"));
 
-    for surface in ["pub use accesskit_winit_adapter::{", "pub use egui_host::{"] {
+    for surface in ["pub use accesskit_winit_adapter::{"] {
         assert!(
             !root.contains(surface),
             "{surface} should be imported from the adapter module, not flattened into operad::*"
@@ -2308,20 +2307,6 @@ fn crate_root_uses_explicit_core_document_exports() {
         !root.contains("pub use core::document::*"),
         "crate root should not glob-export every core document helper"
     );
-    for egui_helper in [
-        "egui_rect",
-        "egui_color",
-        "paint_document_egui",
-        "paint_document_egui_clipped",
-        "paint_document_egui_with_canvas",
-        "paint_document_egui_with_images",
-        "paint_document_egui_with_callbacks",
-    ] {
-        assert!(
-            !root.contains(egui_helper),
-            "{egui_helper} should stay module-scoped under operad::core::document"
-        );
-    }
 }
 
 #[test]

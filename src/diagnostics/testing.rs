@@ -1,7 +1,7 @@
 //! Renderer-neutral testing helpers for Operad documents.
 //!
 //! These utilities are intended for consumers as well as Operad's own tests:
-//! replay input without an egui harness, assert layout by stable node names,
+//! replay input without a host harness, assert layout by stable node names,
 //! inspect paint lists, diff rgba snapshots with tolerances, and track simple
 //! frame timing sections.
 
@@ -5613,7 +5613,7 @@ mod tests {
                 "back.button",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 90.0, 32.0)).style,
-                    z_index: 1,
+                    z_index: 1.0,
                     ..Default::default()
                 },
             )
@@ -5625,7 +5625,7 @@ mod tests {
                 "front.button",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(50.0, 16.0, 90.0, 40.0)).style,
-                    z_index: 10,
+                    z_index: 10.0,
                     ..Default::default()
                 },
             )
@@ -5691,7 +5691,7 @@ mod tests {
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 60.0)).style,
                     clip: ClipBehavior::Clip,
-                    z_index: 1,
+                    z_index: 1.0,
                     ..Default::default()
                 },
             )
@@ -5708,7 +5708,7 @@ mod tests {
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 120.0, 90.0)).style,
                     clip: ClipBehavior::Clip,
-                    z_index: 10,
+                    z_index: 10.0,
                     ..Default::default()
                 },
             )
@@ -6642,7 +6642,7 @@ mod tests {
                 "back.button",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 90.0, 32.0)).style,
-                    z_index: 1,
+                    z_index: 1.0,
                     ..Default::default()
                 },
             )
@@ -6654,7 +6654,7 @@ mod tests {
                 "front.button",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(50.0, 16.0, 90.0, 40.0)).style,
-                    z_index: 10,
+                    z_index: 10.0,
                     ..Default::default()
                 },
             )
@@ -7021,7 +7021,7 @@ mod tests {
                 "back.button",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 80.0, 32.0)).style,
-                    z_index: 1,
+                    z_index: 1.0,
                     ..Default::default()
                 },
             )
@@ -7033,7 +7033,7 @@ mod tests {
                 "front.button",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(56.0, 24.0, 80.0, 32.0)).style,
-                    z_index: 2,
+                    z_index: 2.0,
                     ..Default::default()
                 },
             )
@@ -7173,7 +7173,7 @@ mod tests {
             node: UiNodeId(3),
             rect: UiRect::new(8.0, 10.0, 120.0, 64.0),
             clip_rect: UiRect::new(0.0, 0.0, 160.0, 120.0),
-            z_index: 0,
+            z_index: 0.0,
             layer_order: crate::platform::LayerOrder::DEFAULT,
             opacity: 1.0,
             transform: PaintTransform::default(),
@@ -7194,15 +7194,15 @@ mod tests {
                     CanvasHitTarget::new("item.body", UiRect::new(10.0, 12.0, 60.0, 24.0))
                         .label("Item body")
                         .metadata("kind", "range")
-                        .z_index(1),
+                        .z_index(1.0),
                     CanvasHitTarget::new("disabled.overlay", UiRect::new(10.0, 12.0, 60.0, 24.0))
                         .label("Disabled overlay")
                         .disabled(true)
-                        .z_index(10),
+                        .z_index(10.0),
                     CanvasHitTarget::new("item.resize", UiRect::new(14.0, 12.0, 12.0, 24.0))
                         .label("Resize handle")
                         .value("start edge")
-                        .z_index(4),
+                        .z_index(4.0),
                 ]))
             },
         );
@@ -7239,7 +7239,7 @@ mod tests {
         output.batches = vec![PaintBatch {
             key: PaintBatchKey {
                 kind: PaintBatchKind::Rect,
-                z_index: 0,
+                z_index: 0.0,
                 clip_rect: UiRect::new(0.0, 0.0, 2.0, 1.0),
                 layer_order: crate::platform::LayerOrder::DEFAULT,
                 shader: None,
@@ -7971,7 +7971,7 @@ mod tests {
                         node: UiNodeId(index),
                         rect: UiRect::new(index as f32, 0.0, 1.0, 1.0),
                         clip_rect: UiRect::new(0.0, 0.0, 16.0, 16.0),
-                        z_index: 0,
+                        z_index: 0.0,
                         layer_order: crate::platform::LayerOrder::DEFAULT,
                         opacity: 1.0,
                         transform: PaintTransform::default(),

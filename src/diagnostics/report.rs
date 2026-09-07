@@ -272,7 +272,7 @@ pub struct GeometryHitDiagnostic {
     pub visible: bool,
     pub point_hit: Option<bool>,
     pub rejected_by: Vec<EffectiveHitRejection>,
-    pub resolved_z: i32,
+    pub resolved_z: f32,
     pub order: usize,
 }
 

@@ -4,6 +4,8 @@
 //! masks, hit testing, bounds, and renderer feature fallback planning. They do
 //! not prescribe a GPU backend.
 
+use std::cmp::Ordering;
+
 use crate::platform::LayerOrder;
 use crate::{ColorRgba, CornerRadii, UiPoint, UiRect};
 
@@ -236,7 +238,7 @@ pub struct StackingContext {
     pub id: StackingContextId,
     pub parent: Option<StackingContextId>,
     pub layer_order: LayerOrder,
-    pub z_index: i32,
+    pub z_index: f32,
     pub order: usize,
     pub transform: AffineTransform,
     pub opacity: f32,
@@ -251,7 +253,7 @@ impl StackingContext {
             id,
             parent: None,
             layer_order: LayerOrder::DEFAULT,
-            z_index: 0,
+            z_index: 0.0,
             order: 0,
             transform: AffineTransform::IDENTITY,
             opacity: 1.0,
@@ -275,7 +277,7 @@ impl StackingContext {
         self
     }
 
-    pub const fn z_index(mut self, z_index: i32) -> Self {
+    pub const fn z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -322,7 +324,7 @@ impl StackingContext {
 pub struct CompositorLayer {
     pub id: CompositorLayerId,
     pub context: StackingContextId,
-    pub z_index: i32,
+    pub z_index: f32,
     pub order: usize,
     pub bounds: UiRect,
     pub transform: AffineTransform,
@@ -340,7 +342,7 @@ impl CompositorLayer {
         Self {
             id,
             context: StackingContextId::new(0),
-            z_index: 0,
+            z_index: 0.0,
             order: 0,
             bounds,
             transform: AffineTransform::IDENTITY,
@@ -359,7 +361,7 @@ impl CompositorLayer {
         self
     }
 
-    pub const fn z_index(mut self, z_index: i32) -> Self {
+    pub const fn z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -1039,10 +1041,10 @@ fn color_support_level(level: ColorManagementLevel) -> FeatureSupportLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct SortComponent {
-    plane_z: i32,
-    z_index: i32,
+    plane_z: f32,
+    z_index: f32,
     order: usize,
     kind: u8,
 }
@@ -1059,11 +1061,29 @@ impl SortComponent {
 
     const fn layer(layer: &CompositorLayer) -> Self {
         Self {
-            plane_z: 0,
+            plane_z: 0.0,
             z_index: layer.z_index,
             order: layer.order,
             kind: 1,
         }
+    }
+}
+
+impl Eq for SortComponent {}
+
+impl Ord for SortComponent {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.plane_z
+            .total_cmp(&other.plane_z)
+            .then_with(|| self.z_index.total_cmp(&other.z_index))
+            .then_with(|| self.order.cmp(&other.order))
+            .then_with(|| self.kind.cmp(&other.kind))
+    }
+}
+
+impl PartialOrd for SortComponent {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -1132,7 +1152,7 @@ mod tests {
         let root = StackingContext::root();
         let modal = StackingContext::new(StackingContextId::new(10))
             .parent(StackingContextId::new(0))
-            .z_index(20)
+            .z_index(20.0)
             .order(1);
         let debug = StackingContext::new(StackingContextId::new(20))
             .parent(StackingContextId::new(0))
@@ -1143,13 +1163,13 @@ mod tests {
                 CompositorLayerId::new(1),
                 UiRect::new(0.0, 0.0, 100.0, 100.0),
             )
-            .z_index(-10)
+            .z_index(-10.0)
             .order(0),
             CompositorLayer::new(
                 CompositorLayerId::new(2),
                 UiRect::new(0.0, 0.0, 100.0, 100.0),
             )
-            .z_index(0)
+            .z_index(0.0)
             .order(1),
             CompositorLayer::new(
                 CompositorLayerId::new(3),
@@ -1206,7 +1226,7 @@ mod tests {
             ))
             .layer(
                 CompositorLayer::new(CompositorLayerId::new(2), UiRect::new(0.0, 0.0, 40.0, 40.0))
-                    .z_index(5)
+                    .z_index(5.0)
                     .transform(AffineTransform::translation(20.0, 0.0)),
             );
 

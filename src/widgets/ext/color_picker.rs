@@ -2942,7 +2942,7 @@ mod tests {
 
     #[test]
     #[allow(deprecated)]
-    fn color_button_builders_cover_egui_style_color_conveniences() {
+    fn color_button_builders_cover_premultiplied_color_conveniences() {
         let mut document = UiDocument::new(root_style(420.0, 240.0));
         let root = document.root;
         let color = ColorRgba::new(51, 102, 153, 128);

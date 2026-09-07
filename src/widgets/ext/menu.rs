@@ -142,7 +142,7 @@ impl AnchoredPopup {
 #[derive(Debug, Clone)]
 pub struct PopupOptions {
     pub visual: UiVisual,
-    pub z_index: i16,
+    pub z_index: f32,
     pub clip: ClipBehavior,
     pub clip_scope: ClipScope,
     pub layer: Option<crate::platform::UiLayer>,
@@ -161,7 +161,7 @@ impl Default for PopupOptions {
                 Some(StrokeStyle::new(ColorRgba::new(77, 90, 111, 255), 1.0)),
                 4.0,
             ),
-            z_index: 100,
+            z_index: 100.0,
             clip: ClipBehavior::Clip,
             clip_scope: ClipScope::Viewport,
             layer: Some(crate::platform::UiLayer::AppOverlay),
@@ -1089,7 +1089,7 @@ fn menu_button_with_image(
         .then(|| {
             anchors.map(|anchors| {
                 let mut popup_menu = options.popup_menu.clone();
-                popup_menu.z_index = popup_menu.z_index.max(101);
+                popup_menu.z_index = popup_menu.z_index.max(101.0);
                 menu_list_popup(
                     document,
                     parent,
@@ -1160,7 +1160,7 @@ fn menu_button_trigger(
         UiNodeStyle {
             layout: layout.clone(),
             clip: ClipBehavior::Clip,
-            z_index: if open { 20 } else { 0 },
+            z_index: if open { 20.0 } else { 0.0 },
             ..Default::default()
         },
     )
@@ -1251,7 +1251,7 @@ fn menu_button_submenus(
             break;
         };
         let mut popup_menu = options.popup_menu.clone();
-        popup_menu.z_index = popup_menu.z_index.max(101).saturating_add(depth as i16 + 1);
+        popup_menu.z_index = popup_menu.z_index.max(101.0) + depth as f32 + 1.0;
         let submenu = menu_list_popup(
             document,
             parent,
@@ -2141,7 +2141,7 @@ mod tests {
 
         let node = document.node(popup);
         assert_eq!(node.style.layout.position, Position::Absolute);
-        assert_eq!(node.style.z_index, 100);
+        assert_eq!(node.style.z_index, 100.0);
         assert_eq!(node.clip_scope, ClipScope::Viewport);
         assert_eq!(node.layer, Some(crate::platform::UiLayer::AppOverlay));
         assert!(node.scroll.is_some());
@@ -2183,7 +2183,7 @@ mod tests {
                 "window",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 260.0, 180.0)).style,
-                    z_index: 40,
+                    z_index: 40.0,
                     ..Default::default()
                 },
             )

@@ -237,7 +237,7 @@ mod tests {
                     node: UiNodeId(1),
                     rect: UiRect::new(0.0, 0.0, 100.0, 40.0),
                     clip_rect: UiRect::new(0.0, 0.0, 200.0, 100.0),
-                    z_index: 0,
+                    z_index: 0.0,
                     layer_order: Default::default(),
                     opacity: 1.0,
                     transform: PaintTransform {
@@ -256,7 +256,7 @@ mod tests {
                     node: UiNodeId(2),
                     rect: UiRect::new(0.0, 0.0, 40.0, 20.0),
                     clip_rect: UiRect::new(0.0, 0.0, 200.0, 100.0),
-                    z_index: 0,
+                    z_index: 0.0,
                     layer_order: Default::default(),
                     opacity: 1.0,
                     transform: PaintTransform::default(),

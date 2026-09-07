@@ -1800,6 +1800,12 @@ pub enum ScenePrimitive {
         fill: ColorRgba,
         stroke: Option<StrokeStyle>,
     },
+    MorphPolygonKeyframes {
+        frames: Vec<Vec<UiPoint>>,
+        amount: f32,
+        fill: ColorRgba,
+        stroke: Option<StrokeStyle>,
+    },
     Image {
         key: String,
         rect: UiRect,
@@ -2229,7 +2235,7 @@ pub struct UiNodeStyle {
     pub(crate) layout: Style,
     pub(crate) clip: ClipBehavior,
     pub(crate) opacity: f32,
-    pub(crate) z_index: i16,
+    pub(crate) z_index: f32,
 }
 
 impl UiNodeStyle {
@@ -2257,7 +2263,7 @@ impl UiNodeStyle {
         self.opacity
     }
 
-    pub const fn z_index(&self) -> i16 {
+    pub const fn z_index(&self) -> f32 {
         self.z_index
     }
 
@@ -2271,7 +2277,7 @@ impl UiNodeStyle {
         self
     }
 
-    pub const fn with_z_index(mut self, z_index: i16) -> Self {
+    pub const fn with_z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -2284,7 +2290,7 @@ impl UiNodeStyle {
         self.opacity = opacity;
     }
 
-    pub fn set_z_index(&mut self, z_index: i16) {
+    pub fn set_z_index(&mut self, z_index: f32) {
         self.z_index = z_index;
     }
 }
@@ -2304,7 +2310,7 @@ impl Default for UiNodeStyle {
             layout: Style::default(),
             clip: ClipBehavior::None,
             opacity: 1.0,
-            z_index: 0,
+            z_index: 0.0,
         }
     }
 }
@@ -3828,7 +3834,7 @@ impl UiDocument {
             let Some(node) = self.nodes.get(current.0) else {
                 return self.root;
             };
-            if current == self.root || node.style.z_index != 0 || node.layer.is_some() {
+            if current == self.root || node.style.z_index != 0.0 || node.layer.is_some() {
                 return current;
             }
             let Some(parent) = node.stack_parent.or(node.parent) else {
@@ -6016,6 +6022,11 @@ impl UiDocument {
                         layer_order,
                         opacity,
                         morph: animation_values.morph,
+                        active_morph: node
+                            .animation
+                            .as_ref()
+                            .and_then(AnimationMachine::active_morph_transition),
+                        fill_color: animation_values.fill_color,
                         transform,
                         shader: node.shader.clone(),
                         material: material.clone(),
@@ -6226,7 +6237,7 @@ impl UiDocument {
             let inherited_parent = node.stack_parent.or(node.parent);
             let local_z = if index == self.root.0 {
                 node.style.z_index
-            } else if node.style.z_index == 0 {
+            } else if node.style.z_index == 0.0 {
                 inherited_parent
                     .map(|parent| orders[parent.0].local_z)
                     .unwrap_or(node.style.z_index)
@@ -6567,10 +6578,12 @@ struct ScenePaintContext {
     node: UiNodeId,
     node_rect: UiRect,
     clip_rect: UiRect,
-    z_index: i16,
+    z_index: f32,
     layer_order: platform::LayerOrder,
     opacity: f32,
     morph: f32,
+    active_morph: Option<AnimationMorphTransition>,
+    fill_color: Option<ColorRgba>,
     transform: PaintTransform,
     shader: Option<ShaderEffect>,
     material: Option<ElementMaterial>,
@@ -6626,7 +6639,7 @@ fn scene_primitive_to_paint_item(
                 kind: PaintKind::Circle {
                     center,
                     radius: *radius,
-                    fill: *fill,
+                    fill: context.fill_color.unwrap_or(*fill),
                     stroke: *stroke,
                 },
             }
@@ -6640,7 +6653,12 @@ fn scene_primitive_to_paint_item(
                 .iter()
                 .map(|point| point_in_rect(context.node_rect, *point))
                 .collect::<Vec<_>>();
-            polygon_paint_item(context, points, *fill, *stroke)
+            polygon_paint_item(
+                context,
+                points,
+                context.fill_color.unwrap_or(*fill),
+                *stroke,
+            )
         }
         ScenePrimitive::MorphPolygon {
             from_points,
@@ -6654,7 +6672,33 @@ fn scene_primitive_to_paint_item(
                 .into_iter()
                 .map(|point| point_in_rect(context.node_rect, point))
                 .collect::<Vec<_>>();
-            polygon_paint_item(context, points, *fill, *stroke)
+            polygon_paint_item(
+                context,
+                points,
+                context.fill_color.unwrap_or(*fill),
+                *stroke,
+            )
+        }
+        ScenePrimitive::MorphPolygonKeyframes {
+            frames,
+            amount,
+            fill,
+            stroke,
+        } => {
+            let points = if let Some(active_morph) = &context.active_morph {
+                active_morph.points(frames, *amount)
+            } else {
+                morph_polygon_keyframe_points(frames, *amount + context.morph)
+            }
+            .into_iter()
+            .map(|point| point_in_rect(context.node_rect, point))
+            .collect::<Vec<_>>();
+            polygon_paint_item(
+                context,
+                points,
+                context.fill_color.unwrap_or(*fill),
+                *stroke,
+            )
         }
         ScenePrimitive::Image { key, rect, tint } => PaintItem {
             node: context.node,
@@ -6793,6 +6837,23 @@ fn morph_polygon_points(
             )
         })
         .collect()
+}
+
+fn morph_polygon_keyframe_points(frames: &[Vec<UiPoint>], amount: f32) -> Vec<UiPoint> {
+    if frames.is_empty() {
+        return Vec::new();
+    }
+    if frames.len() == 1 {
+        return resample_closed_polygon(&frames[0], frames[0].len().max(3));
+    }
+    let amount = finite_or(amount, 0.0).clamp(0.0, (frames.len() - 1) as f32);
+    let from_index = amount.floor() as usize;
+    let to_index = (from_index + 1).min(frames.len() - 1);
+    morph_polygon_points(
+        &frames[from_index],
+        &frames[to_index],
+        amount - from_index as f32,
+    )
 }
 
 fn resample_closed_polygon(points: &[UiPoint], count: usize) -> Vec<UiPoint> {
@@ -6939,6 +7000,17 @@ fn scene_primitive_bounds(primitive: &ScenePrimitive) -> Option<UiRect> {
                     )
                 })
         }
+        ScenePrimitive::MorphPolygonKeyframes { frames, stroke, .. } => frames
+            .iter()
+            .filter(|points| !points.is_empty())
+            .map(|points| rect_from_points(points))
+            .reduce(union_rects)
+            .map(|bounds| {
+                expand_rect(
+                    bounds,
+                    stroke.map_or(0.0, |stroke| stroke.width.max(0.0) * 0.5),
+                )
+            }),
         ScenePrimitive::Image { rect, .. } => Some(finite_rect(*rect)),
         ScenePrimitive::Rect(rect) => Some(paint_rect_bounds(rect)),
         ScenePrimitive::Text(text) => Some(finite_rect(text.rect)),
@@ -7038,7 +7110,7 @@ pub struct PaintItem {
     pub node: UiNodeId,
     pub rect: UiRect,
     pub clip_rect: UiRect,
-    pub z_index: i16,
+    pub z_index: f32,
     pub layer_order: platform::LayerOrder,
     pub opacity: f32,
     pub transform: PaintTransform,
@@ -8904,6 +8976,7 @@ pub struct AnimatedValues {
     pub translate: UiPoint,
     pub scale: f32,
     pub morph: f32,
+    pub fill_color: Option<ColorRgba>,
 }
 
 impl AnimatedValues {
@@ -8913,12 +8986,26 @@ impl AnimatedValues {
             translate,
             scale,
             morph: 0.0,
+            fill_color: None,
         }
     }
 
     pub const fn with_morph(mut self, morph: f32) -> Self {
         self.morph = morph;
         self
+    }
+
+    pub const fn with_fill_color(mut self, fill_color: ColorRgba) -> Self {
+        self.fill_color = Some(fill_color);
+        self
+    }
+
+    pub fn transform_rect(self, rect: UiRect) -> UiRect {
+        PaintTransform {
+            translation: self.translate,
+            scale: self.scale,
+        }
+        .transform_rect(rect)
     }
 
     fn lerp(self, to: Self, t: f32) -> Self {
@@ -8931,8 +9018,36 @@ impl AnimatedValues {
             ),
             scale: self.scale + (to.scale - self.scale) * t,
             morph: self.morph + (to.morph - self.morph) * t,
+            fill_color: lerp_optional_color(self.fill_color, to.fill_color, t),
         }
     }
+}
+
+fn lerp_optional_color(
+    from: Option<ColorRgba>,
+    to: Option<ColorRgba>,
+    t: f32,
+) -> Option<ColorRgba> {
+    match (from, to) {
+        (Some(from), Some(to)) => Some(lerp_color(from, to, t)),
+        (Some(from), None) => (t < 1.0).then_some(from),
+        (None, Some(to)) => (t > 0.0).then_some(to),
+        (None, None) => None,
+    }
+}
+
+fn lerp_color(from: ColorRgba, to: ColorRgba, t: f32) -> ColorRgba {
+    let channel = |from: u8, to: u8| {
+        (from as f32 + (to as f32 - from as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    ColorRgba::new(
+        channel(from.r, to.r),
+        channel(from.g, to.g),
+        channel(from.b, to.b),
+        channel(from.a, to.a),
+    )
 }
 
 impl Default for AnimatedValues {
@@ -9202,9 +9317,56 @@ pub struct AnimationTickReport {
 struct ActiveTransition {
     from_state: usize,
     from_values: AnimatedValues,
+    from_morph: AnimationMorphEndpoint,
     to_state: usize,
     duration_seconds: f32,
     elapsed_seconds: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum AnimationMorphEndpoint {
+    Amount(f32),
+    Transition(Box<AnimationMorphTransition>),
+}
+
+impl AnimationMorphEndpoint {
+    fn amount(amount: f32) -> Self {
+        Self::Amount(finite_or(amount, 0.0))
+    }
+
+    fn points(&self, frames: &[Vec<UiPoint>], amount_offset: f32) -> Vec<UiPoint> {
+        match self {
+            Self::Amount(amount) => morph_polygon_keyframe_points(frames, amount_offset + *amount),
+            Self::Transition(transition) => transition.points(frames, amount_offset),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AnimationMorphTransition {
+    from: AnimationMorphEndpoint,
+    to: AnimationMorphEndpoint,
+    progress: f32,
+}
+
+impl AnimationMorphTransition {
+    fn new(from: AnimationMorphEndpoint, to: AnimationMorphEndpoint, progress: f32) -> Self {
+        Self {
+            from,
+            to,
+            progress: finite_or(progress, 0.0).clamp(0.0, 1.0),
+        }
+    }
+
+    fn into_endpoint(self) -> AnimationMorphEndpoint {
+        AnimationMorphEndpoint::Transition(Box::new(self))
+    }
+
+    fn points(&self, frames: &[Vec<UiPoint>], amount_offset: f32) -> Vec<UiPoint> {
+        let from = self.from.points(frames, amount_offset);
+        let to = self.to.points(frames, amount_offset);
+        morph_polygon_points(&from, &to, self.progress)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -9290,6 +9452,20 @@ impl AnimationMachine {
         self.values
     }
 
+    pub fn animation_bounds(&self, local_rect: UiRect) -> UiRect {
+        let mut bounds = self.values.transform_rect(local_rect);
+        for state in &self.states {
+            bounds = union_rects(bounds, state.values.transform_rect(local_rect));
+        }
+        if let Some(active) = &self.active {
+            bounds = union_rects(bounds, active.from_values.transform_rect(local_rect));
+            if let Some(to_state) = self.states.get(active.to_state) {
+                bounds = union_rects(bounds, to_state.values.transform_rect(local_rect));
+            }
+        }
+        finite_rect(bounds)
+    }
+
     pub fn is_animating(&self) -> bool {
         self.active.is_some()
     }
@@ -9314,6 +9490,27 @@ impl AnimationMachine {
             elapsed_seconds: active.elapsed_seconds,
             progress,
         })
+    }
+
+    fn active_morph_transition(&self) -> Option<AnimationMorphTransition> {
+        let active = self.active.as_ref()?;
+        let to_state = self.states.get(active.to_state)?;
+        let progress = if active.duration_seconds <= f32::EPSILON {
+            1.0
+        } else {
+            (active.elapsed_seconds / active.duration_seconds).clamp(0.0, 1.0)
+        };
+        Some(AnimationMorphTransition::new(
+            active.from_morph.clone(),
+            AnimationMorphEndpoint::amount(to_state.values.morph),
+            progress,
+        ))
+    }
+
+    fn current_morph_endpoint(&self) -> AnimationMorphEndpoint {
+        self.active_morph_transition()
+            .map(AnimationMorphTransition::into_endpoint)
+            .unwrap_or_else(|| AnimationMorphEndpoint::amount(self.values.morph))
     }
 
     pub fn has_same_definition(&self, other: &Self) -> bool {
@@ -9383,13 +9580,12 @@ impl AnimationMachine {
         self.current_state = previous.current_state;
         self.active = previous.active.clone();
         self.values = previous.values;
-        self.inputs = previous.inputs.clone();
-        for (name, value) in desired_inputs {
-            self.set_input(name, value);
-        }
-        if self.active.is_none() {
+        self.inputs = desired_inputs;
+        let transitioned = self.evaluate_input_transitions();
+        if !transitioned && self.active.is_none() {
             self.apply_blend_bindings();
         }
+        self.consume_trigger_inputs();
         true
     }
 
@@ -9432,10 +9628,13 @@ impl AnimationMachine {
         else {
             return false;
         };
+        let from_values = self.values;
+        let from_morph = self.current_morph_endpoint();
         self.current_state = to_state;
         self.active = Some(ActiveTransition {
             from_state: logical_state,
-            from_values: self.values,
+            from_values,
+            from_morph,
             to_state,
             duration_seconds: transition.duration_seconds.max(0.0),
             elapsed_seconds: 0.0,
@@ -9547,550 +9746,6 @@ pub fn root_style(width: f32, height: f32) -> UiNodeStyle {
 
 pub fn length(value: f32) -> Dimension {
     Dimension::length(value)
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-pub fn egui_rect(rect: UiRect) -> egui::Rect {
-    egui::Rect::from_min_size(
-        egui::Pos2::new(rect.x, rect.y),
-        egui::Vec2::new(rect.width, rect.height),
-    )
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-pub fn egui_color(color: ColorRgba, opacity: f32) -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(
-        color.r,
-        color.g,
-        color.b,
-        ((color.a as f32) * opacity.clamp(0.0, 1.0)).round() as u8,
-    )
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-pub fn paint_document_egui(document: &UiDocument, ctx: &egui::Context, layer: egui::LayerId) {
-    paint_document_egui_impl(document, ctx, layer, None, None, None);
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-pub fn paint_document_egui_clipped(
-    document: &UiDocument,
-    ctx: &egui::Context,
-    layer: egui::LayerId,
-    clip_rect: UiRect,
-) {
-    paint_document_egui_impl(document, ctx, layer, Some(clip_rect), None, None);
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-pub fn paint_document_egui_with_canvas(
-    document: &UiDocument,
-    ctx: &egui::Context,
-    layer: egui::LayerId,
-    mut paint_canvas: impl FnMut(&CanvasContent, &PaintItem, &egui::Painter),
-) {
-    paint_document_egui_impl(document, ctx, layer, None, None, Some(&mut paint_canvas));
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-pub fn paint_document_egui_with_images(
-    document: &UiDocument,
-    ctx: &egui::Context,
-    layer: egui::LayerId,
-    mut paint_image: impl FnMut(&PaintImage, &PaintItem, &egui::Painter),
-) {
-    paint_document_egui_impl(document, ctx, layer, None, Some(&mut paint_image), None);
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-pub fn paint_document_egui_with_callbacks(
-    document: &UiDocument,
-    ctx: &egui::Context,
-    layer: egui::LayerId,
-    mut paint_image: impl FnMut(&PaintImage, &PaintItem, &egui::Painter),
-    mut paint_canvas: impl FnMut(&CanvasContent, &PaintItem, &egui::Painter),
-) {
-    paint_document_egui_impl(
-        document,
-        ctx,
-        layer,
-        None,
-        Some(&mut paint_image),
-        Some(&mut paint_canvas),
-    );
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-type EguiImageCallback<'a> = dyn FnMut(&PaintImage, &PaintItem, &egui::Painter) + 'a;
-
-#[cfg(feature = "egui-renderer-compat")]
-type EguiCanvasCallback<'a> = dyn FnMut(&CanvasContent, &PaintItem, &egui::Painter) + 'a;
-
-#[cfg(feature = "egui-renderer-compat")]
-fn paint_document_egui_impl(
-    document: &UiDocument,
-    ctx: &egui::Context,
-    layer: egui::LayerId,
-    outer_clip: Option<UiRect>,
-    mut paint_image: Option<&mut EguiImageCallback<'_>>,
-    mut paint_canvas: Option<&mut EguiCanvasCallback<'_>>,
-) {
-    let painter = ctx.layer_painter(layer);
-    let mut simple_rect_batch = SimpleRectBatch::default();
-    for item in document.paint_list().items {
-        let Some(clip_rect) = (match outer_clip {
-            Some(outer) => item.clip_rect.intersection(outer),
-            None => Some(item.clip_rect),
-        }) else {
-            continue;
-        };
-        if clip_rect.width <= f32::EPSILON || clip_rect.height <= f32::EPSILON {
-            continue;
-        }
-        let clip_rect = egui_rect(clip_rect);
-        let rect = egui_rect(transform_rect(item.rect, item.transform));
-        match &item.kind {
-            PaintKind::Rect { .. } if simple_rect_batch.try_push(&item, rect, clip_rect) => {}
-            PaintKind::Rect {
-                fill,
-                stroke,
-                corner_radius,
-            } => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                let node_painter = painter.with_clip_rect(clip_rect);
-                if fill.a > 0 {
-                    node_painter.rect_filled(rect, *corner_radius, egui_color(*fill, item.opacity));
-                }
-                if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
-                    node_painter.rect_stroke(
-                        rect,
-                        *corner_radius,
-                        egui::Stroke::new(stroke.width, egui_color(stroke.color, item.opacity)),
-                        egui::StrokeKind::Outside,
-                    );
-                }
-            }
-            PaintKind::RichRect(rect_primitive) => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                paint_rich_rect_egui(
-                    &painter.with_clip_rect(clip_rect),
-                    rect,
-                    rect_primitive,
-                    item.opacity,
-                );
-            }
-            PaintKind::Text(text) => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                let text_painter = painter.with_clip_rect(clip_rect);
-                text_painter.text(
-                    egui::Pos2::new(rect.min.x, rect.min.y),
-                    egui::Align2::LEFT_TOP,
-                    &text.text,
-                    egui_font_id(&text.style, item.transform.scale),
-                    egui_color(text.style.color, item.opacity),
-                );
-            }
-            PaintKind::SceneText(text) => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                let node_painter = painter.with_clip_rect(clip_rect);
-                let text_rect = egui_rect(transform_rect(text.rect, item.transform));
-                node_painter.text(
-                    scene_text_pos(text_rect, text),
-                    scene_text_align(text),
-                    scene_text_content(text),
-                    egui_font_id(&text.style, item.transform.scale),
-                    egui_color(text.style.color, item.opacity),
-                );
-            }
-            PaintKind::Canvas(canvas) => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                if let Some(callback) = paint_canvas.as_deref_mut() {
-                    callback(canvas, &item, &painter.with_clip_rect(clip_rect));
-                }
-            }
-            PaintKind::Line { from, to, stroke } => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                if stroke.is_visible() {
-                    painter.with_clip_rect(clip_rect).line_segment(
-                        [
-                            egui_pos(transform_point(*from, item.transform)),
-                            egui_pos(transform_point(*to, item.transform)),
-                        ],
-                        egui::Stroke::new(stroke.width, egui_color(stroke.color, item.opacity)),
-                    );
-                }
-            }
-            PaintKind::Circle {
-                center,
-                radius,
-                fill,
-                stroke,
-            } => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                let node_painter = painter.with_clip_rect(clip_rect);
-                let center = egui_pos(transform_point(*center, item.transform));
-                let radius = radius * item.transform.scale.max(0.0);
-                if fill.a > 0 {
-                    node_painter.circle_filled(center, radius, egui_color(*fill, item.opacity));
-                }
-                if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
-                    node_painter.circle_stroke(
-                        center,
-                        radius,
-                        egui::Stroke::new(stroke.width, egui_color(stroke.color, item.opacity)),
-                    );
-                }
-            }
-            PaintKind::Polygon {
-                points,
-                fill,
-                stroke,
-            } => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                let points = points
-                    .iter()
-                    .copied()
-                    .map(|point| egui_pos(transform_point(point, item.transform)))
-                    .collect::<Vec<_>>();
-                if fill.a > 0 && points.len() >= 3 {
-                    painter
-                        .with_clip_rect(clip_rect)
-                        .add(egui::Shape::convex_polygon(
-                            points.clone(),
-                            egui_color(*fill, item.opacity),
-                            egui::Stroke::NONE,
-                        ));
-                }
-                if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
-                    painter.with_clip_rect(clip_rect).add(egui::Shape::line(
-                        points,
-                        egui::Stroke::new(stroke.width, egui_color(stroke.color, item.opacity)),
-                    ));
-                }
-            }
-            PaintKind::Image { key, tint } => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                if let Some(callback) = paint_image.as_deref_mut() {
-                    let mut image = PaintImage::new(key.clone(), item.rect);
-                    image.tint = *tint;
-                    callback(&image, &item, &painter.with_clip_rect(clip_rect));
-                }
-            }
-            PaintKind::CompositedLayer(_) => {
-                simple_rect_batch.flush(&painter, outer_clip);
-            }
-            PaintKind::Path(path) => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                let points = paint_path_points(path)
-                    .into_iter()
-                    .map(|point| egui_pos(transform_point(point, item.transform)))
-                    .collect::<Vec<_>>();
-                if let Some(fill) = &path.fill {
-                    if points.len() >= 3 {
-                        painter
-                            .with_clip_rect(clip_rect)
-                            .add(egui::Shape::convex_polygon(
-                                points.clone(),
-                                egui_color(fill.fallback_color(), item.opacity),
-                                egui::Stroke::NONE,
-                            ));
-                    }
-                }
-                if let Some(stroke) = path.stroke.filter(|stroke| stroke.is_visible()) {
-                    if points.len() >= 2 {
-                        painter.with_clip_rect(clip_rect).add(egui::Shape::line(
-                            points,
-                            egui::Stroke::new(
-                                stroke.style.width,
-                                egui_color(stroke.style.color, item.opacity),
-                            ),
-                        ));
-                    }
-                }
-            }
-            PaintKind::ImagePlacement(image) => {
-                simple_rect_batch.flush(&painter, outer_clip);
-                if let Some(callback) = paint_image.as_deref_mut() {
-                    callback(image, &item, &painter.with_clip_rect(clip_rect));
-                }
-            }
-        }
-    }
-    simple_rect_batch.flush(&painter, outer_clip);
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn paint_rich_rect_egui(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    rect_primitive: &PaintRect,
-    opacity: f32,
-) {
-    let radius = egui_corner_radius(rect_primitive.corner_radii);
-    for effect in &rect_primitive.effects {
-        let color = egui_color(effect.color, opacity);
-        match effect.kind {
-            PaintEffectKind::Shadow | PaintEffectKind::Glow => {
-                let spread = effect.spread.max(0.0) + effect.blur_radius.max(0.0) * 0.25;
-                let effect_rect = rect
-                    .expand(spread)
-                    .translate(egui::vec2(effect.offset.x, effect.offset.y));
-                painter.rect_filled(
-                    effect_rect,
-                    egui_corner_radius(outset_corner_radii(rect_primitive.corner_radii, spread)),
-                    color,
-                );
-            }
-            PaintEffectKind::InsetShadow => {
-                painter.rect_stroke(
-                    rect.shrink(effect.spread.max(0.0)),
-                    radius,
-                    egui::Stroke::new(effect.blur_radius.max(1.0), color),
-                    egui::StrokeKind::Inside,
-                );
-            }
-        }
-    }
-
-    let fill = rect_primitive.fill.fallback_color();
-    if fill.a > 0 {
-        painter.rect_filled(rect, radius, egui_color(fill, opacity));
-    }
-    if let Some(stroke) = rect_primitive.stroke.filter(|stroke| stroke.is_visible()) {
-        painter.rect_stroke(
-            rect,
-            radius,
-            egui::Stroke::new(stroke.style.width, egui_color(stroke.style.color, opacity)),
-            egui_stroke_kind(stroke.alignment),
-        );
-    }
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn egui_corner_radius(radii: CornerRadii) -> egui::CornerRadius {
-    fn to_u8(value: f32) -> u8 {
-        value.round().clamp(0.0, 255.0) as u8
-    }
-
-    egui::CornerRadius {
-        nw: to_u8(radii.top_left),
-        ne: to_u8(radii.top_right),
-        sw: to_u8(radii.bottom_left),
-        se: to_u8(radii.bottom_right),
-    }
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn outset_corner_radii(radii: CornerRadii, amount: f32) -> CornerRadii {
-    let amount = amount.max(0.0);
-    CornerRadii::new(
-        radii.top_left + amount,
-        radii.top_right + amount,
-        radii.bottom_right + amount,
-        radii.bottom_left + amount,
-    )
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn egui_stroke_kind(alignment: StrokeAlignment) -> egui::StrokeKind {
-    match alignment {
-        StrokeAlignment::Inside => egui::StrokeKind::Inside,
-        StrokeAlignment::Center => egui::StrokeKind::Middle,
-        StrokeAlignment::Outside => egui::StrokeKind::Outside,
-    }
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn scene_text_pos(rect: egui::Rect, text: &PaintText) -> egui::Pos2 {
-    let x = match text.horizontal_align {
-        TextHorizontalAlign::Start => rect.min.x,
-        TextHorizontalAlign::Center => rect.center().x,
-        TextHorizontalAlign::End => rect.max.x,
-    };
-    let y = match text.vertical_align {
-        TextVerticalAlign::Top | TextVerticalAlign::Baseline => rect.min.y,
-        TextVerticalAlign::Center => rect.center().y,
-        TextVerticalAlign::Bottom => rect.max.y,
-    };
-    egui::Pos2::new(x, y)
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn scene_text_align(text: &PaintText) -> egui::Align2 {
-    match (text.horizontal_align, text.vertical_align) {
-        (TextHorizontalAlign::Start, TextVerticalAlign::Top | TextVerticalAlign::Baseline) => {
-            egui::Align2::LEFT_TOP
-        }
-        (TextHorizontalAlign::Center, TextVerticalAlign::Top | TextVerticalAlign::Baseline) => {
-            egui::Align2::CENTER_TOP
-        }
-        (TextHorizontalAlign::End, TextVerticalAlign::Top | TextVerticalAlign::Baseline) => {
-            egui::Align2::RIGHT_TOP
-        }
-        (TextHorizontalAlign::Start, TextVerticalAlign::Center) => egui::Align2::LEFT_CENTER,
-        (TextHorizontalAlign::Center, TextVerticalAlign::Center) => egui::Align2::CENTER_CENTER,
-        (TextHorizontalAlign::End, TextVerticalAlign::Center) => egui::Align2::RIGHT_CENTER,
-        (TextHorizontalAlign::Start, TextVerticalAlign::Bottom) => egui::Align2::LEFT_BOTTOM,
-        (TextHorizontalAlign::Center, TextVerticalAlign::Bottom) => egui::Align2::CENTER_BOTTOM,
-        (TextHorizontalAlign::End, TextVerticalAlign::Bottom) => egui::Align2::RIGHT_BOTTOM,
-    }
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn scene_text_content(text: &PaintText) -> &str {
-    if text.multiline {
-        &text.text
-    } else {
-        text.text.lines().next().unwrap_or("")
-    }
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn paint_path_points(path: &PaintPath) -> Vec<UiPoint> {
-    path.verbs
-        .iter()
-        .filter_map(|verb| match *verb {
-            PathVerb::MoveTo(point) | PathVerb::LineTo(point) => Some(point),
-            PathVerb::QuadraticTo { to, .. } | PathVerb::CubicTo { to, .. } => Some(to),
-            PathVerb::Close => None,
-        })
-        .collect()
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn egui_pos(point: UiPoint) -> egui::Pos2 {
-    egui::Pos2::new(point.x, point.y)
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn transform_point(point: UiPoint, transform: PaintTransform) -> UiPoint {
-    transform.transform_point(point)
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn transform_rect(rect: UiRect, transform: PaintTransform) -> UiRect {
-    transform.transform_rect(rect)
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn egui_font_id(style: &TextStyle, scale: f32) -> egui::FontId {
-    let size = style.font_size * scale.max(0.0);
-    match style.family {
-        FontFamily::Monospace => egui::FontId::monospace(size),
-        FontFamily::SansSerif | FontFamily::Serif | FontFamily::Named(_) => {
-            egui::FontId::proportional(size)
-        }
-    }
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-#[derive(Default)]
-struct SimpleRectBatch {
-    mesh: egui::epaint::Mesh,
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-impl SimpleRectBatch {
-    fn try_push(&mut self, item: &PaintItem, rect: egui::Rect, clip_rect: egui::Rect) -> bool {
-        let PaintKind::Rect {
-            fill,
-            stroke,
-            corner_radius,
-        } = &item.kind
-        else {
-            return false;
-        };
-        let fill = *fill;
-        let stroke = *stroke;
-        let corner_radius = *corner_radius;
-        if !rect_is_inside_clip(rect, clip_rect) || corner_radius > 2.0 {
-            return false;
-        }
-        let has_fill = fill.a > 0;
-        let has_stroke = stroke.is_some_and(|stroke| stroke.width > 0.0 && stroke.color.a > 0);
-        if !has_fill && !has_stroke {
-            return false;
-        }
-        if has_fill {
-            self.mesh
-                .add_colored_rect(rect, egui_color(fill, item.opacity));
-        }
-        if let Some(stroke) = stroke.filter(|stroke| stroke.width > 0.0 && stroke.color.a > 0) {
-            add_inner_rect_stroke(
-                &mut self.mesh,
-                rect,
-                stroke.width,
-                egui_color(stroke.color, item.opacity),
-            );
-        }
-        true
-    }
-
-    fn flush(&mut self, painter: &egui::Painter, outer_clip: Option<UiRect>) {
-        if self.mesh.indices.is_empty() {
-            return;
-        }
-        let mesh = std::mem::take(&mut self.mesh);
-        if let Some(clip) = outer_clip {
-            painter
-                .with_clip_rect(egui_rect(clip))
-                .add(egui::Shape::Mesh(mesh.into()));
-        } else {
-            painter.add(egui::Shape::Mesh(mesh.into()));
-        }
-    }
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn rect_is_inside_clip(rect: egui::Rect, clip_rect: egui::Rect) -> bool {
-    rect.min.x >= clip_rect.min.x
-        && rect.min.y >= clip_rect.min.y
-        && rect.max.x <= clip_rect.max.x
-        && rect.max.y <= clip_rect.max.y
-}
-
-#[cfg(feature = "egui-renderer-compat")]
-fn add_inner_rect_stroke(
-    mesh: &mut egui::epaint::Mesh,
-    rect: egui::Rect,
-    width: f32,
-    color: egui::Color32,
-) {
-    let width = width
-        .max(0.0)
-        .min(rect.width() * 0.5)
-        .min(rect.height() * 0.5);
-    if width <= f32::EPSILON {
-        return;
-    }
-    mesh.add_colored_rect(
-        egui::Rect::from_min_max(
-            rect.left_top(),
-            egui::pos2(rect.right(), rect.top() + width),
-        ),
-        color,
-    );
-    mesh.add_colored_rect(
-        egui::Rect::from_min_max(
-            egui::pos2(rect.left(), rect.bottom() - width),
-            rect.right_bottom(),
-        ),
-        color,
-    );
-    mesh.add_colored_rect(
-        egui::Rect::from_min_max(
-            egui::pos2(rect.left(), rect.top() + width),
-            egui::pos2(rect.left() + width, rect.bottom() - width),
-        ),
-        color,
-    );
-    mesh.add_colored_rect(
-        egui::Rect::from_min_max(
-            egui::pos2(rect.right() - width, rect.top() + width),
-            egui::pos2(rect.right(), rect.bottom() - width),
-        ),
-        color,
-    );
 }
 
 #[cfg(test)]
@@ -11018,7 +10673,7 @@ mod tests {
                         ..Default::default()
                     })
                     .style,
-                    z_index: 5,
+                    z_index: 5.0,
                     ..Default::default()
                 },
             )
@@ -11041,7 +10696,7 @@ mod tests {
                         ..Default::default()
                     })
                     .style,
-                    z_index: 10,
+                    z_index: 10.0,
                     ..Default::default()
                 },
             ),
@@ -11329,7 +10984,7 @@ mod tests {
                 "back.window",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 120.0, 120.0)).style,
-                    z_index: 10,
+                    z_index: 10.0,
                     ..Default::default()
                 },
             )
@@ -11347,7 +11002,7 @@ mod tests {
                 "back.popup",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 80.0)).style,
-                    z_index: 100,
+                    z_index: 100.0,
                     ..Default::default()
                 },
             )
@@ -11361,7 +11016,7 @@ mod tests {
                 "front.window",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(30.0, 30.0, 120.0, 120.0)).style,
-                    z_index: 20,
+                    z_index: 20.0,
                     ..Default::default()
                 },
             )
@@ -11439,7 +11094,7 @@ mod tests {
                 "back.late.child",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 80.0)).style,
-                    z_index: 500,
+                    z_index: 500.0,
                     ..Default::default()
                 },
             )
@@ -11483,7 +11138,7 @@ mod tests {
                 "content",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 120.0, 120.0)).style,
-                    z_index: 900,
+                    z_index: 900.0,
                     ..Default::default()
                 },
             )
@@ -11501,7 +11156,7 @@ mod tests {
                 "global.overlay",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 80.0, 80.0)).style,
-                    z_index: 100,
+                    z_index: 100.0,
                     ..Default::default()
                 },
             )
@@ -11527,7 +11182,7 @@ mod tests {
                 "back.window",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 120.0, 120.0)).style,
-                    z_index: 10,
+                    z_index: 10.0,
                     ..Default::default()
                 },
             )
@@ -11539,7 +11194,7 @@ mod tests {
                 "front.window",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(30.0, 30.0, 120.0, 120.0)).style,
-                    z_index: 20,
+                    z_index: 20.0,
                     ..Default::default()
                 },
             )
@@ -11552,7 +11207,7 @@ mod tests {
                 "global.overlay",
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 80.0)).style,
-                    z_index: 100,
+                    z_index: 100.0,
                     ..Default::default()
                 },
             )
@@ -11894,7 +11549,7 @@ mod tests {
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 60.0)).style,
                     clip: ClipBehavior::Clip,
-                    z_index: 1,
+                    z_index: 1.0,
                     ..Default::default()
                 },
             )
@@ -11911,7 +11566,7 @@ mod tests {
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 120.0, 90.0)).style,
                     clip: ClipBehavior::Clip,
-                    z_index: 10,
+                    z_index: 10.0,
                     ..Default::default()
                 },
             )
@@ -11940,7 +11595,7 @@ mod tests {
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(20.0, 20.0, 100.0, 60.0)).style,
                     clip: ClipBehavior::Clip,
-                    z_index: 1,
+                    z_index: 1.0,
                     ..Default::default()
                 },
             )
@@ -11957,7 +11612,7 @@ mod tests {
                 UiNodeStyle {
                     layout: LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 140.0, 110.0)).style,
                     clip: ClipBehavior::Clip,
-                    z_index: 10,
+                    z_index: 10.0,
                     ..Default::default()
                 },
             )
@@ -12730,7 +12385,7 @@ mod tests {
         );
         let mut content_style: UiNodeStyle =
             LayoutStyle::size(70.0, 160.0).with_flex_shrink(0.0).into();
-        content_style.z_index = 20;
+        content_style.z_index = 20.0;
         let content = doc.add_child(
             scroll,
             UiNode::container("content", content_style).with_visual(UiVisual::panel(
@@ -13831,75 +13486,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "egui-renderer-compat")]
-    #[test]
-    fn egui_paint_callbacks_receive_image_and_canvas_items() {
-        let mut doc = UiDocument::new(root_style(160.0, 120.0));
-        doc.add_child(
-            doc.root,
-            UiNode::image(
-                "icon",
-                ImageContent::new("icons.play").tinted(ColorRgba::new(120, 180, 255, 255)),
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(24.0),
-                        height: length(24.0),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
-        doc.add_child(
-            doc.root,
-            UiNode::scene(
-                "preview",
-                vec![ScenePrimitive::ImagePlacement(
-                    PaintImage::new("thumbs.lot", UiRect::new(4.0, 6.0, 32.0, 20.0))
-                        .fit(ImageFit::Contain),
-                )],
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(48.0),
-                        height: length(32.0),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
-        doc.add_child(
-            doc.root,
-            UiNode::canvas(
-                "mask",
-                "editor.mask.viewport",
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: length(80.0),
-                        height: length(48.0),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
-        doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
-            .expect("layout");
-
-        let ctx = egui::Context::default();
-        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("operad-test"));
-        let mut image_keys = Vec::new();
-        let mut canvas_keys = Vec::new();
-
-        paint_document_egui_with_callbacks(
-            &doc,
-            &ctx,
-            layer,
-            |image, _item, _painter| image_keys.push(image.key.clone()),
-            |canvas, _item, _painter| canvas_keys.push(canvas.key.clone()),
-        );
-
-        assert_eq!(image_keys, vec!["icons.play", "thumbs.lot"]);
-        assert_eq!(canvas_keys, vec!["editor.mask.viewport"]);
-    }
-
     #[test]
     fn accessibility_tree_exports_explicit_node_metadata() {
         let mut doc = UiDocument::new(root_style(180.0, 80.0));
@@ -14265,6 +13851,41 @@ mod tests {
     }
 
     #[test]
+    fn animation_machine_blends_fill_color_between_states() {
+        let mut machine = AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "red",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0)
+                        .with_fill_color(ColorRgba::new(255, 0, 0, 255)),
+                ),
+                AnimationState::new(
+                    "blue",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0)
+                        .with_fill_color(ColorRgba::new(0, 0, 255, 255)),
+                ),
+            ],
+            vec![AnimationTransition::when(
+                "red",
+                "blue",
+                AnimationCondition::bool("blue", true),
+                1.0,
+            )],
+            "red",
+        )
+        .expect("animation")
+        .with_bool_input("blue", false);
+
+        assert!(machine.set_bool_input("blue", true));
+        machine.tick(0.5);
+
+        assert_eq!(
+            machine.values().fill_color,
+            Some(ColorRgba::new(128, 0, 128, 255))
+        );
+    }
+
+    #[test]
     fn morph_polygon_scene_primitive_blends_different_point_counts() {
         let mut doc = UiDocument::new(root_style(140.0, 100.0));
         doc.add_child(
@@ -14309,6 +13930,274 @@ mod tests {
         assert!(points
             .iter()
             .all(|point| point.x.is_finite() && point.y.is_finite()));
+    }
+
+    #[test]
+    fn morph_polygon_keyframes_select_intermediate_shape() {
+        let mut doc = UiDocument::new(root_style(140.0, 100.0));
+        doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "keyframes",
+                vec![ScenePrimitive::MorphPolygonKeyframes {
+                    frames: vec![
+                        vec![
+                            UiPoint::new(20.0, 20.0),
+                            UiPoint::new(60.0, 20.0),
+                            UiPoint::new(40.0, 60.0),
+                        ],
+                        vec![
+                            UiPoint::new(30.0, 12.0),
+                            UiPoint::new(68.0, 50.0),
+                            UiPoint::new(12.0, 50.0),
+                        ],
+                        vec![
+                            UiPoint::new(40.0, 8.0),
+                            UiPoint::new(72.0, 40.0),
+                            UiPoint::new(40.0, 72.0),
+                            UiPoint::new(8.0, 40.0),
+                        ],
+                    ],
+                    amount: 1.0,
+                    fill: ColorRgba::new(120, 210, 180, 255),
+                    stroke: None,
+                }],
+                LayoutStyle::size(100.0, 80.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(140.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let points = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::Polygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .expect("keyframed morph paint");
+        assert_eq!(points[0], UiPoint::new(30.0, 12.0));
+    }
+
+    #[test]
+    fn animated_morph_value_drives_morph_polygon_keyframe_paint() {
+        let animation = AnimationMachine::single_state(
+            "circle",
+            AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(2.0),
+        );
+        let mut doc = UiDocument::new(root_style(140.0, 100.0));
+        doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "animated_keyframes",
+                vec![ScenePrimitive::MorphPolygonKeyframes {
+                    frames: vec![
+                        vec![
+                            UiPoint::new(20.0, 20.0),
+                            UiPoint::new(60.0, 20.0),
+                            UiPoint::new(40.0, 60.0),
+                        ],
+                        vec![
+                            UiPoint::new(30.0, 12.0),
+                            UiPoint::new(68.0, 50.0),
+                            UiPoint::new(12.0, 50.0),
+                        ],
+                        vec![
+                            UiPoint::new(40.0, 8.0),
+                            UiPoint::new(72.0, 40.0),
+                            UiPoint::new(40.0, 72.0),
+                            UiPoint::new(8.0, 40.0),
+                        ],
+                    ],
+                    amount: 0.0,
+                    fill: ColorRgba::new(120, 210, 180, 255),
+                    stroke: None,
+                }],
+                LayoutStyle::size(100.0, 80.0),
+            )
+            .with_animation(animation),
+        );
+        doc.compute_layout(UiSize::new(140.0, 100.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let points = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::Polygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .expect("animated keyframed morph paint");
+        assert_eq!(points[0], UiPoint::new(40.0, 8.0));
+    }
+
+    #[test]
+    fn active_morph_keyframe_transition_skips_intermediate_frames() {
+        let animation = AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "a",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(0.0),
+                ),
+                AnimationState::new(
+                    "b",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(1.0),
+                ),
+                AnimationState::new(
+                    "c",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(2.0),
+                ),
+            ],
+            vec![AnimationTransition::when(
+                "a",
+                "c",
+                AnimationCondition::bool("go", true),
+                1.0,
+            )],
+            "a",
+        )
+        .expect("animation")
+        .with_bool_input("go", false);
+
+        let mut doc = UiDocument::new(root_style(160.0, 160.0));
+        let node = doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "direct_keyframes",
+                vec![ScenePrimitive::MorphPolygonKeyframes {
+                    frames: vec![
+                        vec![
+                            UiPoint::new(20.0, 20.0),
+                            UiPoint::new(60.0, 20.0),
+                            UiPoint::new(40.0, 60.0),
+                        ],
+                        vec![
+                            UiPoint::new(20.0, 100.0),
+                            UiPoint::new(60.0, 100.0),
+                            UiPoint::new(40.0, 140.0),
+                        ],
+                        vec![
+                            UiPoint::new(120.0, 20.0),
+                            UiPoint::new(120.0, 60.0),
+                            UiPoint::new(80.0, 40.0),
+                        ],
+                    ],
+                    amount: 0.0,
+                    fill: ColorRgba::new(120, 210, 180, 255),
+                    stroke: None,
+                }],
+                LayoutStyle::size(160.0, 160.0),
+            )
+            .with_animation(animation),
+        );
+        assert!(doc.set_animation_bool_input(node, "go", true));
+        doc.tick_animations(0.5);
+        doc.compute_layout(UiSize::new(160.0, 160.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let points = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::Polygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .expect("direct keyframed morph paint");
+        assert_eq!(points[0], UiPoint::new(70.0, 20.0));
+    }
+
+    #[test]
+    fn interrupted_direct_keyframe_transition_keeps_resolved_source_shape() {
+        let base_animation = |target: f32| {
+            AnimationMachine::new(
+                vec![
+                    AnimationState::new(
+                        "a",
+                        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(0.0),
+                    ),
+                    AnimationState::new(
+                        "b",
+                        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(1.0),
+                    ),
+                    AnimationState::new(
+                        "c",
+                        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_morph(2.0),
+                    ),
+                ],
+                vec![
+                    AnimationTransition::when(
+                        "a",
+                        "c",
+                        AnimationCondition::number("target", AnimationNumberComparison::Equal, 2.0),
+                        1.0,
+                    ),
+                    AnimationTransition::when(
+                        "c",
+                        "a",
+                        AnimationCondition::number("target", AnimationNumberComparison::Equal, 0.0),
+                        1.0,
+                    ),
+                ],
+                "a",
+            )
+            .expect("animation")
+            .with_number_input("target", target)
+        };
+
+        let mut previous = base_animation(0.0);
+        assert!(previous.set_number_input("target", 2.0));
+        previous.tick(0.5);
+        let mut restored = base_animation(0.0);
+        assert!(restored.retain_runtime_from(&previous));
+
+        let mut doc = UiDocument::new(root_style(180.0, 180.0));
+        doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "direct_keyframes",
+                vec![ScenePrimitive::MorphPolygonKeyframes {
+                    frames: vec![
+                        vec![
+                            UiPoint::new(20.0, 20.0),
+                            UiPoint::new(60.0, 20.0),
+                            UiPoint::new(40.0, 60.0),
+                        ],
+                        vec![
+                            UiPoint::new(20.0, 120.0),
+                            UiPoint::new(60.0, 120.0),
+                            UiPoint::new(40.0, 160.0),
+                        ],
+                        vec![
+                            UiPoint::new(120.0, 20.0),
+                            UiPoint::new(120.0, 60.0),
+                            UiPoint::new(80.0, 40.0),
+                        ],
+                    ],
+                    amount: 0.0,
+                    fill: ColorRgba::new(120, 210, 180, 255),
+                    stroke: None,
+                }],
+                LayoutStyle::size(180.0, 180.0),
+            )
+            .with_animation(restored),
+        );
+
+        doc.compute_layout(UiSize::new(180.0, 180.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let points = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::Polygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .expect("interrupted keyframed morph paint");
+        assert_eq!(points[0], UiPoint::new(70.0, 20.0));
     }
 
     #[test]
@@ -14373,6 +14262,55 @@ mod tests {
     }
 
     #[test]
+    fn animated_fill_color_drives_scene_polygon_paint() {
+        let fill_color = ColorRgba::new(88, 214, 141, 255);
+        let animation = AnimationMachine::single_state(
+            "green",
+            AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0).with_fill_color(fill_color),
+        );
+
+        let mut doc = UiDocument::new(root_style(120.0, 120.0));
+        doc.add_child(
+            doc.root,
+            UiNode::scene(
+                "animated_fill",
+                vec![ScenePrimitive::MorphPolygon {
+                    from_points: vec![
+                        UiPoint::new(20.0, 20.0),
+                        UiPoint::new(60.0, 20.0),
+                        UiPoint::new(60.0, 60.0),
+                        UiPoint::new(20.0, 60.0),
+                    ],
+                    to_points: vec![
+                        UiPoint::new(40.0, 8.0),
+                        UiPoint::new(72.0, 40.0),
+                        UiPoint::new(40.0, 72.0),
+                        UiPoint::new(8.0, 40.0),
+                    ],
+                    amount: 0.0,
+                    fill: ColorRgba::BLACK,
+                    stroke: None,
+                }],
+                LayoutStyle::size(100.0, 100.0),
+            )
+            .with_animation(animation),
+        );
+        doc.compute_layout(UiSize::new(120.0, 120.0), &mut ApproxTextMeasurer)
+            .expect("layout");
+
+        let paint = doc.paint_list();
+        let fill = paint
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                PaintKind::Polygon { fill, .. } => Some(*fill),
+                _ => None,
+            })
+            .expect("animated fill paint");
+        assert_eq!(fill, fill_color);
+    }
+
+    #[test]
     fn retained_animation_runtime_merges_fresh_input_values() {
         let base_animation = || {
             AnimationMachine::new(
@@ -14401,6 +14339,73 @@ mod tests {
             Some(0.20)
         );
         assert!((fresh.values().translate.x - 20.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn retained_animation_runtime_batches_rebuilt_inputs_before_blending() {
+        let base_animation = || {
+            AnimationMachine::new(
+                vec![
+                    AnimationState::new(
+                        "start",
+                        AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+                    ),
+                    AnimationState::new(
+                        "end",
+                        AnimatedValues::new(1.0, UiPoint::new(100.0, 0.0), 1.0),
+                    ),
+                ],
+                vec![AnimationTransition::when(
+                    "start",
+                    "end",
+                    AnimationCondition::bool("open", true),
+                    0.24,
+                )],
+                "start",
+            )
+            .expect("animation")
+            .with_blend_binding(AnimationBlendBinding::new("scrub", "start", "end"))
+        };
+        let previous = base_animation()
+            .with_bool_input("open", false)
+            .with_number_input("scrub", 0.0);
+        let mut fresh = base_animation()
+            .with_number_input("scrub", 1.0)
+            .with_bool_input("open", true);
+
+        assert!(fresh.retain_runtime_from(&previous));
+        let active = fresh
+            .active_transition()
+            .expect("rebuilt open input should start transition");
+        assert_eq!(active.from_state_name, "start");
+        assert_eq!(active.to_state_name, "end");
+        assert!((active.from_values.translate.x - 0.0).abs() <= f32::EPSILON);
+        assert!((fresh.values().translate.x - 0.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn animation_machine_reports_state_bounds_for_local_rect() {
+        let machine = AnimationMachine::new(
+            vec![
+                AnimationState::new(
+                    "left",
+                    AnimatedValues::new(1.0, UiPoint::new(0.0, 4.0), 0.75),
+                ),
+                AnimationState::new(
+                    "right",
+                    AnimatedValues::new(1.0, UiPoint::new(80.0, 0.0), 1.25),
+                ),
+            ],
+            Vec::new(),
+            "left",
+        )
+        .expect("animation");
+
+        let bounds = machine.animation_bounds(UiRect::new(0.0, 0.0, 40.0, 20.0));
+        assert_eq!(bounds.x, 0.0);
+        assert_eq!(bounds.y, 0.0);
+        assert_eq!(bounds.width, 130.0);
+        assert_eq!(bounds.height, 25.0);
     }
 
     #[test]

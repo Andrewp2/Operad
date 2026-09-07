@@ -500,7 +500,7 @@ mod tests {
                     node: UiNodeId(index),
                     rect: UiRect::new(index as f32, 0.0, 1.0, 1.0),
                     clip_rect: UiRect::new(0.0, 0.0, 100.0, 100.0),
-                    z_index: 0,
+                    z_index: 0.0,
                     layer_order: LayerOrder::DEFAULT,
                     opacity: 1.0,
                     transform: PaintTransform::default(),

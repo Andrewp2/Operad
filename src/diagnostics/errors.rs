@@ -333,7 +333,7 @@ pub struct RuntimeErrorOverlayOptions {
     pub context_value_style: TextStyle,
     pub context_label_width: f32,
     pub max_context_rows: usize,
-    pub z_index: i16,
+    pub z_index: f32,
 }
 
 impl RuntimeErrorOverlayOptions {
@@ -347,7 +347,7 @@ impl RuntimeErrorOverlayOptions {
         self
     }
 
-    pub const fn with_z_index(mut self, z_index: i16) -> Self {
+    pub const fn with_z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -411,7 +411,7 @@ impl Default for RuntimeErrorOverlayOptions {
             context_value_style,
             context_label_width: 132.0,
             max_context_rows: 8,
-            z_index: 10_000,
+            z_index: 10_000.0,
         }
     }
 }

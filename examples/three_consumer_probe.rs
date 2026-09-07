@@ -43,7 +43,7 @@ fn build_game_overlay() -> UiDocument {
                 )),
                 18.0,
             ))
-            .with_z_index(10),
+            .with_z_index(10.0),
         )
         .with_visual(UiVisual::panel(
             ColorRgba::new(20, 24, 31, 230),

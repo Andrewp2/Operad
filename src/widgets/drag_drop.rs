@@ -230,7 +230,7 @@ pub struct DropZoneOptions {
     pub kind: DragDropSurfaceKind,
     pub accepted_payload: DropPayloadFilter,
     pub accepted_operations: Vec<DragOperation>,
-    pub z_index: i16,
+    pub z_index: f32,
     pub enabled: bool,
     pub action: Option<WidgetActionBinding>,
     pub accessibility_label: Option<String>,
@@ -274,7 +274,7 @@ impl Default for DropZoneOptions {
             kind: DragDropSurfaceKind::Custom("Drop zone".to_string()),
             accepted_payload: DropPayloadFilter::any(),
             accepted_operations: all_drag_operations(),
-            z_index: 0,
+            z_index: 0.0,
             enabled: true,
             action: None,
             accessibility_label: None,
@@ -312,7 +312,7 @@ impl DropZoneOptions {
         self
     }
 
-    pub const fn with_z_index(mut self, z_index: i16) -> Self {
+    pub const fn with_z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -730,7 +730,7 @@ mod tests {
             .with_kind(DragDropSurfaceKind::ListRow)
             .with_accepted_payload(DropPayloadFilter::empty().text())
             .with_accepted_operations([DragOperation::Move])
-            .with_z_index(7)
+            .with_z_index(7.0)
             .with_accessibility_label("Timeline lane");
         let target = dnd_drop_zone(
             &mut document,
@@ -778,7 +778,7 @@ mod tests {
 
         let target_descriptor = dnd_drop_target_descriptor(&document, target.root, &drop_options);
         assert_eq!(target_descriptor.id, DropTargetId::new("lane"));
-        assert_eq!(target_descriptor.z_index, 7);
+        assert_eq!(target_descriptor.z_index, 7.0);
         assert_eq!(
             target_descriptor.resolve_operation(&payload, &[DragOperation::Move]),
             Some(DragOperation::Move)

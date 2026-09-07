@@ -1,6 +1,6 @@
 //! Host adapter contracts for pre-paint interaction state.
 //!
-//! Backends such as egui, winit/wgpu, test harnesses, or app-owned hosts
+//! Backends such as winit/wgpu, test harnesses, or app-owned hosts
 //! can use these data contracts to feed hover, press, focus, drag capture,
 //! wheel targeting, text/IME, and shortcut routing state into Operad before a
 //! document is painted.

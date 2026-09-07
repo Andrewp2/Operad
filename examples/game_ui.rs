@@ -1,10 +1,11 @@
 use operad::{
     layout, root_style, AccessibilityMeta, AccessibilityRole, ColorRgba, CornerRadii, PaintRect,
     PaintText, ScenePrimitive, StrokeStyle, TextHorizontalAlign, TextOverflow, TextStyle,
-    TextVerticalAlign, UiDocument, UiNode, UiPoint, UiRect, UiSize, UiVisual,
+    TextVerticalAlign, UiDocument, UiNode, UiPoint, UiRect, UiSize, UiVisual, WidgetAction,
 };
 
 pub const GAME_UI_VIEWPORT: UiSize = UiSize::new(1280.0, 720.0);
+const TICK_ACTION: &str = "game.tick";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GameUiState {
@@ -40,7 +41,7 @@ impl Default for GameUiState {
             ammo_capacity: 36,
             wave: 9,
             time_seconds: 312.0,
-            damage_flash: 0.22,
+            damage_flash: 0.0,
         }
     }
 }
@@ -62,7 +63,7 @@ impl GameUiState {
             ammo_capacity: 36,
             wave: 9 + ((frame / 48) % 4) as u32,
             time_seconds: 312.0 + frame as f32 * 0.15,
-            damage_flash: wave01(phase * 1.3 + 0.5, 0.0, 0.36),
+            damage_flash: damage_flash_for_frame(frame),
         }
     }
 }
@@ -73,7 +74,18 @@ pub fn game_ui_document(viewport: UiSize, state: GameUiState) -> UiDocument {
     let root = document.root();
     document
         .node_mut(root)
-        .set_visual(UiVisual::panel(ColorRgba::TRANSPARENT, None, 0.0));
+        .set_visual(UiVisual::panel(ColorRgba::new(3, 7, 11, 255), None, 0.0));
+
+    add_scene(
+        &mut document,
+        root,
+        "game.backdrop",
+        0.0,
+        0.0,
+        viewport.width,
+        viewport.height,
+        backdrop_scene(viewport, &state),
+    );
 
     let overlay = document.add_child(
         root,
@@ -92,6 +104,16 @@ pub fn game_ui_document(viewport: UiSize, state: GameUiState) -> UiDocument {
         390.0,
         64.0,
         objective_scene(&state),
+    );
+    add_scene(
+        &mut document,
+        overlay,
+        "game.compass",
+        centered(viewport.width, 520.0),
+        safe + 76.0,
+        520.0,
+        40.0,
+        compass_scene(&state),
     );
     add_scene(
         &mut document,
@@ -128,9 +150,9 @@ pub fn game_ui_document(viewport: UiSize, state: GameUiState) -> UiDocument {
         overlay,
         "game.abilities",
         centered(viewport.width, 432.0),
-        bottom(viewport.height, safe, 86.0),
+        bottom(viewport.height, safe, 104.0),
         432.0,
-        86.0,
+        104.0,
         ability_scene(&state),
     );
     add_scene(
@@ -186,8 +208,166 @@ fn add_scene(
     );
 }
 
+fn backdrop_scene(viewport: UiSize, state: &GameUiState) -> Vec<ScenePrimitive> {
+    let mut scene = Vec::with_capacity(64);
+    let width = viewport.width;
+    let height = viewport.height;
+    let horizon = height * 0.46;
+    let phase = (state.time_seconds * 0.08).fract();
+
+    scene.push(rect(
+        0.0,
+        0.0,
+        width,
+        height,
+        ColorRgba::new(3, 7, 11, 255),
+        None,
+        0.0,
+    ));
+    scene.push(rect(
+        0.0,
+        horizon,
+        width,
+        height - horizon,
+        ColorRgba::new(5, 12, 17, 255),
+        None,
+        0.0,
+    ));
+
+    for index in 0..12 {
+        let x = width * (index as f32 + 0.5) / 12.0;
+        let column_height = 18.0 + ((index * 17) % 46) as f32;
+        scene.push(rect(
+            x - 14.0,
+            horizon - column_height,
+            28.0,
+            column_height,
+            ColorRgba::new(9, 19, 27, 210),
+            Some(StrokeStyle::new(ColorRgba::new(33, 63, 74, 120), 1.0)),
+            2.0,
+        ));
+    }
+
+    for index in 0..18 {
+        let x = width * (((index * 37) % 97) as f32 / 97.0);
+        let y = height * (0.08 + ((index * 23) % 28) as f32 / 100.0);
+        let radius = if index % 5 == 0 { 1.6 } else { 1.0 };
+        scene.push(ScenePrimitive::Circle {
+            center: UiPoint::new(x, y),
+            radius,
+            fill: ColorRgba::new(113, 208, 222, 96),
+            stroke: None,
+        });
+    }
+
+    let grid_height = (height - horizon).max(1.0);
+    for index in 0..9 {
+        let row = (index as f32 + phase) / 9.0;
+        let y = horizon + grid_height * row * row;
+        scene.push(line(
+            UiPoint::new(0.0, y),
+            UiPoint::new(width, y),
+            ColorRgba::new(45, 88, 98, 82),
+            1.0,
+        ));
+    }
+
+    let vanishing = UiPoint::new(width * 0.5, horizon);
+    for index in 0..11 {
+        let amount = index as f32 / 10.0;
+        let x = width * amount;
+        scene.push(line(
+            UiPoint::new(x, height),
+            vanishing,
+            ColorRgba::new(36, 80, 92, 70),
+            1.0,
+        ));
+    }
+
+    let marker_y = horizon + grid_height * 0.34;
+    let marker_width = 112.0 + state.objective * 28.0;
+    scene.push(line(
+        UiPoint::new(width * 0.5 - marker_width, marker_y),
+        UiPoint::new(width * 0.5 - 26.0, marker_y),
+        ColorRgba::new(77, 203, 219, 140),
+        2.0,
+    ));
+    scene.push(line(
+        UiPoint::new(width * 0.5 + 26.0, marker_y),
+        UiPoint::new(width * 0.5 + marker_width, marker_y),
+        ColorRgba::new(77, 203, 219, 140),
+        2.0,
+    ));
+
+    scene
+}
+
+fn compass_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
+    let mut scene = vec![rect(
+        0.0,
+        0.0,
+        520.0,
+        40.0,
+        ColorRgba::new(7, 11, 16, 144),
+        Some(StrokeStyle::new(ColorRgba::new(55, 80, 91, 160), 1.0)),
+        4.0,
+    )];
+    let heading = (state.time_seconds * 5.25).rem_euclid(360.0);
+    let snapped = (heading / 15.0).round() * 15.0;
+    for offset in -6..=6 {
+        let degrees = (snapped + offset as f32 * 15.0).rem_euclid(360.0);
+        let x = 260.0 + (degrees_delta(degrees, heading) * 3.15);
+        if !(18.0..=502.0).contains(&x) {
+            continue;
+        }
+        let major = (degrees.round() as i32).rem_euclid(45) == 0;
+        scene.push(line(
+            UiPoint::new(x, if major { 8.0 } else { 13.0 }),
+            UiPoint::new(x, 24.0),
+            if major { TEXT_MAIN } else { TEXT_MUTED },
+            1.0,
+        ));
+        if major {
+            scene.push(text(
+                compass_label(degrees),
+                x - 20.0,
+                22.0,
+                40.0,
+                14.0,
+                10.0,
+                TEXT_MUTED,
+                TextHorizontalAlign::Center,
+            ));
+        }
+    }
+    scene.push(line(
+        UiPoint::new(260.0, 4.0),
+        UiPoint::new(260.0, 32.0),
+        ACCENT_AMBER,
+        2.0,
+    ));
+    scene.push(text(
+        format!("{:03}", heading.round() as i32 % 360),
+        226.0,
+        7.0,
+        68.0,
+        16.0,
+        12.0,
+        TEXT_MAIN,
+        TextHorizontalAlign::Center,
+    ));
+    scene
+}
+
 fn objective_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
     let mut scene = panel(390.0, 64.0);
+    let status = if state.objective > 0.72 {
+        "LOCK"
+    } else if state.objective > 0.36 {
+        "HOLD"
+    } else {
+        "PUSH"
+    };
     scene.push(text(
         "ZONE 04",
         16.0,
@@ -215,7 +395,7 @@ fn objective_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
         ACCENT_GREEN,
     );
     scene.push(text(
-        "HOLD",
+        status,
         166.0,
         14.0,
         58.0,
@@ -334,15 +514,16 @@ fn labeled_bar(
 }
 
 fn ability_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
-    let mut scene = panel(432.0, 86.0);
+    let mut scene = panel(432.0, 104.0);
     for slot in 0..5 {
         let x = 18.0 + slot as f32 * 80.0;
         let ready = (state.charge + slot as f32 * 0.19).fract();
+        let frame = UiRect::new(x, 30.0, 58.0, 44.0);
         scene.push(rect(
-            x,
-            18.0,
-            58.0,
-            50.0,
+            frame.x,
+            frame.y,
+            frame.width,
+            frame.height,
             tint(PANEL_FILL, 1.12),
             Some(StrokeStyle::new(
                 if ready > 0.62 {
@@ -355,30 +536,38 @@ fn ability_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
             6.0,
         ));
         if ready < 0.62 {
+            let inset = 4.0;
+            let inner_height = frame.height - inset * 2.0;
             scene.push(rect(
-                x + 4.0,
-                22.0 + (42.0 * ready),
-                50.0,
-                42.0 * (1.0 - ready),
+                frame.x + inset,
+                frame.y + inset + inner_height * ready,
+                frame.width - inset * 2.0,
+                inner_height * (1.0 - ready),
                 ColorRgba::new(6, 8, 12, 156),
                 None,
                 4.0,
             ));
         }
+        ability_icon(
+            &mut scene,
+            slot,
+            UiPoint::new(frame.x + frame.width * 0.5, frame.y + frame.height * 0.52),
+            if ready > 0.62 { TEXT_MAIN } else { TEXT_MUTED },
+        );
         scene.push(text(
             format!("{}", slot + 1),
             x,
-            28.0,
+            12.0,
             58.0,
-            20.0,
-            14.0,
-            TEXT_MAIN,
+            12.0,
+            10.0,
+            TEXT_MUTED,
             TextHorizontalAlign::Center,
         ));
         scene.push(text(
             ability_label(slot),
             x,
-            48.0,
+            80.0,
             58.0,
             14.0,
             10.0,
@@ -389,8 +578,91 @@ fn ability_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
     scene
 }
 
+fn ability_icon(scene: &mut Vec<ScenePrimitive>, slot: usize, center: UiPoint, color: ColorRgba) {
+    match slot {
+        0 => {
+            scene.push(line(
+                UiPoint::new(center.x - 10.0, center.y),
+                UiPoint::new(center.x + 10.0, center.y),
+                color,
+                2.0,
+            ));
+            scene.push(line(
+                UiPoint::new(center.x, center.y - 10.0),
+                UiPoint::new(center.x, center.y + 10.0),
+                color,
+                2.0,
+            ));
+        }
+        1 => {
+            scene.push(ScenePrimitive::Circle {
+                center,
+                radius: 10.0,
+                fill: ColorRgba::TRANSPARENT,
+                stroke: Some(StrokeStyle::new(color, 1.5)),
+            });
+            scene.push(ScenePrimitive::Circle {
+                center,
+                radius: 3.0,
+                fill: color,
+                stroke: None,
+            });
+        }
+        2 => {
+            scene.push(rect(
+                center.x - 10.0,
+                center.y - 8.0,
+                20.0,
+                16.0,
+                ColorRgba::TRANSPARENT,
+                Some(StrokeStyle::new(color, 1.5)),
+                3.0,
+            ));
+            scene.push(line(
+                UiPoint::new(center.x - 6.0, center.y + 8.0),
+                UiPoint::new(center.x + 6.0, center.y - 8.0),
+                color,
+                1.5,
+            ));
+        }
+        3 => {
+            scene.push(line(
+                UiPoint::new(center.x - 11.0, center.y - 7.0),
+                UiPoint::new(center.x + 11.0, center.y + 7.0),
+                color,
+                1.8,
+            ));
+            scene.push(line(
+                UiPoint::new(center.x - 11.0, center.y + 7.0),
+                UiPoint::new(center.x + 11.0, center.y - 7.0),
+                color,
+                1.8,
+            ));
+        }
+        _ => {
+            scene.push(ScenePrimitive::Circle {
+                center,
+                radius: 9.0,
+                fill: ColorRgba::TRANSPARENT,
+                stroke: Some(StrokeStyle::new(color, 1.5)),
+            });
+            scene.push(line(
+                UiPoint::new(center.x - 12.0, center.y),
+                UiPoint::new(center.x + 12.0, center.y),
+                color,
+                1.5,
+            ));
+        }
+    }
+}
+
 fn weapon_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
     let mut scene = panel(342.0, 146.0);
+    let ammo_color = if state.ammo <= state.ammo_capacity / 3 {
+        ACCENT_AMBER
+    } else {
+        TEXT_MAIN
+    };
     scene.push(text(
         "AMMO",
         18.0,
@@ -408,7 +680,7 @@ fn weapon_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
         122.0,
         48.0,
         38.0,
-        TEXT_MAIN,
+        ammo_color,
         TextHorizontalAlign::Start,
     ));
     scene.push(text(
@@ -433,6 +705,24 @@ fn weapon_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
     ));
     labeled_meter(&mut scene, 94.0, "HEAT", state.overheat, ACCENT_RED);
     labeled_meter(&mut scene, 116.0, "CHARGE", state.charge, ACCENT_AMBER);
+    scene.push(text(
+        if state.overheat > 0.62 {
+            "VENT"
+        } else {
+            "READY"
+        },
+        236.0,
+        42.0,
+        78.0,
+        18.0,
+        11.0,
+        if state.overheat > 0.62 {
+            ACCENT_RED
+        } else {
+            ACCENT_GREEN
+        },
+        TextHorizontalAlign::End,
+    ));
     scene
 }
 
@@ -462,6 +752,23 @@ fn radar_scene(state: &GameUiState) -> Vec<ScenePrimitive> {
         to: UiPoint::new(150.0, 85.0),
         stroke: StrokeStyle::new(ColorRgba::new(77, 203, 219, 64), 1.0),
     });
+    let sweep = state.time_seconds * 1.8;
+    scene.push(line(
+        UiPoint::new(85.0, 85.0),
+        UiPoint::new(85.0 + sweep.cos() * 64.0, 85.0 + sweep.sin() * 64.0),
+        ColorRgba::new(77, 203, 219, 170),
+        2.0,
+    ));
+    scene.push(text(
+        "N",
+        77.0,
+        18.0,
+        16.0,
+        14.0,
+        10.0,
+        ACCENT_CYAN,
+        TextHorizontalAlign::Center,
+    ));
     for index in 0..7 {
         let angle = state.time_seconds * 0.018 + index as f32 * 0.91;
         let distance = 18.0 + ((index * 11) % 42) as f32;
@@ -619,6 +926,35 @@ fn panel(width: f32, height: f32) -> Vec<ScenePrimitive> {
             None,
             0.0,
         ),
+        rect(
+            8.0,
+            height - 9.0,
+            width - 16.0,
+            1.0,
+            ColorRgba::new(8, 17, 24, 168),
+            None,
+            0.0,
+        ),
+        rect(0.0, 0.0, 18.0, 2.0, ACCENT_CYAN_DIM, None, 0.0),
+        rect(0.0, 0.0, 2.0, 18.0, ACCENT_CYAN_DIM, None, 0.0),
+        rect(
+            width - 18.0,
+            height - 2.0,
+            18.0,
+            2.0,
+            ACCENT_CYAN_DIM,
+            None,
+            0.0,
+        ),
+        rect(
+            width - 2.0,
+            height - 18.0,
+            2.0,
+            18.0,
+            ACCENT_CYAN_DIM,
+            None,
+            0.0,
+        ),
     ]
 }
 
@@ -637,6 +973,14 @@ fn rect(
         rect = rect.stroke(stroke);
     }
     ScenePrimitive::Rect(rect)
+}
+
+fn line(from: UiPoint, to: UiPoint, color: ColorRgba, width: f32) -> ScenePrimitive {
+    ScenePrimitive::Line {
+        from,
+        to,
+        stroke: StrokeStyle::new(color, width),
+    }
 }
 
 fn text(
@@ -667,6 +1011,21 @@ fn text(
     )
 }
 
+fn degrees_delta(degrees: f32, center: f32) -> f32 {
+    ((degrees - center + 540.0).rem_euclid(360.0)) - 180.0
+}
+
+fn compass_label(degrees: f32) -> String {
+    let degrees = (degrees.round() as i32).rem_euclid(360);
+    match degrees {
+        0 => "N".to_string(),
+        90 => "E".to_string(),
+        180 => "S".to_string(),
+        270 => "W".to_string(),
+        _ => format!("{degrees:03}"),
+    }
+}
+
 fn ability_label(slot: usize) -> &'static str {
     match slot {
         0 => "BLINK",
@@ -680,6 +1039,15 @@ fn ability_label(slot: usize) -> &'static str {
 fn wave01(phase: f32, low: f32, high: f32) -> f32 {
     let t = phase.sin() * 0.5 + 0.5;
     low + (high - low) * t
+}
+
+fn damage_flash_for_frame(frame: usize) -> f32 {
+    let hit_phase = frame % 210;
+    if hit_phase < 18 {
+        1.0 - hit_phase as f32 / 18.0
+    } else {
+        0.0
+    }
 }
 
 fn tint(color: ColorRgba, factor: f32) -> ColorRgba {
@@ -709,15 +1077,22 @@ const PANEL_STROKE: ColorRgba = ColorRgba::new(70, 91, 104, 210);
 const TEXT_MAIN: ColorRgba = ColorRgba::new(233, 241, 244, 255);
 const TEXT_MUTED: ColorRgba = ColorRgba::new(149, 169, 180, 255);
 const ACCENT_CYAN: ColorRgba = ColorRgba::new(77, 203, 219, 255);
+const ACCENT_CYAN_DIM: ColorRgba = ColorRgba::new(77, 203, 219, 120);
 const ACCENT_GREEN: ColorRgba = ColorRgba::new(110, 224, 150, 255);
 const ACCENT_AMBER: ColorRgba = ColorRgba::new(238, 194, 86, 255);
 const ACCENT_RED: ColorRgba = ColorRgba::new(245, 90, 92, 255);
 
 #[cfg(feature = "native-window")]
 fn main() -> operad::native::NativeWindowResult {
-    operad::native::run("Game UI", |viewport| {
-        game_ui_document(viewport, GameUiState::default())
-    })
+    operad::native::run_app_with(
+        operad::native::NativeWindowOptions::new("Game UI")
+            .with_min_size(960.0, 540.0)
+            .with_tick_action(TICK_ACTION)
+            .with_tick_rate_hz(60.0),
+        GameUiApp::default(),
+        GameUiApp::update,
+        GameUiApp::view,
+    )
 }
 
 #[cfg(not(feature = "native-window"))]
@@ -731,4 +1106,27 @@ fn main() {
         document.node_count(),
         document.paint_list().items.len()
     );
+}
+
+#[cfg(feature = "native-window")]
+#[derive(Default)]
+struct GameUiApp {
+    frame: usize,
+}
+
+#[cfg(feature = "native-window")]
+impl GameUiApp {
+    fn update(&mut self, action: WidgetAction) {
+        if action
+            .binding
+            .action_id()
+            .is_some_and(|id| id.as_str() == TICK_ACTION)
+        {
+            self.frame = self.frame.wrapping_add(1);
+        }
+    }
+
+    fn view(&self, viewport: UiSize) -> UiDocument {
+        game_ui_document(viewport, GameUiState::for_frame(self.frame))
+    }
 }

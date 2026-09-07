@@ -16,18 +16,6 @@ include = [
     "LICENSE",
     "operad_icon.png",
     "README.md",
-    "docs/getting_started.md",
-    "docs/just_work_principles.md",
-    "docs/release_process.md",
-    "docs/v7_0_migration_guide.md",
-    "docs/v7_0_performance.md",
-    "docs/v8_0_api_stability.md",
-    "docs/v8_0_completion_audit.md",
-    "docs/v8_0_roadmap.md",
-    "docs/v9_0_api_stability.md",
-    "docs/v9_0_completion_audit.md",
-    "docs/app_owned_wgpu_compositor.md",
-    "docs/widget_inventory.md",
     "examples/**",
     "scripts/**",
     "src/**",
@@ -45,8 +33,6 @@ path = "src/lib.rs"
 # and enable only the features they need.
 default = ["widgets", "native-window", "image-decode"]
 accesskit-winit = ["dep:accesskit", "dep:accesskit_winit", "dep:winit"]
-egui = ["dep:egui"]
-egui-renderer-compat = ["egui"]
 wgpu = [
     "dep:wgpu",
     "dep:pollster",
@@ -77,26 +63,6 @@ required-features = ["native-window"]
 [[example]]
 name = "minimal_web"
 required-features = ["web-runtime"]
-
-[[example]]
-name = "simple_form"
-required-features = ["native-window", "widgets"]
-
-[[example]]
-name = "canvas_app"
-required-features = ["native-window", "widgets"]
-
-[[example]]
-name = "command_palette_hotkeys"
-required-features = ["native-window", "widgets"]
-
-[[example]]
-name = "docked_workspace"
-required-features = ["native-window", "widgets"]
-
-[[example]]
-name = "theme_customization"
-required-features = ["native-window", "widgets"]
 
 [[example]]
 name = "animation_state_machine"
@@ -135,7 +101,6 @@ arboard = { version = "3.6.1", optional = true, features = ["wayland-data-contro
 binpack2d = "1.0.1"
 console_error_panic_hook = { version = "0.1.7", optional = true }
 cosmic-text = { version = "0.18.2", optional = true }
-egui = { version = "0.33.3", optional = true }
 epaint_default_fonts = { version = "0.33.3", optional = true }
 glyphon = { version = "0.11.0", optional = true }
 image = { version = "0.25.10", optional = true, default-features = false, features = ["png", "jpeg", "bmp"] }

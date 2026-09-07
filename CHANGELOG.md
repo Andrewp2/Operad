@@ -113,7 +113,7 @@
 - Added v7 overlay/widget builders for collapsing headers, tooltip boxes, and
   modal dialogs so examples and applications can use normal Operad surfaces
   instead of hand-building those nodes from low-level containers.
-- Added link, hyperlink, and selectable-label builders so egui-style text
+- Added link, hyperlink, and selectable-label builders so interactive text
   controls are available separately from selectable read-only text input.
 - Added text-input convenience builders for single-line input, multiline input,
   text areas, code editors, search boxes, and password fields.
@@ -123,7 +123,7 @@
   of the default button primitive.
 - Added form section, row, field label, help text, validation message, and error
   summary widget helpers backed by the existing form validation contracts.
-- Added egui-style container helpers for panels, frames, groups, sides, columns,
+- Added container helpers for panels, frames, groups, sides, columns,
   indentation, resize handles, and resize containers.
 - Added compact color button, color swatch button, color-format display, and
   RGB/RGBA/SRGB/SRGBA/HSVA/OKLCH color-edit button helpers.
@@ -132,7 +132,7 @@
   composition.
 - Added selectable-value and angle-drag helper builders over the existing
   selectable-label and drag-value primitives.
-- Added egui-style color conveniences for premultiplied/unmultiplied RGBA and
+- Added color conveniences for premultiplied/unmultiplied RGBA and
   SRGBA buttons, `Color32`-style color buttons, and standalone HSV 2D picker
   fields.
 - Added `area` and `scene` widget helpers so absolute-positioned regions and
@@ -263,9 +263,8 @@
 - Added opt-in GPU render-pass timestamp timing via `RenderOptions::collect_gpu_timing`.
 - Added glyphon text chunk caching so changing one text run does not force
   preparing every visible text surface each frame.
-- Split the legacy egui painter into `egui-renderer-compat`; the `egui`
-  feature now represents host/input/platform compatibility rather than the
-  renderer backend path.
+- Removed the legacy compatibility painter path from the active renderer
+  backend surface.
 - Added initial v4 migration guidance and release checklist.
 - Added v4 migration-compat constructors so legacy `taffy::Style` inputs can be passed
   into common node/style constructors (`UiNode::container`, `UiNode::text`, etc.) during

@@ -990,7 +990,7 @@ pub struct SelectMenuOptions {
     pub active_shader: Option<ShaderEffect>,
     pub menu_animation: Option<AnimationMachine>,
     pub portal: UiPortalTarget,
-    pub z_index: i16,
+    pub z_index: f32,
     pub action_prefix: Option<String>,
 }
 
@@ -1020,7 +1020,7 @@ impl Default for SelectMenuOptions {
             active_shader: None,
             menu_animation: None,
             portal: UiPortalTarget::AppOverlay,
-            z_index: 100,
+            z_index: 100.0,
             action_prefix: None,
         }
     }

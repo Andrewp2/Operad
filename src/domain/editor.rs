@@ -760,13 +760,13 @@ impl TimelineRangeItemGeometry {
             return Vec::new();
         };
         let body_z = if item.disabled {
-            0
+            0.0
         } else if item.dragging {
-            30
+            30.0
         } else if item.selected {
-            20
+            20.0
         } else {
-            10
+            10.0
         };
         let mut body = EditorHitTarget::new(item.id.clone(), EditorHitKind::Item, rect)
             .z_index(body_z)
@@ -791,7 +791,7 @@ impl TimelineRangeItemGeometry {
                         EditorHitKind::ResizeHandle,
                         edge_rect,
                     )
-                    .z_index(body_z + 1)
+                    .z_index(body_z + 1.0)
                     .cursor(EditorCursor::ResizeHorizontal)
                     .selectable(false),
                 );
@@ -1033,13 +1033,13 @@ impl CurveEditorGeometry {
 
     pub fn point_hit_target(self, point: &CurvePoint) -> EditorHitTarget {
         let z_index = if point.disabled {
-            0
+            0.0
         } else if point.dragging {
-            30
+            30.0
         } else if point.selected {
-            20
+            20.0
         } else {
-            10
+            10.0
         };
         let mut target = EditorHitTarget::new(
             point.id.clone(),
@@ -1359,7 +1359,7 @@ impl LaneValueGeometry {
             .view_width_to_span(self.resize_handle_width_px)
             .max(MIN_SCALE);
         let mut targets = Vec::with_capacity(rects.len() + 2);
-        let body_z = if item.selected { 20 } else { 10 };
+        let body_z = if item.selected { 20.0 } else { 10.0 };
 
         for (index, rect) in rects.iter().copied().enumerate() {
             targets.push(
@@ -1384,7 +1384,7 @@ impl LaneValueGeometry {
                 EditorHitKind::ResizeHandle,
                 start_rect,
             )
-            .z_index(body_z + 1)
+            .z_index(body_z + 1.0)
             .cursor(EditorCursor::ResizeHorizontal),
         );
 
@@ -1399,7 +1399,7 @@ impl LaneValueGeometry {
                 EditorHitKind::ResizeHandle,
                 end_rect,
             )
-            .z_index(body_z + 1)
+            .z_index(body_z + 1.0)
             .cursor(EditorCursor::ResizeHorizontal),
         );
 
@@ -1557,7 +1557,7 @@ pub struct EditorHitTarget {
     pub id: EditorHitId,
     pub kind: EditorHitKind,
     pub world_rect: UiRect,
-    pub z_index: i16,
+    pub z_index: f32,
     pub cursor: Option<EditorCursor>,
     pub selectable: bool,
     pub draggable: bool,
@@ -1569,14 +1569,14 @@ impl EditorHitTarget {
             id: id.into(),
             kind,
             world_rect,
-            z_index: 0,
+            z_index: 0.0,
             cursor: None,
             selectable: true,
             draggable: true,
         }
     }
 
-    pub const fn z_index(mut self, z_index: i16) -> Self {
+    pub const fn z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -1866,7 +1866,12 @@ impl EditorHitTester {
                 .iter()
                 .enumerate()
                 .filter(|(_, target)| target.contains_world_point(world_point))
-                .max_by_key(|(index, target)| (target.z_index, *index))
+                .max_by(|left, right| {
+                    left.1
+                        .z_index
+                        .total_cmp(&right.1.z_index)
+                        .then_with(|| left.0.cmp(&right.0))
+                })
                 .map(|(_, target)| target.clone())
         } else {
             None
@@ -1949,7 +1954,7 @@ impl EditorOverlay {
     pub fn new(id: impl Into<EditorHitId>, world_rect: UiRect) -> Self {
         Self {
             id: id.into(),
-            layer: LayerOrder::new(UiLayer::AppOverlay, 0),
+            layer: LayerOrder::new(UiLayer::AppOverlay, 0.0),
             world_rect,
             hit_testable: false,
             cursor: None,
@@ -2413,12 +2418,12 @@ mod tests {
         assert_eq!(targets.len(), 3);
         assert_eq!(targets[0].id.as_str(), "range.1");
         assert_eq!(targets[0].kind, EditorHitKind::Item);
-        assert_eq!(targets[0].z_index, 20);
+        assert_eq!(targets[0].z_index, 20.0);
         assert!(targets[0].selectable);
         assert!(targets[0].draggable);
         assert_eq!(targets[1].id.as_str(), "range.1.start");
         assert_eq!(targets[1].kind, EditorHitKind::ResizeHandle);
-        assert_eq!(targets[1].z_index, 21);
+        assert_eq!(targets[1].z_index, 21.0);
         assert!(!targets[1].selectable);
         assert_eq!(targets[2].id.as_str(), "range.1.end");
 
@@ -2502,14 +2507,14 @@ mod tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].id.as_str(), "curve.1");
         assert_eq!(targets[0].kind, EditorHitKind::Item);
-        assert_eq!(targets[0].z_index, 20);
+        assert_eq!(targets[0].z_index, 20.0);
         assert_eq!(targets[0].cursor, Some(EditorCursor::Grab));
         assert!(targets[0].selectable);
         assert!(targets[0].draggable);
 
         let disabled = CurvePoint::new("curve.disabled", 125.0, 0.75).disabled(true);
         let disabled_target = geometry.point_hit_target(&disabled);
-        assert_eq!(disabled_target.z_index, 0);
+        assert_eq!(disabled_target.z_index, 0.0);
         assert!(disabled_target.cursor.is_none());
         assert!(!disabled_target.selectable);
         assert!(!disabled_target.draggable);
@@ -2812,14 +2817,14 @@ mod tests {
             EditorHitKind::Item,
             UiRect::new(120.0, 60.0, 30.0, 10.0),
         )
-        .z_index(2)
+        .z_index(2.0)
         .cursor(EditorCursor::Grab);
         let handle = EditorHitTarget::new(
             "range-item.resize",
             EditorHitKind::ResizeHandle,
             UiRect::new(145.0, 60.0, 5.0, 10.0),
         )
-        .z_index(4)
+        .z_index(4.0)
         .cursor(EditorCursor::ResizeHorizontal);
         let tester = EditorHitTester::new()
             .target(range_item.clone())
@@ -2877,13 +2882,13 @@ mod tests {
         let mut stack = EditorOverlayStack::new();
         stack.push(
             EditorOverlay::new("playhead", UiRect::new(10.0, 0.0, 1.0, 100.0))
-                .layer(LayerOrder::new(UiLayer::AppOverlay, 20))
+                .layer(LayerOrder::new(UiLayer::AppOverlay, 20.0))
                 .hit_testable(true)
                 .cursor(EditorCursor::ResizeHorizontal),
         );
         stack.push(
             EditorOverlay::new("debug.bounds", UiRect::new(0.0, 0.0, 100.0, 100.0))
-                .layer(LayerOrder::new(UiLayer::DebugOverlay, 0)),
+                .layer(LayerOrder::new(UiLayer::DebugOverlay, 0.0)),
         );
 
         let ordered = stack.ordered();

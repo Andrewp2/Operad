@@ -267,7 +267,7 @@ impl ChartOverlayLayer {
         Self {
             id: id.into(),
             kind,
-            layer: LayerOrder::new(UiLayer::AppContent, 0),
+            layer: LayerOrder::new(UiLayer::AppContent, 0.0),
             bounds: None,
             label: None,
             visible: true,
@@ -1566,7 +1566,7 @@ mod tests {
         let stack = ChartOverlayStack::new()
             .layer(
                 ChartOverlayLayer::new("selection", ChartOverlayKind::Selection)
-                    .layer(LayerOrder::new(UiLayer::AppOverlay, 2))
+                    .layer(LayerOrder::new(UiLayer::AppOverlay, 2.0))
                     .bounds(UiRect::new(0.0, 0.0, 50.0, 50.0))
                     .hit_testable(true)
                     .sample_count(3),

@@ -25,6 +25,7 @@ use wgpu::{
 use crate::accessibility::AccessibilityCapabilities;
 use crate::compositor::{CompositorClip, CompositorFilterKind, CompositorMask, MaskMode};
 use crate::fonts::FontLibrary;
+use crate::paint::tessellate_polygon_points;
 use crate::platform::{
     BackendAdapterKind, BackendCapabilities, LayerCapabilities, PixelSize,
     PlatformServiceCapabilities, RenderingCapabilities, ResourceCapabilities,
@@ -37,7 +38,7 @@ use crate::{
     BuiltInIcon, ColorRgba, CornerRadii, FontFamily, FontStretch, FontStyle, FrameTiming,
     ImageAlignment, ImageFit, LinearGradient, PaintBrush, PaintCompositorLayer, PaintEffectKind,
     PaintKind, PaintTransform, ShaderEffect, StrokeStyle, TextHorizontalAlign, TextStyle,
-    TextVerticalAlign, TextWrap, UiNodeId, UiPoint, UiRect, UiSize,
+    TextVerticalAlign, TextWrap, UiPoint, UiRect, UiSize,
 };
 
 const OFFSCREEN_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
@@ -936,7 +937,7 @@ struct WgpuContext {
     glyph_atlas: Option<GlyphTextAtlas>,
     glyph_format: Option<TextureFormat>,
     glyph_buffer_cache: HashMap<TextBufferKey, CachedGlyphBuffer>,
-    glyph_scratch_buffer_cache: HashMap<UiNodeId, CachedGlyphBuffer>,
+    glyph_scratch_buffer_cache: HashMap<TextBufferKey, CachedGlyphBuffer>,
     glyph_scene_renderer: Option<GlyphTextRenderer>,
     glyph_scene_key: Vec<TextRenderKey>,
     glyph_scene_active: bool,
@@ -1838,23 +1839,11 @@ impl WgpuContext {
             return;
         }
 
-        if let Some(cached) = self.glyph_scratch_buffer_cache.get_mut(&text.node) {
-            if cached.key != *buffer_key {
-                sync_glyph_buffer(
-                    &mut cached.buffer,
-                    &mut self.font_system,
-                    text,
-                    Some(&cached.key),
-                    buffer_key,
-                );
-                cached.key = buffer_key.clone();
-                cached.stable_hits = 0;
-            } else {
-                cached.stable_hits = cached.stable_hits.saturating_add(1);
-            }
+        if let Some(cached) = self.glyph_scratch_buffer_cache.get_mut(buffer_key) {
+            cached.stable_hits = cached.stable_hits.saturating_add(1);
             cached.last_used_generation = generation;
             if cached.stable_hits >= 1 {
-                let Some(cached) = self.glyph_scratch_buffer_cache.remove(&text.node) else {
+                let Some(cached) = self.glyph_scratch_buffer_cache.remove(buffer_key) else {
                     return;
                 };
                 self.glyph_buffer_cache.insert(buffer_key.clone(), cached);
@@ -1865,7 +1854,7 @@ impl WgpuContext {
         let mut buffer = GlyphBuffer::new_empty(GlyphMetrics::new(1.0, 1.0));
         sync_glyph_buffer(&mut buffer, &mut self.font_system, text, None, buffer_key);
         self.glyph_scratch_buffer_cache.insert(
-            text.node,
+            buffer_key.clone(),
             CachedGlyphBuffer {
                 key: buffer_key.clone(),
                 buffer,
@@ -1933,7 +1922,7 @@ impl WgpuContext {
             let buffer = self
                 .glyph_buffer_cache
                 .get(&render_key.buffer)
-                .or_else(|| self.glyph_scratch_buffer_cache.get(&text.node))
+                .or_else(|| self.glyph_scratch_buffer_cache.get(&render_key.buffer))
                 .ok_or_else(|| {
                     RenderError::Backend("glyph text buffer missing from cache".to_string())
                 })?;
@@ -2426,7 +2415,6 @@ struct GeometryBatch {
 
 #[derive(Debug, Clone)]
 struct TextPaint {
-    node: UiNodeId,
     rect: UiRect,
     clip: UiRect,
     text: String,
@@ -2914,7 +2902,6 @@ impl WgpuRenderer {
             PixelSize::new(512, 128),
             OFFSCREEN_FORMAT,
             &[TextPaint {
-                node: UiNodeId(0),
                 rect: UiRect::new(0.0, 0.0, 512.0, 128.0),
                 clip: UiRect::new(0.0, 0.0, 512.0, 128.0),
                 text: "Operad glyphon warmup 0123456789 reusable toolkit surface".to_string(),
@@ -4017,7 +4004,6 @@ fn build_geometry_into(
             }
             PaintKind::Text(text) => push_text(
                 geometry,
-                item.node,
                 item.rect,
                 clip,
                 &text.text,
@@ -4030,7 +4016,6 @@ fn build_geometry_into(
             PaintKind::SceneText(text) => {
                 push_text(
                     geometry,
-                    item.node,
                     text.rect,
                     clip,
                     &text.text,
@@ -5053,7 +5038,6 @@ fn push_arc_points(
 #[allow(clippy::too_many_arguments)]
 fn push_text(
     geometry: &mut RenderGeometry,
-    node: UiNodeId,
     rect: UiRect,
     clip: UiRect,
     text: &str,
@@ -5079,7 +5063,6 @@ fn push_text(
     style.font_size = (style.font_size * scale).max(1.0);
     style.line_height = (style.line_height * scale).max(style.font_size);
     geometry.push_text(TextPaint {
-        node,
         rect,
         clip,
         text: text.to_owned(),
@@ -5433,16 +5416,14 @@ fn push_polygon(
     if points.len() < 3 || color.a == 0 || opacity <= 0.0 {
         return;
     }
-    let color = color_as_vertex(color, opacity);
-    let mut vertices = Vec::with_capacity((points.len() - 2).saturating_mul(3));
-    for index in 1..points.len() - 1 {
-        vertices.extend_from_slice(&[
-            GpuVertex::new(points[0], color),
-            GpuVertex::new(points[index], color),
-            GpuVertex::new(points[index + 1], color),
-        ]);
-    }
-    geometry.push_triangle_vertices(clip, &vertices);
+    push_triangle_mesh(
+        geometry,
+        &tessellate_polygon_points(points),
+        PaintTransform::default(),
+        clip,
+        color,
+        opacity,
+    );
 }
 
 fn push_triangle_mesh(
@@ -6058,7 +6039,24 @@ mod tests {
     use crate::platform::LayerOrder;
     use crate::renderer::RenderOptions;
     use crate::testing::EmptyResourceResolver;
-    use crate::{PaintItem, PaintList, TextContent};
+    use crate::{PaintItem, PaintList, TextContent, UiNodeId};
+
+    fn test_text_paint(text: impl Into<String>, rect: UiRect) -> TextPaint {
+        TextPaint {
+            rect,
+            clip: UiRect::new(0.0, 0.0, 240.0, 96.0),
+            text: text.into(),
+            style: TextStyle {
+                font_size: 14.0,
+                line_height: 20.0,
+                color: ColorRgba::WHITE,
+                ..Default::default()
+            },
+            horizontal_align: TextHorizontalAlign::Start,
+            vertical_align: TextVerticalAlign::Center,
+            opacity: 1.0,
+        }
+    }
 
     #[test]
     fn default_glyph_font_system_includes_embedded_web_fonts() {
@@ -6134,6 +6132,39 @@ mod tests {
             "one changed label should replace one prepared text chunk, not the full scene"
         );
         assert!(context.glyph_chunks_active);
+    }
+
+    #[test]
+    fn glyph_scratch_buffers_do_not_alias_scene_text_with_shared_node() {
+        let mut renderer = WgpuRenderer::default();
+        let size = PixelSize::new(220, 72);
+        let context = renderer.ensure_context().expect("wgpu context");
+        let health = test_text_paint("HP", UiRect::new(8.0, 8.0, 80.0, 20.0));
+        let shield = test_text_paint("SHIELD", UiRect::new(8.0, 34.0, 100.0, 20.0));
+        let health_key = TextBufferKey::new(&health);
+        let shield_key = TextBufferKey::new(&shield);
+
+        context
+            .prepare_glyphon_text(size, OFFSCREEN_FORMAT, &[health, shield])
+            .expect("prepare shared-node scene text");
+
+        assert_ne!(health_key, shield_key);
+        assert!(
+            context.glyph_scratch_buffer_cache.contains_key(&health_key),
+            "first scene label lost its scratch text buffer"
+        );
+        assert!(
+            context.glyph_scratch_buffer_cache.contains_key(&shield_key),
+            "second scene label lost its scratch text buffer"
+        );
+        assert_eq!(
+            &context.glyph_scratch_buffer_cache[&health_key].key, &health_key,
+            "first scene label points at the wrong scratch text buffer"
+        );
+        assert_eq!(
+            &context.glyph_scratch_buffer_cache[&shield_key].key, &shield_key,
+            "second scene label points at the wrong scratch text buffer"
+        );
     }
 
     #[test]
@@ -6418,7 +6449,7 @@ mod tests {
             node,
             rect,
             clip_rect: UiRect::new(0.0, 0.0, 320.0, 240.0),
-            z_index: 0,
+            z_index: 0.0,
             layer_order: LayerOrder::DEFAULT,
             opacity,
             transform: PaintTransform::default(),
@@ -6482,7 +6513,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                             node: UiNodeId(1),
                             rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
                             clip_rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
-                            z_index: 0,
+                            z_index: 0.0,
                             layer_order: LayerOrder::DEFAULT,
                             opacity: 1.0,
                             transform: Default::default(),
@@ -6552,7 +6583,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                             node: UiNodeId(1),
                             rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
                             clip_rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
-                            z_index: 0,
+                            z_index: 0.0,
                             layer_order: LayerOrder::DEFAULT,
                             opacity: 1.0,
                             transform: Default::default(),
@@ -6617,7 +6648,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                             node: UiNodeId(1),
                             rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
                             clip_rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
-                            z_index: 0,
+                            z_index: 0.0,
                             layer_order: LayerOrder::DEFAULT,
                             opacity: 1.0,
                             transform: Default::default(),
@@ -6664,7 +6695,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                             node: UiNodeId(1),
                             rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
                             clip_rect: UiRect::new(0.0, 0.0, 4.0, 4.0),
-                            z_index: 0,
+                            z_index: 0.0,
                             layer_order: LayerOrder::DEFAULT,
                             opacity: 1.0,
                             transform: Default::default(),
@@ -6713,7 +6744,6 @@ fn fs_main() -> @location(0) vec4<f32> {
     #[test]
     fn text_render_key_preserves_fractional_position_without_rebuilding_layout_buffer() {
         let text = TextPaint {
-            node: UiNodeId(1),
             rect: UiRect::new(4.25, 6.5, 88.0, 28.0),
             clip: UiRect::new(0.0, 0.0, 96.0, 36.0),
             text: "Subpixel".to_string(),
@@ -6743,7 +6773,6 @@ fn fs_main() -> @location(0) vec4<f32> {
     #[test]
     fn text_render_keys_track_scene_text_alignment() {
         let text = TextPaint {
-            node: UiNodeId(1),
             rect: UiRect::new(4.0, 6.0, 88.0, 40.0),
             clip: UiRect::new(0.0, 0.0, 96.0, 64.0),
             text: "Centered".to_string(),
@@ -6776,7 +6805,6 @@ fn fs_main() -> @location(0) vec4<f32> {
         let mut geometry = RenderGeometry::default();
         push_text(
             &mut geometry,
-            UiNodeId(1),
             UiRect::new(4.0, 6.0, 88.0, 40.0),
             UiRect::new(0.0, 0.0, 96.0, 64.0),
             "Centered",
@@ -6824,6 +6852,36 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     #[test]
+    fn push_polygon_uses_concave_tessellation() {
+        let mut geometry = RenderGeometry::default();
+        let points = [
+            UiPoint::new(0.0, 0.0),
+            UiPoint::new(16.0, 0.0),
+            UiPoint::new(16.0, 16.0),
+            UiPoint::new(8.0, 8.0),
+            UiPoint::new(0.0, 16.0),
+        ];
+        push_polygon(
+            &mut geometry,
+            &points,
+            UiRect::new(0.0, 0.0, 32.0, 32.0),
+            ColorRgba::WHITE,
+            1.0,
+        );
+
+        let expected = tessellate_polygon_points(&points)
+            .into_iter()
+            .flat_map(|triangle| triangle.into_iter().map(|point| [point.x, point.y]))
+            .collect::<Vec<_>>();
+        let actual = geometry
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn built_in_icon_image_fallback_uses_vector_paths() {
         let mut geometry = RenderGeometry::default();
         let rect = UiRect::new(0.0, 0.0, 24.0, 24.0);
@@ -6863,7 +6921,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             node: UiNodeId(70_000),
             rect: UiRect::new(0.0, 0.0, viewport.width, viewport.height),
             clip_rect: UiRect::new(0.0, 0.0, viewport.width, viewport.height),
-            z_index: 0,
+            z_index: 0.0,
             layer_order: LayerOrder::DEFAULT,
             opacity: 1.0,
             transform: Default::default(),
@@ -6885,7 +6943,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                 node: UiNodeId(70_001 + row),
                 rect: UiRect::new(12.0, 12.0 + row as f32 * 7.0, 360.0, 12.0),
                 clip_rect: UiRect::new(0.0, 0.0, viewport.width, viewport.height),
-                z_index: 0,
+                z_index: 0.0,
                 layer_order: LayerOrder::DEFAULT,
                 opacity: 1.0,
                 transform: Default::default(),

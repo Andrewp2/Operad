@@ -307,7 +307,7 @@ pub struct DropTargetDescriptor {
     pub id: DropTargetId,
     pub kind: DragDropSurfaceKind,
     pub bounds: UiRect,
-    pub z_index: i16,
+    pub z_index: f32,
     pub accepted_payload: DropPayloadFilter,
     pub accepted_operations: Vec<DragOperation>,
     pub disabled: bool,
@@ -321,7 +321,7 @@ impl DropTargetDescriptor {
             id: id.into(),
             kind,
             bounds,
-            z_index: 0,
+            z_index: 0.0,
             accepted_payload: DropPayloadFilter::empty(),
             accepted_operations: ALL_OPERATIONS.to_vec(),
             disabled: false,
@@ -330,7 +330,7 @@ impl DropTargetDescriptor {
         }
     }
 
-    pub const fn z_index(mut self, z_index: i16) -> Self {
+    pub const fn z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -465,7 +465,7 @@ pub struct DropTargetHit {
     pub kind: DragDropSurfaceKind,
     pub local_position: UiPoint,
     pub operation: DragOperation,
-    pub z_index: i16,
+    pub z_index: f32,
 }
 
 pub fn payload_has_content(payload: &DragPayload) -> bool {
@@ -585,7 +585,7 @@ mod tests {
             )
             .accept_mime_type("audio/*")
             .accepted_operations([DragOperation::Copy, DragOperation::Move])
-            .z_index(1),
+            .z_index(1.0),
             DropTargetDescriptor::new(
                 "clip.1",
                 DragDropSurfaceKind::EditorRangeItem,
@@ -593,7 +593,7 @@ mod tests {
             )
             .accept_mime_type("audio/wav")
             .accepted_operations([DragOperation::Move])
-            .z_index(4),
+            .z_index(4.0),
         ];
 
         let hit = DropTargetDescriptor::hit_test(

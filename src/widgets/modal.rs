@@ -11,7 +11,7 @@ pub struct ModalDialogOptions {
     pub dialog_visual: UiVisual,
     pub title_text_style: TextStyle,
     pub body_visual: UiVisual,
-    pub z_index: i16,
+    pub z_index: f32,
     pub modal: bool,
     pub trap_focus: bool,
     pub focus_restore: FocusRestoreTarget,
@@ -61,7 +61,7 @@ impl Default for ModalDialogOptions {
                 ..Default::default()
             },
             body_visual: UiVisual::TRANSPARENT,
-            z_index: 200,
+            z_index: 200.0,
             modal: true,
             trap_focus: true,
             focus_restore: FocusRestoreTarget::Previous,
@@ -169,7 +169,7 @@ pub fn modal_dialog(
         .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Group).hidden()),
     );
 
-    let scrim_z_index = options.z_index.saturating_sub(1);
+    let scrim_z_index = options.z_index - 1.0;
     let dialog_z_index = options.z_index;
 
     let mut scrim = UiNode::container(
@@ -441,9 +441,9 @@ mod tests {
             .expect("app overlay portal");
         assert_eq!(document.node(nodes.overlay).parent, Some(portal));
         assert_eq!(document.node(nodes.overlay).clip_scope, ClipScope::Viewport);
-        assert_eq!(document.node(nodes.overlay).style.z_index, 200);
-        assert_eq!(document.node(nodes.scrim).style.z_index, 199);
-        assert_eq!(document.node(nodes.dialog).style.z_index, 200);
+        assert_eq!(document.node(nodes.overlay).style.z_index, 200.0);
+        assert_eq!(document.node(nodes.scrim).style.z_index, 199.0);
+        assert_eq!(document.node(nodes.dialog).style.z_index, 200.0);
         let accessibility = document.node(nodes.dialog).accessibility.as_ref().unwrap();
         assert_eq!(accessibility.role, AccessibilityRole::Dialog);
         assert!(accessibility.modal);

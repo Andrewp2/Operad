@@ -554,7 +554,7 @@ pub struct CommandPaletteOptions {
     pub panel_shader: Option<ShaderEffect>,
     pub active_row_shader: Option<ShaderEffect>,
     pub panel_animation: Option<AnimationMachine>,
-    pub z_index: i16,
+    pub z_index: f32,
     pub action_prefix: Option<String>,
 }
 
@@ -591,7 +591,7 @@ impl Default for CommandPaletteOptions {
             panel_shader: None,
             active_row_shader: None,
             panel_animation: None,
-            z_index: 120,
+            z_index: 120.0,
             action_prefix: None,
         }
     }

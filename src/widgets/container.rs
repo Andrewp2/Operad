@@ -99,7 +99,7 @@ pub struct AreaOptions {
     pub rect: UiRect,
     pub visual: UiVisual,
     pub clip: ClipBehavior,
-    pub z_index: i16,
+    pub z_index: f32,
     pub scroll_axes: ScrollAxes,
     pub action: Option<WidgetActionBinding>,
     pub action_mode: WidgetActionMode,
@@ -112,7 +112,7 @@ impl AreaOptions {
             rect,
             visual: UiVisual::TRANSPARENT,
             clip: ClipBehavior::Clip,
-            z_index: 0,
+            z_index: 0.0,
             scroll_axes: ScrollAxes::NONE,
             action: None,
             action_mode: WidgetActionMode::Activate,
@@ -135,7 +135,7 @@ impl AreaOptions {
         self
     }
 
-    pub fn with_z_index(mut self, z_index: i16) -> Self {
+    pub fn with_z_index(mut self, z_index: f32) -> Self {
         self.z_index = z_index;
         self
     }
@@ -681,7 +681,7 @@ pub fn resize_handle(
         UiNodeStyle {
             layout: layout.style,
             clip: ClipBehavior::Clip,
-            z_index: 2,
+            z_index: 2.0,
             ..Default::default()
         },
     )
@@ -952,7 +952,7 @@ mod tests {
             root,
             "floating_area",
             AreaOptions::new(UiRect::new(20.0, 24.0, 180.0, 96.0))
-                .with_z_index(7)
+                .with_z_index(7.0)
                 .with_action("area.activate")
                 .with_action_mode(WidgetActionMode::PointerEdit),
             |document, parent| {
@@ -1061,7 +1061,7 @@ mod tests {
             document.node(area_nodes.root).style.layout.position,
             taffy::prelude::Position::Absolute
         );
-        assert_eq!(document.node(area_nodes.root).style.z_index, 7);
+        assert_eq!(document.node(area_nodes.root).style.z_index, 7.0);
         assert_eq!(
             document.node(area_nodes.root).action.as_ref(),
             Some(&WidgetActionBinding::action("area.activate"))
