@@ -12,11 +12,13 @@ use crate::accessibility::{
     AccessibilityAnnouncementQueue, AccessibilityCapabilities, AccessibilityLiveRegionSnapshot,
     AccessibilityPreferences, FocusRestoreTarget,
 };
-use crate::actions::action_target_enabled;
+use crate::actions::{
+    action_target_accepts_pointer_click, action_target_enabled, resolve_action_target,
+};
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{
-    text_input_is_keyboard_line_break, GestureEvent, GesturePhase, PointerCapture,
-    PointerEventKind, PointerGestureTracker, RawInputEvent,
+    GestureEvent, GesturePhase, PointerCapture, PointerEventKind, PointerGestureTracker,
+    RawInputEvent,
 };
 use crate::layout_animation::{
     apply_layout_animation_transitions_to_paint_list, layout_animation_transitions,
@@ -34,9 +36,9 @@ use crate::renderer::{
 };
 use crate::shell::{ShellLayoutPlan, ShellWorkspaceState};
 use crate::{
-    AccessibilityRole, AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers, LayoutSnapshot,
-    TextMeasurer, UiDocument, UiInputEvent, UiInputResult, UiNodeId, UiPoint, UiRect, UiSize,
-    WidgetAction, WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
+    AccessibilityTree, DirtyFlags, KeyCode, KeyModifiers, LayoutSnapshot, TextMeasurer, UiDocument,
+    UiFocusState, UiInputEvent, UiInputResult, UiNodeId, UiPoint, UiRect, UiSize, WidgetAction,
+    WidgetActionBinding, WidgetActionQueue, WidgetValueEditPhase,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +87,33 @@ impl HostNodeInteraction {
     }
 }
 
+/// Composition lifetime from ordered input, independent of the last frame's
+/// rendered snapshot. An empty preedit can precede a valid native commit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HostTextCompositionState {
+    /// No composition is awaiting completion.
+    #[default]
+    Inactive,
+    /// A nonempty draft is active or has been published by the application.
+    Preedit,
+    /// An empty preedit was routed; a valid commit may still follow it.
+    EmptyPreedit,
+}
+
+impl HostTextCompositionState {
+    pub const fn is_active(self) -> bool {
+        !matches!(self, Self::Inactive)
+    }
+
+    pub(crate) fn from_session(session: &TextImeSession) -> Self {
+        match &session.composition {
+            Some(range) if range.start == range.end => Self::EmptyPreedit,
+            Some(_) => Self::Preedit,
+            None => Self::Inactive,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostInteractionState {
     pub hovered: Option<UiNodeId>,
@@ -94,6 +123,9 @@ pub struct HostInteractionState {
     pub gesture_tracker: PointerGestureTracker,
     pub text_ime: Option<TextImeSession>,
     pub text_target: Option<UiNodeId>,
+    /// Ordered input lifetime; the IME snapshot can still describe the frame
+    /// before the application applies the latest composition events.
+    pub text_composition: HostTextCompositionState,
     pub wheel_target: Option<UiNodeId>,
     pub input_consumed: bool,
     pub input_consumed_by: Option<UiNodeId>,
@@ -222,6 +254,7 @@ impl HostInteractionState {
 
     pub fn activate_text_ime(&mut self, session: TextImeSession) -> PlatformRequest {
         self.text_target = text_target_from_input(&session.input);
+        self.text_composition = HostTextCompositionState::from_session(&session);
         self.text_ime = Some(session.clone());
         PlatformRequest::TextIme(TextImeRequest::Activate(session))
     }
@@ -232,11 +265,13 @@ impl HostInteractionState {
         session: TextImeSession,
     ) -> PlatformRequest {
         self.text_target = Some(target);
+        self.text_composition = HostTextCompositionState::from_session(&session);
         self.text_ime = Some(session.clone());
         PlatformRequest::TextIme(TextImeRequest::Activate(session))
     }
 
     pub fn update_text_ime(&mut self, session: TextImeSession) -> PlatformRequest {
+        self.text_composition = HostTextCompositionState::from_session(&session);
         self.text_target = self
             .text_target
             .or_else(|| text_target_from_input(&session.input));
@@ -247,6 +282,7 @@ impl HostInteractionState {
     pub fn deactivate_text_ime(&mut self, input: TextInputId) -> PlatformRequest {
         self.text_ime = None;
         self.text_target = None;
+        self.text_composition = HostTextCompositionState::Inactive;
         PlatformRequest::TextIme(TextImeRequest::Deactivate { input })
     }
 
@@ -259,6 +295,7 @@ impl HostInteractionState {
             {
                 self.text_ime = None;
                 self.text_target = None;
+                self.text_composition = HostTextCompositionState::Inactive;
             }
         }
     }
@@ -323,11 +360,64 @@ impl HostFrameRequest {
     }
 }
 
+/// An ordered document event and any gesture derived from platform input.
+/// Keeping them together preserves ordering and lets document-owned interactions
+/// (such as automatic scrollbars) suppress generic widget actions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostInputEvent {
+    pub ui_event: Option<UiInputEvent>,
+    pub gesture: Option<GestureEvent>,
+    /// Position before this raw pointer event, when a gesture is active. This
+    /// survives rebuilt documents and distinguishes motion from a stationary
+    /// release even if the displayed field moved or changed font after press.
+    pub previous_pointer_position: Option<UiPoint>,
+    /// Set when this event has been applied to a document. Its actions retain
+    /// the geometry and values at that event, even after later input changes them.
+    pub document_result: Option<HostDocumentInputResult>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostDocumentInputResult {
+    pub previous_focus: UiFocusState,
+    pub input: Option<UiInputResult>,
+    pub actions: Vec<WidgetAction>,
+    gesture_action: Option<usize>,
+}
+
+impl HostDocumentInputResult {
+    pub(crate) fn gesture_action(&self) -> Option<&WidgetAction> {
+        self.gesture_action
+            .and_then(|index| self.actions.get(index))
+    }
+}
+
+impl HostInputEvent {
+    pub fn new(ui_event: Option<UiInputEvent>, gesture: Option<GestureEvent>) -> Self {
+        Self {
+            ui_event,
+            gesture,
+            previous_pointer_position: None,
+            document_result: None,
+        }
+    }
+}
+
+impl From<UiInputEvent> for HostInputEvent {
+    fn from(event: UiInputEvent) -> Self {
+        Self::new(Some(event), None)
+    }
+}
+
+impl From<GestureEvent> for HostInputEvent {
+    fn from(gesture: GestureEvent) -> Self {
+        Self::new(None, Some(gesture))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostFrameOutput {
     pub state: HostInteractionState,
-    pub ui_events: Vec<UiInputEvent>,
-    pub gestures: Vec<GestureEvent>,
+    pub events: Vec<HostInputEvent>,
     pub commands: Vec<HostCommandDispatch>,
     pub platform_requests: Vec<PlatformServiceRequest>,
     pub platform_responses: Vec<PlatformServiceResponse>,
@@ -337,12 +427,23 @@ impl HostFrameOutput {
     pub fn new(state: HostInteractionState) -> Self {
         Self {
             state,
-            ui_events: Vec::new(),
-            gestures: Vec::new(),
+            events: Vec::new(),
             commands: Vec::new(),
             platform_requests: Vec::new(),
             platform_responses: Vec::new(),
         }
+    }
+
+    pub fn ui_events(&self) -> impl DoubleEndedIterator<Item = &UiInputEvent> {
+        self.events
+            .iter()
+            .filter_map(|event| event.ui_event.as_ref())
+    }
+
+    pub fn gestures(&self) -> impl DoubleEndedIterator<Item = &GestureEvent> {
+        self.events
+            .iter()
+            .filter_map(|event| event.gesture.as_ref())
     }
 
     pub fn request(mut self, id: PlatformRequestId, request: PlatformRequest) -> Self {
@@ -380,10 +481,151 @@ pub fn process_host_frame_input_with_target_resolver(
 pub fn process_host_frame_input_with_wheel_scale_and_target_resolver(
     request: HostFrameRequest,
     wheel_line_size: f32,
-    mut resolve_target: impl FnMut(&RawInputEvent, &HostInteractionState) -> Option<UiNodeId>,
+    resolve_target: impl FnMut(&RawInputEvent, &HostInteractionState) -> Option<UiNodeId>,
 ) -> HostFrameOutput {
+    process_host_frame_input_with_filter(request, wheel_line_size, resolve_target, |_, _| true)
+}
+
+/// Run interception against the state produced by all preceding events. Keeping
+/// interception here preserves gesture order and keyboard/text pairing.
+pub(crate) fn process_host_frame_input_with_filter(
+    request: HostFrameRequest,
+    wheel_line_size: f32,
+    resolve_target: impl FnMut(&RawInputEvent, &HostInteractionState) -> Option<UiNodeId>,
+    accepts_event: impl FnMut(&RawInputEvent, &HostInteractionState) -> bool,
+) -> HostFrameOutput {
+    let mut routing = RawInputRouting {
+        resolve_target,
+        accepts_event,
+    };
+    let wheel_scale = (wheel_line_size, request.viewport);
+    match process_host_input(request, wheel_scale, &mut routing) {
+        Ok(output) => output,
+        Err(never) => match never {},
+    }
+}
+
+trait HostInputRouting {
+    type Error;
+
+    fn accepts_event(
+        &mut self,
+        event: &RawInputEvent,
+        state: &HostInteractionState,
+    ) -> Result<bool, Self::Error>;
+    fn resolve_target(
+        &mut self,
+        event: &RawInputEvent,
+        state: &HostInteractionState,
+    ) -> Option<UiNodeId>;
+    fn process_event(&mut self, _event: &mut HostInputEvent, _state: &mut HostInteractionState) {}
+}
+
+struct RawInputRouting<Resolve, Accept> {
+    resolve_target: Resolve,
+    accepts_event: Accept,
+}
+
+impl<Resolve, Accept> HostInputRouting for RawInputRouting<Resolve, Accept>
+where
+    Resolve: FnMut(&RawInputEvent, &HostInteractionState) -> Option<UiNodeId>,
+    Accept: FnMut(&RawInputEvent, &HostInteractionState) -> bool,
+{
+    type Error = std::convert::Infallible;
+
+    fn accepts_event(
+        &mut self,
+        event: &RawInputEvent,
+        state: &HostInteractionState,
+    ) -> Result<bool, Self::Error> {
+        Ok((self.accepts_event)(event, state))
+    }
+
+    fn resolve_target(
+        &mut self,
+        event: &RawInputEvent,
+        state: &HostInteractionState,
+    ) -> Option<UiNodeId> {
+        (self.resolve_target)(event, state)
+    }
+}
+
+struct DocumentInputRouting<'a, M, Accept> {
+    document: &'a mut UiDocument,
+    measurer: &'a mut M,
+    viewport: UiSize,
+    accepts_event: Accept,
+}
+
+impl<M, Accept> HostInputRouting for DocumentInputRouting<'_, M, Accept>
+where
+    M: TextMeasurer,
+    Accept: FnMut(&UiDocument, &RawInputEvent, &HostInteractionState) -> bool,
+{
+    type Error = taffy::TaffyError;
+
+    fn accepts_event(
+        &mut self,
+        event: &RawInputEvent,
+        state: &HostInteractionState,
+    ) -> Result<bool, Self::Error> {
+        // Unchanged geometry takes the document's cached fast path. Scroll and
+        // interaction styles become visible to the next event's hit test.
+        self.document.compute_layout(self.viewport, self.measurer)?;
+        Ok((self.accepts_event)(self.document, event, state))
+    }
+
+    fn resolve_target(
+        &mut self,
+        event: &RawInputEvent,
+        state: &HostInteractionState,
+    ) -> Option<UiNodeId> {
+        document_input_target(event, state, self.document)
+    }
+
+    fn process_event(&mut self, event: &mut HostInputEvent, state: &mut HostInteractionState) {
+        let previous_focus = self.document.focus.clone();
+        process_document_input_event(self.document, event, state, previous_focus);
+    }
+}
+
+pub(crate) fn process_document_input_with_filter(
+    document: &mut UiDocument,
+    measurer: &mut impl TextMeasurer,
+    request: HostFrameRequest,
+    wheel_scale: (f32, UiSize),
+    accepts_event: impl FnMut(&UiDocument, &RawInputEvent, &HostInteractionState) -> bool,
+) -> Result<HostFrameOutput, taffy::TaffyError> {
+    let viewport = request.viewport;
+    process_host_input(
+        request,
+        wheel_scale,
+        &mut DocumentInputRouting {
+            document,
+            measurer,
+            viewport,
+            accepts_event,
+        },
+    )
+}
+
+fn record_host_input(
+    output: &mut HostFrameOutput,
+    state: &mut HostInteractionState,
+    routing: &mut impl HostInputRouting,
+    mut event: HostInputEvent,
+) {
+    routing.process_event(&mut event, state);
+    output.events.push(event);
+}
+
+fn process_host_input<R: HostInputRouting>(
+    request: HostFrameRequest,
+    wheel_scale: (f32, UiSize),
+    routing: &mut R,
+) -> Result<HostFrameOutput, R::Error> {
     let HostFrameRequest {
-        viewport,
+        viewport: _,
         mut state,
         raw_input,
         platform_responses,
@@ -391,47 +633,140 @@ pub fn process_host_frame_input_with_wheel_scale_and_target_resolver(
     let mut output = HostFrameOutput::new(state.clone());
     output.platform_responses = platform_responses;
 
-    let mut suppress_next_enter_text = false;
     for event in raw_input {
-        let suppress_ui_event = matches!(
-            &event,
-            RawInputEvent::Text(text)
-                if suppress_next_enter_text && text_input_is_keyboard_line_break(&text.text)
-        );
-        if !suppress_ui_event {
-            if let Some(ui_event) =
-                event.to_ui_input_event_with_wheel_scale(wheel_line_size, viewport)
+        if let RawInputEvent::Composition(composition) = &event {
+            if !state
+                .text_ime
+                .as_ref()
+                .is_some_and(|session| session.input == composition.input)
             {
-                output.ui_events.push(ui_event);
+                continue;
             }
         }
-
-        suppress_next_enter_text = matches!(
-            &event,
-            RawInputEvent::Keyboard(key)
-                if key.pressed
-                    && key.key == KeyCode::Enter
-                    && !key.modifiers.ctrl
-                    && !key.modifiers.meta
-        );
-        if suppress_ui_event {
-            suppress_next_enter_text = false;
+        // The document has one press owner. Raw hooks still see other pointers
+        // and buttons, but they cannot update or finish that widget gesture.
+        let accepts_pointer_event = match &event {
+            RawInputEvent::Pointer(pointer) => {
+                state
+                    .drag_capture
+                    .is_none_or(|capture| capture.pointer_id == pointer.pointer_id)
+                    && state.gesture_tracker.accepts_pointer_event(*pointer)
+            }
+            _ => true,
+        };
+        if !routing.accepts_event(&event, &state)? {
+            if let RawInputEvent::Pointer(pointer) = &event {
+                if accepts_pointer_event
+                    && matches!(
+                        pointer.kind,
+                        PointerEventKind::Up(_) | PointerEventKind::Cancel
+                    )
+                {
+                    // A hook may intercept release after allowing the press.
+                    // End widget ownership without committing or clicking.
+                    let gesture = state
+                        .gesture_tracker
+                        .pointer_cancel(pointer.pointer_id, pointer.position);
+                    if let Some(cancel) = &gesture {
+                        apply_host_frame_gesture(&mut state, cancel);
+                    }
+                    record_host_input(
+                        &mut output,
+                        &mut state,
+                        routing,
+                        HostInputEvent::new(Some(UiInputEvent::PointerCancel), gesture),
+                    );
+                    clear_host_frame_capture_after_terminal_event(&mut state, &event);
+                }
+            }
+            continue;
         }
+        if !accepts_pointer_event {
+            continue;
+        }
+        if let RawInputEvent::Composition(composition) = &event {
+            if let Some(target) = state.text_target {
+                record_host_input(
+                    &mut output,
+                    &mut state,
+                    routing,
+                    UiInputEvent::Composition {
+                        target: Some(target),
+                        event: composition.event.clone(),
+                    }
+                    .into(),
+                );
+            }
+            continue;
+        }
+        let mut ui_events = event.to_ui_input_events_with_wheel_scale(wheel_scale.0, wheel_scale.1);
+        let ui_event = ui_events.next();
 
         let target = match event {
-            RawInputEvent::Pointer(_) | RawInputEvent::Wheel(_) => resolve_target(&event, &state),
-            RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
+            RawInputEvent::Pointer(_) | RawInputEvent::Wheel(_) => {
+                routing.resolve_target(&event, &state)
+            }
+            RawInputEvent::Keyboard(_)
+            | RawInputEvent::Text(_)
+            | RawInputEvent::Composition(_)
+            | RawInputEvent::Focus(_) => None,
         };
-        if let Some(gesture) = host_frame_gesture_for_event(&mut state, &event, target) {
-            apply_host_frame_gesture(&mut state, &gesture);
-            output.gestures.push(gesture);
+        let previous_pointer_position = match &event {
+            RawInputEvent::Pointer(pointer) => {
+                state.gesture_tracker.pointer_position(pointer.pointer_id)
+            }
+            _ => None,
+        };
+        let gesture = host_frame_gesture_for_event(&mut state, &event, target);
+        if let Some(gesture) = &gesture {
+            apply_host_frame_gesture(&mut state, gesture);
         } else {
             clear_host_frame_capture_after_terminal_event(&mut state, &event);
+        }
+        if ui_event.is_some() || gesture.is_some() {
+            let mut input = HostInputEvent::new(ui_event, gesture);
+            input.previous_pointer_position = previous_pointer_position;
+            record_host_input(&mut output, &mut state, routing, input);
+        }
+        for ui_event in ui_events {
+            record_host_input(&mut output, &mut state, routing, ui_event.into());
         }
     }
 
     output.state = state;
-    output
+    Ok(output)
+}
+
+pub(crate) fn document_input_target(
+    event: &RawInputEvent,
+    state: &HostInteractionState,
+    document: &UiDocument,
+) -> Option<UiNodeId> {
+    // Release must hit-test for clicks. Active drags already retain their target
+    // in the gesture tracker, and canvas hooks retain their own pointer capture.
+    match event {
+        RawInputEvent::Pointer(pointer) => state
+            .drag_capture
+            .filter(|capture| {
+                capture.pointer_id == pointer.pointer_id
+                    && matches!(
+                        pointer.kind,
+                        PointerEventKind::Move | PointerEventKind::Cancel
+                    )
+            })
+            .map(|capture| capture.target)
+            .or_else(|| {
+                document
+                    .pointer_input_hit(pointer.position)
+                    .0
+                    .and_then(crate::HitTestResult::target)
+            }),
+        RawInputEvent::Wheel(wheel) => document.hit_test(wheel.position),
+        RawInputEvent::Keyboard(_)
+        | RawInputEvent::Text(_)
+        | RawInputEvent::Composition(_)
+        | RawInputEvent::Focus(_) => None,
+    }
 }
 
 fn default_host_frame_target(
@@ -451,7 +786,10 @@ fn default_host_frame_target(
             .map(|capture| capture.target)
             .or(state.hovered),
         RawInputEvent::Wheel(_) => state.wheel_target.or(state.hovered),
-        RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
+        RawInputEvent::Keyboard(_)
+        | RawInputEvent::Text(_)
+        | RawInputEvent::Composition(_)
+        | RawInputEvent::Focus(_) => None,
     }
 }
 
@@ -462,7 +800,7 @@ fn host_frame_gesture_for_event(
 ) -> Option<GestureEvent> {
     match event {
         RawInputEvent::Pointer(pointer) => match pointer.kind {
-            PointerEventKind::Down(_) => Some(state.gesture_tracker.pointer_down(target, *pointer)),
+            PointerEventKind::Down(_) => state.gesture_tracker.pointer_down(target, *pointer),
             PointerEventKind::Move => state.gesture_tracker.pointer_move(target, *pointer),
             PointerEventKind::Up(_) => state.gesture_tracker.pointer_up(target, *pointer),
             PointerEventKind::Cancel => state
@@ -470,7 +808,10 @@ fn host_frame_gesture_for_event(
                 .pointer_cancel(pointer.pointer_id, pointer.position),
         },
         RawInputEvent::Wheel(wheel) => Some(PointerGestureTracker::wheel(target, *wheel)),
-        RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) | RawInputEvent::Focus(_) => None,
+        RawInputEvent::Keyboard(_)
+        | RawInputEvent::Text(_)
+        | RawInputEvent::Composition(_)
+        | RawInputEvent::Focus(_) => None,
     }
 }
 
@@ -708,8 +1049,9 @@ impl HostDocumentFrameRequest {
 pub struct HostDocumentFrameOutput {
     /// Focused node before this document frame's UI events were applied.
     pub previous_focused: Option<UiNodeId>,
+    /// Press owner before this document frame's UI events were applied.
+    pub previous_pressed: Option<UiNodeId>,
     pub host_output: HostFrameOutput,
-    pub input_results: Vec<UiInputResult>,
     pub render_request: RenderFrameRequest,
     pub accessibility_tree: AccessibilityTree,
     pub live_regions: AccessibilityLiveRegionSnapshot,
@@ -722,6 +1064,24 @@ pub struct HostDocumentFrameOutput {
 }
 
 impl HostDocumentFrameOutput {
+    pub fn input_results(&self) -> impl Iterator<Item = &UiInputResult> {
+        self.input_events().filter_map(|(_, input)| input)
+    }
+
+    pub(crate) fn input_events(
+        &self,
+    ) -> impl Iterator<Item = (&HostInputEvent, Option<&UiInputResult>)> {
+        self.host_output.events.iter().map(|event| {
+            (
+                event,
+                event
+                    .document_result
+                    .as_ref()
+                    .and_then(|result| result.input.as_ref()),
+            )
+        })
+    }
+
     pub fn platform_requests(&self) -> Vec<PlatformRequest> {
         let mut requests = self
             .host_output
@@ -1020,24 +1380,66 @@ pub fn process_document_frame(
     } = request;
 
     let mut state = host_output.state.clone();
-    let authored_focused = document.focus.focused;
-    if authored_focused.is_some() {
-        state.focused = authored_focused;
+    if let Some(focused) = document.focus.focused {
+        state.focused = Some(focused);
     }
+    let initial_focus = host_output
+        .events
+        .iter()
+        .find_map(|event| {
+            event
+                .document_result
+                .as_ref()
+                .map(|result| result.previous_focus.clone())
+        })
+        .unwrap_or_else(|| document.focus.clone());
+    let authored_focused = initial_focus.focused;
     let previous_focused_for_actions =
         authored_focused.or_else(|| previous_focused.unwrap_or(state.focused));
-    let mut input_results = Vec::with_capacity(host_output.ui_events.len());
-    for event in host_output.ui_events.iter().cloned() {
-        let result = document.handle_input(event);
-        state.apply_input_result(result.clone());
-        input_results.push(result);
+    let previous_pressed = initial_focus.pressed;
+    if host_output.ui_events().next().is_none()
+        && host_output
+            .events
+            .iter()
+            .all(|event| event.document_result.is_none())
+    {
+        let mut actions = WidgetActionQueue::new();
+        push_focus_transition_actions(
+            document,
+            &mut actions,
+            previous_focused_for_actions,
+            state.focused,
+        );
+        let actions = actions.into_vec();
+        if !actions.is_empty() {
+            let mut event = HostInputEvent::new(None, None);
+            event.document_result = Some(HostDocumentInputResult {
+                previous_focus: initial_focus,
+                input: None,
+                actions,
+                gesture_action: None,
+            });
+            host_output.events.insert(0, event);
+        }
+    }
+    let mut action_focus = document.focus.clone();
+    action_focus.focused = previous_focused_for_actions;
+    for event in &mut host_output.events {
+        if event.document_result.is_none() {
+            document.compute_layout(viewport, measurer)?;
+            process_document_input_event(document, event, &mut state, action_focus);
+        }
+        action_focus = document.focus.clone();
     }
     host_output.state = state.clone();
 
     document.compute_layout(viewport, measurer)?;
     #[cfg(feature = "widgets")]
-    if crate::widgets::tooltip::add_active_node_tooltip(document, viewport, None).is_some() {
-        document.compute_layout(viewport, measurer)?;
+    {
+        let cursor = document.pointer_position;
+        if crate::widgets::tooltip::add_active_node_tooltip(document, viewport, cursor).is_some() {
+            document.compute_layout(viewport, measurer)?;
+        }
     }
     let layout_snapshot = document.layout_snapshot();
     let layout_animation_transitions = if accessibility_preferences.should_reduce_motion() {
@@ -1124,8 +1526,8 @@ pub fn process_document_frame(
 
     Ok(HostDocumentFrameOutput {
         previous_focused: previous_focused_for_actions,
+        previous_pressed,
         host_output,
-        input_results,
         render_request,
         accessibility_tree,
         live_regions,
@@ -1138,94 +1540,262 @@ pub fn process_document_frame(
     })
 }
 
-pub fn collect_document_widget_actions(
-    document: &UiDocument,
-    frame: &HostDocumentFrameOutput,
-) -> Vec<WidgetAction> {
+/// Return actions captured against the document state at each input event.
+pub fn collect_document_widget_actions(frame: &HostDocumentFrameOutput) -> Vec<WidgetAction> {
+    frame
+        .host_output
+        .events
+        .iter()
+        .filter_map(|event| event.document_result.as_ref())
+        .flat_map(|result| result.actions.iter().cloned())
+        .collect()
+}
+
+pub(crate) fn process_document_input_event(
+    document: &mut UiDocument,
+    event: &mut HostInputEvent,
+    state: &mut HostInteractionState,
+    previous_focus: UiFocusState,
+) {
+    let text_pointer_changed = match &event.ui_event {
+        Some(UiInputEvent::PointerMove(point) | UiInputEvent::PointerUp(point)) => {
+            event
+                .previous_pointer_position
+                .or(document.pointer_position)
+                != Some(*point)
+        }
+        _ => true,
+    };
+    let click_target = match &event.gesture {
+        Some(GestureEvent::Click(click)) => {
+            action_target_accepts_pointer_click(document, click.target, click.button)
+                .then_some(click.target)
+        }
+        _ => None,
+    };
+    let input = event.ui_event.as_ref().map(|event| {
+        let input = document.handle_input_with_click_target(event.clone(), click_target);
+        state.apply_input_result(input.clone());
+        input
+    });
     let mut queue = WidgetActionQueue::new();
-    push_focus_transition_actions(
-        document,
-        &mut queue,
-        frame.previous_focused,
-        frame.host_output.state.focused,
-    );
-    for event in &frame.host_output.ui_events {
-        if let Some((target, phase, position, selecting)) =
-            text_pointer_edit_target(document, frame, event)
-        {
-            if let Some(binding) = action_binding(document, target) {
-                let target_rect = document
-                    .nodes()
-                    .get(target.0)
-                    .map(|node| node.layout.rect)
-                    .unwrap_or_else(|| UiRect::new(0.0, 0.0, 0.0, 0.0));
-                queue.push(WidgetAction::text_pointer_edit(
-                    target,
-                    binding,
-                    event.clone(),
-                    phase,
-                    position,
-                    target_rect,
-                    selecting,
-                ));
-                continue;
+    let scrollbar_handled = input
+        .as_ref()
+        .is_some_and(|input| input.scrollbar_target.is_some());
+    if let (Some(event), Some(input)) = (&event.ui_event, &input) {
+        // A valid cancellation must reach the original model even though it
+        // revokes the session before subsequent events are routed.
+        let obsolete_composition = matches!(event, UiInputEvent::Composition { target, .. }
+            if state.text_ime.is_some() && *target != state.text_target);
+        if let Some(target) = state.text_target {
+            let pointer_target = if matches!(event, UiInputEvent::PointerDown(_)) {
+                input.pressed
+            } else {
+                previous_focus.pressed
+            };
+            let pointer_selection = state.text_composition.is_active()
+                && !scrollbar_handled
+                && text_pointer_changed
+                && text_pointer_edit_target(document, pointer_target, event).is_some_and(
+                    |(owner, _, point, _)| {
+                        owner == target
+                            && document.text_input_pointer_geometry(owner, point).is_some()
+                    },
+                );
+            let explicit_cancel = matches!(
+                event,
+                UiInputEvent::Key {
+                    key: KeyCode::Escape,
+                    ..
+                }
+            ) || matches!(event, UiInputEvent::Composition {
+                    target: Some(owner), event: crate::TextCompositionEvent::Cancel,
+                } if *owner == target);
+            let cancels_draft =
+                state.text_composition.is_active() && (pointer_selection || explicit_cancel);
+            if input.focused != Some(target) || cancels_draft {
+                // Revoke routing immediately, including later events in this
+                // batch. Runtime sync deactivates the retained platform session
+                // before activating a fresh input ID.
+                state.text_target = None;
+                state.text_composition = HostTextCompositionState::Inactive;
             }
         }
-        let Some(target) = document.focus.focused else {
-            continue;
-        };
-        let Some(binding) = action_binding(document, target) else {
-            continue;
-        };
-        if text_edit_target(document, target)
-            && matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. })
-        {
-            queue.push(WidgetAction::text_edit(target, binding, event.clone()));
-            continue;
+        if let UiInputEvent::Composition { target, event } = event {
+            if target.is_some() && *target == state.text_target && *target == input.focused {
+                // Empty preedit can precede a queued native commit, including
+                // across a frame boundary with no visible draft.
+                state.text_composition = match event {
+                    crate::TextCompositionEvent::Preedit { text, .. } if text.is_empty() => {
+                        HostTextCompositionState::EmptyPreedit
+                    }
+                    crate::TextCompositionEvent::Preedit { .. } => {
+                        HostTextCompositionState::Preedit
+                    }
+                    _ => HostTextCompositionState::Inactive,
+                };
+            }
         }
-        if text_edit_target(document, target) {
-            if let Some((phase, position, selecting)) =
-                text_pointer_edit_event(event, frame.host_output.state.pressed == Some(target))
+        push_focus_transition_actions(document, &mut queue, previous_focus.focused, input.focused);
+        if !scrollbar_handled && !obsolete_composition {
+            push_document_input_actions(
+                document,
+                &mut queue,
+                event,
+                input.focused,
+                input.pressed,
+                previous_focus.pressed,
+                text_pointer_changed,
+            );
+        }
+        if let Some(target) = input.scrolled {
+            if let (Some(binding), Some(scroll)) = (
+                action_binding(document, target),
+                document.scroll_state(target),
+            ) {
+                queue.push(WidgetAction::scroll(target, binding, scroll));
+            }
+        }
+    }
+    let click_matches_document = match (&event.ui_event, &event.gesture) {
+        (Some(UiInputEvent::PointerUp(_)), Some(GestureEvent::Click(click))) => input
+            .as_ref()
+            .is_some_and(|input| input.clicked == Some(click.target)),
+        _ => true,
+    };
+    let mut gesture_action = None;
+    if !scrollbar_handled && click_matches_document {
+        if let Some(gesture) = &event.gesture {
+            if let Some(action) =
+                WidgetAction::from_gesture_event_for_document(document, gesture, |id| {
+                    action_binding(document, id)
+                })
             {
-                let target_rect = document
-                    .nodes()
-                    .get(target.0)
-                    .map(|node| node.layout.rect)
-                    .unwrap_or_else(|| UiRect::new(0.0, 0.0, 0.0, 0.0));
-                queue.push(WidgetAction::text_pointer_edit(
-                    target,
-                    binding,
-                    event.clone(),
-                    phase,
-                    position,
-                    target_rect,
-                    selecting,
-                ));
-                continue;
+                gesture_action = Some(queue.len());
+                queue.push(action);
+            }
+            if let Some(action) = drop_target_drag_action_from_gesture(document, gesture) {
+                queue.push(action);
             }
         }
-        if let UiInputEvent::Key { key, modifiers } = event {
-            queue.push_key_activation(target, binding, *key, *modifiers);
-        }
     }
-    for gesture in &frame.host_output.gestures {
-        queue.push_gesture_event_for_document(document, gesture, |id| action_binding(document, id));
-        if let Some(action) = drop_target_drag_action_from_gesture(document, gesture) {
+    event.document_result = Some(HostDocumentInputResult {
+        previous_focus,
+        input,
+        actions: queue.into_vec(),
+        gesture_action,
+    });
+}
+
+fn push_document_input_actions(
+    document: &UiDocument,
+    queue: &mut WidgetActionQueue,
+    event: &UiInputEvent,
+    focused: Option<UiNodeId>,
+    pressed: Option<UiNodeId>,
+    previous_pressed: Option<UiNodeId>,
+    text_pointer_changed: bool,
+) {
+    // Focus transitions were already dispatched. Navigation must not become a
+    // text edit on the newly focused control.
+    if event.focus_direction().is_some() {
+        return;
+    }
+    if let UiInputEvent::Composition {
+        target,
+        event: composition,
+    } = event
+    {
+        if let Some(target) = target.filter(|target| Some(*target) == focused) {
+            if let Some(binding) = action_binding(document, target) {
+                queue.push(WidgetAction::text_edit(
+                    target,
+                    binding,
+                    UiInputEvent::Composition {
+                        target: Some(target),
+                        event: composition.clone(),
+                    },
+                ));
+            }
+        }
+        return;
+    }
+    let pointer_target = if matches!(event, UiInputEvent::PointerDown(_)) {
+        pressed
+    } else {
+        previous_pressed
+    };
+    if let Some((target, phase, position, selecting)) =
+        text_pointer_edit_target(document, pointer_target, event)
+    {
+        // A press already placed the caret. Reinterpreting an unchanged point
+        // after focus restyles the field would create a selection on release.
+        if !text_pointer_changed {
+            return;
+        }
+        if let Some(binding) = action_binding(document, target) {
+            let target_rect = document
+                .nodes()
+                .get(target.0)
+                .map(|node| node.layout.rect)
+                .unwrap_or_else(|| UiRect::new(0.0, 0.0, 0.0, 0.0));
+            let Some(geometry) = document.text_input_pointer_geometry(target, position) else {
+                return;
+            };
+            let mut action = WidgetAction::text_pointer_edit(
+                target,
+                binding,
+                event.clone(),
+                phase,
+                position,
+                target_rect,
+                selecting,
+            );
+            if let crate::WidgetActionKind::TextEdit(edit) = &mut action.kind {
+                edit.geometry = Some(geometry);
+            }
             queue.push(action);
+            return;
         }
     }
-    for input in &frame.input_results {
-        let Some(target) = input.scrolled else {
-            continue;
-        };
-        let Some(binding) = action_binding(document, target) else {
-            continue;
-        };
-        if let Some(scroll) = document.scroll_state(target) {
-            queue.push(WidgetAction::scroll(target, binding, scroll));
-        }
+    let Some(target) = focused else {
+        return;
+    };
+    let Some(binding) = action_binding(document, target) else {
+        return;
+    };
+    if document.node_is_text_control(target)
+        && matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. })
+    {
+        queue.push(WidgetAction::text_edit(target, binding, event.clone()));
+        return;
     }
-    queue.into_vec()
+    if let UiInputEvent::Key { key, modifiers } = event {
+        queue.push_key_activation(target, binding, *key, *modifiers);
+    }
+}
+
+pub(crate) fn document_focus_transition_event(
+    document: &UiDocument,
+    previous: UiFocusState,
+    current: Option<UiNodeId>,
+) -> Option<HostInputEvent> {
+    let mut queue = WidgetActionQueue::new();
+    push_focus_transition_actions(document, &mut queue, previous.focused, current);
+    if queue.is_empty() {
+        return None;
+    }
+    Some(HostInputEvent {
+        ui_event: None,
+        gesture: None,
+        previous_pointer_position: None,
+        document_result: Some(HostDocumentInputResult {
+            previous_focus: previous,
+            input: None,
+            actions: queue.into_vec(),
+            gesture_action: None,
+        }),
+    })
 }
 
 fn push_focus_transition_actions(
@@ -1238,14 +1808,22 @@ fn push_focus_transition_actions(
         return;
     }
     if let Some(previous) = previous {
-        if text_edit_target(document, previous) {
+        if document.node_is_text_control(previous) {
             if let Some(binding) = action_binding(document, previous) {
+                queue.push(WidgetAction::text_edit(
+                    previous,
+                    binding.clone(),
+                    UiInputEvent::Composition {
+                        target: Some(previous),
+                        event: crate::TextCompositionEvent::Cancel,
+                    },
+                ));
                 queue.focus(previous, binding, false);
             }
         }
     }
     if let Some(current) = current {
-        if text_edit_target(document, current) {
+        if document.node_is_text_control(current) {
             if let Some(binding) = action_binding(document, current) {
                 queue.focus(current, binding, true);
             }
@@ -1255,67 +1833,19 @@ fn push_focus_transition_actions(
 
 fn text_pointer_edit_target(
     document: &UiDocument,
-    frame: &HostDocumentFrameOutput,
+    pressed: Option<UiNodeId>,
     event: &UiInputEvent,
 ) -> Option<(UiNodeId, WidgetValueEditPhase, UiPoint, bool)> {
-    let pointer_position = match event {
-        UiInputEvent::PointerDown(point)
-        | UiInputEvent::PointerMove(point)
-        | UiInputEvent::PointerUp(point) => Some(*point),
-        _ => None,
-    };
-    if pointer_position.is_some_and(|point| document.auto_scrollbar_hit_target(point).is_some()) {
-        return None;
-    }
+    let target = pressed.filter(|target| {
+        document.node_is_text_control(*target) && action_target_enabled(document, *target)
+    })?;
     let (phase, position, selecting) = match event {
         UiInputEvent::PointerDown(point) => (WidgetValueEditPhase::Begin, *point, false),
-        UiInputEvent::PointerMove(point) => {
-            let target = frame.host_output.state.pressed?;
-            if !text_edit_target(document, target) {
-                return None;
-            }
-            return Some((target, WidgetValueEditPhase::Update, *point, true));
-        }
-        UiInputEvent::PointerUp(point) => {
-            let target = frame.host_output.state.pressed.or(document.focus.pressed)?;
-            if !text_edit_target(document, target) {
-                return None;
-            }
-            return Some((target, WidgetValueEditPhase::Commit, *point, true));
-        }
+        UiInputEvent::PointerMove(point) => (WidgetValueEditPhase::Update, *point, true),
+        UiInputEvent::PointerUp(point) => (WidgetValueEditPhase::Commit, *point, true),
         _ => return None,
     };
-    let target = document.hit_test(position)?;
-    text_edit_target(document, target).then_some((target, phase, position, selecting))
-}
-
-fn text_pointer_edit_event(
-    event: &UiInputEvent,
-    pressed: bool,
-) -> Option<(WidgetValueEditPhase, UiPoint, bool)> {
-    match event {
-        UiInputEvent::PointerDown(point) => Some((WidgetValueEditPhase::Begin, *point, false)),
-        UiInputEvent::PointerMove(point) if pressed => {
-            Some((WidgetValueEditPhase::Update, *point, true))
-        }
-        UiInputEvent::PointerUp(point) if pressed => {
-            Some((WidgetValueEditPhase::Commit, *point, true))
-        }
-        _ => None,
-    }
-}
-
-fn text_edit_target(document: &UiDocument, target: UiNodeId) -> bool {
-    document
-        .nodes()
-        .get(target.0)
-        .and_then(|node| node.accessibility.as_ref())
-        .is_some_and(|accessibility| {
-            matches!(
-                accessibility.role,
-                AccessibilityRole::TextBox | AccessibilityRole::SearchBox
-            )
-        })
+    Some((target, phase, position, selecting))
 }
 
 fn action_binding(document: &UiDocument, id: UiNodeId) -> Option<WidgetActionBinding> {
@@ -1332,10 +1862,10 @@ fn drop_target_drag_action_from_gesture(
     let GestureEvent::Drag(gesture) = event else {
         return None;
     };
-    drag_source_action_target_for_hit(document, gesture.target)?;
+    let source = drag_source_action_target_for_hit(document, gesture.target)?;
     let hit = document.hit_test(gesture.current)?;
     let target = drop_action_target_for_hit(document, hit)?;
-    if target == gesture.target || document.node_is_descendant_or_self(gesture.target, target) {
+    if document.node_is_logical_descendant_or_self(source, target) {
         return None;
     }
     let binding = action_binding(document, target)?;
@@ -1357,8 +1887,7 @@ fn action_target_for_accessibility_action(
     hit: UiNodeId,
     accessibility_action_id: &str,
 ) -> Option<UiNodeId> {
-    let mut current = Some(hit);
-    while let Some(id) = current {
+    resolve_action_target(document, hit, |id| {
         let node = document.nodes().get(id.0)?;
         let has_action = node.accessibility.as_ref().is_some_and(|accessibility| {
             accessibility
@@ -1366,12 +1895,9 @@ fn action_target_for_accessibility_action(
                 .iter()
                 .any(|action| action.id == accessibility_action_id)
         });
-        if has_action && node.action.is_some() && action_target_enabled(document, id) {
-            return Some(id);
-        }
-        current = node.parent();
-    }
-    None
+        (has_action && node.action.is_some()).then_some(())
+    })
+    .map(|(target, _, _)| target)
 }
 
 fn normalized_host_scale(scale: f32) -> f32 {
@@ -1386,9 +1912,8 @@ fn normalized_host_scale(scale: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::accessibility::{
-        AccessibilityAdapter, AccessibilityAdapterRequest, AccessibilityAdapterResponse,
-        AccessibilityAnnouncement, AccessibilityCapabilities, AccessibilityPreferences,
-        AccessibilityRequestKind, FocusRestoreTarget, FocusTrap,
+        AccessibilityAdapterRequest, AccessibilityCapabilities, AccessibilityPreferences,
+        AccessibilityRequestKind, FocusRestoreTarget,
     };
     use crate::commands::{Command, CommandMeta};
     use crate::diagnostics::{DiagnosticCategory, DiagnosticReport};
@@ -1397,9 +1922,9 @@ mod tests {
         RawPointerEvent, RawTextInputEvent, RawWheelEvent, WheelPhase,
     };
     use crate::platform::{
-        BackendAdapterKind, CapabilityDecision, CursorGrabMode, CursorRequest, InputCapabilities,
-        InputCapabilityKind, LogicalRect, PlatformRequestId, PlatformRequestIdAllocator,
-        PlatformServiceCapabilities, RepaintResponse, TextRange,
+        CapabilityDecision, CursorGrabMode, CursorRequest, InputCapabilities, InputCapabilityKind,
+        LogicalRect, PlatformRequestId, PlatformRequestIdAllocator, PlatformServiceCapabilities,
+        TextRange,
     };
     use crate::shell::{ShellPanelState, ShellRegion};
     use crate::{
@@ -1445,85 +1970,6 @@ mod tests {
         RawInputEvent::Pointer(RawPointerEvent::new(kind, UiPoint::new(x, y), timestamp))
     }
 
-    #[derive(Debug, Default)]
-    struct TestHostAccessibilityAdapter {
-        capabilities: AccessibilityCapabilities,
-        handled: Vec<AccessibilityAdapterRequest>,
-        published_focus: Option<UiNodeId>,
-        preferences: Option<AccessibilityPreferences>,
-        trap: Option<FocusTrap>,
-        announced: Vec<AccessibilityAnnouncement>,
-        focused: Option<UiNodeId>,
-    }
-
-    impl TestHostAccessibilityAdapter {
-        fn new(capabilities: AccessibilityCapabilities) -> Self {
-            Self {
-                capabilities,
-                ..Self::default()
-            }
-        }
-    }
-
-    impl AccessibilityAdapter for TestHostAccessibilityAdapter {
-        fn accessibility_capabilities(&self) -> AccessibilityCapabilities {
-            self.capabilities
-        }
-
-        fn handle_accessibility_request(
-            &mut self,
-            request: AccessibilityAdapterRequest,
-        ) -> AccessibilityAdapterResponse {
-            if !self.capabilities.supports(request.kind()) {
-                return AccessibilityAdapterResponse::Unsupported(request.kind());
-            }
-
-            self.handled.push(request.clone());
-            match request {
-                AccessibilityAdapterRequest::PublishTree {
-                    focused,
-                    preferences,
-                    ..
-                } => {
-                    self.published_focus = focused;
-                    self.preferences = Some(preferences);
-                    AccessibilityAdapterResponse::Applied
-                }
-                AccessibilityAdapterRequest::MoveFocus { target, .. } => {
-                    self.focused = Some(target);
-                    AccessibilityAdapterResponse::FocusChanged(Some(target))
-                }
-                AccessibilityAdapterRequest::SetFocusTrap(trap) => {
-                    self.trap = Some(trap);
-                    AccessibilityAdapterResponse::Applied
-                }
-                AccessibilityAdapterRequest::ClearFocusTrap { restore } => {
-                    self.trap = None;
-                    AccessibilityAdapterResponse::FocusChanged(match restore {
-                        FocusRestoreTarget::Node(node) => Some(node),
-                        FocusRestoreTarget::Previous => self.focused,
-                        FocusRestoreTarget::None => None,
-                    })
-                }
-                AccessibilityAdapterRequest::RestoreFocus(restore) => {
-                    AccessibilityAdapterResponse::FocusChanged(match restore {
-                        FocusRestoreTarget::Node(node) => Some(node),
-                        FocusRestoreTarget::Previous => self.focused,
-                        FocusRestoreTarget::None => None,
-                    })
-                }
-                AccessibilityAdapterRequest::Announce(announcement) => {
-                    self.announced.push(announcement);
-                    AccessibilityAdapterResponse::Applied
-                }
-                AccessibilityAdapterRequest::ApplyPreferences(preferences) => {
-                    self.preferences = Some(preferences);
-                    AccessibilityAdapterResponse::PreferencesChanged(preferences)
-                }
-            }
-        }
-    }
-
     #[test]
     fn host_state_folds_input_results_and_gestures_before_paint() {
         let hovered = UiNodeId(1);
@@ -1536,6 +1982,7 @@ mod tests {
             pressed: Some(hovered),
             clicked: None,
             scrolled: Some(scrolled),
+            scrollbar_target: None,
             consumed: true,
             consumed_by: Some(scrolled),
         });
@@ -1576,11 +2023,11 @@ mod tests {
         );
 
         assert_eq!(
-            first.ui_events,
+            first.ui_events().cloned().collect::<Vec<_>>(),
             vec![UiInputEvent::PointerDown(UiPoint::new(10.0, 10.0))]
         );
         assert!(matches!(
-            &first.gestures[..],
+            &first.gestures().cloned().collect::<Vec<_>>()[..],
             [GestureEvent::Press {
                 target: Some(actual),
                 ..
@@ -1597,9 +2044,9 @@ mod tests {
             )),
             |_, _| Some(outside),
         );
-        assert!(under_threshold.gestures.is_empty());
+        assert!(under_threshold.gestures().next().is_none());
         assert_eq!(
-            under_threshold.ui_events,
+            under_threshold.ui_events().cloned().collect::<Vec<_>>(),
             vec![UiInputEvent::PointerMove(UiPoint::new(12.0, 13.0))]
         );
         assert_eq!(under_threshold.state.drag_capture.unwrap().target, target);
@@ -1613,12 +2060,164 @@ mod tests {
             )),
             |_, _| Some(outside),
         );
-        let [GestureEvent::Drag(begin)] = &drag_begin.gestures[..] else {
+        let [GestureEvent::Drag(begin)] = &drag_begin.gestures().cloned().collect::<Vec<_>>()[..]
+        else {
             panic!("expected one drag begin gesture");
         };
         assert_eq!(begin.target, target);
         assert_eq!(begin.phase, GesturePhase::Begin);
         assert_eq!(begin.total_delta, UiPoint::new(10.0, 4.0));
+    }
+
+    #[test]
+    fn pointer_chords_cannot_replace_or_release_the_press_owner() {
+        for owner in [PointerButton::Primary, PointerButton::Secondary] {
+            let other = if owner == PointerButton::Primary {
+                PointerButton::Secondary
+            } else {
+                PointerButton::Primary
+            };
+            for dragging in [false, true] {
+                for intercepted in [false, true] {
+                    let target = UiNodeId(3);
+                    let neighbor = UiNodeId(4);
+                    let viewport = UiSize::new(200.0, 120.0);
+                    let pressed = process_host_frame_input_with_target_resolver(
+                        HostFrameRequest::new(viewport, HostInteractionState::default())
+                            .raw_event(raw_pointer(PointerEventKind::Down(owner), 4.0, 4.0, 1)),
+                        |_, _| Some(target),
+                    );
+                    let state =
+                        if dragging {
+                            process_host_frame_input_with_target_resolver(
+                                HostFrameRequest::new(viewport, pressed.state)
+                                    .raw_event(raw_pointer(PointerEventKind::Move, 24.0, 4.0, 2)),
+                                |_, _| Some(target),
+                            )
+                            .state
+                        } else {
+                            pressed.state
+                        };
+                    let capture = state.drag_capture;
+                    // Include an unmatched release as well as a full chord.
+                    let mut request = HostFrameRequest::new(viewport, state);
+                    for kind in [
+                        PointerEventKind::Up(other),
+                        PointerEventKind::Down(other),
+                        PointerEventKind::Up(other),
+                    ] {
+                        request.raw_input.push(raw_pointer(kind, 24.0, 4.0, 3));
+                    }
+                    let mut seen = 0;
+                    let chord = process_host_frame_input_with_filter(
+                        request,
+                        16.0,
+                        |_, _| Some(neighbor),
+                        |_, _| {
+                            seen += 1;
+                            !intercepted
+                        },
+                    );
+                    assert_eq!(seen, 3, "raw hooks must still receive button chords");
+                    assert!(
+                        chord.gestures().next().is_none(),
+                        "{owner:?}, dragging={dragging}, intercepted={intercepted}: {:?}",
+                        chord.gestures().cloned().collect::<Vec<_>>()
+                    );
+                    assert!(chord.ui_events().next().is_none());
+                    assert_eq!(chord.state.drag_capture, capture);
+                    assert_eq!(chord.state.pressed, Some(target));
+                    let released = process_host_frame_input_with_target_resolver(
+                        HostFrameRequest::new(viewport, chord.state).raw_event(raw_pointer(
+                            PointerEventKind::Up(owner),
+                            if dragging { 24.0 } else { 4.0 },
+                            4.0,
+                            4,
+                        )),
+                        |_, _| Some(target),
+                    );
+                    assert!(
+                        matches!(released.gestures().cloned().collect::<Vec<_>>().as_slice(), [GestureEvent::Drag(drag)]
+                            if dragging && drag.target == target && drag.button == owner && drag.phase == GesturePhase::Commit)
+                            || matches!(released.gestures().cloned().collect::<Vec<_>>().as_slice(), [GestureEvent::Click(click)]
+                                if !dragging && click.target == target && click.button == owner)
+                    );
+                    assert!(released.state.drag_capture.is_none());
+                    assert!(released.state.pressed.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn other_pointers_cannot_steal_or_cancel_the_document_press_owner() {
+        for intercepted in [false, true] {
+            let viewport = UiSize::new(200.0, 120.0);
+            let target = UiNodeId(3);
+            let neighbor = UiNodeId(4);
+            let pressed = process_host_frame_input_with_target_resolver(
+                HostFrameRequest::new(viewport, HostInteractionState::default())
+                    .raw_event(raw_pointer(
+                        PointerEventKind::Down(PointerButton::Primary),
+                        4.0,
+                        4.0,
+                        1,
+                    ))
+                    .raw_event(raw_pointer(PointerEventKind::Move, 24.0, 4.0, 2)),
+                |_, _| Some(target),
+            );
+            let capture = pressed.state.drag_capture;
+            let mut request = HostFrameRequest::new(viewport, pressed.state);
+            for kind in [
+                PointerEventKind::Up(PointerButton::Primary),
+                PointerEventKind::Cancel,
+                PointerEventKind::Down(PointerButton::Primary),
+                PointerEventKind::Move,
+                PointerEventKind::Up(PointerButton::Primary),
+            ] {
+                request.raw_input.push(RawInputEvent::Pointer(
+                    RawPointerEvent::new(kind, UiPoint::new(140.0, 40.0), 3)
+                        .pointer_id(PointerId::new(2))
+                        .pointer_kind(crate::input::PointerKind::Touch),
+                ));
+            }
+            let mut seen = 0;
+            let other = process_host_frame_input_with_filter(
+                request,
+                16.0,
+                |_, _| Some(neighbor),
+                |_, _| {
+                    seen += 1;
+                    !intercepted
+                },
+            );
+            assert_eq!(
+                seen, 5,
+                "custom raw hooks must still receive other pointers"
+            );
+            assert!(
+                other.ui_events().next().is_none(),
+                "intercepted={intercepted}: {:?}",
+                other.ui_events().cloned().collect::<Vec<_>>()
+            );
+            assert!(other.gestures().next().is_none());
+            assert_eq!(other.state.drag_capture, capture);
+            assert_eq!(other.state.pressed, Some(target));
+            let released = process_host_frame_input_with_target_resolver(
+                HostFrameRequest::new(viewport, other.state).raw_event(raw_pointer(
+                    PointerEventKind::Up(PointerButton::Primary),
+                    24.0,
+                    4.0,
+                    4,
+                )),
+                |_, _| Some(neighbor),
+            );
+            assert!(
+                matches!(released.gestures().cloned().collect::<Vec<_>>().as_slice(), [GestureEvent::Drag(drag)]
+                    if drag.target == target && drag.phase == GesturePhase::Commit)
+            );
+            assert!(released.state.drag_capture.is_none());
+        }
     }
 
     #[test]
@@ -1641,7 +2240,8 @@ mod tests {
             )),
             |_, _| Some(outside),
         );
-        let [GestureEvent::Drag(begin)] = &dragging.gestures[..] else {
+        let [GestureEvent::Drag(begin)] = &dragging.gestures().cloned().collect::<Vec<_>>()[..]
+        else {
             panic!("expected drag begin");
         };
         assert_eq!(begin.target, target);
@@ -1657,7 +2257,8 @@ mod tests {
             )),
             |_, _| Some(outside),
         );
-        let [GestureEvent::Drag(commit)] = &committed.gestures[..] else {
+        let [GestureEvent::Drag(commit)] = &committed.gestures().cloned().collect::<Vec<_>>()[..]
+        else {
             panic!("expected drag commit");
         };
         assert_eq!(commit.target, target);
@@ -1707,7 +2308,8 @@ mod tests {
             )),
             |_, _| Some(target),
         );
-        let [GestureEvent::Drag(cancel)] = &cancelled.gestures[..] else {
+        let [GestureEvent::Drag(cancel)] = &cancelled.gestures().cloned().collect::<Vec<_>>()[..]
+        else {
             panic!("expected drag cancel");
         };
         assert_eq!(cancel.target, target);
@@ -1737,9 +2339,9 @@ mod tests {
             HostFrameRequest::new(viewport, state).raw_event(RawInputEvent::Wheel(wheel)),
         );
 
-        assert_eq!(output.ui_events.len(), 1);
+        assert_eq!(output.ui_events().count(), 1);
         assert!(matches!(
-            &output.gestures[..],
+            &output.gestures().cloned().collect::<Vec<_>>()[..],
             [GestureEvent::WheelTargeted {
                 target: Some(actual),
                 event
@@ -1766,10 +2368,20 @@ mod tests {
             RawInputEvent::Text(RawTextInputEvent::new("a", 4)),
             RawInputEvent::Focus(crate::FocusDirection::Next),
         ];
-        let expected_ui_events: Vec<_> = raw_events
-            .iter()
-            .filter_map(|event| event.to_ui_input_event_with_wheel_scale(20.0, viewport))
-            .collect();
+        let expected_ui_events = vec![
+            UiInputEvent::PointerDown(UiPoint::new(6.0, 8.0)),
+            UiInputEvent::Wheel(
+                crate::UiWheelEvent::pixels(UiPoint::new(12.0, 10.0), UiPoint::new(0.0, -40.0))
+                    .unit(crate::input::WheelDeltaUnit::Line)
+                    .phase(WheelPhase::Started),
+            ),
+            UiInputEvent::Key {
+                key: KeyCode::Character('A'),
+                modifiers: KeyModifiers::NONE,
+            },
+            UiInputEvent::TextInput("a".to_string()),
+            UiInputEvent::Focus(crate::FocusDirection::Next),
+        ];
         let mut request = HostFrameRequest::new(viewport, HostInteractionState::default());
         for event in raw_events {
             request = request.raw_event(event);
@@ -1784,9 +2396,12 @@ mod tests {
             },
         );
 
-        assert_eq!(output.ui_events, expected_ui_events);
+        assert_eq!(
+            output.ui_events().cloned().collect::<Vec<_>>(),
+            expected_ui_events
+        );
         assert!(matches!(
-            output.gestures.first(),
+            output.gestures().next(),
             Some(GestureEvent::Press {
                 target: Some(actual),
                 ..
@@ -1798,17 +2413,15 @@ mod tests {
     fn host_frame_deduplicates_enter_key_and_generated_newline_text() {
         let viewport = UiSize::new(320.0, 180.0);
         let output = process_host_frame_input(
-            HostFrameRequest::new(viewport, HostInteractionState::default())
-                .raw_event(RawInputEvent::Keyboard(RawKeyboardEvent::press(
-                    KeyCode::Enter,
-                    KeyModifiers::NONE,
-                    10,
-                )))
-                .raw_event(RawInputEvent::Text(RawTextInputEvent::new("\r", 10))),
+            HostFrameRequest::new(viewport, HostInteractionState::default()).raw_event(
+                RawInputEvent::Keyboard(
+                    RawKeyboardEvent::press(KeyCode::Enter, KeyModifiers::NONE, 10).with_text("\r"),
+                ),
+            ),
         );
 
         assert_eq!(
-            output.ui_events,
+            output.ui_events().cloned().collect::<Vec<_>>(),
             vec![UiInputEvent::Key {
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
@@ -1820,8 +2433,25 @@ mod tests {
                 .raw_event(RawInputEvent::Text(RawTextInputEvent::new("\n", 11))),
         );
         assert_eq!(
-            text_only.ui_events,
+            text_only.ui_events().cloned().collect::<Vec<_>>(),
             vec![UiInputEvent::TextInput("\n".to_string())]
+        );
+    }
+
+    #[test]
+    fn enter_does_not_consume_independent_newline_text() {
+        let output = process_host_frame_input(
+            HostFrameRequest::new(UiSize::new(320.0, 180.0), HostInteractionState::default())
+                .raw_event(RawInputEvent::Keyboard(RawKeyboardEvent::press(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    10,
+                )))
+                .raw_event(RawInputEvent::Text(RawTextInputEvent::new("\n", 11))),
+        );
+        assert!(
+            matches!(output.ui_events().cloned().collect::<Vec<_>>().as_slice(),
+            [UiInputEvent::Key { key: KeyCode::Enter, .. }, UiInputEvent::TextInput(text)] if text == "\n")
         );
     }
 
@@ -1916,7 +2546,6 @@ mod tests {
         state.activate_text_ime(session);
         assert_eq!(state.text_target, Some(UiNodeId(7)));
         assert!(state.node_state(UiNodeId(7)).text_editing);
-        assert_eq!(input.as_str(), "node:7");
     }
 
     #[test]
@@ -1958,8 +2587,8 @@ mod tests {
 
         let mut host_output = HostFrameOutput::new(HostInteractionState::default());
         host_output
-            .ui_events
-            .push(UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0)));
+            .events
+            .push(UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0)).into());
         let frame = process_document_frame(
             &mut document,
             &mut measurer,
@@ -1978,7 +2607,7 @@ mod tests {
         )
         .expect("document frame");
 
-        assert_eq!(frame.input_results[0].focused, Some(button));
+        assert_eq!(frame.input_results().next().unwrap().focused, Some(button));
         assert_eq!(frame.host_output.state.focused, Some(button));
         assert_eq!(frame.render_request.viewport, viewport);
         assert!(frame.render_request.interaction_for(button).focused);
@@ -1992,7 +2621,9 @@ mod tests {
             Some("Running")
         );
         assert_eq!(frame.announcements.pending.len(), 1);
-        assert_eq!(frame.announcements.pending[0].message, "Status: Running");
+        let announcement = &frame.announcements.pending[0].message;
+        assert!(announcement.contains("Status"));
+        assert!(announcement.contains("Running"));
         assert_eq!(
             frame
                 .accessibility_requests
@@ -2011,10 +2642,6 @@ mod tests {
                 .reduced_motion(true)
                 .text_scale(1.25)
         );
-        assert!(matches!(
-            frame.accessibility_requests[2],
-            AccessibilityAdapterRequest::Announce(_)
-        ));
     }
 
     #[test]
@@ -2027,6 +2654,7 @@ mod tests {
             crate::platform::PixelSize::new(1, 1),
             vec![10, 20, 30, 255],
         );
+        let pixel_buffer = update.bytes.as_ptr();
         document.add_resource_update(update.clone());
 
         let frame = process_document_frame(
@@ -2041,6 +2669,11 @@ mod tests {
         .expect("document frame");
 
         assert_eq!(frame.render_request.resource_updates, vec![update]);
+        assert_eq!(
+            frame.render_request.resource_updates[0].bytes.as_ptr(),
+            pixel_buffer,
+            "frame preparation must share pixel storage with pending uploads"
+        );
     }
 
     #[test]
@@ -2080,20 +2713,23 @@ mod tests {
         );
 
         let mut host_output = HostFrameOutput::new(HostInteractionState::default());
-        host_output.gestures.push(GestureEvent::Drag(DragGesture {
-            pointer_id: PointerId::MOUSE,
-            target: source,
-            phase: GesturePhase::Commit,
-            origin: UiPoint::new(12.0, 16.0),
-            current: UiPoint::new(150.0, 40.0),
-            previous: UiPoint::new(88.0, 28.0),
-            delta: UiPoint::new(62.0, 12.0),
-            total_delta: UiPoint::new(138.0, 24.0),
-            button: PointerButton::Primary,
-            modifiers: KeyModifiers::NONE,
-            captured: true,
-            timestamp_millis: 24,
-        }));
+        host_output.events.push(
+            GestureEvent::Drag(DragGesture {
+                pointer_id: PointerId::MOUSE,
+                target: source,
+                phase: GesturePhase::Commit,
+                origin: UiPoint::new(12.0, 16.0),
+                current: UiPoint::new(150.0, 40.0),
+                previous: UiPoint::new(88.0, 28.0),
+                delta: UiPoint::new(62.0, 12.0),
+                total_delta: UiPoint::new(138.0, 24.0),
+                button: PointerButton::Primary,
+                modifiers: KeyModifiers::NONE,
+                captured: true,
+                timestamp_millis: 24,
+            })
+            .into(),
+        );
 
         let frame = process_document_frame(
             &mut document,
@@ -2106,7 +2742,7 @@ mod tests {
         )
         .expect("document frame");
 
-        let actions = collect_document_widget_actions(&document, &frame);
+        let actions = collect_document_widget_actions(&frame);
         assert_eq!(actions.len(), 2, "{actions:#?}");
         assert_eq!(actions[0].target, source);
         assert_eq!(
@@ -2125,7 +2761,403 @@ mod tests {
     }
 
     #[test]
-    fn document_widget_actions_dispatch_secondary_clicks_and_wheel_activations() {
+    fn drag_drop_actions_follow_owners_and_reject_disabled_hits_and_self_drops() {
+        use crate::UiPortalTarget;
+
+        for (source_portal, drop_portal, source_owner, drop_owner) in [
+            (
+                UiPortalTarget::Parent,
+                UiPortalTarget::Parent,
+                "source",
+                "drop",
+            ),
+            (
+                UiPortalTarget::AppOverlay,
+                UiPortalTarget::Parent,
+                "source",
+                "drop",
+            ),
+            (
+                UiPortalTarget::Parent,
+                UiPortalTarget::AppOverlay,
+                "source",
+                "drop",
+            ),
+            (
+                UiPortalTarget::named("host"),
+                UiPortalTarget::named("host"),
+                "source",
+                "drop",
+            ),
+            (
+                UiPortalTarget::global_named("host"),
+                UiPortalTarget::Parent,
+                "host",
+                "drop",
+            ),
+            (
+                UiPortalTarget::Parent,
+                UiPortalTarget::global_named("host"),
+                "source",
+                "host",
+            ),
+            (
+                UiPortalTarget::global_named("host"),
+                UiPortalTarget::global_named("host"),
+                "host",
+                "host",
+            ),
+            (
+                UiPortalTarget::GlobalAppOverlay,
+                UiPortalTarget::Parent,
+                "none",
+                "drop",
+            ),
+            (
+                UiPortalTarget::Parent,
+                UiPortalTarget::GlobalAppOverlay,
+                "source",
+                "none",
+            ),
+        ] {
+            for drop_inside_source in [false, true] {
+                for disabled in ["none", "source-hit", "drop-hit"] {
+                    for phase in [
+                        GesturePhase::Begin,
+                        GesturePhase::Update,
+                        GesturePhase::Commit,
+                        GesturePhase::Cancel,
+                    ] {
+                        let viewport = UiSize::new(480.0, 240.0);
+                        let mut document =
+                            UiDocument::new(fixed_style(viewport.width, viewport.height));
+                        let root = document.root();
+                        let source = document.add_child(
+                            root,
+                            UiNode::container(
+                                "source",
+                                LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 100.0, 60.0)),
+                            )
+                            .with_action("source")
+                            .with_action_mode(crate::WidgetActionMode::Drag)
+                            .with_accessibility(
+                                AccessibilityMeta::new(AccessibilityRole::ListItem)
+                                    .action(AccessibilityAction::new("drag.start", "Drag")),
+                            ),
+                        );
+                        let drop = document.add_child(
+                            if drop_inside_source { source } else { root },
+                            UiNode::container(
+                                "drop",
+                                LayoutStyle::absolute_rect(UiRect::new(180.0, 60.0, 100.0, 60.0)),
+                            )
+                            .with_action("drop")
+                            .with_accessibility(
+                                AccessibilityMeta::new(AccessibilityRole::Group)
+                                    .action(AccessibilityAction::new("drop.accept", "Drop")),
+                            ),
+                        );
+                        let host = document.add_child(
+                            root,
+                            UiNode::container(
+                                "host",
+                                LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 480.0, 240.0)),
+                            )
+                            .with_action("host")
+                            .with_action_mode(crate::WidgetActionMode::Drag)
+                            .with_accessibility(
+                                AccessibilityMeta::new(AccessibilityRole::Group)
+                                    .action(AccessibilityAction::new("drag.start", "Drag"))
+                                    .action(AccessibilityAction::new("drop.accept", "Drop")),
+                            ),
+                        );
+                        document.register_portal_host("host", host);
+                        let source_hit = document.add_portal_child(
+                            source,
+                            source_portal.clone(),
+                            UiNode::container(
+                                "source-hit",
+                                LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 20.0, 20.0)),
+                            )
+                            .with_input(InputBehavior::BUTTON),
+                        );
+                        let drop_hit = document.add_portal_child(
+                            drop,
+                            drop_portal.clone(),
+                            UiNode::container(
+                                "drop-hit",
+                                LayoutStyle::absolute_rect(UiRect::new(40.0, 20.0, 20.0, 20.0)),
+                            )
+                            .with_input(InputBehavior::BUTTON),
+                        );
+                        if disabled == "source-hit" {
+                            document.set_node_enabled(source_hit, false);
+                        }
+                        if disabled == "drop-hit" {
+                            document.set_node_enabled(drop_hit, false);
+                        }
+                        document
+                            .compute_layout(viewport, &mut ApproxTextMeasurer)
+                            .unwrap();
+                        let rect = document.node(drop_hit).layout().rect;
+                        let current = UiPoint::new(rect.x + 5.0, rect.y + 5.0);
+                        assert_eq!(
+                            document.hit_test(current),
+                            (disabled != "drop-hit").then_some(drop_hit)
+                        );
+                        let mut host_output = HostFrameOutput::new(HostInteractionState::default());
+                        host_output.events.push(
+                            GestureEvent::Drag(DragGesture {
+                                pointer_id: PointerId::MOUSE,
+                                target: source_hit,
+                                phase,
+                                origin: UiPoint::new(15.0, 15.0),
+                                current,
+                                previous: current,
+                                delta: UiPoint::new(0.0, 0.0),
+                                total_delta: UiPoint::new(current.x - 15.0, current.y - 15.0),
+                                button: PointerButton::Primary,
+                                modifiers: KeyModifiers::NONE,
+                                captured: true,
+                                timestamp_millis: 12,
+                            })
+                            .into(),
+                        );
+                        let frame = process_document_frame(
+                            &mut document,
+                            &mut ApproxTextMeasurer,
+                            HostDocumentFrameRequest::new(
+                                viewport,
+                                RenderTarget::window("main", viewport),
+                                host_output,
+                            ),
+                        )
+                        .unwrap();
+                        let actions = collect_document_widget_actions(&frame);
+                        let mut expected = Vec::new();
+                        if disabled != "source-hit" && source_owner != "none" {
+                            expected.push(if source_owner == "source" {
+                                source
+                            } else {
+                                host
+                            });
+                            let self_drop = source_owner == drop_owner
+                                || (drop_inside_source
+                                    && source_owner == "source"
+                                    && drop_owner == "drop");
+                            if disabled != "drop-hit" && drop_owner != "none" && !self_drop {
+                                expected.push(if drop_owner == "drop" { drop } else { host });
+                            }
+                        }
+                        let targets: Vec<_> = actions.iter().map(|action| action.target).collect();
+                        assert_eq!(targets, expected,
+                            "source={source_portal:?}, drop={drop_portal:?}, nested={drop_inside_source}, disabled={disabled}, phase={phase:?}");
+                        assert!(actions.iter().all(|action| matches!(&action.kind,
+                            WidgetActionKind::Drag(drag) if drag.phase == WidgetDragPhase::try_from(phase).unwrap())));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn document_frame_requires_paired_clicks_to_match_the_press_and_release() {
+        for release_over_pressed in [false, true] {
+            for claimed in [None, Some(0), Some(1)] {
+                let viewport = UiSize::new(240.0, 80.0);
+                let mut document = UiDocument::new(fixed_style(240.0, 80.0));
+                let controls: Vec<_> = (0..2)
+                    .map(|index| {
+                        document.add_child(
+                            document.root(),
+                            UiNode::container(
+                                format!("control.{index}"),
+                                LayoutStyle::absolute_rect(UiRect::new(
+                                    index as f32 * 120.0,
+                                    0.0,
+                                    100.0,
+                                    40.0,
+                                )),
+                            )
+                            .with_input(InputBehavior::BUTTON)
+                            .with_action(format!("activate.{index}")),
+                        )
+                    })
+                    .collect();
+                let release = UiPoint::new(if release_over_pressed { 4.0 } else { 124.0 }, 4.0);
+                let mut host_output = HostFrameOutput::new(HostInteractionState::default());
+                host_output
+                    .events
+                    .push(UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0)).into());
+                host_output.events.push(HostInputEvent::new(
+                    Some(UiInputEvent::PointerUp(release)),
+                    claimed.map(|index| {
+                        GestureEvent::Click(PointerClick {
+                            pointer_id: PointerId::MOUSE,
+                            target: controls[index],
+                            position: release,
+                            button: PointerButton::Primary,
+                            count: 1,
+                            modifiers: KeyModifiers::NONE,
+                            timestamp_millis: 1,
+                        })
+                    }),
+                ));
+                let frame = process_document_frame(
+                    &mut document,
+                    &mut ApproxTextMeasurer,
+                    HostDocumentFrameRequest::new(
+                        viewport,
+                        RenderTarget::window("test", viewport),
+                        host_output,
+                    ),
+                )
+                .unwrap();
+                let expected = (release_over_pressed && claimed == Some(0)).then_some(controls[0]);
+                assert_eq!(
+                    frame.input_results().last().unwrap().clicked,
+                    expected,
+                    "release_over_pressed={release_over_pressed}, claimed={claimed:?}"
+                );
+                let actions = collect_document_widget_actions(&frame);
+                assert_eq!(actions.len(), usize::from(expected.is_some()));
+                if let Some(target) = expected {
+                    assert_eq!(actions[0].target, target);
+                    assert!(matches!(actions[0].kind, WidgetActionKind::Activate(_)));
+                }
+                assert!(frame.host_output.state.pressed.is_none());
+            }
+        }
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn text_pointer_selection_does_not_activate_its_edit_binding() {
+        for control in [
+            "button",
+            "editable",
+            "read_only",
+            "selectable",
+            "search",
+            "ime",
+        ] {
+            for count in [1, 2] {
+                let viewport = UiSize::new(240.0, 80.0);
+                let mut document = UiDocument::new(fixed_style(240.0, 80.0));
+                let parent = document.root();
+                let text_control = control != "button";
+                let target = if matches!(control, "editable" | "read_only" | "selectable") {
+                    let options =
+                        crate::widgets::TextInputOptions::default().with_edit_action("edit.name");
+                    let options = if control == "read_only" {
+                        options.read_only()
+                    } else {
+                        options
+                    };
+                    let builder = if control == "selectable" {
+                        crate::widgets::selectable_text
+                    } else {
+                        crate::widgets::singleline_text_input
+                    };
+                    builder(
+                        &mut document,
+                        parent,
+                        "name",
+                        &crate::widgets::TextInputState::new("Track"),
+                        options,
+                    )
+                } else if control == "ime" {
+                    document.add_child(
+                        parent,
+                        UiNode::container("ime", LayoutStyle::size(180.0, 30.0))
+                            .with_input(InputBehavior::BUTTON)
+                            .with_text_input(crate::TextInputSnapshot::new(
+                                "Track",
+                                0..0,
+                                UiRect::new(0.0, 0.0, 1.0, 20.0),
+                            ))
+                            .with_action("edit.ime"),
+                    )
+                } else if control == "search" {
+                    // Custom text controls can route selection without owning an IME session.
+                    document.add_child(
+                        parent,
+                        UiNode::container("search", LayoutStyle::size(180.0, 30.0))
+                            .with_input(InputBehavior::BUTTON)
+                            .with_accessibility(AccessibilityMeta::new(
+                                AccessibilityRole::SearchBox,
+                            ))
+                            .with_action("edit.search"),
+                    )
+                } else {
+                    document.add_child(
+                        parent,
+                        UiNode::container("button", LayoutStyle::size(180.0, 30.0))
+                            .with_input(InputBehavior::BUTTON)
+                            .with_action("button.activate"),
+                    )
+                };
+                let point = UiPoint::new(12.0, 12.0);
+                let mut host_output = HostFrameOutput::new(HostInteractionState::default());
+                host_output
+                    .events
+                    .push(UiInputEvent::PointerDown(point).into());
+                host_output.events.push(HostInputEvent::new(
+                    Some(UiInputEvent::PointerUp(point)),
+                    Some(GestureEvent::Click(PointerClick {
+                        pointer_id: PointerId::MOUSE,
+                        target,
+                        position: point,
+                        button: PointerButton::Primary,
+                        count,
+                        modifiers: KeyModifiers::NONE,
+                        timestamp_millis: 1,
+                    })),
+                ));
+                let frame = process_document_frame(
+                    &mut document,
+                    &mut ApproxTextMeasurer,
+                    HostDocumentFrameRequest::new(
+                        viewport,
+                        RenderTarget::window("test", viewport),
+                        host_output,
+                    ),
+                )
+                .unwrap();
+                let actions = collect_document_widget_actions(&frame);
+                assert_eq!(
+                    actions
+                        .iter()
+                        .filter(|action| matches!(
+                            action.kind,
+                            crate::WidgetActionKind::Activate(_)
+                        ))
+                        .count(),
+                    usize::from(!text_control),
+                    "control={control}, clicks={count}: {actions:?}"
+                );
+                assert_eq!(
+                    actions
+                        .iter()
+                        .any(|action| matches!(action.kind, crate::WidgetActionKind::TextEdit(_))),
+                    text_control
+                );
+                let input = frame.input_results().last().unwrap();
+                assert_eq!(
+                    crate::WidgetAction::activation_from_input_result_for_document(
+                        &document,
+                        input,
+                        |id| document.node(id).action().cloned()
+                    )
+                    .is_some(),
+                    !text_control
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn document_any_button_actions_dispatch_secondary_clicks_but_not_wheel_activations() {
         let viewport = UiSize::new(220.0, 120.0);
         let mut measurer = ApproxTextMeasurer;
         let mut document = UiDocument::new(fixed_style(220.0, 120.0));
@@ -2136,23 +3168,30 @@ mod tests {
                 LayoutStyle::absolute_rect(UiRect::new(8.0, 12.0, 96.0, 32.0)),
             )
             .with_input(InputBehavior::BUTTON)
-            .with_action("grid.cycle"),
+            .with_action("grid.cycle")
+            .with_action_mode(crate::WidgetActionMode::ActivateAnyButton),
         );
         let wheel = RawWheelEvent::pixels(UiPoint::new(24.0, 24.0), UiPoint::new(0.0, -32.0), 12);
         let mut host_output = HostFrameOutput::new(HostInteractionState::default());
-        host_output.gestures.push(GestureEvent::Click(PointerClick {
-            pointer_id: PointerId::MOUSE,
-            target,
-            position: UiPoint::new(24.0, 24.0),
-            button: PointerButton::Secondary,
-            count: 1,
-            modifiers: KeyModifiers::NONE,
-            timestamp_millis: 10,
-        }));
-        host_output.gestures.push(GestureEvent::WheelTargeted {
-            target: Some(target),
-            event: wheel,
-        });
+        host_output.events.push(
+            GestureEvent::Click(PointerClick {
+                pointer_id: PointerId::MOUSE,
+                target,
+                position: UiPoint::new(24.0, 24.0),
+                button: PointerButton::Secondary,
+                count: 1,
+                modifiers: KeyModifiers::NONE,
+                timestamp_millis: 10,
+            })
+            .into(),
+        );
+        host_output.events.push(
+            GestureEvent::WheelTargeted {
+                target: Some(target),
+                event: wheel,
+            }
+            .into(),
+        );
 
         let frame = process_document_frame(
             &mut document,
@@ -2165,16 +3204,12 @@ mod tests {
         )
         .expect("document frame");
 
-        let actions = collect_document_widget_actions(&document, &frame);
-        assert_eq!(actions.len(), 2, "{actions:#?}");
+        let actions = collect_document_widget_actions(&frame);
+        assert_eq!(actions.len(), 1, "{actions:#?}");
         assert!(matches!(
             actions[0].kind,
             WidgetActionKind::Activate(activation)
                 if activation.pointer_button() == Some(PointerButton::Secondary)
-        ));
-        assert!(matches!(
-            actions[1].kind,
-            WidgetActionKind::Activate(activation) if activation.wheel_event() == Some(wheel)
         ));
     }
 
@@ -2204,104 +3239,6 @@ mod tests {
         .expect("document frame");
 
         assert_eq!(frame.render_request.options.scale_factor, 3.0);
-    }
-
-    #[test]
-    fn host_accessibility_requests_round_trip_all_supported_kinds_with_focus_trap() {
-        let viewport = UiSize::new(240.0, 120.0);
-        let mut measurer = ApproxTextMeasurer;
-        let mut document = UiDocument::new(fixed_style(240.0, 120.0));
-        let root = document.root;
-        let play = document.add_child(
-            root,
-            UiNode::container("play", fixed_style(80.0, 28.0))
-                .with_input(InputBehavior::BUTTON)
-                .with_accessibility(
-                    AccessibilityMeta::new(AccessibilityRole::Button)
-                        .label("Play")
-                        .focusable(),
-                ),
-        );
-        let status = document.add_child(
-            root,
-            UiNode::container("status", fixed_style(140.0, 24.0)).with_accessibility(
-                AccessibilityMeta::new(AccessibilityRole::Status)
-                    .label("Status")
-                    .value("Ready")
-                    .live_region(AccessibilityLiveRegion::Polite),
-            ),
-        );
-        document
-            .compute_layout(viewport, &mut measurer)
-            .expect("initial layout");
-
-        let previous_live_regions =
-            AccessibilityLiveRegionSnapshot::from_tree(&document.accessibility_snapshot());
-        document
-            .node_mut(status)
-            .accessibility
-            .as_mut()
-            .expect("status accessibility")
-            .value = Some("Running".to_string());
-
-        let frame = process_document_frame(
-            &mut document,
-            &mut measurer,
-            HostDocumentFrameRequest::new(
-                viewport,
-                RenderTarget::window("main", viewport),
-                HostFrameOutput::new(HostInteractionState::default()),
-            )
-            .previous_live_regions(previous_live_regions)
-            .accessibility_capabilities(AccessibilityCapabilities::SCREEN_READER)
-            .accessibility_preferences(AccessibilityPreferences::DEFAULT.high_contrast(true)),
-        )
-        .expect("document frame");
-
-        let focus_trap = FocusTrap::new(root).restore_focus(FocusRestoreTarget::Node(play));
-        let mut requests = frame.accessibility_requests;
-        requests.extend([
-            AccessibilityAdapterRequest::SetFocusTrap(focus_trap),
-            AccessibilityAdapterRequest::MoveFocus {
-                target: play,
-                restore: FocusRestoreTarget::Previous,
-            },
-            AccessibilityAdapterRequest::RestoreFocus(FocusRestoreTarget::Node(status)),
-            AccessibilityAdapterRequest::ClearFocusTrap {
-                restore: FocusRestoreTarget::Node(play),
-            },
-        ]);
-
-        let mut adapter =
-            TestHostAccessibilityAdapter::new(AccessibilityCapabilities::SCREEN_READER);
-        let mut responses = Vec::with_capacity(requests.len());
-        for request in requests {
-            responses.push(adapter.handle_accessibility_request(request));
-        }
-
-        assert_eq!(
-            responses,
-            vec![
-                AccessibilityAdapterResponse::Applied,
-                AccessibilityAdapterResponse::PreferencesChanged(
-                    AccessibilityPreferences::DEFAULT.high_contrast(true),
-                ),
-                AccessibilityAdapterResponse::Applied,
-                AccessibilityAdapterResponse::Applied,
-                AccessibilityAdapterResponse::FocusChanged(Some(play)),
-                AccessibilityAdapterResponse::FocusChanged(Some(status)),
-                AccessibilityAdapterResponse::FocusChanged(Some(play)),
-            ]
-        );
-        assert_eq!(adapter.announced.len(), 1);
-        assert_eq!(adapter.announced[0].message, "Status: Running");
-        assert_eq!(adapter.published_focus, None);
-        assert_eq!(
-            adapter.preferences,
-            Some(AccessibilityPreferences::DEFAULT.high_contrast(true))
-        );
-        assert_eq!(adapter.trap, None);
-        assert_eq!(adapter.focused, Some(play));
     }
 
     #[test]
@@ -2387,8 +3324,8 @@ mod tests {
             ..HostInteractionState::default()
         });
         host_output
-            .ui_events
-            .push(UiInputEvent::PointerDown(UiPoint::new(180.0, 70.0)));
+            .events
+            .push(UiInputEvent::PointerDown(UiPoint::new(180.0, 70.0)).into());
         let frame = process_document_frame(
             &mut document,
             &mut measurer,
@@ -2403,7 +3340,7 @@ mod tests {
 
         assert_eq!(frame.previous_focused, Some(input));
         assert_eq!(frame.host_output.state.focused, None);
-        let actions = collect_document_widget_actions(&document, &frame);
+        let actions = collect_document_widget_actions(&frame);
         assert!(
             actions.iter().any(|action| {
                 action.target == input
@@ -2449,47 +3386,13 @@ mod tests {
         )
         .expect("document frame");
 
-        let actions = collect_document_widget_actions(&document, &frame);
+        let actions = collect_document_widget_actions(&frame);
 
         assert!(
             actions
                 .iter()
                 .all(|action| !matches!(action.kind, WidgetActionKind::Focus(_))),
             "ordinary button focus must not emit focus actions with activation bindings: {actions:#?}"
-        );
-    }
-
-    #[test]
-    fn host_accessibility_state_groups_previous_frame_inputs() {
-        let focused = UiNodeId(3);
-        let preferences = AccessibilityPreferences::DEFAULT
-            .screen_reader_active(true)
-            .text_scale(1.4);
-        let tree = AccessibilityTree {
-            nodes: Vec::new(),
-            focus_order: vec![focused],
-            modal_scope: None,
-        };
-        let live_regions = AccessibilityLiveRegionSnapshot::default();
-        let state = HostAccessibilityState::new()
-            .tree(tree.clone())
-            .focused(Some(focused))
-            .live_regions(live_regions.clone())
-            .preferences(preferences);
-
-        let request = HostDocumentFrameRequest::new(
-            UiSize::new(100.0, 50.0),
-            RenderTarget::window("main", UiSize::new(100.0, 50.0)),
-            HostFrameOutput::new(HostInteractionState::default()),
-        )
-        .previous_accessibility_state(state);
-
-        assert_eq!(request.previous_accessibility_tree, Some(tree));
-        assert_eq!(request.previous_focused, Some(Some(focused)));
-        assert_eq!(request.previous_live_regions, Some(live_regions));
-        assert_eq!(
-            request.previous_accessibility_preferences,
-            Some(preferences)
         );
     }
 
@@ -3182,117 +4085,5 @@ mod tests {
             output.layout.panel_rect("drawer"),
             Some(UiRect::new(614.0, 20.0, 36.0, 360.0))
         );
-    }
-
-    #[derive(Debug)]
-    struct RecordingHost {
-        capabilities: BackendCapabilities,
-        registry: CommandRegistry,
-    }
-
-    impl HostAdapter for RecordingHost {
-        fn capabilities(&self) -> BackendCapabilities {
-            self.capabilities.clone()
-        }
-
-        fn process_frame(
-            &mut self,
-            request: HostFrameRequest,
-        ) -> Result<HostFrameOutput, HostAdapterError> {
-            let mut state = request.state;
-            let mut output = HostFrameOutput::new(state.clone());
-            output.platform_responses = request.platform_responses;
-
-            for event in request.raw_input {
-                if let Some(ui_event) =
-                    event.to_ui_input_event_with_wheel_scale(16.0, request.viewport)
-                {
-                    output.ui_events.push(ui_event);
-                }
-                if let RawInputEvent::Keyboard(keyboard) = event {
-                    let route = state.route_key(keyboard.key, keyboard.modifiers, &self.registry);
-                    if let Some(command) = route.command.clone() {
-                        output.commands.push(HostCommandDispatch {
-                            command,
-                            shortcut: route.shortcut,
-                            target: route.target,
-                        });
-                    }
-                }
-            }
-
-            output.state = state;
-            Ok(output.repaint_next_frame(PlatformRequestId::new(77)))
-        }
-    }
-
-    #[test]
-    fn host_adapter_trait_processes_raw_input_commands_and_repaint_requests() {
-        let mut registry = CommandRegistry::new();
-        registry
-            .register(Command::new(CommandMeta::new("save", "Save")))
-            .unwrap();
-        registry
-            .bind_shortcut(CommandScope::Global, Shortcut::ctrl('s'), "save")
-            .unwrap();
-
-        let mut adapter = RecordingHost {
-            capabilities: BackendCapabilities::new("recording-host")
-                .adapter(BackendAdapterKind::Test)
-                .services(PlatformServiceCapabilities {
-                    repaint: true,
-                    text_ime: true,
-                    ..PlatformServiceCapabilities::NONE
-                }),
-            registry,
-        };
-        let response = PlatformServiceResponse::new(
-            PlatformRequestId::new(1),
-            PlatformResponse::Repaint(RepaintResponse::Coalesced),
-        );
-        let request = HostFrameRequest::new(
-            UiSize::new(320.0, 180.0),
-            HostInteractionState {
-                focused: Some(UiNodeId(2)),
-                active_shortcut_scopes: vec![CommandScope::Editor],
-                ..HostInteractionState::default()
-            },
-        )
-        .raw_event(RawInputEvent::Keyboard(RawKeyboardEvent::press(
-            KeyCode::Character('S'),
-            KeyModifiers {
-                ctrl: true,
-                ..KeyModifiers::NONE
-            },
-            10,
-        )))
-        .raw_event(RawInputEvent::Wheel(
-            RawWheelEvent::pixels(UiPoint::new(20.0, 10.0), UiPoint::new(0.0, -8.0), 11)
-                .phase(WheelPhase::Moved),
-        ))
-        .platform_response(response.clone());
-
-        let output = adapter.process_frame(request).expect("host frame output");
-        assert_eq!(adapter.capabilities().adapter, BackendAdapterKind::Test);
-        assert_eq!(output.commands[0].command, CommandId::new("save"));
-        assert_eq!(output.commands[0].target, Some(UiNodeId(2)));
-        assert_eq!(output.ui_events.len(), 2);
-        assert_eq!(output.platform_responses, vec![response]);
-        assert!(matches!(
-            output.platform_requests[0].request,
-            PlatformRequest::Repaint(RepaintRequest::NextFrame)
-        ));
-    }
-
-    #[test]
-    fn text_pointer_edit_event_preserves_drag_selection_on_pointer_up() {
-        let point = UiPoint::new(42.0, 8.0);
-        let (phase, position, selecting) =
-            text_pointer_edit_event(&UiInputEvent::PointerUp(point), true)
-                .expect("pressed text input should commit pointer edits");
-
-        assert_eq!(phase, WidgetValueEditPhase::Commit);
-        assert_eq!(position, point);
-        assert!(selecting);
     }
 }

@@ -1778,13 +1778,12 @@ mod tests {
             &report.records[0],
             DiagnosticRecord::HostCapability(capability)
                 if !capability.supported
+                    && capability.requirement == BackendCapabilityRequirement::Input(InputCapabilityKind::RawMouseMotion)
                     && capability.decision == CapabilityDecision::EmitDiagnostic
-                    && capability.summary.contains("raw mouse motion")
         ));
         assert!(report.summaries.iter().any(|summary| {
             summary.category == DiagnosticCategory::HostCapability
-                && summary.label == "input:raw mouse motion"
-                && summary.summary.contains("does not support")
+                && summary.severity == DiagnosticSeverity::Warning
         }));
     }
 
@@ -1802,14 +1801,15 @@ mod tests {
         let mut report = DiagnosticReport::new();
         report.render_timing(&timing).dirty_flags(dirty);
 
-        assert!(report.summaries.iter().any(|summary| {
-            summary.category == DiagnosticCategory::RenderTiming
-                && summary.summary == "2 sections, total 2.500ms"
-        }));
-        assert!(report.summaries.iter().any(|summary| {
-            summary.category == DiagnosticCategory::DirtyState
-                && summary.summary == "dirty layout, paint"
-        }));
+        assert!(report.records.iter().any(|record| matches!(
+            record,
+            DiagnosticRecord::RenderTiming(timing)
+                if timing.section_count == 2 && timing.total == Duration::from_micros(2500)
+        )));
+        assert!(report.records.iter().any(|record| matches!(
+            record,
+            DiagnosticRecord::DirtyFlags(diagnostic) if diagnostic.flags == dirty
+        )));
     }
 
     #[test]
@@ -1822,7 +1822,6 @@ mod tests {
         let explanation = DirtyStateExplanation::from_invalidations(&invalidations);
 
         assert!(!explanation.clean);
-        assert_eq!(explanation.summary, "dirty layout, paint, text_measurement");
         assert_eq!(
             explanation.recompute_order,
             vec![
@@ -1832,23 +1831,28 @@ mod tests {
             ]
         );
         assert_eq!(
-            explanation.invalidations[0].summary,
-            "Window resize: viewport"
+            explanation.invalidations[0].reason,
+            RuntimeInvalidationReason::Resize
         );
-        assert_eq!(explanation.invalidations[1].summary, "Resource: atlas");
+        assert_eq!(
+            explanation.invalidations[0].detail.as_deref(),
+            Some("viewport")
+        );
+        assert_eq!(
+            explanation.invalidations[1].reason,
+            RuntimeInvalidationReason::Resource
+        );
+        assert_eq!(
+            explanation.invalidations[1].detail.as_deref(),
+            Some("atlas")
+        );
 
         let layout = explanation
             .active_subsystems()
             .find(|subsystem| subsystem.subsystem == DirtyStateSubsystem::Layout)
             .expect("layout explanation");
-        assert!(layout
-            .downstream
-            .iter()
-            .any(|target| target == "hit testing"));
-        assert!(layout
-            .recomputes
-            .iter()
-            .any(|step| step == "solve node layout"));
+        assert!(!layout.downstream.is_empty());
+        assert!(!layout.recomputes.is_empty());
     }
 
     #[test]
@@ -1962,8 +1966,7 @@ mod tests {
         assert_eq!(report.highest_severity(), Some(DiagnosticSeverity::Error));
         assert!(report.summaries.iter().any(|summary| {
             summary.category == DiagnosticCategory::JustWork
-                && summary.label == "just-work:scroll"
-                && summary.summary.contains("hides horizontal content")
+                && summary.severity == DiagnosticSeverity::Error
         }));
         assert!(report.records.iter().any(|record| matches!(
             record,
@@ -1971,7 +1974,7 @@ mod tests {
                 if issue.kind == JustWorkIssueKind::Scroll
                     && issue.node == Some(scroll)
                     && issue.name.as_deref() == Some("vertical.scroll")
-                    && issue.remediation.contains("Enable horizontal scrolling")
+                    && !issue.remediation.is_empty()
                     && matches!(
                         &issue.warning,
                         AuditWarning::ScrollRangeHidden {

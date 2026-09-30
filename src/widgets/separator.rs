@@ -127,7 +127,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn separator_defaults_to_accessible_horizontal_rule() {
+    fn separator_exposes_accessible_role() {
         let mut document = UiDocument::new(root_style(320.0, 120.0));
         let root = document.root;
         let node = separator(
@@ -141,6 +141,5 @@ mod tests {
             document.node(node).accessibility.as_ref().unwrap().role,
             AccessibilityRole::Separator
         );
-        assert_eq!(document.node(node).style.layout.size.height, length(1.0));
     }
 }

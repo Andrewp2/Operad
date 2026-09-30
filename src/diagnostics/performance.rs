@@ -524,10 +524,8 @@ mod tests {
             Some(Duration::from_micros(200))
         );
         assert_eq!(
-            pipeline
-                .slowest_stage()
-                .map(|section| section.stage.label()),
-            Some("backend-draw")
+            pipeline.slowest_stage().map(|section| &section.stage),
+            Some(&FramePipelineStage::BackendDraw)
         );
         assert_eq!(
             FramePipelineStage::from_label("gpu-render"),

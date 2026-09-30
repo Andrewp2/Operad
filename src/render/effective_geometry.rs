@@ -244,20 +244,15 @@ impl EffectiveGeometry {
     }
 
     pub fn contains_point(&self, point: UiPoint) -> bool {
-        if !self.hit_eligibility().eligible {
-            return false;
-        }
-        if !self
-            .clip_chain
-            .iter()
-            .copied()
-            .all(|clip| clip.contains_point(point))
-        {
-            return false;
-        }
-        self.transform
-            .inverse_transform_point(point)
-            .is_some_and(|local| self.hit_shape.contains_point(self.original_rect, local))
+        self.hit_testable
+            && self.visible
+            && clipped_shape_contains_point(
+                self.original_rect,
+                self.transform,
+                &self.clip_chain,
+                &self.hit_shape,
+                point,
+            )
     }
 
     pub fn point_hit_rejections(&self, point: UiPoint) -> Vec<EffectiveHitRejection> {
@@ -413,6 +408,24 @@ pub fn clipped_visible_rect(
         }
     }
     Some(visible)
+}
+
+/// Borrowed point queries need neither owned clip/shape data nor rejection records.
+pub(crate) fn clipped_shape_contains_point(
+    rect: UiRect,
+    transform: EffectiveTransform,
+    clips: &[EffectiveClip],
+    shape: &ElementShape,
+    point: UiPoint,
+) -> bool {
+    if !clips.iter().all(|clip| clip.contains_point(point)) {
+        return false;
+    }
+    let Some(local) = transform.inverse_transform_point(point) else {
+        return false;
+    };
+    shape.contains_point(rect, local)
+        && clipped_visible_rect(transform.transform_rect_bounds(rect), clips).is_some()
 }
 
 pub fn accessibility_bounds(geometry: &EffectiveGeometry) -> Option<EffectiveAccessibilityBounds> {
@@ -689,6 +702,88 @@ mod tests {
             EffectiveAccessibilityBoundsSource::VisibleRect
         );
         assert_rect_near(bounds.rect, UiRect::new(5.0, 10.0, 75.0, 70.0));
+    }
+
+    #[test]
+    fn point_queries_agree_with_diagnostics_for_shapes_clips_and_transforms() {
+        let shapes = [
+            ElementShape::Rect,
+            ElementShape::rounded_rect(8.0),
+            ElementShape::Circle,
+            ElementShape::normalized_polygon(vec![
+                UiPoint::new(0.5, 0.0),
+                UiPoint::new(1.0, 0.5),
+                UiPoint::new(0.5, 1.0),
+                UiPoint::new(0.0, 0.5),
+            ]),
+            ElementShape::normalized_polygon(Vec::new()),
+        ];
+        let clips = [
+            vec![],
+            vec![EffectiveClip::new(UiRect::new(15.0, 15.0, 40.0, 20.0))],
+            vec![
+                EffectiveClip::new(UiRect::new(0.0, 0.0, 100.0, 100.0)),
+                EffectiveClip::new(UiRect::new(30.0, 0.0, 10.0, 30.0)),
+            ],
+            vec![EffectiveClip::new(UiRect::new(200.0, 200.0, 10.0, 10.0))],
+            vec![EffectiveClip::new(UiRect::new(20.0, 20.0, 0.0, 30.0))],
+            vec![EffectiveClip::new(UiRect::new(
+                0.0,
+                0.0,
+                f32::INFINITY,
+                30.0,
+            ))],
+        ];
+        for rect in [
+            UiRect::new(10.0, 20.0, 30.0, 10.0),
+            UiRect::new(10.0, 20.0, 0.0, 10.0),
+            UiRect::new(10.0, 20.0, -30.0, 10.0),
+            UiRect::new(f32::NAN, 20.0, 30.0, 10.0),
+            UiRect::new(10.0, 20.0, f32::INFINITY, 10.0),
+        ] {
+            for transform in [
+                EffectiveTransform::IDENTITY,
+                EffectiveTransform::new(UiPoint::new(5.0, -10.0), 2.0),
+                EffectiveTransform::new(UiPoint::new(80.0, 60.0), -1.0),
+                EffectiveTransform::scale(0.0),
+                EffectiveTransform::scale(f32::EPSILON),
+                EffectiveTransform::scale(f32::NAN),
+                EffectiveTransform::scale(f32::INFINITY),
+                EffectiveTransform::translation(f32::NAN, 0.0),
+            ] {
+                for shape in &shapes {
+                    for clip_chain in &clips {
+                        for (visible, hit_testable) in [(true, true), (false, true), (true, false)]
+                        {
+                            let geometry = EffectiveGeometry::new(UiNodeId(1), rect)
+                                .transform(transform)
+                                .clip_chain(clip_chain.clone())
+                                .hit_shape(shape.clone())
+                                .visible(visible)
+                                .hit_testable(hit_testable);
+                            for point in [
+                                UiPoint::new(0.0, 0.0),
+                                UiPoint::new(20.0, 20.0),
+                                UiPoint::new(30.0, 25.0),
+                                UiPoint::new(40.0, 30.0),
+                                transform.transform_point(UiPoint::new(25.0, 25.0)),
+                                transform.transform_point(UiPoint::new(10.0, 20.0)),
+                                transform.transform_point(UiPoint::new(40.0, 30.0)),
+                                UiPoint::new(f32::NAN, 25.0),
+                                UiPoint::new(f32::INFINITY, 25.0),
+                            ] {
+                                let rejections = geometry.point_hit_rejections(point);
+                                assert_eq!(
+                                    geometry.contains_point(point),
+                                    rejections.is_empty(),
+                                    "geometry={geometry:?}, point={point:?}, rejections={rejections:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

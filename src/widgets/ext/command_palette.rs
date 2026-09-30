@@ -1,5 +1,8 @@
 //! Command palette widget implementations.
 
+#[cfg(test)]
+mod tests;
+
 use std::cmp::Ordering;
 
 use taffy::prelude::{
@@ -8,17 +11,20 @@ use taffy::prelude::{
 };
 
 use crate::tooltips::ShortcutFormatter;
+use crate::widgets::text_input::{
+    search_input, TextInputOptions, TextInputOutcome, TextInputState,
+};
 use crate::{
     length, AccessibilityMeta, AccessibilityRole, AnimationMachine, ClipBehavior, ColorRgba,
     CommandId, CommandRegistry, CommandScope, ImageContent, InputBehavior, KeyCode, LayoutStyle,
     ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId,
-    UiNodeStyle, UiSize, UiVisual,
+    UiNodeStyle, UiSize, UiVisual, WidgetTextEdit,
 };
 
 use super::menu::{
-    command_shortcut_label, label, leading_image, menu_accessibility_label, normalize, place_popup,
-    pop_last_char, popup_panel, set_active_descendant, visible_match_range, visible_row_count,
-    AnchoredPopup, NavigationDirection, PopupOptions, SearchFieldState, SearchStatusText,
+    command_shortcut_label, label, leading_image, menu_accessibility_label, normalize, popup_panel,
+    set_active_descendant, visible_match_range, visible_row_count, AnchoredPopup,
+    NavigationDirection, PopupOptions, SearchFieldState, SearchStatusText,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,7 +134,7 @@ pub struct CommandPaletteCommandSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandPaletteState {
-    query: String,
+    input: TextInputState,
     active_match: Option<usize>,
     max_results: usize,
 }
@@ -136,14 +142,14 @@ pub struct CommandPaletteState {
 impl CommandPaletteState {
     pub fn new() -> Self {
         Self {
-            query: String::new(),
+            input: TextInputState::new(""),
             active_match: None,
             max_results: 12,
         }
     }
 
     pub fn with_query(mut self, query: impl Into<String>) -> Self {
-        self.query = query.into();
+        self.input = TextInputState::new(query).multiline(false);
         self.active_match = None;
         self
     }
@@ -159,7 +165,7 @@ impl CommandPaletteState {
     }
 
     pub fn query(&self) -> &str {
-        &self.query
+        self.input.text()
     }
 
     pub fn active_match(&self) -> Option<usize> {
@@ -175,7 +181,7 @@ impl CommandPaletteState {
     }
 
     pub fn search_field(&self) -> SearchFieldState {
-        SearchFieldState::from_query(self.query.clone())
+        SearchFieldState::from_query(self.query())
     }
 
     pub fn apply_search_field(
@@ -183,8 +189,11 @@ impl CommandPaletteState {
         field: &SearchFieldState,
         items: &[CommandPaletteItem],
     ) -> CommandPaletteOutcome {
-        let query_changed = self.query != field.query;
-        self.query = field.query.clone();
+        let input = TextInputState::new(&field.query).multiline(false);
+        let query_changed = self.query() != input.text();
+        if query_changed {
+            self.input = input;
+        }
         let matches = self.matches(items);
         self.active_match = first_enabled_palette_match(items, &matches);
         CommandPaletteOutcome {
@@ -195,19 +204,21 @@ impl CommandPaletteState {
     }
 
     pub fn clear_query(&mut self, items: &[CommandPaletteItem]) -> CommandPaletteOutcome {
-        if self.query.is_empty() {
+        let query_changed = !self.query().is_empty();
+        if !query_changed && self.input.composition().is_none() {
+            self.input.clear_history();
             return CommandPaletteOutcome::default();
         }
         self.set_query("", items);
         CommandPaletteOutcome {
-            query_changed: true,
+            query_changed,
             active_match: self.active_match,
             ..Default::default()
         }
     }
 
     pub fn matches(&self, items: &[CommandPaletteItem]) -> Vec<CommandPaletteMatch> {
-        filter_command_palette(items, &self.query, self.max_results)
+        filter_command_palette(items, self.query(), self.max_results)
     }
 
     pub fn visible_count(&self, items: &[CommandPaletteItem]) -> usize {
@@ -233,7 +244,9 @@ impl CommandPaletteState {
     }
 
     pub fn set_query(&mut self, query: impl Into<String>, items: &[CommandPaletteItem]) {
-        self.query = query.into();
+        // An application replacement starts a new editing session. Undo must
+        // not resurrect a query from a previously opened palette.
+        self.input = TextInputState::new(query).multiline(false);
         self.active_match = first_enabled_palette_match(items, &self.matches(items));
     }
 
@@ -272,60 +285,70 @@ impl CommandPaletteState {
         items: &[CommandPaletteItem],
         event: &UiInputEvent,
     ) -> CommandPaletteOutcome {
-        let mut outcome = CommandPaletteOutcome::default();
-        match event {
-            UiInputEvent::TextInput(text) => {
-                if push_command_palette_text(&mut self.query, text) {
-                    self.active_match = first_enabled_palette_match(items, &self.matches(items));
-                    outcome.query_changed = true;
-                    outcome.active_match = self.active_match;
-                }
-            }
-            UiInputEvent::Key { key, .. } => match key {
-                KeyCode::Backspace | KeyCode::Delete => {
-                    if pop_last_char(&mut self.query) {
-                        self.active_match =
-                            first_enabled_palette_match(items, &self.matches(items));
-                        outcome.query_changed = true;
-                        outcome.active_match = self.active_match;
+        if self.input.composition().is_none() {
+            let mut outcome = CommandPaletteOutcome::default();
+            if let UiInputEvent::Key { key, .. } = event {
+                match key {
+                    KeyCode::ArrowDown => {
+                        outcome.active_match = self.move_active(items, NavigationDirection::Next);
                     }
+                    KeyCode::ArrowUp => {
+                        outcome.active_match =
+                            self.move_active(items, NavigationDirection::Previous);
+                    }
+                    KeyCode::Enter => {
+                        outcome.selected = self.select_active(items);
+                    }
+                    KeyCode::Escape => outcome.closed = true,
+                    _ => return self.edit_event(items, event),
                 }
-                KeyCode::ArrowDown => {
-                    outcome.active_match = self.move_active(items, NavigationDirection::Next);
-                }
-                KeyCode::ArrowUp => {
-                    outcome.active_match = self.move_active(items, NavigationDirection::Previous);
-                }
-                KeyCode::Home => {
-                    let matches = self.matches(items);
-                    self.active_match = first_enabled_palette_match(items, &matches);
-                    outcome.active_match = self.active_match;
-                }
-                KeyCode::End => {
-                    let matches = self.matches(items);
-                    self.active_match = last_enabled_palette_match(items, &matches);
-                    outcome.active_match = self.active_match;
-                }
-                KeyCode::Enter => {
-                    outcome.selected = self.select_active(items);
-                }
-                KeyCode::Escape => outcome.closed = true,
-                _ => {}
-            },
-            _ => {}
+                return outcome;
+            }
         }
-        outcome
+        self.edit_event(items, event)
     }
-}
 
-fn push_command_palette_text(query: &mut String, text: &str) -> bool {
-    let before = query.len();
-    for character in text.chars() {
-        if !character.is_control() {
-            query.push(character);
+    /// Applies a routed edit, including pointer placement/selection. Use the
+    /// same options as the builder so pointer geometry uses its text style.
+    pub fn apply_widget_text_edit(
+        &mut self,
+        items: &[CommandPaletteItem],
+        edit: &WidgetTextEdit,
+        options: &CommandPaletteOptions,
+    ) -> CommandPaletteOutcome {
+        if edit.geometry.is_none() && edit.local_position.is_none() {
+            return self.handle_event(items, &edit.event);
+        }
+        let edit = self
+            .input
+            .apply_widget_text_edit(edit, &options.text_input_options());
+        self.finish_edit(items, edit)
+    }
+
+    fn edit_event(
+        &mut self,
+        items: &[CommandPaletteItem],
+        event: &UiInputEvent,
+    ) -> CommandPaletteOutcome {
+        let edit = self.input.handle_event(event);
+        self.finish_edit(items, edit)
+    }
+
+    fn finish_edit(
+        &mut self,
+        items: &[CommandPaletteItem],
+        edit: TextInputOutcome,
+    ) -> CommandPaletteOutcome {
+        if edit.changed {
+            self.refresh_active_match(items);
+        }
+        CommandPaletteOutcome {
+            query_changed: edit.changed,
+            active_match: self.active_match,
+            edit: Some(edit),
+            ..Default::default()
         }
     }
-    query.len() != before
 }
 
 impl Default for CommandPaletteState {
@@ -340,6 +363,8 @@ pub struct CommandPaletteOutcome {
     pub active_match: Option<usize>,
     pub selected: Option<CommandPaletteSelection>,
     pub closed: bool,
+    /// Shared editing outcome, including clipboard requests and undo history.
+    pub edit: Option<TextInputOutcome>,
 }
 
 impl CommandPaletteOutcome {
@@ -544,6 +569,8 @@ pub struct CommandPaletteOptions {
     pub input_image: Option<ImageContent>,
     pub input_image_size: UiSize,
     pub input_placeholder: String,
+    pub focused: bool,
+    pub caret_visible: bool,
     pub row_visual: UiVisual,
     pub active_row_visual: UiVisual,
     pub text_style: TextStyle,
@@ -575,6 +602,8 @@ impl Default for CommandPaletteOptions {
             ),
             input_image_size: UiSize::new(16.0, 16.0),
             input_placeholder: "Search commands".to_string(),
+            focused: false,
+            caret_visible: true,
             row_visual: UiVisual::TRANSPARENT,
             active_row_visual: UiVisual::panel(ColorRgba::new(58, 87, 126, 255), None, 3.0),
             text_style: TextStyle::default(),
@@ -598,6 +627,33 @@ impl Default for CommandPaletteOptions {
 }
 
 impl CommandPaletteOptions {
+    fn text_input_options(&self) -> TextInputOptions {
+        TextInputOptions {
+            // The text scene applies the editor inset. Extra layout padding
+            // would shift its paint away from pointer and IME coordinates.
+            layout: LayoutStyle::from_taffy_style(Style {
+                size: TaffySize {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                min_size: TaffySize {
+                    width: length(0.0),
+                    height: length(0.0),
+                },
+                ..Default::default()
+            }),
+            visual: UiVisual::TRANSPARENT,
+            focused_visual: None,
+            text_style: self.text_style.clone(),
+            placeholder_style: self.muted_text_style.clone(),
+            placeholder: self.input_placeholder.clone(),
+            focused: self.focused,
+            caret_visible: self.caret_visible,
+            accessibility_label: Some("Command search".into()),
+            ..Default::default()
+        }
+    }
+
     pub fn with_action_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.action_prefix = Some(prefix.into());
         self
@@ -647,17 +703,13 @@ pub fn command_palette(
     );
     let height = 42.0 + visible_rows as f32 * options.row_height;
     let root = if let Some(popup) = popup {
-        let layout = place_popup(
-            popup.anchor,
-            UiSize::new(options.width.max(0.0), height.max(0.0)),
-            popup.viewport,
-            popup.placement,
-        );
+        let size = UiSize::new(options.width.max(0.0), height.max(0.0));
+        let rect = popup.layout_rect(document.ui_scale(), size);
         let root = popup_panel(
             document,
             parent,
             name.clone(),
-            layout.rect,
+            rect,
             PopupOptions {
                 visual: options.panel_visual,
                 z_index: options.z_index,
@@ -671,6 +723,12 @@ pub fn command_palette(
                 ..Default::default()
             },
         );
+        document.node_mut(root).layout_constraint =
+            Some(crate::UiNodeLayoutConstraint::AnchoredPopup {
+                popup,
+                size,
+                scroll_axes: None,
+            });
         {
             let layout = &mut document.node_mut(root).style.layout;
             layout.display = Display::Flex;
@@ -715,35 +773,44 @@ pub fn command_palette(
         document.add_child(parent, node)
     };
 
-    let input = document.add_child(
+    // The header owns the icon and background. The editable child owns its
+    // caret, selection, pointer geometry, and platform text-input snapshot.
+    let search_row = document.add_child(
         root,
         UiNode::container(
-            format!("{name}.input"),
-            UiNodeStyle {
-                layout: LayoutStyle::from_taffy_style(Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    align_items: Some(AlignItems::Center),
-                    size: TaffySize {
-                        width: Dimension::percent(1.0),
-                        height: length(34.0),
-                    },
-                    padding: TaffyRect::length(8.0_f32),
-                    ..Default::default()
-                })
-                .style,
-                clip: ClipBehavior::Clip,
+            format!("{name}.search"),
+            LayoutStyle::from_taffy_style(Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::Center),
+                size: TaffySize {
+                    width: Dimension::percent(1.0),
+                    height: length(34.0),
+                },
+                flex_shrink: 0.0,
                 ..Default::default()
-            },
+            }),
         )
-        .with_input(InputBehavior::BUTTON)
-        .with_visual(options.input_visual)
-        .with_accessibility(
-            search_field
-                .input_accessibility("Command search")
-                .shortcut("Ctrl+K"),
-        )
-        .with_action(
+        .with_visual(options.input_visual),
+    );
+    if let Some(image) = &options.input_image {
+        let icon = leading_image(
+            document,
+            search_row,
+            format!("{name}.search_icon"),
+            image.clone(),
+            "Command search",
+            options.input_image_size,
+        );
+        document.node_mut(icon).style.layout.margin.left =
+            taffy::prelude::LengthPercentageAuto::length(8.0);
+    }
+    let input = search_input(
+        document,
+        search_row,
+        format!("{name}.input"),
+        &state.input,
+        options.text_input_options().with_edit_action(
             options
                 .action_prefix
                 .as_deref()
@@ -751,39 +818,11 @@ pub fn command_palette(
                 .unwrap_or_else(|| format!("{name}.search")),
         ),
     );
-    if let Some(image) = &options.input_image {
-        leading_image(
-            document,
-            input,
-            format!("{name}.search_icon"),
-            image.clone(),
-            "Command search",
-            options.input_image_size,
-        );
+    if let Some(accessibility) = document.node_mut(input).accessibility.as_mut() {
+        accessibility
+            .actions
+            .extend(search_field.input_accessibility("Command search").actions);
     }
-    let query_is_empty = state.query().is_empty();
-    label(
-        document,
-        input,
-        format!("{name}.query"),
-        if query_is_empty {
-            options.input_placeholder.as_str()
-        } else {
-            state.query()
-        },
-        if query_is_empty {
-            options.muted_text_style.clone()
-        } else {
-            options.text_style.clone()
-        },
-        LayoutStyle::from_taffy_style(Style {
-            size: TaffySize {
-                width: Dimension::percent(1.0),
-                height: Dimension::auto(),
-            },
-            ..Default::default()
-        }),
-    );
 
     let mut list_node = UiNode::container(
         format!("{name}.results"),
@@ -795,16 +834,18 @@ pub fn command_palette(
                     width: Dimension::percent(1.0),
                     height: length(visible_rows as f32 * options.row_height),
                 },
+                min_size: TaffySize {
+                    width: length(0.0),
+                    height: length(0.0),
+                },
                 ..Default::default()
             })
             .style,
             clip: ClipBehavior::Clip,
             ..Default::default()
         },
-    );
-    if matches.len() > visible_rows {
-        list_node = list_node.with_scroll(ScrollAxes::VERTICAL);
-    }
+    )
+    .with_scroll(ScrollAxes::VERTICAL);
     list_node = list_node.with_accessibility(
         AccessibilityMeta::new(AccessibilityRole::List)
             .label(format!("{name} results"))
@@ -1061,15 +1102,6 @@ pub(in crate::widgets::ext) fn first_enabled_palette_match(
     matches
         .iter()
         .position(|palette_match| items[palette_match.index].enabled)
-}
-
-fn last_enabled_palette_match(
-    items: &[CommandPaletteItem],
-    matches: &[CommandPaletteMatch],
-) -> Option<usize> {
-    matches
-        .iter()
-        .rposition(|palette_match| items[palette_match.index].enabled)
 }
 
 fn next_enabled_palette_match(

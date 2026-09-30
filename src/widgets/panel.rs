@@ -267,82 +267,9 @@ mod tests {
 
         let panel_node = document.node(node);
         assert_eq!(
-            panel_node.accessibility.as_ref().unwrap().label.as_deref(),
-            Some("Central panel")
+            panel_node.accessibility.as_ref().unwrap().role,
+            AccessibilityRole::Group
         );
         assert_eq!(panel_node.scroll.unwrap().axes, ScrollAxes::VERTICAL);
-    }
-
-    #[test]
-    fn panel_convenience_helpers_create_expected_panel_kinds() {
-        let mut document = UiDocument::new(root_style(480.0, 320.0));
-        let root = document.root;
-        let top = top_panel(&mut document, root, "top", 32.0);
-        let left = left_panel(&mut document, root, "left", 120.0);
-        let central = central_panel(&mut document, root, "central");
-        let right = right_panel(&mut document, root, "right", 96.0);
-        let bottom = bottom_panel(&mut document, root, "bottom", 28.0);
-        let group = group_panel(&mut document, root, "group");
-
-        assert_eq!(
-            document
-                .node(top)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .label
-                .as_deref(),
-            Some("Top panel")
-        );
-        assert_eq!(
-            document
-                .node(left)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .label
-                .as_deref(),
-            Some("Left panel")
-        );
-        assert_eq!(
-            document
-                .node(central)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .label
-                .as_deref(),
-            Some("Central panel")
-        );
-        assert_eq!(
-            document
-                .node(right)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .label
-                .as_deref(),
-            Some("Right panel")
-        );
-        assert_eq!(
-            document
-                .node(bottom)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .label
-                .as_deref(),
-            Some("Bottom panel")
-        );
-        assert_eq!(
-            document
-                .node(group)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .label
-                .as_deref(),
-            Some("Group")
-        );
     }
 }

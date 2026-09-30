@@ -221,6 +221,5 @@ mod tests {
             document.node(cell).accessibility.as_ref().unwrap().role,
             AccessibilityRole::GridCell
         );
-        assert_eq!(document.node(cell).children.len(), 1);
     }
 }

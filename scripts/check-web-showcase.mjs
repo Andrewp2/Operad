@@ -5,6 +5,11 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { connectCdp } from "./cdp-client.mjs";
+import { runRuntimeEditorProbe } from "./runtime-editor-probe.mjs";
+import { runRuntimeImeProbe } from "./runtime-ime-probe.mjs";
+import { runRuntimeFailureProbe } from "./runtime-failure-probe.mjs";
+import { runRuntimeClockProbe, runtimeClockSetup } from "./runtime-clock-probe.mjs";
 
 const url = process.argv[2];
 if (!url) {
@@ -17,12 +22,28 @@ if (typeof WebSocket !== "function") {
   process.exit(2);
 }
 
+if (process.platform === "linux" && !process.env.DISPLAY) {
+  console.error(
+    "Linux WebGPU checks require an X display for canvas presentation. " +
+    "Run with xvfb-run -a node scripts/check-web-showcase.mjs <url>; Chrome remains headless."
+  );
+  process.exit(2);
+}
+
 const timeoutMs = numberFromEnv("OPERAD_WEB_SMOKE_TIMEOUT_MS", 15_000);
 const settleMs = numberFromEnv("OPERAD_WEB_SMOKE_SETTLE_MS", 3_000);
 const runUat = boolFromEnv("OPERAD_WEB_SHOWCASE_UAT");
+// Run just the checkbox/wheel workflow when investigating pointer regressions.
+const runCheckbox = boolFromEnv("OPERAD_WEB_CHECKBOX_PROBE");
+const runScheduling = boolFromEnv("OPERAD_WEB_SCHEDULING_PROBE");
+const runClock = boolFromEnv("OPERAD_WEB_CLOCK_PROBE");
+const runEditor = boolFromEnv("OPERAD_WEB_EDITOR_PROBE");
+const runIme = boolFromEnv("OPERAD_WEB_IME_PROBE");
+const runDeviceLoss = boolFromEnv("OPERAD_WEB_DEVICE_LOSS_PROBE");
+const runRenderFailure = boolFromEnv("OPERAD_WEB_RENDER_FAILURE_PROBE");
 const viewportWidth = numberFromEnv("OPERAD_WEB_SMOKE_WIDTH", 1440);
 const viewportHeight = numberFromEnv("OPERAD_WEB_SMOKE_HEIGHT", 1000);
-const showcaseUrl = runUat ? withQueryParam(url, "operad_uat", "1") : url;
+const showcaseUrl = runUat || runCheckbox ? withQueryParam(url, "operad_uat", "1") : url;
 const debuggingPort = await reservePort();
 const showcaseWindowIds = [
   "labels",
@@ -75,6 +96,17 @@ const chrome = spawn(
     "--remote-allow-origins=*",
     "--enable-unsafe-webgpu",
     "--ignore-gpu-blocklist",
+    // Keep WebGPU and the compositor on the same software Vulkan backend.
+    // Otherwise Chrome can accept input while the WebGPU canvas stays blank.
+    // https://github.com/visgl/luma.gl/issues/2874
+    ...(process.platform === "linux" ? [
+      "--enable-gpu",
+      "--enable-features=Vulkan",
+      "--use-angle=swiftshader",
+      "--use-vulkan=swiftshader",
+      "--use-webgpu-adapter=swiftshader",
+      "--enable-unsafe-swiftshader",
+    ] : []),
     "--disable-dev-shm-usage",
     `--window-size=${viewportWidth},${viewportHeight}`,
     "--force-device-scale-factor=1",
@@ -89,6 +121,11 @@ const chrome = spawn(
 
 let stdout = "";
 let stderr = "";
+let chromeFailure = null;
+chrome.on("error", error => { chromeFailure = error; });
+chrome.on("exit", (code, signal) => {
+  chromeFailure ??= new Error(`Chrome exited (${signal ?? code}). Recent output:\n${stderr.slice(-2000)}`);
+});
 chrome.stdout.on("data", (chunk) => {
   stdout += chunk;
 });
@@ -167,93 +204,61 @@ function reservePort() {
 
 async function waitForDevtoolsEndpoint() {
   const endpoint = `http://127.0.0.1:${debuggingPort}/json/version`;
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + 10_000;
-    const timer = setInterval(async () => {
-      const text = `${stderr}\n${stdout}`;
-      const match = text.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-      if (match) {
-        clearInterval(timer);
-        resolve(match[1]);
-        return;
-      }
+  const deadline = performance.now() + Math.min(timeoutMs, 10_000);
+  while (performance.now() < deadline) {
+    if (chromeFailure) throw chromeFailure;
+    const match = `${stderr}\n${stdout}`.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+    if (match) return match[1];
 
-      try {
-        const response = await fetch(endpoint);
-        if (response.ok) {
-          const metadata = await response.json();
-          if (typeof metadata.webSocketDebuggerUrl === "string") {
-            clearInterval(timer);
-            resolve(metadata.webSocketDebuggerUrl);
-            return;
-          }
-        }
-      } catch {
-        // Chrome is still starting.
+    const controller = new AbortController();
+    // Bound headers and body consumption; don't overlap startup requests.
+    const timer = setTimeout(() => controller.abort(), Math.min(250, deadline - performance.now()));
+    try {
+      const response = await fetch(endpoint, { signal: controller.signal });
+      if (response.ok) {
+        const metadata = await response.json();
+        if (typeof metadata.webSocketDebuggerUrl === "string") return metadata.webSocketDebuggerUrl;
       }
-
-      if (Date.now() > deadline) {
-        clearInterval(timer);
-        reject(
-          new Error(
-            `Chrome did not publish a DevTools endpoint. Recent output:\n${text.slice(-2000)}`
-          )
-        );
-      }
-    }, 50);
-  });
+    } catch {
+      // Retry a starting server or incomplete response until the startup deadline.
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+    }
+    await delay(50);
+  }
+  if (chromeFailure) throw chromeFailure;
+  throw new Error(`Chrome did not publish a DevTools endpoint. Recent output:\n${`${stderr}\n${stdout}`.slice(-2000)}`);
 }
 
 async function runSmoke(browserWsUrl) {
-  const ws = new WebSocket(browserWsUrl);
-  let id = 0;
-  const pending = new Map();
   const events = [];
   const requestUrls = new Map();
-
-  function send(method, params = {}, sessionId = undefined) {
-    const message = { id: ++id, method, params };
-    if (sessionId) message.sessionId = sessionId;
-    ws.send(JSON.stringify(message));
-    return new Promise((resolve, reject) => {
-      pending.set(message.id, { method, resolve, reject });
-    });
-  }
-
-  ws.onmessage = (messageEvent) => {
-    const message = JSON.parse(messageEvent.data);
-    if (message.id && pending.has(message.id)) {
-      const pendingMessage = pending.get(message.id);
-      pending.delete(message.id);
-      if (message.error) {
-        pendingMessage.reject(
-          new Error(`${pendingMessage.method}: ${JSON.stringify(message.error)}`)
-        );
-      } else {
-        pendingMessage.resolve(message.result);
+  const connection = await connectCdp(new WebSocket(browserWsUrl), {
+    timeoutMs,
+    onEvent(message) {
+      if (message.method === "Network.requestWillBeSent") {
+        requestUrls.set(message.params.requestId, message.params.request.url);
       }
-      return;
-    }
-
-    if (message.method === "Network.requestWillBeSent") {
-      requestUrls.set(message.params.requestId, message.params.request.url);
-    }
-    if (
-      message.method === "Runtime.consoleAPICalled" ||
-      message.method === "Runtime.exceptionThrown" ||
-      message.method === "Log.entryAdded" ||
-      message.method === "Network.loadingFailed"
-    ) {
-      events.push({ ...message, url: requestUrls.get(message.params?.requestId) });
-    }
-  };
-
-  await new Promise((resolve, reject) => {
-    ws.onopen = resolve;
-    ws.onerror = reject;
+      if (
+        message.method === "Runtime.consoleAPICalled" ||
+        message.method === "Runtime.exceptionThrown" ||
+        message.method === "Log.entryAdded" ||
+        message.method === "Network.loadingFailed"
+      ) {
+        events.push({ ...message, url: requestUrls.get(message.params?.requestId) });
+      }
+    },
   });
+  const { send } = connection;
 
   try {
+    if (runDeviceLoss || runRenderFailure) {
+      const expected = await runRuntimeFailureProbe(send, evaluate, events, url, timeoutMs,
+        runRenderFailure ? "render" : "device");
+      connection.assertOpen();
+      return events.filter(event => !expected.has(event));
+    }
     const { targetId } = await send("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await send("Target.attachToTarget", {
       targetId,
@@ -263,16 +268,146 @@ async function runSmoke(browserWsUrl) {
     await send("Log.enable", {}, sessionId);
     await send("Network.enable", {}, sessionId);
     await send("Page.enable", {}, sessionId);
+    if (runClock) {
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: runtimeClockSetup }, sessionId);
+    }
     await send("Page.navigate", { url: showcaseUrl }, sessionId);
-    await waitForShowcaseReady(send, sessionId);
+    if (runClock) {
+      await runRuntimeClockProbe(send, sessionId, evaluate, timeoutMs);
+    } else if (runIme) {
+      await runRuntimeImeProbe(send, sessionId, evaluate, timeoutMs);
+    } else if (runEditor) {
+      await runRuntimeEditorProbe(send, sessionId, evaluate, timeoutMs);
+    } else if (runScheduling) {
+      await runSchedulingProbe(send, sessionId);
+    } else {
+      await waitForShowcaseReady(send, sessionId);
+      await assertShowcasePainted(send, sessionId);
+    }
     if (runUat) {
       await runShowcaseUat(send, sessionId);
+    } else if (runCheckbox) {
+      await waitForUatHook(send, sessionId);
+      await runCheckboxWheelUat(send, sessionId, await uatSnapshot(send, sessionId));
     }
     await delay(settleMs);
+    connection.assertOpen();
     return events;
   } finally {
-    ws.close();
+    connection.close();
   }
+}
+
+// This fixture deliberately has no tick action: input, delayed repaints, and
+// continuous rendering must each provide their own wakeups.
+async function runSchedulingProbe(send, sessionId) {
+  await waitForUatHook(send, sessionId);
+  const status = async () => {
+    const text = await evaluate(
+      send, sessionId, 'document.getElementById("probe-status").textContent'
+    );
+    // The UAT hook is installed before the first animation callback runs.
+    if (text === "Loading…") return null;
+    const match = text.match(/Frames: (\d+) \| Count: (\d+) \| Continuous: (true|false) \| Delayed: (\w+) \| Width: ([0-9.]+) \| Async: (true|false) \| Task: (\w+)/);
+    if (!match) throw new Error(`invalid scheduling probe status: ${text}`);
+    return {
+      frames: Number(match[1]),
+      count: Number(match[2]),
+      continuous: match[3] === "true",
+      delayed: match[4],
+      width: Number(match[5]),
+      async: match[6] === "true",
+      task: match[7],
+    };
+  };
+  const waitFor = async (predicate, description) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const current = await status();
+      if (current && predicate(current)) return current;
+      await delay(25);
+    }
+    const display = await evaluate(send, sessionId, `({
+      ratio: devicePixelRatio,
+      pixels: document.getElementById("operad-canvas").width
+    })`);
+    throw new Error(
+      `scheduling probe timed out: ${description}; ` +
+      JSON.stringify({ status: await status(), display })
+    );
+  };
+  const assertIdle = async () => {
+    await delay(150);
+    const before = await status();
+    await delay(300);
+    const after = await status();
+    if (!before || !after || after.frames !== before.frames) {
+      throw new Error(`idle probe kept rendering: ${JSON.stringify({ before, after })}`);
+    }
+    return after;
+  };
+  await waitFor(current => current.frames > 0, "first frame");
+  await assertIdle();
+  let snapshot = await uatSnapshot(send, sessionId);
+  await clickNode(send, sessionId, snapshot, "increment");
+  await waitFor(current => current.count === 1, "input after idle");
+  await assertIdle();
+  snapshot = await uatSnapshot(send, sessionId);
+  await clickNode(send, sessionId, snapshot, "async");
+  await waitFor(current => current.async, "asynchronous service response without unrelated input");
+  await assertIdle();
+  for (const [finish, expected] of [["__completeTask(42)", "42"], ["__failTask('read failed')", "error"]]) {
+    snapshot = await uatSnapshot(send, sessionId);
+    await clickNode(send, sessionId, snapshot, "task");
+    await waitFor(current => current.task === "pending", "background job started");
+    const pending = await assertIdle();
+    await evaluate(send, sessionId, `window.${finish}; delete window.__completeTask; delete window.__failTask; true`);
+    await waitFor(current => current.task === expected && current.frames > pending.frames,
+      "background completion wakes the idle UI without input");
+    await assertIdle();
+  }
+  snapshot = await uatSnapshot(send, sessionId);
+  await clickNode(send, sessionId, snapshot, "delayed", 0);
+  const pendingRepaint = await waitFor(current => current.delayed === "pending", "delayed repaint scheduled");
+  await waitFor(
+    current => current.delayed === "complete" && current.frames > pendingRepaint.frames,
+    "delayed repaint on a later frame without input"
+  );
+  await assertIdle();
+  snapshot = await uatSnapshot(send, sessionId);
+  await clickNode(send, sessionId, snapshot, "continuous");
+  const started = await waitFor(current => current.continuous, "continuous rendering enabled");
+  await waitFor(current => current.frames >= started.frames + 3, "continuous frames");
+  snapshot = await uatSnapshot(send, sessionId);
+  await clickNode(send, sessionId, snapshot, "continuous");
+  await waitFor(current => !current.continuous, "continuous rendering disabled");
+  const beforeResize = await assertIdle();
+  await send("Emulation.setDeviceMetricsOverride", {
+    width: 1100, height: 800, deviceScaleFactor: 1, mobile: false,
+  }, sessionId);
+  await waitFor(current => current.frames > beforeResize.frames, "resize after idle");
+  await assertIdle();
+  await evaluate(send, sessionId, 'document.getElementById("resize-host").click()');
+  await waitFor(current => current.width === 600, "embedded canvas resize without a window event");
+  await assertIdle();
+  // Chrome's CDP override changes devicePixelRatio without delivering resolution
+  // change events when the viewport is unchanged (verified with an independent
+  // matchMedia listener). Include a viewport change to model a display switch.
+  for (const ratio of [2, 0.75]) {
+    const beforeScale = await status();
+    await send("Emulation.setDeviceMetricsOverride", {
+      width: ratio === 2 ? 1101 : 1102,
+      height: 800, deviceScaleFactor: ratio, mobile: false,
+    }, sessionId);
+    await waitFor(current => current.frames > beforeScale.frames, `DPI ${ratio} change after idle`);
+    const pixels = await evaluate(send, sessionId, 'document.getElementById("operad-canvas").width');
+    if (pixels !== Math.ceil(600 * ratio)) {
+      throw new Error(`wrong canvas backing size at DPI ${ratio}: ${pixels}`);
+    }
+    await assertIdle();
+  }
+  const final = await assertIdle();
+  console.log(`Scheduling probe passed: idle, input, async response, background success/failure, delayed repaint, continuous start/stop, window and embedded resize, DPI (${final.frames} frames)`);
 }
 
 async function waitForShowcaseReady(send, sessionId) {
@@ -302,6 +437,49 @@ async function evaluateShowcaseState(send, sessionId) {
         status: document.getElementById("operad-showcase-status")?.textContent ?? null,
         hasGpu: !!navigator.gpu
       })`);
+}
+
+async function assertShowcasePainted(send, sessionId) {
+  await evaluate(send, sessionId, `(async () => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const canvas = document.getElementById("operad-showcase-canvas");
+    const device = canvas.getContext("webgpu").getConfiguration().device;
+    let timeout;
+    try {
+      await Promise.race([
+        device.queue.onSubmittedWorkDone(),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("WebGPU frame did not complete")), ${timeoutMs});
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+  })()`);
+  // Capture the presented frame, not the WebGPU drawing buffer between frames.
+  const { data } = await send("Page.captureScreenshot", { format: "png" }, sessionId);
+  const painted = await evaluate(send, sessionId, `(async () => {
+    const image = new Image();
+    image.src = ${JSON.stringify(`data:image/png;base64,${data}`)};
+    await image.decode();
+    const copy = document.createElement("canvas");
+    copy.width = image.width;
+    copy.height = image.height;
+    const context = copy.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, copy.width, copy.height).data;
+    let firstColor;
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      if (pixels[offset + 3] === 0) continue;
+      const color = pixels[offset] | (pixels[offset + 1] << 8) | (pixels[offset + 2] << 16);
+      if (firstColor === undefined) firstColor = color;
+      else if (color !== firstColor) return true;
+    }
+    return false;
+  })()`);
+  if (!painted) {
+    throw new Error("showcase canvas is blank or uniformly colored despite successful startup");
+  }
 }
 
 async function runShowcaseUat(send, sessionId) {
@@ -342,6 +520,9 @@ async function runShowcaseUat(send, sessionId) {
   );
   assertSnapshotOk(snapshot);
 
+  await runCheckboxWheelUat(send, sessionId, snapshot);
+  snapshot = await uatSnapshot(send, sessionId);
+
   await runTextInputUat(send, sessionId, snapshot);
   snapshot = await uatSnapshot(send, sessionId);
 
@@ -356,6 +537,99 @@ async function runShowcaseUat(send, sessionId) {
 
   snapshot = await scrollWidgetListToEnd(send, sessionId, snapshot);
   assertScrollAtEnd(snapshot, "controls.widget_list.viewport");
+}
+
+async function runCheckboxWheelUat(send, sessionId, snapshot) {
+  if (rootWindows(snapshot).length > 0) {
+    await clickNode(send, sessionId, snapshot, "controls.clear_all");
+    snapshot = await waitForSnapshotCondition(
+      send, sessionId, (next) => rootWindows(next).length === 0,
+      "windows to clear before checkbox wheel checks"
+    );
+  }
+  snapshot = await scrollNodeIntoView(send, sessionId, snapshot, "controls.checkbox");
+
+  const checkWheelAndOtherButtons = async (name) => {
+    const before = requireNode(snapshot, name).accessibility?.value;
+    if (before !== "checked" && before !== "unchecked") {
+      throw new Error(`${name} did not expose its checked state: ${before}`);
+    }
+    const windows = JSON.stringify(rootWindows(snapshot).map((node) => node.name).sort());
+    for (const part of ["box", "label"]) {
+      for (const delta of [8, -8]) {
+        const target = requireNode(snapshot, `${name}.${part}`);
+        const point = nodeCenter(target);
+        assertPointInsideClip(target, point);
+        const scrollBefore = requireNode(snapshot, "controls.widget_list.viewport").scroll;
+        await wheelAt(send, sessionId, point, delta);
+        // Observe after the runtime has had an opportunity to process and paint
+        // the wheel event, so an immediate unchanged snapshot cannot pass.
+        await evaluate(send, sessionId,
+          "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))"
+        );
+        snapshot = await uatSnapshot(send, sessionId);
+        const after = requireNode(snapshot, name).accessibility?.value;
+        if (after !== before) {
+          throw new Error(`wheel toggled ${name}.${part}: ${before} -> ${after}, delta=${delta}`);
+        }
+        const afterWindows = JSON.stringify(rootWindows(snapshot).map((node) => node.name).sort());
+        if (afterWindows !== windows) {
+          throw new Error(`wheel over ${name}.${part} changed open windows: ${windows} -> ${afterWindows}`);
+        }
+        if (name === "controls.checkbox" && delta > 0 && scrollBefore.offset.y < scrollBefore.maxOffset.y) {
+          const scrollAfter = requireNode(snapshot, "controls.widget_list.viewport").scroll;
+          if (scrollAfter.offset.y <= scrollBefore.offset.y) {
+            throw new Error("wheel over a sidebar checkbox did not scroll its containing list");
+          }
+        }
+      }
+      for (const [button, buttons] of [["middle", 4], ["right", 2]]) {
+        const target = requireNode(snapshot, `${name}.${part}`);
+        const point = nodeCenter(target);
+        assertPointInsideClip(target, point);
+        for (const type of ["mousePressed", "mouseReleased"]) {
+          await send("Input.dispatchMouseEvent", {
+            type, ...point, button, buttons: type === "mousePressed" ? buttons : 0, clickCount: 1,
+          }, sessionId);
+        }
+        await evaluate(send, sessionId,
+          "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))"
+        );
+        snapshot = await uatSnapshot(send, sessionId);
+        const after = requireNode(snapshot, name).accessibility?.value;
+        const afterWindows = JSON.stringify(rootWindows(snapshot).map(node => node.name).sort());
+        if (after !== before || afterWindows !== windows) {
+          throw new Error(`${button} button activated ${name}.${part}: ${before} -> ${after}; windows ${windows} -> ${afterWindows}`);
+        }
+      }
+    }
+  };
+
+  await checkWheelAndOtherButtons("controls.checkbox");
+  await clickNode(send, sessionId, snapshot, "controls.checkbox");
+  snapshot = await waitForSnapshotCondition(
+    send, sessionId,
+    (next) => rootWindows(next).some((node) => node.name.endsWith(".checkbox")),
+    "checkbox window to open on click"
+  );
+  snapshot = await ensureWindowExpanded(send, sessionId, snapshot, "checkbox", ["checkbox.enabled"]);
+  await checkWheelAndOtherButtons("controls.checkbox");
+  await checkWheelAndOtherButtons("checkbox.enabled");
+  const beforeClick = requireNode(snapshot, "checkbox.enabled").accessibility.value;
+  const toggled = beforeClick === "checked" ? "unchecked" : "checked";
+  await clickNode(send, sessionId, snapshot, "checkbox.enabled");
+  snapshot = await waitForSnapshotCondition(
+    send, sessionId,
+    (next) => requireNode(next, "checkbox.enabled").accessibility?.value === toggled,
+    "checkbox value to toggle on click"
+  );
+  await checkWheelAndOtherButtons("checkbox.enabled");
+  await clickNode(send, sessionId, snapshot, "controls.checkbox");
+  await waitForSnapshotCondition(
+    send, sessionId, (next) => rootWindows(next).length === 0,
+    "checkbox window to close on click"
+  );
+  console.log("Checkbox pointer probe passed: checked/unchecked sidebar and widget controls, box/label, wheel directions, middle/right buttons, and primary click activation");
 }
 
 async function runTextInputUat(send, sessionId, snapshot) {
@@ -611,7 +885,7 @@ async function waitForSnapshotCondition(send, sessionId, predicate, description)
   );
 }
 
-async function clickNode(send, sessionId, snapshot, name) {
+async function clickNode(send, sessionId, snapshot, name, settleDelayMs = 120) {
   const node = requireNode(snapshot, name);
   const point = nodeCenter(node);
   assertPointInsideClip(node, point);
@@ -639,7 +913,7 @@ async function clickNode(send, sessionId, snapshot, name) {
     },
     sessionId
   );
-  await delay(120);
+  await delay(settleDelayMs);
 }
 
 async function scrollNodeIntoView(send, sessionId, snapshot, name) {
@@ -1051,7 +1325,7 @@ function delay(ms) {
 }
 
 function terminateChrome(process) {
-  if (process.exitCode !== null || process.signalCode !== null) {
+  if (!process.pid || process.exitCode !== null || process.signalCode !== null) {
     return Promise.resolve();
   }
   return new Promise((resolve) => {

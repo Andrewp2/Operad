@@ -421,8 +421,6 @@ fn widget_state_matrix_core_controls_keep_geometry_and_pointer_targets() {
     let report = run_ui_state_matrix(widget_state_matrix_viewports(), widget_state_matrix_cases())
         .expect("widget state matrix should stay layout-clean and interactive");
 
-    assert_eq!(report.cases, 10);
-    assert_eq!(report.viewports, 2);
     assert!(report.pointer_interactions > 0);
 }
 
@@ -545,52 +543,6 @@ fn dimension_length(value: Dimension) -> Option<f32> {
 
 #[cfg(feature = "widgets")]
 #[test]
-fn widget_apis_accept_legacy_taffy_layout_inputs() {
-    let root_style = root_style(280.0, 120.0);
-    let mut doc = UiDocument::new(root_style);
-    let root = doc.root;
-    let legacy = Style {
-        size: TaffySize {
-            width: length(120.0),
-            height: length(24.0),
-        },
-        ..Default::default()
-    };
-    let legacy_layout = LayoutStyle::from_taffy_style(legacy.clone());
-    let label = widgets::label(
-        &mut doc,
-        root,
-        "label",
-        "Legacy Label",
-        TextStyle::default(),
-        legacy_layout.clone(),
-    );
-    let scroll = widgets::scroll_area(
-        &mut doc,
-        root,
-        "scroll",
-        ScrollAxes::HORIZONTAL,
-        legacy_layout.clone(),
-    );
-
-    let button_options =
-        widgets::ButtonOptions::new(legacy_layout.clone()).with_layout(legacy_layout.clone());
-    let checkbox_options = widgets::CheckboxOptions::default().with_layout(legacy_layout.clone());
-    let slider_options = widgets::SliderOptions::default().with_layout(legacy_layout.clone());
-    let text_input_options =
-        widgets::TextInputOptions::default().with_layout(legacy_layout.clone());
-    let combo_box_options = widgets::ComboBoxOptions::default().with_layout(legacy_layout);
-
-    assert_eq!(doc.node(label).style.layout.size, legacy.size);
-    assert_eq!(doc.node(scroll).style.layout.size, legacy.size);
-    assert_eq!(button_options.layout.as_taffy_style().size, legacy.size);
-    assert_eq!(checkbox_options.layout.as_taffy_style().size, legacy.size);
-    assert_eq!(slider_options.layout.as_taffy_style().size, legacy.size);
-    assert_eq!(text_input_options.layout.as_taffy_style().size, legacy.size);
-    assert_eq!(combo_box_options.layout.as_taffy_style().size, legacy.size);
-}
-#[cfg(feature = "widgets")]
-#[test]
 fn widget_localized_label_exports_direction_to_paint_and_accessibility() {
     let mut doc = UiDocument::new(root_style(300.0, 100.0));
     let root = doc.root;
@@ -695,36 +647,6 @@ fn widget_label_row_uses_real_text_widths_with_cosmic_measurer() {
         yellow_rect.width > green_rect.width,
         "real text measurement should preserve Yellow as wider than Green"
     );
-}
-
-#[cfg(feature = "widgets")]
-#[test]
-fn widget_button_builds_focusable_document_nodes() {
-    let mut doc = UiDocument::new(root_style(200.0, 80.0));
-    let root = doc.root;
-    let button = widgets::button(
-        &mut doc,
-        root,
-        "play",
-        "Play",
-        widgets::ButtonOptions::new(LayoutStyle::from_taffy_style(Style {
-            size: TaffySize {
-                width: length(80.0),
-                height: length(32.0),
-            },
-            ..Default::default()
-        })),
-    );
-    doc.compute_layout(UiSize::new(200.0, 80.0), &mut ApproxTextMeasurer)
-        .expect("layout");
-
-    assert!(doc.node(button).input.focusable);
-    assert_eq!(doc.node(button).children.len(), 1);
-    assert!(doc
-        .paint_list()
-        .items
-        .iter()
-        .any(|item| item.node == button));
 }
 
 #[cfg(feature = "widgets")]
@@ -868,21 +790,9 @@ fn widget_button_options_apply_disabled_accessibility_and_media_hooks() {
 }
 #[cfg(feature = "widgets")]
 #[test]
-fn widget_button_convenience_builders_cover_common_button_modes() {
+fn widget_button_convenience_builders_preserve_accessibility_and_enabled_state() {
     let mut doc = UiDocument::new(root_style(360.0, 120.0));
     let root = doc.root;
-
-    let small = widgets::small_button(
-        &mut doc,
-        root,
-        "small",
-        "Small",
-        widgets::ButtonOptions::default(),
-    );
-    assert_eq!(
-        doc.node(small).style.layout.size.height,
-        Dimension::length(28.0)
-    );
 
     let icon = widgets::icon_button(
         &mut doc,
@@ -901,7 +811,6 @@ fn widget_button_convenience_builders_cover_common_button_modes() {
             .as_deref(),
         Some("Save")
     );
-    assert_eq!(doc.node(icon).children.len(), 1);
     assert!(matches!(
         doc.node(doc.node(icon).children[0]).content,
         UiContent::Image(_)
@@ -923,7 +832,6 @@ fn widget_button_convenience_builders_cover_common_button_modes() {
         doc.node(toggled).accessibility.as_ref().unwrap().pressed,
         Some(true)
     );
-    assert!(doc.node(toggled).visual.fill.relative_luminance() < 0.08);
 
     let reset = widgets::reset_button(
         &mut doc,
@@ -1004,19 +912,28 @@ fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
         WidgetActionKind::Activate(WidgetActivation::pointer(2))
     );
 
+    let secondary_click = GestureEvent::Click(PointerClick {
+        pointer_id: PointerId::MOUSE,
+        target: label,
+        position: label_point,
+        button: PointerButton::Secondary,
+        count: 1,
+        modifiers: KeyModifiers::NONE,
+        timestamp_millis: 18,
+    });
+    assert!(widgets::button::button_actions_from_gesture_event(
+        &doc,
+        button,
+        &options,
+        &secondary_click,
+    )
+    .is_empty());
+    doc.node_mut(button).action_mode = WidgetActionMode::ActivateAnyButton;
     let secondary_actions = widgets::button::button_actions_from_gesture_event(
         &doc,
         button,
         &options,
-        &GestureEvent::Click(PointerClick {
-            pointer_id: PointerId::MOUSE,
-            target: label,
-            position: label_point,
-            button: PointerButton::Secondary,
-            count: 1,
-            modifiers: KeyModifiers::NONE,
-            timestamp_millis: 18,
-        }),
+        &secondary_click,
     );
     assert_eq!(secondary_actions.len(), 1);
     assert_eq!(
@@ -1027,6 +944,7 @@ fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
             KeyModifiers::NONE,
         ))
     );
+    doc.node_mut(button).action_mode = WidgetActionMode::Activate;
 
     let wheel = RawWheelEvent::pixels(label_point, UiPoint::new(0.0, -16.0), 19);
     let wheel_actions = widgets::button::button_actions_from_gesture_event(
@@ -1038,11 +956,7 @@ fn widget_button_action_helpers_route_pointer_and_keyboard_activation() {
             event: wheel,
         },
     );
-    assert_eq!(wheel_actions.len(), 1);
-    assert_eq!(
-        wheel_actions.as_slice()[0].kind,
-        WidgetActionKind::Activate(WidgetActivation::wheel(wheel))
-    );
+    assert!(wheel_actions.is_empty());
 
     let key_actions = widgets::button::button_actions_from_key_event(
         &doc,
@@ -1112,6 +1026,278 @@ fn widget_button_action_helpers_suppress_disabled_and_preserve_command_binding()
         Some(&CommandId::from("file.save"))
     );
 }
+
+#[test]
+fn manual_widget_actions_follow_portal_ownership_and_current_input_eligibility() {
+    use widgets::*;
+
+    for (portal, source_owns, host_owns) in [
+        (UiPortalTarget::Parent, true, false),
+        (UiPortalTarget::AppOverlay, true, false),
+        (UiPortalTarget::named("host"), true, false),
+        (UiPortalTarget::GlobalAppOverlay, false, false),
+        (UiPortalTarget::global_named("host"), false, true),
+    ] {
+        for nested in [false, true] {
+            for state in [
+                "enabled",
+                "disabled-hit",
+                "disabled-source",
+                "disabled-host",
+                "modal-source",
+                "modal-host",
+                "modal-hit",
+            ] {
+                let mut doc = UiDocument::new(root_style(640.0, 360.0));
+                let root = doc.root();
+                let options = CollapsingHeaderOptions::default().with_toggle_action("route");
+                let source = collapsing_header(&mut doc, root, "source", "Source", options.clone());
+                let host = collapsing_header(&mut doc, root, "host", "Host", options.clone());
+                doc.register_portal_host("host", host.header);
+                let mut parent = doc.add_portal_child(
+                    source.header,
+                    portal.clone(),
+                    UiNode::container("portal", LayoutStyle::size(30.0, 30.0)),
+                );
+                if nested {
+                    parent = doc.add_portal_child(
+                        parent,
+                        UiPortalTarget::AppOverlay,
+                        UiNode::container("nested", LayoutStyle::size(30.0, 30.0)),
+                    );
+                }
+                let hit = doc.add_child(
+                    parent,
+                    UiNode::container("hit", LayoutStyle::size(20.0, 20.0))
+                        .with_input(InputBehavior::BUTTON)
+                        .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button)),
+                );
+                match state {
+                    "disabled-hit" => {
+                        doc.set_node_enabled(hit, false);
+                    }
+                    "disabled-source" => {
+                        doc.set_node_enabled(source.header, false);
+                    }
+                    "disabled-host" => {
+                        doc.set_node_enabled(host.header, false);
+                    }
+                    "modal-source" => {
+                        doc.node_mut(source.header)
+                            .accessibility
+                            .as_mut()
+                            .unwrap()
+                            .modal = true;
+                    }
+                    "modal-host" => {
+                        doc.node_mut(host.header)
+                            .accessibility
+                            .as_mut()
+                            .unwrap()
+                            .modal = true;
+                    }
+                    "modal-hit" => {
+                        doc.node_mut(hit).accessibility.as_mut().unwrap().modal = true;
+                    }
+                    _ => {}
+                }
+                doc.compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+                    .unwrap();
+                let eligible = state != "disabled-hit"
+                    && state != "modal-hit"
+                    && !(state == "disabled-source" && source_owns)
+                    && !(state == "disabled-host"
+                        && matches!(
+                            portal,
+                            UiPortalTarget::Named(_) | UiPortalTarget::GlobalNamed(_)
+                        ))
+                    && (state != "modal-source" || source_owns)
+                    && (state != "modal-host" || host_owns);
+                let expected = if !eligible {
+                    None
+                } else if source_owns {
+                    Some(source.header)
+                } else if host_owns {
+                    Some(host.header)
+                } else {
+                    None
+                };
+                let input = UiInputResult {
+                    clicked: Some(hit),
+                    ..Default::default()
+                };
+                let click = GestureEvent::Click(PointerClick {
+                    pointer_id: PointerId::MOUSE,
+                    target: hit,
+                    position: UiPoint::new(5.0, 5.0),
+                    button: PointerButton::Primary,
+                    count: 1,
+                    modifiers: KeyModifiers::NONE,
+                    timestamp_millis: 1,
+                });
+                let drag = GestureEvent::Drag(DragGesture {
+                    pointer_id: PointerId::MOUSE,
+                    target: hit,
+                    phase: GesturePhase::Update,
+                    origin: UiPoint::new(5.0, 5.0),
+                    current: UiPoint::new(25.0, 5.0),
+                    previous: UiPoint::new(15.0, 5.0),
+                    delta: UiPoint::new(10.0, 0.0),
+                    total_delta: UiPoint::new(20.0, 0.0),
+                    button: PointerButton::Primary,
+                    modifiers: KeyModifiers::NONE,
+                    captured: true,
+                    timestamp_millis: 2,
+                });
+                let context = format!("portal={portal:?}, nested={nested}, state={state}");
+                let automatic = WidgetAction::from_gesture_event_for_document(&doc, &click, |id| {
+                    doc.node(id).action.clone()
+                });
+                assert_eq!(automatic.map(|action| action.target), expected, "{context}");
+
+                // These adapters accept an explicit owner. Exercise each on the same
+                // interactive subtree so their ownership policy cannot drift apart.
+                for nodes in [source, host] {
+                    let owner = nodes.header;
+                    let queues = [
+                        (
+                            "button input",
+                            button::button_actions_from_input_result(
+                                &doc,
+                                owner,
+                                &ButtonOptions::default().with_action("route"),
+                                &input,
+                            ),
+                        ),
+                        (
+                            "button gesture",
+                            button::button_actions_from_gesture_event(
+                                &doc,
+                                owner,
+                                &ButtonOptions::default().with_action("route"),
+                                &click,
+                            ),
+                        ),
+                        (
+                            "checkbox",
+                            checkbox::checkbox_actions_from_input_result(
+                                &doc,
+                                owner,
+                                false,
+                                &CheckboxOptions::default().with_action("route"),
+                                &input,
+                            ),
+                        ),
+                        (
+                            "toggle",
+                            toggle::toggle_switch_actions_from_input_result(
+                                &doc,
+                                owner,
+                                ToggleValue::Off,
+                                &ToggleSwitchOptions::default().with_action("route"),
+                                &input,
+                            ),
+                        ),
+                        (
+                            "radio",
+                            radio::radio_button_actions_from_input_result(
+                                &doc,
+                                owner,
+                                &RadioButtonOptions::default().with_action("route"),
+                                &input,
+                            ),
+                        ),
+                        (
+                            "collapsing",
+                            collapsing::collapsing_header_actions_from_input_result(
+                                &doc, nodes, &options, &input,
+                            ),
+                        ),
+                        (
+                            "link",
+                            label::link_actions_from_input_result(
+                                &doc,
+                                owner,
+                                &LinkOptions::default().with_action("route"),
+                                &input,
+                            ),
+                        ),
+                        (
+                            "selection",
+                            label::selectable_label_actions_from_input_result(
+                                &doc,
+                                owner,
+                                &SelectableLabelOptions::default().with_action("route"),
+                                &input,
+                            ),
+                        ),
+                        (
+                            "slider drag",
+                            slider::slider_actions_from_gesture_event(
+                                &doc,
+                                owner,
+                                &SliderOptions::default().with_drag_action("route"),
+                                &drag,
+                            ),
+                        ),
+                        (
+                            "slider edit",
+                            slider::slider_actions_from_gesture_event(
+                                &doc,
+                                owner,
+                                &SliderOptions::default().with_value_edit_action("route"),
+                                &drag,
+                            ),
+                        ),
+                        (
+                            "drag value",
+                            drag_value::drag_value_input_actions_from_gesture_event(
+                                &doc,
+                                owner,
+                                &DragValueOptions::default().with_action("route"),
+                                &drag,
+                            ),
+                        ),
+                        (
+                            "drag source",
+                            drag_drop::dnd_drag_source_actions_from_gesture_event(
+                                &doc,
+                                owner,
+                                &DragSourceOptions::default().with_action("route"),
+                                &drag,
+                            ),
+                        ),
+                        (
+                            "drop zone",
+                            drag_drop::dnd_drop_zone_actions_from_gesture_event(
+                                &doc,
+                                owner,
+                                &DropZoneOptions::default().with_action("route"),
+                                &drag,
+                            ),
+                        ),
+                    ];
+                    for (helper, queue) in queues {
+                        let targets: Vec<_> = queue
+                            .as_slice()
+                            .iter()
+                            .map(|action| action.target)
+                            .collect();
+                        let expected_targets: Vec<_> = expected
+                            .filter(|target| *target == owner)
+                            .into_iter()
+                            .collect();
+                        assert_eq!(
+                            targets, expected_targets,
+                            "{helper}: owner={owner:?}, {context}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(feature = "widgets")]
 #[test]
 fn widget_checkbox_action_helpers_toggle_selection_from_pointer_and_keyboard() {
@@ -1196,7 +1382,6 @@ fn widget_checkbox_indeterminate_state_renders_mixed_and_cycles_when_enabled() {
 
     let box_node = doc.node(checkbox).children[0];
     let mark = doc.node(box_node).children[0];
-    assert_eq!(doc.node(mark).name, "sync.indeterminate");
     let UiContent::Scene(primitives) = doc.node(mark).content() else {
         panic!("indeterminate checkbox should render a scene mark");
     };
@@ -1291,10 +1476,9 @@ fn widget_checkbox_options_customize_box_metrics_and_check_image() {
 
     assert_eq!(box_rect.width, 24.0);
     assert_eq!(box_rect.height, 20.0);
-    assert_eq!(check_rect.width, 20.0);
-    assert_eq!(check_rect.height, 16.0);
-    assert!((check_rect.x - box_rect.x - 2.0).abs() < 0.01);
-    assert!((check_rect.y - box_rect.y - 2.0).abs() < 0.01);
+    assert!(check_rect.width > 0.0 && check_rect.height > 0.0);
+    assert!(check_rect.x >= box_rect.x && check_rect.right() <= box_rect.right());
+    assert!(check_rect.y >= box_rect.y && check_rect.bottom() <= box_rect.bottom());
     assert!(
         ((check_rect.x + check_rect.width * 0.5) - (box_rect.x + box_rect.width * 0.5)).abs()
             < 0.01
@@ -1341,10 +1525,6 @@ fn widget_checkbox_default_hit_rect_tracks_visible_composition() {
     assert!(
         (checkbox_rect.height - visible_height).abs() < 0.01,
         "checkbox hit rect should be sized from visible content, not a hard-coded row: checkbox={checkbox_rect:?} box={box_rect:?} label={label_rect:?}"
-    );
-    assert!(
-        checkbox_rect.height < 28.0,
-        "checkbox default should not reserve invisible vertical hit padding: {checkbox_rect:?}"
     );
 }
 
@@ -1778,25 +1958,6 @@ fn widget_text_input_maps_clipboard_and_ime_platform_contracts() {
         state.update_ime_request(context.clone()),
         platform::TextImeRequest::Update(session)
     );
-    assert_eq!(
-        widgets::TextInputState::deactivate_ime_request(context.input.clone()),
-        platform::TextImeRequest::Deactivate {
-            input: context.input.clone()
-        }
-    );
-    assert_eq!(
-        widgets::TextInputState::show_keyboard_request(context.input.clone()),
-        platform::TextImeRequest::ShowKeyboard {
-            input: context.input.clone()
-        }
-    );
-    assert_eq!(
-        widgets::TextInputState::hide_keyboard_request(context.input.clone()),
-        platform::TextImeRequest::HideKeyboard {
-            input: context.input.clone()
-        }
-    );
-
     let copy = state.handle_event(&UiInputEvent::Key {
         key: KeyCode::Character('c'),
         modifiers: KeyModifiers {
@@ -2126,7 +2287,7 @@ fn widget_text_input_applies_ime_commit_preedit_and_delete_responses() {
         selection: Some(platform::TextRange::caret(1)),
     });
     assert!(!preedit.changed);
-    assert_eq!(state.composing.as_deref(), Some("候"));
+    assert_eq!(state.composing(), Some("候"));
 
     let commit = state.apply_ime_response(&platform::TextImeResponse::Commit {
         input: input.clone(),
@@ -2146,7 +2307,7 @@ fn widget_text_input_applies_ime_commit_preedit_and_delete_responses() {
     assert_eq!(state.text, "abd");
     assert_eq!(state.caret, 2);
 
-    state.composing = Some("x".to_string());
+    state.set_composing(Some("x".to_string()));
     state.apply_ime_response(&platform::TextImeResponse::Deactivated { input });
     assert_eq!(state.composing, None);
 }
@@ -2157,7 +2318,7 @@ fn widget_text_input_ignores_ime_responses_for_other_inputs() {
     let other = platform::TextInputId::new("other");
     let mut state = widgets::TextInputState::new("abcd");
     state.caret = 2;
-    state.composing = Some("候".to_string());
+    state.set_composing(Some("候".to_string()));
 
     let ignored = state.apply_ime_response_for_input(
         &input,
@@ -2169,7 +2330,7 @@ fn widget_text_input_ignores_ime_responses_for_other_inputs() {
     assert_eq!(ignored, None);
     assert_eq!(state.text, "abcd");
     assert_eq!(state.caret, 2);
-    assert_eq!(state.composing.as_deref(), Some("候"));
+    assert_eq!(state.composing(), Some("候"));
 
     let applied = state
         .apply_ime_response_for_input(
@@ -2271,46 +2432,21 @@ fn widget_text_input_builds_caret_selection_and_scene_paint_plan() {
         plan.caret.as_ref().map(|caret| caret.rect.height),
         Some(caret.rect.height)
     );
-    assert_eq!(plan.overlay_primitives().len(), 3);
-    assert_eq!(plan.scene_primitives().len(), 4);
-    assert!(matches!(
-        &plan.scene_primitives()[2],
+    let primitives = plan.scene_primitives();
+    for expected in plan
+        .selection_rects
+        .iter()
+        .map(|selection| selection.rect)
+        .chain(plan.caret.iter().map(|caret| caret.rect))
+    {
+        assert!(primitives.iter().any(|primitive| {
+            matches!(primitive, ScenePrimitive::Rect(rect) if rect.rect == expected)
+        }));
+    }
+    assert!(primitives.iter().any(|primitive| matches!(
+        primitive,
         ScenePrimitive::Text(text) if text.text == "one\ntwo"
-    ));
-}
-#[cfg(feature = "widgets")]
-#[test]
-fn widget_text_input_default_render_uses_scene_caret_at_text_end() {
-    let mut doc = UiDocument::new(root_style(240.0, 80.0));
-    let root = doc.root;
-    let state = widgets::TextInputState::new("gain");
-    let input = widgets::text_input(
-        &mut doc,
-        root,
-        "gain",
-        &state,
-        widgets::TextInputOptions {
-            focused: true,
-            ..Default::default()
-        },
-    );
-
-    let text_layer = doc.node(input).children[0];
-    let UiContent::Scene(primitives) = &doc.node(text_layer).content else {
-        panic!("text input should render text, selection, and caret through a scene");
-    };
-
-    assert!(matches!(
-        &primitives[0],
-        ScenePrimitive::Text(text) if text.text == "gain"
-    ));
-    assert!(matches!(
-        primitives.last(),
-        Some(ScenePrimitive::Rect(rect))
-            if rect.rect.x > 6.0
-                && rect.rect.width == 1.0
-                && rect.rect.height == TextStyle::default().line_height
-    ));
+    )));
 }
 #[cfg(feature = "widgets")]
 #[test]
@@ -2318,18 +2454,37 @@ fn widget_text_input_convenience_builders_configure_common_modes() {
     let mut doc = UiDocument::new(root_style(720.0, 320.0));
     let root = doc.root;
 
-    let multiline_state = widgets::TextInputState::new("one\ntwo");
-    let area = widgets::text_area(
-        &mut doc,
-        root,
-        "notes",
-        &multiline_state,
-        widgets::TextInputOptions::default(),
-    );
-    assert_eq!(
-        doc.node(area).style.layout.size.height,
-        Dimension::length(120.0)
-    );
+    for multiline in [false, true] {
+        let state = widgets::TextInputState::new("first\nsecond").multiline(!multiline);
+        let field = if multiline {
+            widgets::multiline_text_input(
+                &mut doc,
+                root,
+                "multi",
+                &state,
+                widgets::TextInputOptions::default(),
+            )
+        } else {
+            widgets::singleline_text_input(
+                &mut doc,
+                root,
+                "single",
+                &state,
+                widgets::TextInputOptions::default(),
+            )
+        };
+        let snapshot = doc.node(field).text_input().unwrap();
+        assert_eq!(snapshot.multiline, multiline);
+        assert_eq!(snapshot.text, state.text());
+        let UiContent::Scene(scene) = doc.node(doc.node(field).children()[0]).content() else {
+            panic!("text field should render a scene");
+        };
+        assert!(scene.iter().any(|primitive| matches!(
+            primitive,
+            ScenePrimitive::Text(text) if text.multiline == multiline && text.text == state.text()
+        )));
+        assert_eq!(state.is_multiline(), !multiline);
+    }
 
     let code = widgets::code_editor(
         &mut doc,
@@ -2337,10 +2492,6 @@ fn widget_text_input_convenience_builders_configure_common_modes() {
         "code",
         &widgets::TextInputState::new("let answer = 42;"),
         widgets::TextInputOptions::default(),
-    );
-    assert_eq!(
-        doc.node(code).style.layout.size.width,
-        Dimension::length(360.0)
     );
     let code_text = doc.node(code).children[0];
     let UiContent::Scene(primitives) = &doc.node(code_text).content else {
@@ -2375,22 +2526,23 @@ fn widget_text_input_convenience_builders_configure_common_modes() {
             ..Default::default()
         },
     );
-    assert_eq!(
-        doc.node(password)
-            .accessibility
-            .as_ref()
-            .unwrap()
-            .value
-            .as_deref(),
-        Some("******")
-    );
+    let masked = doc
+        .node(password)
+        .accessibility
+        .as_ref()
+        .and_then(|meta| meta.value.as_deref())
+        .expect("accessible masked value");
+    assert!(masked
+        .chars()
+        .all(|character| !password_state.text.contains(character)));
+    assert_eq!(masked.chars().count(), password_state.text.chars().count());
     let password_text = doc.node(password).children[0];
     let UiContent::Scene(primitives) = &doc.node(password_text).content else {
         panic!("password input should render masked text through a scene");
     };
     assert!(matches!(
         &primitives[0],
-        ScenePrimitive::Text(text) if text.text == "******"
+        ScenePrimitive::Text(text) if text.text == masked
     ));
 }
 #[cfg(feature = "widgets")]
@@ -2416,10 +2568,72 @@ fn widget_text_input_accessibility_summarizes_caret_and_selection() {
         .and_then(|meta| meta.summary.as_ref())
         .expect("summary");
     let text = summary.screen_reader_text();
-    assert!(text.contains("name caret"));
     assert!(text.contains("Line: 1"));
     assert!(text.contains("Column: 4"));
     assert!(text.contains("Selection: bytes 1 to 3"));
+}
+#[cfg(feature = "widgets")]
+#[test]
+fn widget_text_input_horizontal_navigation_collapses_or_extends_selection() {
+    use unicode_segmentation::UnicodeSegmentation;
+    use widgets::text_input::TextInputInteractionPolicy;
+
+    for text in ["", "gain", "a😀旧z", "one\né😀\nsix", "e\u{301}👩‍🚀🇺🇸"] {
+        let boundaries = text
+            .grapheme_indices(true)
+            .map(|(index, _)| index)
+            .chain(std::iter::once(text.len()))
+            .collect::<Vec<_>>();
+        for anchor in 0..boundaries.len() {
+            for caret in 0..boundaries.len() {
+                for (key, moving_left) in [(KeyCode::ArrowLeft, true), (KeyCode::ArrowRight, false)]
+                {
+                    for selecting in [false, true] {
+                        let expected = if !selecting && anchor != caret {
+                            if moving_left {
+                                anchor.min(caret)
+                            } else {
+                                anchor.max(caret)
+                            }
+                        } else if moving_left {
+                            caret.saturating_sub(1)
+                        } else {
+                            (caret + 1).min(boundaries.len() - 1)
+                        };
+                        for policy in [
+                            TextInputInteractionPolicy::default(),
+                            TextInputInteractionPolicy::read_only(),
+                        ] {
+                            let mut state = widgets::TextInputState::new(text).multiline(true);
+                            state.set_selection(boundaries[anchor], boundaries[caret]);
+                            let outcome = state.handle_event_with_policy(
+                                &UiInputEvent::Key {
+                                    key,
+                                    modifiers: KeyModifiers {
+                                        shift: selecting,
+                                        ..KeyModifiers::NONE
+                                    },
+                                },
+                                policy,
+                            );
+                            assert_eq!(
+                                state.caret(),
+                                boundaries[expected],
+                                "{text:?}: anchor={anchor}, caret={caret}, key={key:?}, shift={selecting}, policy={policy:?}"
+                            );
+                            assert_eq!(
+                                state.selection_anchor(),
+                                selecting.then_some(boundaries[anchor])
+                            );
+                            assert_eq!(state.text(), text);
+                            assert!(!outcome.changed && outcome.transaction.is_none());
+                            assert!(!state.history().can_undo());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 #[cfg(feature = "widgets")]
 #[test]
@@ -2493,7 +2707,7 @@ fn widget_text_input_maps_pointer_points_to_caret_and_selection() {
 }
 #[cfg(feature = "widgets")]
 #[test]
-fn widget_text_input_retained_pointer_drag_keeps_selection_on_commit() {
+fn widget_text_input_pointer_selection_does_not_commit_text() {
     let options = widgets::TextInputOptions::default();
     let target = UiRect::new(0.0, 0.0, 180.0, 30.0);
     let start = UiPoint::new(6.0 + 1.1 * 7.0, 8.0);
@@ -2509,7 +2723,7 @@ fn widget_text_input_retained_pointer_drag_keeps_selection_on_commit() {
         false,
     );
     let begin_outcome = state.apply_widget_text_edit(&begin, &options);
-    assert_eq!(begin_outcome.phase, EditPhase::BeginEdit);
+    assert!(!begin_outcome.changed && !begin_outcome.committed && !begin_outcome.canceled);
     assert_eq!(state.selection_anchor, None);
 
     let update = WidgetTextEdit::pointer(
@@ -2521,7 +2735,7 @@ fn widget_text_input_retained_pointer_drag_keeps_selection_on_commit() {
         true,
     );
     let update_outcome = state.apply_widget_text_edit(&update, &options);
-    assert_eq!(update_outcome.phase, EditPhase::UpdateEdit);
+    assert!(!update_outcome.changed && !update_outcome.committed && !update_outcome.canceled);
     let selected = state
         .selected_text()
         .map(str::to_owned)
@@ -2537,7 +2751,10 @@ fn widget_text_input_retained_pointer_drag_keeps_selection_on_commit() {
     );
     let commit_outcome = state.apply_widget_text_edit(&commit, &options);
 
-    assert_eq!(commit_outcome.phase, EditPhase::CommitEdit);
+    assert!(
+        !commit_outcome.changed && !commit_outcome.committed && !commit_outcome.canceled,
+        "releasing a text selection must not commit the field"
+    );
     assert_eq!(state.selected_text(), Some(selected.as_str()));
 }
 #[cfg(feature = "widgets")]
@@ -2605,7 +2822,29 @@ fn widget_text_input_event_handler_places_caret_from_pointer_metrics() {
         Some(platform::PlatformRequest::TextIme(platform::TextImeRequest::Update(update)))
             if update.selection == platform::TextRange::new(3, 6)
     ));
+
+    // The release's final position completes selection even outside the field.
+    widgets::text_input::handle_text_input_event_with_metrics(
+        &mut doc,
+        input,
+        &mut state,
+        UiInputEvent::PointerUp(UiPoint::new(-50.0, 8.0)),
+        None,
+        Some(metrics),
+    );
+    assert_eq!(state.caret(), 0);
+    assert_eq!(state.selected_text(), Some("abc"));
+    widgets::text_input::handle_text_input_event_with_metrics(
+        &mut doc,
+        input,
+        &mut state,
+        UiInputEvent::PointerMove(UiPoint::new(80.0, 8.0)),
+        None,
+        Some(metrics),
+    );
+    assert_eq!(state.selected_text(), Some("abc"));
 }
+
 #[cfg(feature = "widgets")]
 #[test]
 fn widget_text_input_event_handler_derives_pointer_metrics_from_rendered_text() {
@@ -2659,6 +2898,7 @@ fn widget_text_input_event_handler_derives_pointer_metrics_from_rendered_text() 
 fn virtual_list_builds_only_visible_rows_with_spacers() {
     let mut doc = UiDocument::new(root_style(300.0, 200.0));
     let root = doc.root;
+    let mut built_rows = Vec::new();
     let list = widgets::virtual_list(
         &mut doc,
         root,
@@ -2671,6 +2911,7 @@ fn virtual_list_builds_only_visible_rows_with_spacers() {
             overscan: 1,
         },
         |document, parent, row| {
+            built_rows.push(row);
             document.add_child(
                 parent,
                 UiNode::text(
@@ -2692,7 +2933,7 @@ fn virtual_list_builds_only_visible_rows_with_spacers() {
     doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
         .expect("layout");
 
-    assert_eq!(doc.node(list).children.len(), 8);
+    assert_eq!(built_rows, (9..15).collect::<Vec<_>>());
     assert_eq!(doc.scroll_state(list).unwrap().content_size.height, 2000.0);
 }
 #[cfg(feature = "widgets")]

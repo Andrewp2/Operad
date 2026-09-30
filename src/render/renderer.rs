@@ -7,6 +7,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::accessibility::AccessibilityPreferences;
 use crate::host::HostNodeInteraction;
@@ -70,7 +71,8 @@ impl PixelRect {
     }
 
     pub const fn contains(self, size: PixelSize) -> bool {
-        self.right() <= size.width && self.bottom() <= size.height
+        self.x as u64 + self.width as u64 <= size.width as u64
+            && self.y as u64 + self.height as u64 <= size.height as u64
     }
 }
 
@@ -133,20 +135,27 @@ impl From<image::ImageError> for ImageDecodeError {
 pub struct ResourceUpdate {
     pub descriptor: ResourceDescriptor,
     pub dirty_rect: Option<PixelRect>,
-    pub bytes: Vec<u8>,
+    /// Immutable pixel payload shared by documents, render requests, and retries.
+    /// Cloning an update does not copy these bytes. Constructors accept an owned
+    /// vector or an existing `Arc<[u8]>`; vectors are converted once on entry.
+    pub bytes: Arc<[u8]>,
 }
 
 impl ResourceUpdate {
-    pub fn full(descriptor: ResourceDescriptor, bytes: Vec<u8>) -> Self {
+    pub fn full(descriptor: ResourceDescriptor, bytes: impl Into<Arc<[u8]>>) -> Self {
         Self {
             descriptor,
             dirty_rect: None,
-            bytes,
+            bytes: bytes.into(),
         }
     }
 
     /// Creates a full RGBA8 image upload from decoded app pixels.
-    pub fn rgba8_image(handle: impl Into<ResourceHandle>, size: PixelSize, bytes: Vec<u8>) -> Self {
+    pub fn rgba8_image(
+        handle: impl Into<ResourceHandle>,
+        size: PixelSize,
+        bytes: impl Into<Arc<[u8]>>,
+    ) -> Self {
         Self::full(
             ResourceDescriptor::new(handle, size, ResourceFormat::Rgba8),
             bytes,
@@ -154,7 +163,11 @@ impl ResourceUpdate {
     }
 
     /// Creates a full BGRA8 image upload from decoded app pixels.
-    pub fn bgra8_image(handle: impl Into<ResourceHandle>, size: PixelSize, bytes: Vec<u8>) -> Self {
+    pub fn bgra8_image(
+        handle: impl Into<ResourceHandle>,
+        size: PixelSize,
+        bytes: impl Into<Arc<[u8]>>,
+    ) -> Self {
         Self::full(
             ResourceDescriptor::new(handle, size, ResourceFormat::Bgra8),
             bytes,
@@ -165,7 +178,7 @@ impl ResourceUpdate {
     pub fn alpha8_image(
         handle: impl Into<ResourceHandle>,
         size: PixelSize,
-        bytes: Vec<u8>,
+        bytes: impl Into<Arc<[u8]>>,
     ) -> Self {
         Self::full(
             ResourceDescriptor::new(handle, size, ResourceFormat::Alpha8),
@@ -191,11 +204,20 @@ impl ResourceUpdate {
         ))
     }
 
-    pub fn partial(descriptor: ResourceDescriptor, dirty_rect: PixelRect, bytes: Vec<u8>) -> Self {
+    /// Replaces a rectangle within an existing resource, preserving other pixels.
+    ///
+    /// Establish the resource with a full upload first. Partial uploads must retain
+    /// its size and format; use a full upload to replace either one. The rectangle
+    /// must be nonempty and contained within the resource's dimensions.
+    pub fn partial(
+        descriptor: ResourceDescriptor,
+        dirty_rect: PixelRect,
+        bytes: impl Into<Arc<[u8]>>,
+    ) -> Self {
         Self {
             descriptor,
             dirty_rect: Some(dirty_rect),
-            bytes,
+            bytes: bytes.into(),
         }
     }
 
@@ -351,6 +373,8 @@ pub struct RenderOptions {
     pub deterministic: bool,
     pub allow_partial_updates: bool,
     pub collect_gpu_timing: bool,
+    /// Literal target clear color, including alpha. Defaults to opaque dark gray
+    /// (18, 18, 18); use `ColorRgba::TRANSPARENT` for a transparent background.
     pub clear_color: ColorRgba,
     pub accessibility_preferences: AccessibilityPreferences,
 }
@@ -362,7 +386,7 @@ impl Default for RenderOptions {
             deterministic: false,
             allow_partial_updates: true,
             collect_gpu_timing: false,
-            clear_color: ColorRgba::TRANSPARENT,
+            clear_color: ColorRgba::new(18, 18, 18, 255),
             accessibility_preferences: AccessibilityPreferences::DEFAULT,
         }
     }
@@ -443,33 +467,54 @@ impl RenderFrameRequest {
         PaintBatcher::default().batch(&self.paint)
     }
 
+    /// Borrow canvas instances so preparation can select work before taking
+    /// ownership of shader programs and context descriptors.
+    pub(crate) fn canvas_items(&self) -> impl Iterator<Item = (&PaintItem, &CanvasContent)> {
+        self.paint.iter_recursive().filter_map(|item| {
+            let PaintKind::Canvas(canvas) = &item.kind else {
+                return None;
+            };
+            Some((item, canvas))
+        })
+    }
+
+    /// Discover canvas instances in paint order, including composited children.
+    /// Requests retain each child's paint-space geometry; the backend applies
+    /// its enclosing layers' transforms, opacity, and clipping when compositing.
     pub fn canvas_requests(&self) -> Vec<CanvasRenderRequest> {
-        self.paint
-            .items
-            .iter()
-            .filter_map(CanvasRenderRequest::from_paint_item)
+        self.canvas_items()
+            .map(|(item, canvas)| CanvasRenderRequest::from_canvas(item, canvas))
             .collect()
     }
 
     pub fn canvas_host_capture_plans(&self) -> Vec<CanvasHostCapturePlan> {
-        self.canvas_requests()
-            .into_iter()
-            .filter(|request| request.requires_host_input_capture())
-            .map(|request| request.host_capture_plan())
+        self.canvas_items()
+            .filter_map(|(item, canvas)| {
+                canvas
+                    .requires_host_input_capture()
+                    .then(|| CanvasHostCapturePlan::from_canvas(item.node, item.rect, canvas))
+            })
             .collect()
     }
 
+    /// Initial cursor acquisition for this frame's canvas set. Use
+    /// `CanvasHostCaptureState::sync` for transitions across frames.
     pub fn canvas_platform_requests(&self) -> Vec<PlatformRequest> {
-        self.canvas_host_capture_plans()
-            .into_iter()
-            .flat_map(|plan| plan.platform_requests())
-            .collect()
+        if self
+            .canvas_items()
+            .any(|(_, canvas)| canvas.interaction.pointer_lock)
+        {
+            pointer_lock_platform_requests(true)
+        } else {
+            Vec::new()
+        }
     }
 
+    /// Discover image instances, including composited children, preserving
+    /// paint order and each child's paint-space geometry.
     pub fn image_requests(&self) -> Vec<ImageRenderRequest> {
         self.paint
-            .items
-            .iter()
+            .iter_recursive()
             .filter_map(ImageRenderRequest::from_paint_item)
             .collect()
     }
@@ -499,7 +544,11 @@ impl CanvasRenderRequest {
         let PaintKind::Canvas(canvas) = &item.kind else {
             return None;
         };
-        Some(Self {
+        Some(Self::from_canvas(item, canvas))
+    }
+
+    pub(crate) fn from_canvas(item: &PaintItem, canvas: &CanvasContent) -> Self {
+        Self {
             node: item.node,
             canvas: canvas.clone(),
             rect: item.rect,
@@ -508,7 +557,7 @@ impl CanvasRenderRequest {
             layer_order: item.layer_order,
             opacity: item.opacity,
             transform: item.transform,
-        })
+        }
     }
 
     pub const fn requires_host_input_capture(&self) -> bool {
@@ -538,11 +587,15 @@ pub struct CanvasHostCapturePlan {
 
 impl CanvasHostCapturePlan {
     pub fn from_request(request: &CanvasRenderRequest) -> Self {
-        let interaction = request.canvas.interaction;
+        Self::from_canvas(request.node, request.rect, &request.canvas)
+    }
+
+    fn from_canvas(node: UiNodeId, rect: UiRect, canvas: &CanvasContent) -> Self {
+        let interaction = canvas.interaction;
         Self {
-            node: request.node,
-            key: request.canvas.key.clone(),
-            rect: request.rect,
+            node,
+            key: canvas.key.clone(),
+            rect,
             pointer_capture: interaction.pointer_capture,
             keyboard_capture: interaction.keyboard_capture,
             wheel_capture: interaction.wheel_capture,
@@ -560,21 +613,16 @@ impl CanvasHostCapturePlan {
     }
 
     pub fn platform_requests(&self) -> Vec<PlatformRequest> {
-        let Some(_rect) = self.cursor_confine_rect() else {
-            return Vec::new();
-        };
-        vec![
-            PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
-            PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
-        ]
+        if self.pointer_lock {
+            pointer_lock_platform_requests(true)
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn release_platform_requests(&self) -> Vec<PlatformRequest> {
         if self.pointer_lock {
-            vec![
-                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::None)),
-                PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
-            ]
+            pointer_lock_platform_requests(false)
         } else {
             Vec::new()
         }
@@ -669,24 +717,23 @@ impl CanvasHostCaptureId {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CanvasHostCaptureState {
     active: Vec<CanvasHostCapturePlan>,
+    // Retire input owners immediately, but reconcile the shared cursor lock
+    // after the complete replacement plan set is known in sync().
+    pending_releases: Vec<CanvasHostCapturePlan>,
 }
 
 impl CanvasHostCaptureState {
-    pub(crate) fn remap_targets(
-        &mut self,
-        mut resolve: impl FnMut(UiNodeId) -> Option<UiNodeId>,
-    ) -> Vec<PlatformRequest> {
-        let mut releases = Vec::new();
+    pub(crate) fn remap_targets(&mut self, mut resolve: impl FnMut(UiNodeId) -> Option<UiNodeId>) {
+        let releases = &mut self.pending_releases;
         self.active.retain_mut(|plan| {
             if let Some(node) = resolve(plan.node) {
                 plan.node = node;
                 true
             } else {
-                releases.extend(plan.release_platform_requests());
+                releases.push(plan.clone());
                 false
             }
         });
-        releases
     }
 
     pub fn new() -> Self {
@@ -700,31 +747,49 @@ impl CanvasHostCaptureState {
     pub fn active_plan(&self, id: &CanvasHostCaptureId) -> Option<&CanvasHostCapturePlan> {
         self.active
             .iter()
-            .find(|plan| CanvasHostCaptureId::from_plan(plan) == *id)
+            .find(|plan| plan.node == id.node && plan.key == id.key)
     }
 
     pub fn is_empty(&self) -> bool {
         self.active.is_empty()
     }
 
+    /// Reconcile all canvas owners before changing the host's shared cursor lock.
     pub fn sync(
         &mut self,
         plans: impl IntoIterator<Item = CanvasHostCapturePlan>,
     ) -> CanvasHostCaptureTransition {
         let next = normalized_capture_plans(plans);
-        let previous = self.active.clone();
+        let was_locked = self
+            .active
+            .iter()
+            .chain(&self.pending_releases)
+            .any(|plan| plan.pointer_lock);
+        let locked = next.iter().any(|plan| plan.pointer_lock);
         let mut transition = CanvasHostCaptureTransition::new();
+        transition.pointer_lock_change = (was_locked != locked).then_some(locked);
+        transition
+            .changes
+            .extend(
+                self.pending_releases
+                    .drain(..)
+                    .map(|plan| CanvasHostCaptureChange {
+                        kind: CanvasHostCaptureChangeKind::Released,
+                        id: CanvasHostCaptureId::from_plan(&plan),
+                        previous: Some(plan),
+                        current: None,
+                    }),
+            );
 
-        for previous_plan in &previous {
-            let id = CanvasHostCaptureId::from_plan(previous_plan);
+        for previous_plan in &self.active {
             match next
                 .iter()
-                .find(|plan| CanvasHostCaptureId::from_plan(plan) == id)
+                .find(|plan| same_capture_owner(plan, previous_plan))
             {
                 Some(next_plan) if next_plan != previous_plan => {
                     transition.changes.push(CanvasHostCaptureChange {
                         kind: CanvasHostCaptureChangeKind::Updated,
-                        id,
+                        id: CanvasHostCaptureId::from_plan(previous_plan),
                         previous: Some(previous_plan.clone()),
                         current: Some(next_plan.clone()),
                     });
@@ -732,7 +797,7 @@ impl CanvasHostCaptureState {
                 None => {
                     transition.changes.push(CanvasHostCaptureChange {
                         kind: CanvasHostCaptureChangeKind::Released,
-                        id,
+                        id: CanvasHostCaptureId::from_plan(previous_plan),
                         previous: Some(previous_plan.clone()),
                         current: None,
                     });
@@ -742,14 +807,14 @@ impl CanvasHostCaptureState {
         }
 
         for next_plan in &next {
-            let id = CanvasHostCaptureId::from_plan(next_plan);
-            if previous
+            if self
+                .active
                 .iter()
-                .all(|plan| CanvasHostCaptureId::from_plan(plan) != id)
+                .all(|plan| !same_capture_owner(plan, next_plan))
             {
                 transition.changes.push(CanvasHostCaptureChange {
                     kind: CanvasHostCaptureChangeKind::Acquired,
-                    id,
+                    id: CanvasHostCaptureId::from_plan(next_plan),
                     previous: None,
                     current: Some(next_plan.clone()),
                 });
@@ -780,6 +845,7 @@ pub struct CanvasHostCaptureChange {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CanvasHostCaptureTransition {
     pub changes: Vec<CanvasHostCaptureChange>,
+    pointer_lock_change: Option<bool>,
 }
 
 impl CanvasHostCaptureTransition {
@@ -788,32 +854,15 @@ impl CanvasHostCaptureTransition {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.changes.is_empty()
+        self.changes.is_empty() && self.pointer_lock_change.is_none()
     }
 
+    /// Cursor requests for the complete capture set. Individual canvas changes
+    /// do not release or reacquire a lock still required by another owner.
     pub fn platform_requests(&self) -> Vec<PlatformRequest> {
-        let mut requests = Vec::new();
-        for change in &self.changes {
-            if matches!(
-                change.kind,
-                CanvasHostCaptureChangeKind::Updated | CanvasHostCaptureChangeKind::Released
-            ) {
-                if let Some(previous) = &change.previous {
-                    requests.extend(previous.release_platform_requests());
-                }
-            }
-        }
-        for change in &self.changes {
-            if matches!(
-                change.kind,
-                CanvasHostCaptureChangeKind::Acquired | CanvasHostCaptureChangeKind::Updated
-            ) {
-                if let Some(current) = &change.current {
-                    requests.extend(current.platform_requests());
-                }
-            }
-        }
-        requests
+        self.pointer_lock_change
+            .map(pointer_lock_platform_requests)
+            .unwrap_or_default()
     }
 
     pub fn platform_service_requests(
@@ -887,7 +936,7 @@ impl CanvasHostCaptureDiagnosticReport {
             transition
                 .changes
                 .iter()
-                .map(|change| transition_capture_diagnostic(change, capabilities)),
+                .map(|change| transition_capture_diagnostic(change, transition, capabilities)),
         );
         report
     }
@@ -967,23 +1016,32 @@ fn normalized_capture_plans(
         if !plan.requires_host_capture() {
             continue;
         }
-        let id = CanvasHostCaptureId::from_plan(&plan);
         if let Some(existing) = normalized
             .iter()
-            .position(|existing| CanvasHostCaptureId::from_plan(existing) == id)
+            .position(|existing| same_capture_owner(existing, &plan))
         {
             normalized[existing] = plan;
         } else {
             normalized.push(plan);
         }
     }
-    normalized.sort_by(|a, b| {
-        capture_id_order(
-            &CanvasHostCaptureId::from_plan(a),
-            &CanvasHostCaptureId::from_plan(b),
-        )
-    });
+    normalized.sort_by(|a, b| a.node.0.cmp(&b.node.0).then_with(|| a.key.cmp(&b.key)));
     normalized
+}
+
+fn same_capture_owner(a: &CanvasHostCapturePlan, b: &CanvasHostCapturePlan) -> bool {
+    a.node == b.node && a.key == b.key
+}
+
+fn pointer_lock_platform_requests(locked: bool) -> Vec<PlatformRequest> {
+    vec![
+        PlatformRequest::Cursor(CursorRequest::SetGrab(if locked {
+            CursorGrabMode::Locked
+        } else {
+            CursorGrabMode::None
+        })),
+        PlatformRequest::Cursor(CursorRequest::SetVisible(!locked)),
+    ]
 }
 
 fn change_order(kind: CanvasHostCaptureChangeKind) -> u8 {
@@ -1016,9 +1074,25 @@ fn active_capture_diagnostic(plan: CanvasHostCapturePlan) -> CanvasHostCaptureDi
 
 fn transition_capture_diagnostic(
     change: &CanvasHostCaptureChange,
+    transition: &CanvasHostCaptureTransition,
     capabilities: PlatformServiceCapabilities,
 ) -> CanvasHostCaptureDiagnostic {
-    let platform_requests = capture_platform_requests_for_change(change);
+    let affected = match transition.pointer_lock_change {
+        Some(true) => change
+            .current
+            .as_ref()
+            .is_some_and(|plan| plan.pointer_lock),
+        Some(false) => change
+            .previous
+            .as_ref()
+            .is_some_and(|plan| plan.pointer_lock),
+        None => false,
+    };
+    let platform_requests = if affected {
+        transition.platform_requests()
+    } else {
+        Vec::new()
+    };
     let unsupported_requests = platform_requests
         .iter()
         .filter(|request| !capabilities.supports(request))
@@ -1046,27 +1120,6 @@ fn transition_capture_diagnostic(
         unsupported_requests,
         platform_responses: Vec::new(),
     }
-}
-
-fn capture_platform_requests_for_change(change: &CanvasHostCaptureChange) -> Vec<PlatformRequest> {
-    let mut requests = Vec::new();
-    if matches!(
-        change.kind,
-        CanvasHostCaptureChangeKind::Updated | CanvasHostCaptureChangeKind::Released
-    ) {
-        if let Some(previous) = &change.previous {
-            requests.extend(previous.release_platform_requests());
-        }
-    }
-    if matches!(
-        change.kind,
-        CanvasHostCaptureChangeKind::Acquired | CanvasHostCaptureChangeKind::Updated
-    ) {
-        if let Some(current) = &change.current {
-            requests.extend(current.platform_requests());
-        }
-    }
-    requests
 }
 
 fn capture_diagnostic_reason(
@@ -2066,6 +2119,10 @@ pub enum RenderError {
     MissingCanvasRenderer(String),
     MissingImageRenderer(String),
     InvalidResourceUpdate(String),
+    /// Presentation is temporarily unavailable; retain uploads and retry later.
+    /// The renderer must return this before applying the request's resource
+    /// updates, so retrying them remains valid after size or format changes.
+    SurfaceUnavailable(String),
     Backend(String),
 }
 
@@ -2090,7 +2147,7 @@ impl std::fmt::Display for RenderError {
             Self::InvalidResourceUpdate(reason) => {
                 write!(formatter, "invalid render resource update: {reason}")
             }
-            Self::Backend(reason) => formatter.write_str(reason),
+            Self::SurfaceUnavailable(reason) | Self::Backend(reason) => formatter.write_str(reason),
         }
     }
 }
@@ -2172,13 +2229,8 @@ fn union_rect(a: UiRect, b: UiRect) -> UiRect {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
-    use crate::platform::{
-        BackendAdapterKind, ImageHandle, PlatformRequestId, RenderingCapabilities,
-        ResourceCapabilities, ResourceDomain,
-    };
+    use crate::platform::{ImageHandle, PlatformRequestId};
     use crate::{
         CanvasContent, CanvasInteractionPolicy, CanvasRenderMode, ImageAlignment, ImageFit,
         PaintImage, PaintTransform, ShaderEffect, StrokeStyle, TextContent, TextStyle, UiNodeId,
@@ -2200,22 +2252,28 @@ mod tests {
     }
 
     #[test]
-    fn render_options_default_to_neutral_accessibility_preferences() {
-        assert_eq!(
-            RenderOptions::default().accessibility_preferences,
-            AccessibilityPreferences::DEFAULT
-        );
-    }
-
-    #[test]
-    fn rendered_images_default_to_srgb_pixels() {
-        let image = RenderedImage::new(
-            PixelSize::new(1, 1),
-            ResourceFormat::Rgba8,
-            vec![128, 64, 32, 255],
-        );
-
-        assert_eq!(image.color_space, PixelColorSpace::Srgb);
+    fn pixel_rect_bounds_reject_overflow_on_either_axis() {
+        for extent in [0, 1, 8, u32::MAX] {
+            for origin in [0, 1, 7, u32::MAX - 1, u32::MAX] {
+                for length in [0, 1, 2, 8, u32::MAX] {
+                    let expected = extent
+                        .checked_sub(origin)
+                        .is_some_and(|available| length <= available);
+                    for (rect, size) in [
+                        (
+                            PixelRect::new(origin, 0, length, 1),
+                            PixelSize::new(extent, 1),
+                        ),
+                        (
+                            PixelRect::new(0, origin, 1, length),
+                            PixelSize::new(1, extent),
+                        ),
+                    ] {
+                        assert_eq!(rect.contains(size), expected, "{rect:?} within {size:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2288,7 +2346,7 @@ mod tests {
         assert_eq!(png.descriptor.handle.id().key, "photos.sample.png");
         assert_eq!(png.descriptor.size, PixelSize::new(2, 2));
         assert_eq!(png.descriptor.format, ResourceFormat::Rgba8);
-        assert_eq!(png.bytes, rgba);
+        assert_eq!(png.bytes.as_ref(), rgba.as_slice());
         assert!(png.has_expected_byte_len());
 
         let jpeg_rgb = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
@@ -2315,9 +2373,10 @@ mod tests {
         let raw = ResourceUpdate::rgba8_image(
             ImageHandle::app("photos.raw"),
             PixelSize::new(2, 2),
-            rgba.clone(),
+            png.bytes.clone(),
         );
-        assert_eq!(raw.bytes, rgba);
+        assert_eq!(raw.bytes.as_ref(), rgba.as_slice());
+        assert!(Arc::ptr_eq(&raw.bytes, &png.bytes));
         assert!(raw.has_expected_byte_len());
     }
 
@@ -2508,6 +2567,23 @@ mod tests {
                 PlatformServiceCapabilityKind::CursorVisibility
             ))
         );
+        let mut request = request;
+        request.paint.items.push(paint_item(
+            8,
+            UiRect::new(340.0, 16.0, 200.0, 180.0),
+            PaintKind::Canvas(
+                CanvasContent::new("second.viewport")
+                    .interaction(CanvasInteractionPolicy::NATIVE_VIEWPORT),
+            ),
+        ));
+        assert_eq!(
+            request.canvas_platform_requests(),
+            vec![
+                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
+                PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+            ],
+            "multiple initial owners acquire the shared cursor once"
+        );
     }
 
     #[test]
@@ -2555,6 +2631,358 @@ mod tests {
                 PlatformServiceCapabilityKind::CursorGrab
             ))
         );
+    }
+
+    #[test]
+    fn canvas_host_capture_extraction_preserves_policies_identity_and_paint_order() {
+        for flags in 0..32 {
+            let policy = CanvasInteractionPolicy {
+                pointer_capture: flags & 1 != 0,
+                keyboard_capture: flags & 2 != 0,
+                wheel_capture: flags & 4 != 0,
+                pointer_lock: flags & 8 != 0,
+                domain_hit_testing: flags & 16 != 0,
+            };
+            let mut paint = PaintList::default();
+            let mut expected = Vec::new();
+            for (id, interaction) in [(9, policy), (2, CanvasInteractionPolicy::NONE), (5, policy)]
+            {
+                // Capture identity is the canvas key, even when the backing surface differs
+                // or another canvas uses the same key. Capture coordinates remain paint rects.
+                let rect = UiRect::new(id as f32, 12.0, 320.0, 180.0);
+                let canvas = CanvasContent::new("shared.canvas")
+                    .context(crate::CanvasContextDescriptor::gpu_texture("other.surface"))
+                    .wgsl("shader payload is irrelevant to capture")
+                    .interaction(interaction);
+                let mut item = paint_item(id, rect, PaintKind::Canvas(canvas));
+                item.clip_rect = UiRect::new(10.0, 20.0, 30.0, 40.0);
+                item.transform = PaintTransform {
+                    translation: UiPoint::new(50.0, 60.0),
+                    scale: 2.0,
+                };
+                paint.items.push(item);
+                paint.items.push(paint_item(
+                    id + 100,
+                    rect,
+                    PaintKind::Text(TextContent::new("ordinary paint", TextStyle::default())),
+                ));
+                if id != 2 && flags & 15 != 0 {
+                    expected.push(CanvasHostCapturePlan {
+                        node: UiNodeId(id),
+                        key: "shared.canvas".to_string(),
+                        rect,
+                        pointer_capture: policy.pointer_capture,
+                        keyboard_capture: policy.keyboard_capture,
+                        wheel_capture: policy.wheel_capture,
+                        pointer_lock: policy.pointer_lock,
+                        domain_hit_testing: policy.domain_hit_testing,
+                    });
+                }
+            }
+            let viewport = UiSize::new(640.0, 480.0);
+            let request =
+                RenderFrameRequest::new(RenderTarget::window("capture", viewport), viewport, paint);
+            assert_eq!(
+                request.canvas_host_capture_plans(),
+                expected,
+                "flags={flags}"
+            );
+            assert_eq!(
+                request
+                    .canvas_requests()
+                    .iter()
+                    .map(CanvasRenderRequest::host_capture_plan)
+                    .filter(CanvasHostCapturePlan::requires_host_capture)
+                    .collect::<Vec<_>>(),
+                expected,
+                "individual canvas requests must agree with frame capture: flags={flags}"
+            );
+            let cursor_requests = if policy.pointer_lock {
+                vec![
+                    PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
+                    PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
+                ]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(
+                request.canvas_platform_requests(),
+                cursor_requests,
+                "flags={flags}"
+            );
+        }
+    }
+
+    fn nested_resource_frame(
+        depth: usize,
+        policy: CanvasInteractionPolicy,
+    ) -> (
+        RenderFrameRequest,
+        Vec<CanvasRenderRequest>,
+        Vec<ImageRenderRequest>,
+    ) {
+        use crate::PaintCompositorLayer;
+
+        let bounds = UiRect::new(0.0, 0.0, 640.0, 480.0);
+        let layer = |id, paint| {
+            let mut item = paint_item(
+                id,
+                bounds,
+                PaintKind::CompositedLayer(PaintCompositorLayer::new(bounds, paint).opacity(0.75)),
+            );
+            item.transform = PaintTransform {
+                translation: UiPoint::new(12.0, 20.0),
+                scale: 1.5,
+            };
+            item
+        };
+        let leaf = |id: usize, canvas: bool, interaction| {
+            let rect = UiRect::new(id as f32 * 3.0, 12.0, 100.0, 80.0);
+            let kind = if canvas {
+                PaintKind::Canvas(
+                    CanvasContent::new(if id == 2 { "inner" } else { "shared" })
+                        .context(crate::CanvasContextDescriptor::gpu_texture(format!(
+                            "surface.{id}"
+                        )))
+                        .wgsl(format!("program for {id}"))
+                        .interaction(interaction),
+                )
+            } else if id == 1 || id == 6 {
+                PaintKind::ImagePlacement(
+                    PaintImage::new(
+                        if id == 1 {
+                            "nested.placement"
+                        } else {
+                            "image.shared"
+                        },
+                        rect,
+                    )
+                    .fit(ImageFit::Contain)
+                    .align(ImageAlignment::End, ImageAlignment::Start),
+                )
+            } else {
+                PaintKind::Image {
+                    key: "image.shared".to_string(),
+                    tint: Some(ColorRgba::new(120, 180, 255, 255)),
+                }
+            };
+            let mut item = paint_item(id, rect, kind);
+            item.clip_rect = UiRect::new(5.0, 8.0, 150.0, 100.0);
+            item.opacity = 0.8;
+            item.transform = PaintTransform {
+                translation: UiPoint::new(2.0, 4.0),
+                scale: 1.25,
+            };
+            item
+        };
+        let leaves = vec![
+            leaf(9, true, CanvasInteractionPolicy::NONE),
+            leaf(8, false, CanvasInteractionPolicy::NONE),
+            leaf(2, true, CanvasInteractionPolicy::EDITOR),
+            leaf(1, false, CanvasInteractionPolicy::NONE),
+            leaf(5, true, policy),
+            leaf(4, false, CanvasInteractionPolicy::NONE),
+            leaf(7, true, CanvasInteractionPolicy::NONE),
+            leaf(6, false, CanvasInteractionPolicy::NONE),
+        ];
+        let canvases = leaves
+            .iter()
+            .filter_map(CanvasRenderRequest::from_paint_item)
+            .collect();
+        let images = leaves
+            .iter()
+            .filter_map(ImageRenderRequest::from_paint_item)
+            .collect();
+        let mut inner = PaintList {
+            items: leaves[2..6].to_vec(),
+        };
+        for level in 0..depth {
+            inner = PaintList {
+                items: vec![
+                    layer(100 + level * 3, PaintList::default()),
+                    layer(101 + level * 3, inner),
+                    paint_item(
+                        102 + level * 3,
+                        bounds,
+                        PaintKind::Text(TextContent::new("decoration", TextStyle::default())),
+                    ),
+                ],
+            };
+        }
+        let mut paint = PaintList {
+            items: leaves[..2].to_vec(),
+        };
+        paint.items.extend(inner.items);
+        paint.items.extend_from_slice(&leaves[6..]);
+        let viewport = UiSize::new(640.0, 480.0);
+        let request =
+            RenderFrameRequest::new(RenderTarget::window("nested", viewport), viewport, paint)
+                .options(RenderOptions {
+                    scale_factor: 1.5,
+                    ..Default::default()
+                })
+                .node_interaction(
+                    UiNodeId(2),
+                    HostNodeInteraction {
+                        focused: true,
+                        ..Default::default()
+                    },
+                )
+                .node_interaction(
+                    UiNodeId(1),
+                    HostNodeInteraction {
+                        hovered: true,
+                        ..Default::default()
+                    },
+                );
+        (request, canvases, images)
+    }
+
+    #[test]
+    fn composited_resources_preserve_requests_and_capture_lifetimes() {
+        for flags in 0..32 {
+            let policy = CanvasInteractionPolicy {
+                pointer_capture: flags & 1 != 0,
+                keyboard_capture: flags & 2 != 0,
+                wheel_capture: flags & 4 != 0,
+                pointer_lock: flags & 8 != 0,
+                domain_hit_testing: flags & 16 != 0,
+            };
+            let mut capture = CanvasHostCaptureState::new();
+            let (flat, _, _) = nested_resource_frame(0, policy);
+            capture.sync(flat.canvas_host_capture_plans());
+            for depth in [1, 2, 8, 64] {
+                let (request, canvases, images) = nested_resource_frame(depth, policy);
+                assert_eq!(
+                    request.canvas_requests(),
+                    canvases,
+                    "canvas flags={flags}, depth={depth}"
+                );
+                assert_eq!(
+                    request.image_requests(),
+                    images,
+                    "image flags={flags}, depth={depth}"
+                );
+                let plans: Vec<_> = canvases
+                    .iter()
+                    .map(CanvasRenderRequest::host_capture_plan)
+                    .filter(CanvasHostCapturePlan::requires_host_capture)
+                    .collect();
+                assert_eq!(
+                    request.canvas_host_capture_plans(),
+                    plans,
+                    "capture flags={flags}, depth={depth}"
+                );
+                assert_eq!(
+                    request.canvas_platform_requests(),
+                    if policy.pointer_lock {
+                        pointer_lock_platform_requests(true)
+                    } else {
+                        Vec::new()
+                    }
+                );
+                assert!(
+                    capture.sync(request.canvas_host_capture_plans()).is_empty(),
+                    "compositing must not replace input owners: flags={flags}, depth={depth}"
+                );
+                assert_eq!(
+                    capture.active_plans().len(),
+                    1 + usize::from(flags & 15 != 0)
+                );
+            }
+            let mut removed = flat;
+            removed
+                .paint
+                .items
+                .retain(|item| matches!(item.node.0, 9 | 8 | 7 | 6));
+            let released = capture.sync(removed.canvas_host_capture_plans());
+            assert!(capture.is_empty());
+            assert_eq!(released.changes.len(), 1 + usize::from(flags & 15 != 0));
+            assert!(released
+                .changes
+                .iter()
+                .all(|change| change.kind == CanvasHostCaptureChangeKind::Released));
+            assert_eq!(
+                released.platform_requests(),
+                if policy.pointer_lock {
+                    pointer_lock_platform_requests(false)
+                } else {
+                    Vec::new()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn composited_resource_registries_dispatch_every_instance_and_report_missing_handlers() {
+        for depth in [1, 2, 8] {
+            let (request, canvases, images) =
+                nested_resource_frame(depth, CanvasInteractionPolicy::NATIVE_VIEWPORT);
+            let mut canvas_registry = CanvasRenderRegistry::new();
+            canvas_registry.register("shared", RecordingCanvasHandler);
+            canvas_registry.register("inner", RecordingCanvasHandler);
+            let mut canvas_backend = CanvasBackend::default();
+            let report = canvas_registry
+                .render_frame_canvases_strict(&request, &mut canvas_backend)
+                .unwrap();
+            assert_eq!(
+                report
+                    .outcomes
+                    .iter()
+                    .map(|outcome| outcome.request().clone())
+                    .collect::<Vec<_>>(),
+                canvases
+            );
+            assert_eq!(
+                canvas_backend.rendered,
+                ["shared", "inner", "shared", "shared"]
+            );
+            assert_eq!(canvas_backend.focused, [false, true, false, false]);
+            assert_eq!(canvas_backend.scale_factors, [1.5; 4]);
+            assert!(report.repaint_requested());
+            canvas_registry.unregister("inner");
+            assert_eq!(
+                canvas_registry
+                    .render_frame_canvases_strict(&request, &mut canvas_backend)
+                    .unwrap_err(),
+                RenderError::MissingCanvasRenderer("inner".to_string())
+            );
+
+            let mut image_registry = ImageRenderRegistry::new();
+            image_registry.register("image.shared", RecordingImageHandler);
+            image_registry.register("nested.placement", RecordingImageHandler);
+            let mut image_backend = ImageBackend::default();
+            let report = image_registry
+                .render_frame_images_strict(&request, &mut image_backend)
+                .unwrap();
+            assert_eq!(
+                report
+                    .outcomes
+                    .iter()
+                    .map(|outcome| outcome.request().clone())
+                    .collect::<Vec<_>>(),
+                images
+            );
+            assert_eq!(
+                image_backend.rendered,
+                [
+                    "image.shared",
+                    "nested.placement",
+                    "image.shared",
+                    "image.shared"
+                ]
+            );
+            assert_eq!(image_backend.hovered, [false, true, false, false]);
+            assert_eq!(image_backend.scale_factors, [1.5; 4]);
+            assert!(report.repaint_requested());
+            image_registry.unregister("nested.placement");
+            assert_eq!(
+                image_registry
+                    .render_frame_images_strict(&request, &mut image_backend)
+                    .unwrap_err(),
+                RenderError::MissingImageRenderer("nested.placement".to_string())
+            );
+        }
     }
 
     fn capture_plan(node: usize, key: &str, rect: UiRect) -> CanvasHostCapturePlan {
@@ -2634,7 +3062,7 @@ mod tests {
     }
 
     #[test]
-    fn canvas_host_capture_state_updates_release_before_reacquire() {
+    fn canvas_host_capture_geometry_updates_preserve_pointer_lock() {
         let mut state = CanvasHostCaptureState::new();
         let initial = capture_plan(
             7,
@@ -2655,15 +3083,83 @@ mod tests {
             transition.changes[0].kind,
             CanvasHostCaptureChangeKind::Updated
         );
-        assert_eq!(
-            transition.platform_requests(),
-            vec![
-                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::None)),
-                PlatformRequest::Cursor(CursorRequest::SetVisible(true)),
-                PlatformRequest::Cursor(CursorRequest::SetGrab(CursorGrabMode::Locked)),
-                PlatformRequest::Cursor(CursorRequest::SetVisible(false)),
-            ]
-        );
+        assert!(transition.platform_requests().is_empty());
+    }
+
+    #[test]
+    fn canvas_host_capture_pointer_lock_follows_all_owners() {
+        // Each canvas may be absent, captured without lock, or captured with lock.
+        // Exercise every transition, including handoffs to a different owner.
+        let plans = |modes: [u8; 2], moved: bool| {
+            modes
+                .into_iter()
+                .enumerate()
+                .filter_map(move |(index, mode)| {
+                    (mode != 0).then(|| {
+                        let mut plan = capture_plan(
+                            index,
+                            "shared-surface",
+                            UiRect::new(if moved { 24.0 } else { 12.0 }, 0.0, 100.0, 80.0),
+                        );
+                        plan.pointer_lock = mode == 2;
+                        plan
+                    })
+                })
+        };
+        for before in (0..3).flat_map(|a| (0..3).map(move |b| [a, b])) {
+            for after in (0..3).flat_map(|a| (0..3).map(move |b| [a, b])) {
+                let mut state = CanvasHostCaptureState::new();
+                state.sync(plans(before, false));
+                let transition = state.sync(plans(after, true));
+                let was_locked = before.contains(&2);
+                let locked = after.contains(&2);
+                let expected = if was_locked == locked {
+                    Vec::new()
+                } else {
+                    vec![
+                        PlatformRequest::Cursor(CursorRequest::SetGrab(if locked {
+                            CursorGrabMode::Locked
+                        } else {
+                            CursorGrabMode::None
+                        })),
+                        PlatformRequest::Cursor(CursorRequest::SetVisible(!locked)),
+                    ]
+                };
+                assert_eq!(
+                    transition.platform_requests(),
+                    expected,
+                    "{before:?} -> {after:?}"
+                );
+                assert_eq!(state.active_plans(), plans(after, true).collect::<Vec<_>>());
+                let report = CanvasHostCaptureDiagnosticReport::from_state_transition(
+                    &state,
+                    &transition,
+                    PlatformServiceCapabilities::DESKTOP,
+                );
+                for request in &expected {
+                    assert!(
+                        report
+                            .diagnostics
+                            .iter()
+                            .any(|diagnostic| diagnostic.platform_requests.contains(request)),
+                        "diagnostics must include each emitted cursor request"
+                    );
+                }
+                for diagnostic in &report.diagnostics {
+                    assert!(
+                        diagnostic
+                            .platform_requests
+                            .iter()
+                            .all(|request| expected.contains(request)),
+                        "diagnostics must not report cursor requests that were never emitted"
+                    );
+                }
+                assert!(state
+                    .sync(plans(after, true))
+                    .platform_requests()
+                    .is_empty());
+            }
+        }
     }
 
     #[test]
@@ -3159,134 +3655,6 @@ mod tests {
         assert_eq!(
             report.into_strict_result().unwrap_err(),
             RenderError::MissingImageRenderer("missing.image".to_string())
-        );
-    }
-
-    #[derive(Debug, Default)]
-    struct TestResolver {
-        descriptor: Option<ResourceDescriptor>,
-    }
-
-    impl ResourceResolver for TestResolver {
-        fn resolve_resource(&self, id: &ResourceId) -> Option<ResourceDescriptor> {
-            self.descriptor
-                .clone()
-                .filter(|descriptor| descriptor.handle.id() == id)
-        }
-    }
-
-    #[derive(Debug)]
-    struct RecordingRenderer {
-        capabilities: BackendCapabilities,
-        resolved: Vec<ResourceId>,
-    }
-
-    impl RendererAdapter for RecordingRenderer {
-        fn capabilities(&self) -> BackendCapabilities {
-            self.capabilities.clone()
-        }
-
-        fn render_frame(
-            &mut self,
-            request: RenderFrameRequest,
-            resolver: &dyn ResourceResolver,
-        ) -> Result<RenderFrameOutput, RenderError> {
-            if matches!(request.target.kind(), RenderTargetKind::Snapshot)
-                && !self.capabilities.rendering.deterministic_snapshots
-            {
-                return Err(RenderError::UnsupportedTarget(request.target.kind()));
-            }
-
-            for update in &request.resource_updates {
-                if !self
-                    .capabilities
-                    .supports_resource(update.descriptor.handle.kind())
-                {
-                    return Err(RenderError::UnsupportedResource(
-                        update.descriptor.handle.kind(),
-                    ));
-                }
-                if !update.has_expected_byte_len() || !update.dirty_rect_is_valid() {
-                    return Err(RenderError::InvalidResourceUpdate(
-                        update.descriptor.handle.id().key.clone(),
-                    ));
-                }
-                let id = update.descriptor.handle.id().clone();
-                resolver
-                    .resolve_resource(&id)
-                    .ok_or_else(|| RenderError::MissingResource(id.clone()))?;
-                self.resolved.push(id);
-            }
-
-            let batches = request.batches();
-            let mut output = RenderFrameOutput::new(request.target);
-            output.painted_items = request.paint.items.len();
-            output.batches = batches;
-            output.dirty_regions = request.dirty_regions;
-            output.timings = FrameTiming::new().section("paint-build", Duration::from_millis(1));
-            Ok(output)
-        }
-    }
-
-    #[test]
-    fn renderer_adapter_trait_receives_resources_batches_and_timings() {
-        let handle = ResourceHandle::Image(ImageHandle::app("cover"));
-        let descriptor =
-            ResourceDescriptor::new(handle.clone(), PixelSize::new(2, 2), ResourceFormat::Rgba8);
-        let update = ResourceUpdate::full(descriptor.clone(), vec![128; 2 * 2 * 4]);
-        let resolver = TestResolver {
-            descriptor: Some(descriptor),
-        };
-        let paint = PaintList {
-            items: vec![paint_item(
-                0,
-                UiRect::new(0.0, 0.0, 16.0, 16.0),
-                PaintKind::Image {
-                    key: "cover".to_string(),
-                    tint: None,
-                },
-            )],
-        };
-        let request = RenderFrameRequest::new(
-            RenderTarget::snapshot(PixelSize::new(64, 64)),
-            UiSize::new(64.0, 64.0),
-            paint,
-        )
-        .resource_update(update)
-        .options(RenderOptions {
-            deterministic: true,
-            ..RenderOptions::default()
-        });
-        let mut renderer = RecordingRenderer {
-            capabilities: BackendCapabilities::new("recording")
-                .adapter(BackendAdapterKind::Test)
-                .resources(ResourceCapabilities {
-                    images: true,
-                    partial_texture_updates: true,
-                    ..ResourceCapabilities::NONE
-                })
-                .rendering(RenderingCapabilities {
-                    deterministic_snapshots: true,
-                    offscreen: true,
-                    partial_updates: true,
-                    high_dpi: true,
-                    ..RenderingCapabilities::NONE
-                }),
-            resolved: Vec::new(),
-        };
-
-        let output = renderer
-            .render_frame(request, &resolver)
-            .expect("render output");
-        assert_eq!(output.painted_items, 1);
-        assert_eq!(output.batches.len(), 1);
-        assert_eq!(
-            renderer.resolved,
-            vec![ResourceId::new(ResourceDomain::App, "cover")]
-        );
-        assert_eq!(
-            output.timings.duration("paint-build"),
-            Some(Duration::from_millis(1))
         );
     }
 }

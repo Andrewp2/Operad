@@ -1298,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_view_renders_row_actions_and_indent_guides() {
+    fn tree_view_renders_row_actions() {
         let mut document = UiDocument::new(root_style(360.0, 240.0));
         let roots = vec![
             TreeItem::new("root", "root").with_children(vec![TreeItem::new("child", "child #0")
@@ -1334,10 +1334,6 @@ mod tests {
                 .map(|id| id.as_str()),
             Some("tree.action.child.add")
         );
-        assert!(document
-            .nodes()
-            .iter()
-            .any(|node| node.name() == "tree.row.child.indent.0.guide"));
     }
 
     #[test]

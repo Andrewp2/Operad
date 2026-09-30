@@ -1,4 +1,13 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
+
+mod resource_uploads;
+mod retained_layout;
+pub(crate) mod scroll_reveal;
+mod text_input_geometry;
+pub(crate) mod view_fragment;
+
+use resource_uploads::PendingResourceUploads;
 
 #[cfg(feature = "text-cosmic")]
 use crate::fonts::FontLibrary;
@@ -7,8 +16,6 @@ use cosmic_text::{
     fontdb, Attrs, Buffer, Family as CosmicFamily, FontSystem, Metrics, Shaping,
     Stretch as CosmicStretch, Style as CosmicFontStyle, Weight as CosmicWeight, Wrap as CosmicWrap,
 };
-#[cfg(feature = "text-cosmic")]
-use std::sync::Arc;
 use taffy::prelude::{
     AlignItems, AvailableSpace, CompactLength, Dimension, Display, FlexDirection, FlexWrap,
     JustifyContent, LengthPercentage, LengthPercentageAuto, NodeId as TaffyNodeId,
@@ -17,7 +24,10 @@ use taffy::prelude::{
 use taffy::Overflow;
 
 use crate::compositor::*;
-use crate::effective_geometry::EffectiveGeometry;
+use crate::core::identity::NodeIdentityIndex;
+use crate::effective_geometry::{
+    clipped_shape_contains_point, EffectiveClip, EffectiveGeometry, EffectiveTransform,
+};
 use crate::i18n::{
     BidiPolicy, DynamicLabelMeta, LocaleId, LocalizationPolicy, ResolvedTextDirection,
 };
@@ -276,7 +286,9 @@ pub const APP_OVERLAY_PORTAL: &str = "app-overlay";
 /// `AppOverlay` and `Named` mount through a detached host but still stack with
 /// the source parent, which is the right behavior for menus, popups, and
 /// tooltips that should escape clipping without jumping above unrelated
-/// windows. Use `GlobalAppOverlay` or `GlobalNamed` for true app-modal surfaces.
+/// windows. They retain that source parent for input, accessibility, identity,
+/// and disabled/hidden state. Use `GlobalAppOverlay` or `GlobalNamed` for
+/// independent app-level surfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiPortalTarget {
     Parent,
@@ -522,6 +534,8 @@ pub struct TextStyle {
     pub style: FontStyle,
     pub stretch: FontStretch,
     pub wrap: TextWrap,
+    /// Ellipsis fits a single line to the computed content width.
+    pub overflow: TextOverflow,
     pub color: ColorRgba,
     pub underline: bool,
 }
@@ -536,9 +550,20 @@ impl Default for TextStyle {
             style: FontStyle::Normal,
             stretch: FontStretch::Normal,
             wrap: TextWrap::Word,
+            overflow: TextOverflow::Clip,
             color: ColorRgba::WHITE,
             underline: false,
         }
+    }
+}
+
+impl TextStyle {
+    /// Display a single line with a font-measured ellipsis when space is limited.
+    /// The document and accessibility tree retain the complete source label.
+    pub fn ellipsis(mut self) -> Self {
+        self.wrap = TextWrap::None;
+        self.overflow = TextOverflow::Ellipsis;
+        self
     }
 }
 
@@ -817,6 +842,8 @@ pub struct CanvasRenderProgram {
     pub fragment_entry_point: String,
     pub clear_color: Option<ColorRgba>,
     pub constants: Vec<CanvasShaderConstant>,
+    /// Per-draw bytes for a WGSL uniform at group 0, binding 0.
+    pub uniforms: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -843,6 +870,7 @@ impl CanvasRenderProgram {
             fragment_entry_point: "fs_main".to_string(),
             clear_color: None,
             constants: Vec::new(),
+            uniforms: None,
         }
     }
 
@@ -866,8 +894,18 @@ impl CanvasRenderProgram {
         self
     }
 
+    /// Set a shader specialization constant. Changing its value can compile a
+    /// new GPU pipeline; use `uniform_bytes` for animation and interactive values.
     pub fn constant(mut self, name: impl Into<String>, value: f64) -> Self {
         self.constants.push(CanvasShaderConstant::new(name, value));
+        self
+    }
+
+    /// Supply per-draw data at WGSL `@group(0) @binding(0)`. The bytes must match
+    /// the shader's uniform layout. The WGPU backend pads the buffer allocation
+    /// to a multiple of 16 bytes; changing its contents reuses the pipeline.
+    pub fn uniform_bytes(mut self, uniforms: impl Into<Vec<u8>>) -> Self {
+        self.uniforms = Some(uniforms.into());
         self
     }
 }
@@ -1589,6 +1627,8 @@ pub struct AccessibilityMeta {
     pub focusable: bool,
     pub hidden: bool,
     pub modal: bool,
+    /// Runtime focus destination when this modal closes. Ignored for non-modal nodes.
+    pub modal_focus_restore: crate::accessibility::FocusRestoreTarget,
     pub selected: Option<bool>,
     pub checked: Option<AccessibilityChecked>,
     pub expanded: Option<bool>,
@@ -1617,6 +1657,7 @@ impl AccessibilityMeta {
             focusable: false,
             hidden: false,
             modal: false,
+            modal_focus_restore: crate::accessibility::FocusRestoreTarget::Previous,
             selected: None,
             checked: None,
             expanded: None,
@@ -1667,6 +1708,11 @@ impl AccessibilityMeta {
 
     pub fn modal(mut self) -> Self {
         self.modal = true;
+        self
+    }
+
+    pub fn restore_focus(mut self, target: crate::accessibility::FocusRestoreTarget) -> Self {
+        self.modal_focus_restore = target;
         self
     }
 
@@ -1846,6 +1892,46 @@ impl InputBehavior {
         focusable: true,
         keyboard: true,
     };
+}
+
+/// How a node participates in pointer and wheel hit testing.
+///
+/// This policy applies to the node's own geometry. Children are tested separately,
+/// so a pass-through overlay can still contain interactive controls.
+/// Keyboard focusability is independent of this policy and follows input behavior
+/// and accessibility metadata.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HitTestBehavior {
+    /// Pointer-enabled nodes are targets; disabled nodes block input. Other
+    /// nodes pass pointer input through, while visible surfaces still scope wheel input.
+    #[default]
+    Auto,
+    /// Consume pointer and wheel input without becoming an interaction target.
+    Block,
+    /// Ignore this node for pointer and wheel hit testing, including when disabled.
+    PassThrough,
+}
+
+/// The frontmost node that accepts or blocks pointer input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitTestResult {
+    Target(UiNodeId),
+    Blocked(UiNodeId),
+}
+
+impl HitTestResult {
+    pub const fn node(self) -> UiNodeId {
+        match self {
+            Self::Target(node) | Self::Blocked(node) => node,
+        }
+    }
+
+    pub const fn target(self) -> Option<UiNodeId> {
+        match self {
+            Self::Target(node) => Some(node),
+            Self::Blocked(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2339,6 +2425,7 @@ pub struct UiNode {
     pub(crate) name: String,
     pub(crate) parent: Option<UiNodeId>,
     pub(crate) stack_parent: Option<UiNodeId>,
+    pub(crate) portal_owner: Option<UiNodeId>,
     pub(crate) children: Vec<UiNodeId>,
     pub(crate) style: UiNodeStyle,
     pub(crate) layer: Option<platform::UiLayer>,
@@ -2350,6 +2437,10 @@ pub struct UiNode {
     pub(crate) action_mode: actions::WidgetActionMode,
     pub(crate) content: UiContent,
     pub(crate) input: InputBehavior,
+    pub(crate) text_input: Option<crate::TextInputSnapshot>,
+    pub(crate) text_input_content: Option<Box<crate::TextInputContent>>,
+    pub(crate) enabled: bool,
+    pub(crate) hit_test_behavior: HitTestBehavior,
     pub(crate) scroll: Option<ScrollState>,
     pub(crate) scrollbar: Option<ScrollbarAuditState>,
     pub(crate) auto_scrollbar: bool,
@@ -2367,10 +2458,18 @@ impl UiNode {
         &self.name
     }
 
+    /// Physical parent used for layout and clipping.
     pub fn parent(&self) -> Option<UiNodeId> {
         self.parent
     }
 
+    /// Parent for interaction, accessibility, and retained identity. Owned portals
+    /// keep their source parent even when mounted under a different layout host.
+    pub fn logical_parent(&self) -> Option<UiNodeId> {
+        self.portal_owner.or(self.parent)
+    }
+
+    /// Physical children used for layout and clipping.
     pub fn children(&self) -> &[UiNodeId] {
         &self.children
     }
@@ -2429,6 +2528,44 @@ impl UiNode {
 
     pub fn input(&self) -> InputBehavior {
         self.input
+    }
+
+    /// This node's enabled override. Use [`UiDocument::node_is_enabled`] for
+    /// effective eligibility including ancestors and accessibility metadata.
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Editable text and caret geometry for the platform input method.
+    pub fn text_input(&self) -> Option<&crate::TextInputSnapshot> {
+        self.text_input.as_ref()
+    }
+
+    pub fn with_text_input(mut self, snapshot: crate::TextInputSnapshot) -> Self {
+        self.text_input = Some(snapshot);
+        self
+    }
+
+    pub fn set_text_input(&mut self, snapshot: Option<crate::TextInputSnapshot>) {
+        self.text_input = snapshot;
+    }
+
+    /// Authored content coordinates and displayed font metrics for this editor.
+    /// The owner retains focus and action routing.
+    pub fn text_input_content(&self) -> Option<&crate::TextInputContent> {
+        self.text_input_content.as_deref()
+    }
+
+    pub fn set_text_input_content(&mut self, content: Option<crate::TextInputContent>) {
+        self.text_input_content = content.map(Box::new);
+    }
+
+    pub fn hit_test_behavior(&self) -> HitTestBehavior {
+        self.hit_test_behavior
+    }
+
+    pub fn set_hit_test_behavior(&mut self, behavior: HitTestBehavior) {
+        self.hit_test_behavior = behavior;
     }
 
     pub fn scroll(&self) -> Option<&ScrollState> {
@@ -2515,6 +2652,7 @@ impl UiNode {
             name: name.into(),
             parent: None,
             stack_parent: None,
+            portal_owner: None,
             children: Vec::new(),
             style: style.into(),
             layer: None,
@@ -2526,6 +2664,10 @@ impl UiNode {
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Empty,
             input: InputBehavior::NONE,
+            text_input: None,
+            text_input_content: None,
+            enabled: true,
+            hit_test_behavior: HitTestBehavior::Auto,
             scroll: None,
             scrollbar: None,
             auto_scrollbar: false,
@@ -2550,6 +2692,7 @@ impl UiNode {
             name: name.into(),
             parent: None,
             stack_parent: None,
+            portal_owner: None,
             children: Vec::new(),
             style: UiNodeStyle {
                 layout: layout.style,
@@ -2565,6 +2708,10 @@ impl UiNode {
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Text(TextContent::new(text, text_style)),
             input: InputBehavior::NONE,
+            text_input: None,
+            text_input_content: None,
+            enabled: true,
+            hit_test_behavior: HitTestBehavior::Auto,
             scroll: None,
             scrollbar: None,
             auto_scrollbar: false,
@@ -2590,6 +2737,7 @@ impl UiNode {
             name: name.into(),
             parent: None,
             stack_parent: None,
+            portal_owner: None,
             children: Vec::new(),
             style: UiNodeStyle {
                 layout: layout.style,
@@ -2608,6 +2756,10 @@ impl UiNode {
                     .with_dynamic_label(label, policy),
             ),
             input: InputBehavior::NONE,
+            text_input: None,
+            text_input_content: None,
+            enabled: true,
+            hit_test_behavior: HitTestBehavior::Auto,
             scroll: None,
             scrollbar: None,
             auto_scrollbar: false,
@@ -2631,6 +2783,7 @@ impl UiNode {
             name: name.into(),
             parent: None,
             stack_parent: None,
+            portal_owner: None,
             children: Vec::new(),
             style: UiNodeStyle {
                 layout: layout.style,
@@ -2650,6 +2803,10 @@ impl UiNode {
                 focusable: true,
                 keyboard: true,
             },
+            text_input: None,
+            text_input_content: None,
+            enabled: true,
+            hit_test_behavior: HitTestBehavior::Auto,
             scroll: None,
             scrollbar: None,
             auto_scrollbar: false,
@@ -2691,6 +2848,7 @@ impl UiNode {
             name: name.into(),
             parent: None,
             stack_parent: None,
+            portal_owner: None,
             children: Vec::new(),
             style: UiNodeStyle {
                 layout: layout.style,
@@ -2705,6 +2863,10 @@ impl UiNode {
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Image(image.into()),
             input: InputBehavior::NONE,
+            text_input: None,
+            text_input_content: None,
+            enabled: true,
+            hit_test_behavior: HitTestBehavior::Auto,
             scroll: None,
             scrollbar: None,
             auto_scrollbar: false,
@@ -2728,6 +2890,7 @@ impl UiNode {
             name: name.into(),
             parent: None,
             stack_parent: None,
+            portal_owner: None,
             children: Vec::new(),
             style: UiNodeStyle {
                 layout: layout.style,
@@ -2743,6 +2906,10 @@ impl UiNode {
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::PaintRect(rect),
             input: InputBehavior::NONE,
+            text_input: None,
+            text_input_content: None,
+            enabled: true,
+            hit_test_behavior: HitTestBehavior::Auto,
             scroll: None,
             scrollbar: None,
             auto_scrollbar: false,
@@ -2778,6 +2945,7 @@ impl UiNode {
             name: name.into(),
             parent: None,
             stack_parent: None,
+            portal_owner: None,
             children: Vec::new(),
             style: UiNodeStyle {
                 layout: layout.style,
@@ -2793,6 +2961,10 @@ impl UiNode {
             action_mode: actions::WidgetActionMode::Activate,
             content: UiContent::Scene(primitives),
             input: InputBehavior::NONE,
+            text_input: None,
+            text_input_content: None,
+            enabled: true,
+            hit_test_behavior: HitTestBehavior::Auto,
             scroll: None,
             scrollbar: None,
             auto_scrollbar: false,
@@ -2808,6 +2980,11 @@ impl UiNode {
 
     pub fn with_input(mut self, input: InputBehavior) -> Self {
         self.input = input;
+        self
+    }
+
+    pub fn with_hit_test_behavior(mut self, behavior: HitTestBehavior) -> Self {
+        self.hit_test_behavior = behavior;
         self
     }
 
@@ -2961,6 +3138,26 @@ impl IntrinsicSize {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiNodeLayoutConstraint {
+    /// Place logical anchor geometry using the document's current UI scale.
+    AnchoredPopup {
+        popup: crate::layout::AnchoredPopup,
+        /// Preferred dimensions in authored UI units.
+        size: UiSize,
+        /// Base scroll axes, additionally enabling vertical scrolling when
+        /// the viewport reduces the popup height. None leaves scrolling alone.
+        scroll_axes: Option<ScrollAxes>,
+    },
+    /// Position a tooltip against logical window geometry at layout time.
+    Tooltip {
+        anchor: UiRect,
+        viewport: UiRect,
+        /// Preferred dimensions in authored UI units.
+        size: UiSize,
+        placement: crate::layout::TooltipPlacement,
+        /// Distance from the anchor in authored UI units.
+        offset: f32,
+        cursor: Option<UiPoint>,
+    },
     InlineIntrinsicSize {
         sources: Vec<UiNodeId>,
         min_size: UiSize,
@@ -2991,6 +3188,7 @@ struct LayoutSizingPass {
     mapping: Vec<Option<TaffyNodeId>>,
     measured_content: Vec<Option<UiSize>>,
     sizes: Vec<UiSize>,
+    identities: Arc<NodeIdentityIndex>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3020,6 +3218,17 @@ impl TextMeasurer for ApproxTextMeasurer {
         known: KnownSize,
         available: AvailableSize,
     ) -> UiSize {
+        if text.style.overflow == TextOverflow::Ellipsis {
+            let fitted = crate::core::text::fit_text(
+                self,
+                text,
+                known.width.or(available.width).unwrap_or(f32::INFINITY),
+            );
+            return UiSize::new(
+                known.width.unwrap_or(fitted.size.width),
+                known.height.unwrap_or(fitted.size.height),
+            );
+        }
         let char_width = text.style.font_size * 0.55;
         let explicit_width = known.width.or(available.width);
         let raw_width = (text.text.chars().count() as f32 * char_width).max(char_width);
@@ -3088,6 +3297,17 @@ impl TextMeasurer for CosmicTextMeasurer {
         known: KnownSize,
         available: AvailableSize,
     ) -> UiSize {
+        if text.style.overflow == TextOverflow::Ellipsis {
+            let fitted = crate::core::text::fit_text(
+                self,
+                text,
+                known.width.or(available.width).unwrap_or(f32::INFINITY),
+            );
+            return UiSize::new(
+                known.width.unwrap_or(fitted.size.width),
+                known.height.unwrap_or(fitted.size.height),
+            );
+        }
         let hash = TextMeasureKey::cache_hash(text, known, available);
         if let Some(measured) = self.cache.get(&hash).and_then(|bucket| {
             bucket.iter().find_map(|(key, measured)| {
@@ -3194,6 +3414,15 @@ fn measure_taffy_text(
         text
     };
     if known.width.is_none() && available.width == AvailableSpace::MinContent {
+        if text.style.overflow == TextOverflow::Ellipsis {
+            // An ellipsized label may shrink all the way to an empty presentation.
+            return UiSize::new(
+                0.0,
+                known
+                    .height
+                    .unwrap_or(text.style.line_height.max(text.style.font_size).max(1.0)),
+            );
+        }
         return measure_text_min_content(text_measurer, text, known, available);
     }
     text_measurer.measure(
@@ -3539,8 +3768,16 @@ pub enum UiInputEvent {
     PointerMove(UiPoint),
     PointerDown(UiPoint),
     PointerUp(UiPoint),
+    /// End the pointer interaction without activating it or changing keyboard focus.
+    PointerCancel,
     Wheel(UiWheelEvent),
     TextInput(String),
+    /// A composition edit routed to its current document-local owner by the host.
+    Composition {
+        target: Option<UiNodeId>,
+        event: crate::TextCompositionEvent,
+    },
+    /// Tab and Shift+Tab navigate focus unless Ctrl, Alt, or Meta is held.
     Key {
         key: KeyCode,
         modifiers: KeyModifiers,
@@ -3551,6 +3788,21 @@ pub enum UiInputEvent {
 impl UiInputEvent {
     pub const fn wheel(position: UiPoint, delta: UiPoint) -> Self {
         Self::Wheel(UiWheelEvent::pixels(position, delta))
+    }
+
+    pub(crate) const fn focus_direction(&self) -> Option<FocusDirection> {
+        match self {
+            Self::Focus(direction) => Some(*direction),
+            Self::Key {
+                key: KeyCode::Tab,
+                modifiers,
+            } if !modifiers.ctrl && !modifiers.alt && !modifiers.meta => Some(if modifiers.shift {
+                FocusDirection::Previous
+            } else {
+                FocusDirection::Next
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -3611,6 +3863,9 @@ pub struct UiInputResult {
     /// Scroll container whose offset changed because of a wheel event or
     /// draggable automatic scrollbar.
     pub scrolled: Option<UiNodeId>,
+    /// Automatic scrollbar that handled this pointer event, including a thumb
+    /// press or release that did not change its offset.
+    pub scrollbar_target: Option<UiNodeId>,
     /// The input was intentionally handled by the document.
     ///
     /// This can be true even when no widget state changed. For example, a
@@ -3627,11 +3882,20 @@ struct WheelInputResult {
     consumed_by: Option<UiNodeId>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UiFocusState {
     pub hovered: Option<UiNodeId>,
     pub focused: Option<UiNodeId>,
     pub pressed: Option<UiNodeId>,
+}
+
+/// Pointer ownership for an automatic scrollbar, retained by node identity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AutoScrollbarDrag {
+    pub(crate) node: UiNodeId,
+    axis: AuditAxis,
+    // A fraction keeps the same grip if the thumb changes size during a drag.
+    grab_fraction: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3678,12 +3942,20 @@ pub struct UiDocument {
     pub(crate) focus: UiFocusState,
     pub(crate) focus_authored: bool,
     pub(crate) pointer_position: Option<UiPoint>,
+    pub(crate) auto_scrollbar_drag: Option<AutoScrollbarDrag>,
     pub(crate) scale: UiDocumentScale,
     pub(crate) nodes: Vec<UiNode>,
-    resource_updates: Vec<renderer::ResourceUpdate>,
+    identity_cache: OnceLock<Arc<NodeIdentityIndex>>,
+    visual_order_cache: OnceLock<Arc<VisualOrder>>,
+    resource_updates: PendingResourceUploads,
     portal_hosts: HashMap<UiPortalId, UiNodeId>,
+    view_overlays: Vec<UiNodeId>,
+    pub(crate) reused_view_nodes: HashSet<UiNodeId>,
+    scroll_reveals: HashMap<UiNodeId, scroll_reveal::ScrollReveal>,
     layout_revision: u64,
     layout_cache_key: Option<LayoutCacheKey>,
+    layout_sizing_cache_key: Option<LayoutCacheKey>,
+    retained_layout: Option<LayoutSizingPass>,
 }
 
 impl UiDocument {
@@ -3699,19 +3971,32 @@ impl UiDocument {
         Self {
             root,
             nodes,
+            identity_cache: OnceLock::new(),
+            visual_order_cache: OnceLock::new(),
             focus: UiFocusState::default(),
             focus_authored: false,
             pointer_position: None,
+            auto_scrollbar_drag: None,
             scale: UiDocumentScale::default(),
-            resource_updates: Vec::new(),
+            resource_updates: PendingResourceUploads::default(),
             portal_hosts: HashMap::new(),
+            view_overlays: Vec::new(),
+            reused_view_nodes: HashSet::new(),
+            scroll_reveals: HashMap::new(),
             layout_revision: 0,
             layout_cache_key: None,
+            layout_sizing_cache_key: None,
+            retained_layout: None,
         }
     }
 
     pub const fn root(&self) -> UiNodeId {
         self.root
+    }
+
+    pub(crate) fn identity_index(&self) -> &Arc<NodeIdentityIndex> {
+        self.identity_cache
+            .get_or_init(|| Arc::new(NodeIdentityIndex::from_document(self)))
     }
 
     pub fn with_scale(mut self, scale: UiDocumentScale) -> Self {
@@ -3727,7 +4012,7 @@ impl UiDocument {
         let scale = UiDocumentScale::new(scale.ui_scale, scale.dpi_scale);
         if self.scale != scale {
             self.scale = scale;
-            self.invalidate_layout();
+            self.mark_layout_changed();
         }
     }
 
@@ -3760,15 +4045,37 @@ impl UiDocument {
     /// Use this for app-owned images referenced by `ImageContent`, including
     /// user-supplied PNG, JPEG, BMP, or raw bitmap resources decoded into a
     /// `ResourceUpdate`.
+    /// Writes retain their order across runtime retries. Use [`Self::set_resource`]
+    /// when an unpresented image may be superseded by its latest complete state.
     pub fn add_resource_update(&mut self, update: renderer::ResourceUpdate) -> &mut Self {
-        self.resource_updates.push(update);
+        self.resource_updates.push_update(update);
+        self
+    }
+
+    /// Authors the latest complete state of a renderer resource.
+    ///
+    /// During document preparation, `RuntimeSession` removes earlier pending
+    /// snapshots and writes superseded by this full replacement. Patches queued
+    /// after it remain in order. Superseded snapshots are not submitted or validated
+    /// by the renderer; the retained replacement is validated normally.
+    ///
+    /// Use [`Self::add_resource_update`] for sequences where every write or version
+    /// must reach the renderer. Sharing a textual key across different resource
+    /// handles prevents compaction across those intervening writes.
+    pub fn set_resource(
+        &mut self,
+        descriptor: renderer::ResourceDescriptor,
+        bytes: impl Into<Arc<[u8]>>,
+    ) -> &mut Self {
+        self.resource_updates
+            .push_snapshot(renderer::ResourceUpdate::full(descriptor, bytes));
         self
     }
 
     /// Returns resource uploads that will be forwarded to the renderer with
     /// this document's paint list.
     pub fn resource_updates(&self) -> &[renderer::ResourceUpdate] {
-        &self.resource_updates
+        self.resource_updates.as_slice()
     }
 
     /// Clears queued renderer resource uploads from this document.
@@ -3776,7 +4083,7 @@ impl UiDocument {
         self.resource_updates.clear();
     }
 
-    /// Remove frame-owned decorations before retaining the authored document.
+    /// Remove frame-owned decorations before preparing the next frame.
     pub(crate) fn truncate_runtime_nodes(&mut self, authored_count: usize) {
         assert!(
             authored_count > 0 && authored_count <= self.nodes.len(),
@@ -3785,14 +4092,19 @@ impl UiDocument {
         if self.nodes.len() <= authored_count {
             return;
         }
+        self.identity_cache.take();
+        self.visual_order_cache.take();
         self.nodes.truncate(authored_count);
         for node in &mut self.nodes {
             node.children.retain(|id| id.index() < authored_count);
         }
         self.portal_hosts
             .retain(|_, id| id.index() < authored_count);
+        self.scroll_reveals.retain(|owner, reveal| {
+            owner.index() < authored_count && reveal.target.index() < authored_count
+        });
         self.sanitize_focus_state();
-        self.invalidate_layout();
+        self.mark_layout_changed();
     }
 
     #[allow(dead_code)]
@@ -3802,9 +4114,12 @@ impl UiDocument {
 
     pub fn add_child(&mut self, parent: UiNodeId, mut node: UiNode) -> UiNodeId {
         assert_valid_node_id("UiDocument::add_child parent", parent, self.nodes.len());
-        self.invalidate_layout();
+        self.identity_cache.take();
+        self.visual_order_cache.take();
+        self.mark_layout_changed();
         let id = UiNodeId(self.nodes.len());
         node.parent = Some(parent);
+        node.portal_owner = None;
         self.nodes.push(node);
         self.nodes[parent.0].children.push(id);
         id
@@ -3831,6 +4146,11 @@ impl UiDocument {
         target: UiPortalTarget,
         mut node: UiNode,
     ) -> UiNodeId {
+        assert_valid_node_id(
+            "UiDocument::add_portal_child parent",
+            parent,
+            self.nodes.len(),
+        );
         let (portal_parent, stack_with_parent) = match target {
             UiPortalTarget::Parent => (parent, false),
             UiPortalTarget::AppOverlay => (self.ensure_app_overlay_portal(), true),
@@ -3845,7 +4165,11 @@ impl UiDocument {
         if stack_with_parent && portal_parent != parent && node.stack_parent.is_none() {
             node.stack_parent = Some(parent);
         }
-        self.add_child(portal_parent, node)
+        let id = self.add_child(portal_parent, node);
+        if stack_with_parent && portal_parent != parent {
+            self.nodes[id.0].portal_owner = Some(parent);
+        }
+        id
     }
 
     #[allow(dead_code)]
@@ -3923,7 +4247,10 @@ impl UiDocument {
 
     pub fn node_mut(&mut self, id: UiNodeId) -> &mut UiNode {
         assert_valid_node_id("UiDocument::node_mut", id, self.nodes.len());
-        self.invalidate_layout();
+        // Unrestricted edits may change names, parents, or replace the node.
+        self.identity_cache.take();
+        self.visual_order_cache.take();
+        self.mark_layout_changed();
         &mut self.nodes[id.0]
     }
 
@@ -3939,20 +4266,23 @@ impl UiDocument {
     }
 
     pub fn edit_node(&mut self, id: UiNodeId, edit: impl FnOnce(&mut UiNode)) {
+        self.identity_cache.take();
+        self.visual_order_cache.take();
         edit(self.node_mut_without_invalidation("UiDocument::edit_node", id));
-        self.invalidate_layout();
+        self.mark_layout_changed();
     }
 
     pub fn set_node_style(&mut self, id: UiNodeId, style: impl Into<UiNodeStyle>) {
+        self.visual_order_cache.take();
         self.node_mut_without_invalidation("UiDocument::set_node_style", id)
             .style = style.into();
-        self.invalidate_layout();
+        self.mark_layout_changed();
     }
 
     pub fn set_node_content(&mut self, id: UiNodeId, content: UiContent) {
         self.node_mut_without_invalidation("UiDocument::set_node_content", id)
             .content = content;
-        self.invalidate_layout();
+        self.mark_layout_changed();
     }
 
     pub fn apply_localization_policy(&mut self, policy: &LocalizationPolicy) {
@@ -3969,12 +4299,39 @@ impl UiDocument {
                 }
             }
         }
-        self.invalidate_layout();
+        self.mark_layout_changed();
     }
 
     pub fn set_node_input(&mut self, id: UiNodeId, input: InputBehavior) {
         self.node_mut_without_invalidation("UiDocument::set_node_input", id)
             .input = input;
+    }
+
+    /// Enable or disable a subtree without discarding individual input capabilities
+    /// or the independently disabled state of its descendants.
+    pub fn set_node_enabled(&mut self, id: UiNodeId, enabled: bool) {
+        self.node_mut_without_invalidation("UiDocument::set_node_enabled", id)
+            .enabled = enabled;
+        let previous = self.focus.clone();
+        self.sanitize_focus_state();
+        self.sync_interaction_animation_inputs_for(
+            previous.hovered,
+            previous.pressed,
+            previous.focused,
+            None,
+            None,
+        );
+        self.trigger_interaction_animations_for(
+            previous.hovered,
+            previous.pressed,
+            previous.focused,
+        );
+        for index in 0..self.nodes.len() {
+            let descendant = UiNodeId(index);
+            if self.node_depends_on_ancestor(id, descendant) {
+                self.refresh_interaction_visual(descendant);
+            }
+        }
     }
 
     pub fn set_node_visual(&mut self, id: UiNodeId, visual: UiVisual) {
@@ -4029,9 +4386,17 @@ impl UiDocument {
 
     fn sanitized_focus_state(&self, focus: UiFocusState) -> UiFocusState {
         UiFocusState {
-            hovered: self.valid_node_id(focus.hovered),
-            focused: self.valid_node_id(focus.focused),
-            pressed: self.valid_node_id(focus.pressed),
+            hovered: self.valid_node_id(focus.hovered).filter(|id| {
+                self.node_is_enabled(*id)
+                    && self.nodes[id.0].hit_test_behavior == HitTestBehavior::Auto
+            }),
+            focused: self
+                .valid_node_id(focus.focused)
+                .filter(|id| self.node_is_enabled(*id)),
+            pressed: self.valid_node_id(focus.pressed).filter(|id| {
+                self.node_is_enabled(*id)
+                    && self.nodes[id.0].hit_test_behavior == HitTestBehavior::Auto
+            }),
         }
     }
 
@@ -4065,10 +4430,10 @@ impl UiDocument {
     }
 
     fn refresh_interaction_visual(&mut self, id: UiNodeId) {
+        let enabled = self.node_is_enabled(id);
         let Some(node) = self.nodes.get_mut(id.0) else {
             return;
         };
-        let enabled = node.input.pointer || node.input.focusable || node.input.keyboard;
         let hovered = self.focus.hovered == Some(id);
         let pressed = self.focus.pressed == Some(id);
         let focused = self.focus.focused == Some(id);
@@ -4081,7 +4446,7 @@ impl UiDocument {
             let style = styles.resolve(enabled, hovered, pressed, focused);
             if text.style != style {
                 text.style = style;
-                self.invalidate_layout();
+                self.mark_layout_changed();
             }
         }
     }
@@ -4102,14 +4467,14 @@ impl UiDocument {
             return false;
         }
         scroll.set_host_offset(offset);
-        self.invalidate_layout();
+        self.mark_layout_changed();
         true
     }
 
     pub fn clamp_scroll_offsets(&mut self) -> bool {
         let changed = self.clamp_scroll_offsets_in_place();
         if changed {
-            self.invalidate_layout();
+            self.mark_layout_changed();
         }
         changed
     }
@@ -4122,7 +4487,8 @@ impl UiDocument {
             };
             let offset = scroll.clamp_offset(scroll.offset);
             if scroll.offset != offset {
-                scroll.set_host_offset(offset);
+                // Clamping does not change who authored the requested offset.
+                scroll.offset = offset;
                 changed = true;
             }
         }
@@ -4173,8 +4539,14 @@ impl UiDocument {
     }
 
     pub fn invalidate_layout(&mut self) {
+        self.retained_layout = None;
+        self.mark_layout_changed();
+    }
+
+    fn mark_layout_changed(&mut self) {
         self.layout_revision = self.layout_revision.wrapping_add(1);
         self.layout_cache_key = None;
+        self.layout_sizing_cache_key = None;
     }
 
     pub fn compute_layout(
@@ -4191,12 +4563,22 @@ impl UiDocument {
         if self.layout_cache_key == Some(cache_key) {
             return Ok(());
         }
-        let sizing = self.compute_layout_sizing_pass(viewport, text_measurer)?;
+        let sizing = if self.layout_sizing_cache_key == Some(cache_key) {
+            self.retained_layout.take().expect("cached layout sizing")
+        } else {
+            self.compute_layout_sizing_pass(viewport, text_measurer)?
+        };
         self.apply_layout_position_pass(&sizing, viewport)?;
         if self.clamp_scroll_offsets_in_place() {
             self.apply_layout_position_pass(&sizing, viewport)?;
         }
-        self.layout_cache_key = Some(cache_key);
+        self.apply_scroll_reveals(&sizing, viewport)?;
+        self.layout_cache_key = Some(LayoutCacheKey {
+            revision: self.layout_revision,
+            ..cache_key
+        });
+        self.layout_sizing_cache_key = self.layout_cache_key;
+        self.retained_layout = Some(sizing);
         Ok(())
     }
 
@@ -4206,12 +4588,9 @@ impl UiDocument {
         text_measurer: &mut impl TextMeasurer,
     ) -> Result<LayoutSizingPass, taffy::TaffyError> {
         self.resolve_layout_constraints(text_measurer)?;
-        let mut taffy = TaffyTree::<MeasureContext>::new();
-        let mut mapping = vec![None; self.nodes.len()];
-        let root = self.build_taffy_subtree(self.root, &mut taffy, &mut mapping)?;
-        let mut measured_content = vec![None; self.nodes.len()];
-        taffy.compute_layout_with_measure(
-            root,
+        let mut sizing = self.reconcile_layout_tree()?;
+        sizing.taffy.compute_layout_with_measure(
+            sizing.root,
             TaffySize {
                 width: AvailableSpace::Definite(viewport.width),
                 height: AvailableSpace::Definite(viewport.height),
@@ -4221,7 +4600,7 @@ impl UiDocument {
                     return TaffySize::ZERO;
                 };
                 let measured = measure_taffy_text(text_measurer, text, known, available);
-                if let Some(slot) = measured_content.get_mut(node.0) {
+                if let Some(slot) = sizing.measured_content.get_mut(node.0) {
                     *slot = Some(measured);
                 }
                 TaffySize {
@@ -4230,22 +4609,15 @@ impl UiDocument {
                 }
             },
         )?;
-        let mut sizes = vec![UiSize::ZERO; self.nodes.len()];
-        for (index, taffy_node) in mapping.iter().enumerate() {
+        for (index, taffy_node) in sizing.mapping.iter().enumerate() {
             let Some(taffy_node) = *taffy_node else {
                 continue;
             };
-            let layout = taffy.layout(taffy_node)?;
-            sizes[index] = UiSize::new(layout.size.width, layout.size.height);
+            let layout = sizing.taffy.layout(taffy_node)?;
+            sizing.sizes[index] = UiSize::new(layout.size.width, layout.size.height);
         }
 
-        Ok(LayoutSizingPass {
-            root,
-            taffy,
-            mapping,
-            measured_content,
-            sizes,
-        })
+        Ok(sizing)
     }
 
     fn apply_layout_position_pass(
@@ -4265,6 +4637,12 @@ impl UiDocument {
             &sizing.measured_content,
             &sizing.sizes,
         )?;
+        if self.nodes.iter().any(|node| node.portal_owner.is_some()) {
+            let displayed = self.displayed_nodes();
+            for (node, displayed) in self.nodes.iter_mut().zip(displayed) {
+                node.layout.visible &= displayed;
+            }
+        }
         Ok(())
     }
 
@@ -4828,6 +5206,54 @@ impl UiDocument {
             .collect::<Vec<_>>();
 
         for (target, constraint) in &constraints {
+            let rect = match constraint {
+                UiNodeLayoutConstraint::AnchoredPopup {
+                    popup,
+                    size,
+                    scroll_axes,
+                } => {
+                    let rect = popup.layout_rect(self.ui_scale(), *size);
+                    let node = &mut self.nodes[target.0];
+                    if let Some(axes) = scroll_axes {
+                        let axes = ScrollAxes {
+                            vertical: axes.vertical || rect.height < size.height,
+                            ..*axes
+                        };
+                        if axes == ScrollAxes::NONE {
+                            node.scroll = None;
+                        } else {
+                            node.scroll
+                                .get_or_insert_with(|| ScrollState::new(axes))
+                                .axes = axes;
+                        }
+                    }
+                    Some(rect)
+                }
+                UiNodeLayoutConstraint::Tooltip {
+                    anchor,
+                    viewport,
+                    size,
+                    placement,
+                    offset,
+                    cursor,
+                } => Some(crate::layout::tooltip_layout_rect(
+                    self.ui_scale(),
+                    *anchor,
+                    *size,
+                    *viewport,
+                    *placement,
+                    *offset,
+                    *cursor,
+                )),
+                _ => None,
+            };
+            if let Some(rect) = rect {
+                let style = LayoutStyle::absolute_rect(rect).style;
+                let node = &mut self.nodes[target.0];
+                node.style.layout.position = style.position;
+                node.style.layout.inset = style.inset;
+                node.style.layout.size = style.size;
+            }
             if let UiNodeLayoutConstraint::InlineIntrinsicSize { sources, min_size } = constraint {
                 let base_size = UiSize::new(
                     finite_or(min_size.width, 0.0),
@@ -5002,15 +5428,6 @@ impl UiDocument {
         };
         node.style.layout.inset.left = LengthPercentageAuto::length(contained.x);
         node.style.layout.inset.top = LengthPercentageAuto::length(contained.y);
-    }
-
-    fn build_taffy_subtree(
-        &self,
-        id: UiNodeId,
-        taffy: &mut TaffyTree<MeasureContext>,
-        mapping: &mut [Option<TaffyNodeId>],
-    ) -> Result<TaffyNodeId, taffy::TaffyError> {
-        self.build_taffy_subtree_for_intrinsic(id, taffy, mapping, None, None)
     }
 
     fn build_taffy_subtree_for_intrinsic(
@@ -5190,38 +5607,160 @@ impl UiDocument {
         }
     }
 
+    /// Return the actionable target, stopping at blocking geometry.
+    /// Use [`Self::hit_test_result`] to distinguish a blocker from empty space.
     pub fn hit_test(&self, point: UiPoint) -> Option<UiNodeId> {
-        let layer_orders = self.effective_layer_orders();
-        let visual_order = self.visual_order_with_layer(&layer_orders);
-        for (order, index) in visual_order.into_iter().enumerate().rev() {
-            let geometry = self.effective_geometry_for_index(index, order, layer_orders[index]);
-            if geometry.contains_point(point) {
-                return Some(geometry.node);
+        self.hit_test_result(point).and_then(HitTestResult::target)
+    }
+
+    pub fn hit_test_result(&self, point: UiPoint) -> Option<HitTestResult> {
+        let visual_order = self.visual_order();
+        let modal_scope = self.modal_scope_in_paint_order(&visual_order.nodes);
+        for &index in visual_order.nodes.iter().rev() {
+            let id = UiNodeId(index);
+            if !self.node_in_modal_scope(id, modal_scope)
+                || !self.node_geometry_contains_point(id, point)
+            {
+                continue;
+            }
+            if let Some(hit) = self.node_hit_test_result(id) {
+                return Some(hit);
             }
         }
-        None
+        // A modal consumes background input even without an authored scrim.
+        modal_scope.map(HitTestResult::Blocked)
+    }
+
+    /// Whether this node and its ancestors are enabled for user interaction.
+    /// Accessibility-hidden targets cannot be activated; hidden structural
+    /// ancestors (such as portal hosts) do not disable their children.
+    pub fn node_is_enabled(&self, id: UiNodeId) -> bool {
+        self.nodes
+            .get(id.0)
+            .is_some_and(|node| node.accessibility.as_ref().is_none_or(|meta| !meta.hidden))
+            && !self.node_or_ancestor_disabled(id)
+    }
+
+    fn node_hit_test_result(&self, id: UiNodeId) -> Option<HitTestResult> {
+        let node = self.nodes.get(id.0)?;
+        match node.hit_test_behavior {
+            HitTestBehavior::PassThrough => None,
+            HitTestBehavior::Block => Some(HitTestResult::Blocked(id)),
+            HitTestBehavior::Auto => {
+                // Decorative accessibility-hidden nodes must not become blockers.
+                // Disabled controls, including widgets that clear InputBehavior,
+                // remain obstacles to input aimed at content behind them.
+                let disabled = self.node_or_ancestor_disabled(id);
+                if disabled || (node.input.pointer && !self.node_is_enabled(id)) {
+                    Some(HitTestResult::Blocked(id))
+                } else if node.input.pointer {
+                    Some(HitTestResult::Target(id))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn node_or_ancestor_disabled(&self, id: UiNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            let Some(node) = self.nodes.get(id.0) else {
+                return true;
+            };
+            if !node.enabled
+                || node
+                    .accessibility
+                    .as_ref()
+                    .is_some_and(|meta| !meta.enabled)
+                || node
+                    .portal_owner
+                    .is_some_and(|owner| self.node_or_ancestor_disabled(owner))
+            {
+                return true;
+            }
+            current = node.parent;
+        }
+        false
+    }
+
+    pub(crate) fn pointer_input_hit(
+        &self,
+        point: UiPoint,
+    ) -> (Option<HitTestResult>, Option<AuditAxis>) {
+        if let Some((id, axis)) = self.auto_scrollbar_hit_target(point) {
+            (Some(HitTestResult::Target(id)), Some(axis))
+        } else {
+            (self.hit_test_result(point), None)
+        }
     }
 
     pub(crate) fn auto_scrollbar_hit_target(
         &self,
         point: UiPoint,
     ) -> Option<(UiNodeId, AuditAxis)> {
-        for index in self.visual_order().into_iter().rev() {
+        let visual_order = self.visual_order();
+        let layer_orders = &visual_order.layer_orders;
+        let modal_scope = self.modal_scope_in_paint_order(&visual_order.nodes);
+        for (order, &index) in visual_order.nodes.iter().enumerate().rev() {
             let id = UiNodeId(index);
+            if !self.node_in_modal_scope(id, modal_scope) {
+                continue;
+            }
             if let Some(axis) = self.auto_scrollbar_axis_at_point(id, point) {
-                return Some((id, axis));
+                let obstructed = visual_order.nodes[order + 1..].iter().any(|&above| {
+                    // Automatic bars paint over their content, but not over
+                    // unrelated siblings or descendants on a higher layer.
+                    self.node_in_modal_scope(UiNodeId(above), modal_scope)
+                        && (!self.node_is_descendant_or_self(id, UiNodeId(above))
+                            || layer_orders[above].layer > layer_orders[index].layer)
+                        && self.node_geometry_contains_point(UiNodeId(above), point)
+                        && self.node_hit_test_result(UiNodeId(above)).is_some()
+                });
+                if !obstructed {
+                    return Some((id, axis));
+                }
             }
         }
         None
     }
 
+    /// The paint transform of an already identified node. Coordinate conversion
+    /// does not need hit-test shapes or the document's complete stacking order.
+    pub(crate) fn node_effective_transform(&self, id: UiNodeId) -> EffectiveTransform {
+        Self::node_paint_transform(self.node(id)).into()
+    }
+
+    /// Test a node's visible shape without requiring it to accept pointer input.
+    pub(crate) fn node_geometry_contains_point(&self, id: UiNodeId, point: UiPoint) -> bool {
+        self.nodes.get(id.0).is_some_and(|node| {
+            node.layout.visible
+                && clipped_shape_contains_point(
+                    node.layout.rect,
+                    Self::node_paint_transform(node).into(),
+                    &[EffectiveClip::new(node.layout.clip_rect)],
+                    node_hit_shape(node),
+                    point,
+                )
+        })
+    }
+
     pub fn effective_geometries(&self) -> Vec<EffectiveGeometry> {
-        let layer_orders = self.effective_layer_orders();
-        self.visual_order_with_layer(&layer_orders)
-            .into_iter()
+        let visual_order = self.visual_order();
+        let layer_orders = &visual_order.layer_orders;
+        let modal_scope = self.modal_scope_in_paint_order(&visual_order.nodes);
+        visual_order
+            .nodes
+            .iter()
+            .copied()
             .enumerate()
             .map(|(order, index)| {
-                self.effective_geometry_for_index(index, order, layer_orders[index])
+                let geometry = self.effective_geometry_for_index(index, order, layer_orders[index]);
+                if self.node_in_modal_scope(UiNodeId(index), modal_scope) {
+                    geometry
+                } else {
+                    geometry.hit_testable(false)
+                }
             })
             .collect()
     }
@@ -5234,68 +5773,102 @@ impl UiDocument {
     ) -> EffectiveGeometry {
         let id = UiNodeId(index);
         let node = &self.nodes[index];
-        let material = node_paint_material(node);
         EffectiveGeometry::new(id, node.layout.rect)
             .paint_transform(Self::node_paint_transform(node))
             .clip_rect(node.layout.clip_rect)
             .layer_order(layer_order)
             .order(order)
             .visible(node.layout.visible)
-            .hit_testable(node.input.pointer)
-            .hit_shape(
-                material
-                    .as_ref()
-                    .map(|material| material.hit_shape.clone())
-                    .unwrap_or_default(),
-            )
+            .hit_testable(self.node_hit_test_result(id).is_some())
+            .hit_shape(node_hit_shape(node).clone())
             .accessibility_rect(node.layout.rect)
     }
 
+    /// Apply a document event without gesture recognition. Pointer release clicks
+    /// a matching press target; runtime hosts also require a confirmed click gesture.
     pub fn handle_input(&mut self, event: UiInputEvent) -> UiInputResult {
+        let click_target = self.focus.pressed;
+        self.handle_input_with_click_target(event, click_target)
+    }
+
+    /// Apply the host's click decision before reporting or animating activation.
+    /// The release still reaches scrollbars and text selection when no click is allowed.
+    pub(crate) fn handle_input_with_click_target(
+        &mut self,
+        event: UiInputEvent,
+        click_target: Option<UiNodeId>,
+    ) -> UiInputResult {
+        let event = match event.focus_direction() {
+            Some(direction) => UiInputEvent::Focus(direction),
+            None => event,
+        };
         self.sanitize_focus_state();
         let previous_hovered = self.focus.hovered;
         let previous_pressed = self.focus.pressed;
         let previous_focused = self.focus.focused;
+        let modal_scope = self.accessibility_modal_scope();
+        self.focus.hovered = self
+            .focus
+            .hovered
+            .filter(|id| self.node_in_modal_scope(*id, modal_scope));
+        self.focus.pressed = self
+            .focus
+            .pressed
+            .filter(|id| self.node_in_modal_scope(*id, modal_scope));
+        self.sanitize_auto_scrollbar_drag();
         let mut scrolled = None;
+        let mut scrollbar_target = None;
         let mut pointer = None;
         let mut consumed_by = None;
+        if matches!(
+            event,
+            UiInputEvent::Key { .. }
+                | UiInputEvent::TextInput(_)
+                | UiInputEvent::Composition { .. }
+        ) {
+            if let Some(scope) = modal_scope {
+                if !self
+                    .focus
+                    .focused
+                    .is_some_and(|id| self.is_focus_navigation_candidate(id, Some(scope)))
+                {
+                    self.focus.focused = self.next_focus(None, FocusDirection::Next);
+                }
+            }
+        }
         let clicked = match event {
             UiInputEvent::PointerMove(point) => {
                 pointer = Some(point);
                 self.pointer_position = Some(point);
-                if let Some(pressed) = self.focus.pressed {
-                    if let Some(axis) = self.auto_scrollbar_drag_axis_for_point(pressed, point) {
-                        if self.drag_auto_scrollbar_to_point(pressed, axis, point) {
-                            scrolled = Some(pressed);
-                        }
-                        self.focus.hovered = Some(pressed);
-                        consumed_by = Some(pressed);
-                    } else {
-                        self.focus.hovered = self.hit_test(point);
-                        consumed_by = self.focus.hovered;
+                if let Some(drag) = self.auto_scrollbar_drag {
+                    scrollbar_target = Some(drag.node);
+                    if self.drag_auto_scrollbar_to_point(drag, point) {
+                        scrolled = Some(drag.node);
                     }
+                    self.focus.hovered = Some(drag.node);
+                    consumed_by = Some(drag.node);
                 } else {
-                    self.focus.hovered = self
-                        .auto_scrollbar_hit_target(point)
-                        .map(|(target, _)| target)
-                        .or_else(|| self.hit_test(point));
-                    consumed_by = self.focus.hovered;
+                    let (hit, _) = self.pointer_input_hit(point);
+                    self.focus.hovered = hit.and_then(HitTestResult::target);
+                    consumed_by = hit.map(HitTestResult::node);
                 }
                 None
             }
             UiInputEvent::PointerDown(point) => {
                 pointer = Some(point);
                 self.pointer_position = Some(point);
-                let auto_scrollbar = self.auto_scrollbar_hit_target(point);
-                let hit = auto_scrollbar
-                    .map(|(target, _)| target)
-                    .or_else(|| self.hit_test(point));
-                self.focus.pressed = hit;
-                self.focus.focused = self.focus_target_for_hit(hit);
-                consumed_by = hit;
-                if let Some((target, axis)) = auto_scrollbar {
-                    if self.drag_auto_scrollbar_to_point(target, axis, point) {
-                        scrolled = Some(target);
+                let (hit, scrollbar_axis) = self.pointer_input_hit(point);
+                let target = hit.and_then(HitTestResult::target);
+                self.focus.pressed = target;
+                self.focus.focused = self.focus_target_for_hit(target, modal_scope);
+                consumed_by = hit.map(HitTestResult::node);
+                self.auto_scrollbar_drag = target
+                    .zip(scrollbar_axis)
+                    .and_then(|(id, axis)| self.begin_auto_scrollbar_drag(id, axis, point));
+                if let Some(drag) = self.auto_scrollbar_drag {
+                    scrollbar_target = Some(drag.node);
+                    if self.drag_auto_scrollbar_to_point(drag, point) {
+                        scrolled = Some(drag.node);
                     }
                 }
                 None
@@ -5303,44 +5876,43 @@ impl UiDocument {
             UiInputEvent::PointerUp(point) => {
                 pointer = Some(point);
                 self.pointer_position = Some(point);
-                if let Some(pressed) = previous_pressed {
-                    if let Some(axis) = self.auto_scrollbar_drag_axis_for_point(pressed, point) {
-                        if self.drag_auto_scrollbar_to_point(pressed, axis, point) {
-                            scrolled = Some(pressed);
-                        }
-                        self.focus.hovered = self
-                            .auto_scrollbar_hit_target(point)
-                            .map(|(target, _)| target)
-                            .or_else(|| self.hit_test(point));
-                        self.focus.pressed = None;
-                        consumed_by = Some(pressed);
-                        None
-                    } else {
-                        let hit = self
-                            .auto_scrollbar_hit_target(point)
-                            .map(|(target, _)| target)
-                            .or_else(|| self.hit_test(point));
-                        let clicked = self.focus.pressed.filter(|pressed| Some(*pressed) == hit);
-                        self.focus.pressed = None;
-                        consumed_by = hit.or(clicked);
-                        clicked
+                let (hit, _) = self.pointer_input_hit(point);
+                let target = hit.and_then(HitTestResult::target);
+                let clicked = if let Some(drag) = self.auto_scrollbar_drag.take() {
+                    scrollbar_target = Some(drag.node);
+                    if self.drag_auto_scrollbar_to_point(drag, point) {
+                        scrolled = Some(drag.node);
                     }
+                    self.focus.hovered = target;
+                    consumed_by = Some(drag.node);
+                    None
                 } else {
-                    let hit = self
-                        .auto_scrollbar_hit_target(point)
-                        .map(|(target, _)| target)
-                        .or_else(|| self.hit_test(point));
-                    let clicked = self.focus.pressed.filter(|pressed| Some(*pressed) == hit);
-                    self.focus.pressed = None;
-                    consumed_by = hit.or(clicked);
+                    let clicked = self.focus.pressed.filter(|pressed| {
+                        Some(*pressed) == target && Some(*pressed) == click_target
+                    });
+                    consumed_by = hit.map(HitTestResult::node).or(clicked);
                     clicked
-                }
+                };
+                self.focus.pressed = None;
+                clicked
+            }
+            UiInputEvent::PointerCancel => {
+                scrollbar_target = self.auto_scrollbar_drag.take().map(|drag| drag.node);
+                self.pointer_position = None;
+                self.focus.hovered = None;
+                self.focus.pressed = None;
+                consumed_by = previous_pressed;
+                None
             }
             UiInputEvent::Wheel(wheel) => {
                 self.pointer_position = Some(wheel.position);
                 let wheel = self.apply_wheel_scroll(wheel);
                 scrolled = wheel.scrolled;
                 consumed_by = wheel.consumed_by;
+                None
+            }
+            UiInputEvent::Composition { target, .. } => {
+                consumed_by = target.filter(|target| self.focus.focused == Some(*target));
                 None
             }
             UiInputEvent::TextInput(_) | UiInputEvent::Key { .. } => None,
@@ -5369,6 +5941,7 @@ impl UiDocument {
             pressed: self.focus.pressed,
             clicked,
             scrolled,
+            scrollbar_target,
             consumed: consumed_by.is_some(),
             consumed_by,
         }
@@ -5509,8 +6082,13 @@ impl UiDocument {
             return WheelInputResult::default();
         }
         let delta = wheel.scroll_delta();
-        if let Some(scope) = self.wheel_event_scope(wheel.position) {
-            let scrolled = self.scroll_wheel_from_scope(scope, wheel.position, delta);
+        let modal_scope = self.accessibility_modal_scope();
+        if let Some(scope) = self.wheel_event_scope(wheel.position, modal_scope) {
+            let scrolled = if self.nodes[scope.0].hit_test_behavior == HitTestBehavior::Block {
+                None
+            } else {
+                self.scroll_wheel_from_scope(scope, wheel.position, delta, modal_scope)
+            };
             return WheelInputResult {
                 scrolled,
                 consumed_by: scrolled.or(Some(scope)),
@@ -5528,28 +6106,44 @@ impl UiDocument {
         scope: UiNodeId,
         position: UiPoint,
         delta: UiPoint,
+        modal_scope: Option<UiNodeId>,
     ) -> Option<UiNodeId> {
         if let Some(target) = self.scroll_topmost_wheel_candidate(position, delta, Some(scope)) {
             return Some(target);
         }
 
-        let mut current = self.nodes.get(scope.0).and_then(|node| node.parent);
+        let mut current = self.nodes.get(scope.0).and_then(UiNode::logical_parent);
         while let Some(id) = current {
+            if !self.node_in_modal_scope(id, modal_scope)
+                || self.nodes[id.0].hit_test_behavior == HitTestBehavior::Block
+            {
+                return None;
+            }
             if self.node_can_receive_wheel_scroll(id, position) && self.scroll_by(id, delta) {
                 return Some(id);
             }
-            current = self.nodes.get(id.0).and_then(|node| node.parent);
+            current = self.nodes.get(id.0).and_then(UiNode::logical_parent);
         }
 
         None
     }
 
-    fn wheel_event_scope(&self, position: UiPoint) -> Option<UiNodeId> {
+    fn wheel_event_scope(
+        &self,
+        position: UiPoint,
+        modal_scope: Option<UiNodeId>,
+    ) -> Option<UiNodeId> {
         self.visual_order()
-            .into_iter()
+            .nodes
+            .iter()
             .rev()
+            .copied()
             .map(UiNodeId)
-            .find(|id| self.node_occludes_wheel_at(*id, position))
+            .find(|id| {
+                self.node_in_modal_scope(*id, modal_scope)
+                    && self.node_occludes_wheel_at(*id, position)
+            })
+            .or(modal_scope)
     }
 
     fn scroll_topmost_wheel_candidate(
@@ -5558,7 +6152,10 @@ impl UiDocument {
         delta: UiPoint,
         subtree_root: Option<UiNodeId>,
     ) -> Option<UiNodeId> {
-        for index in self.visual_order().into_iter().rev() {
+        // A scroll update can invalidate layout while this immutable order
+        // remains valid. Keep ownership independent of the document borrow.
+        let visual_order = self.visual_order().clone();
+        for &index in visual_order.nodes.iter().rev() {
             let target = UiNodeId(index);
             if subtree_root.is_none_or(|root| self.node_is_descendant_or_self(root, target))
                 && self.node_can_receive_wheel_scroll(target, position)
@@ -5574,9 +6171,9 @@ impl UiDocument {
         let Some(node) = self.nodes.get(id.0) else {
             return false;
         };
-        node.layout.visible
-            && node.layout.clip_rect.contains_point(position)
-            && self.node_paint_rect(id.0).contains_point(position)
+        self.node_is_enabled(id)
+            && node.hit_test_behavior == HitTestBehavior::Auto
+            && self.node_geometry_contains_point(id, position)
             && node
                 .scroll
                 .is_some_and(|scroll| scroll.axes.horizontal || scroll.axes.vertical)
@@ -5585,7 +6182,11 @@ impl UiDocument {
     fn auto_scrollbar_axis_at_point(&self, id: UiNodeId, point: UiPoint) -> Option<AuditAxis> {
         let node = self.nodes.get(id.0)?;
         let scroll = node.scroll?;
-        if !node.layout.visible || !node.auto_scrollbar {
+        if !node.layout.visible
+            || !node.auto_scrollbar
+            || !self.node_is_enabled(id)
+            || node.hit_test_behavior != HitTestBehavior::Auto
+        {
             return None;
         }
         let viewport = node.layout.rect.intersection(node.layout.clip_rect)?;
@@ -5614,58 +6215,61 @@ impl UiDocument {
         None
     }
 
-    fn auto_scrollbar_drag_axis_for_point(
-        &self,
-        id: UiNodeId,
-        point: UiPoint,
-    ) -> Option<AuditAxis> {
-        if let Some(axis) = self.auto_scrollbar_axis_at_point(id, point) {
-            return Some(axis);
-        }
-        let node = self.nodes.get(id.0)?;
-        let scroll = node.scroll?;
-        if !node.layout.visible || !node.auto_scrollbar {
-            return None;
-        }
-        let viewport = node.layout.rect.intersection(node.layout.clip_rect)?;
-        let max_offset = scroll.max_offset();
-        let vertical = scroll.axes.vertical
-            && max_offset.y > f32::EPSILON
-            && !self.has_visible_scrollbar_for_scroll_node(id, scroll, AuditAxis::Vertical);
-        let horizontal = scroll.axes.horizontal
-            && max_offset.x > f32::EPSILON
-            && !self.has_visible_scrollbar_for_scroll_node(id, scroll, AuditAxis::Horizontal);
-        match (vertical, horizontal) {
-            (true, false) => Some(AuditAxis::Vertical),
-            (false, true) => Some(AuditAxis::Horizontal),
-            (true, true) => {
-                let metrics = AutoScrollbarPaintState::Hovered.metrics()?;
-                let vertical_track = auto_vertical_scrollbar_track(viewport, true, metrics)?;
-                let horizontal_track = auto_horizontal_scrollbar_track(viewport, true, metrics)?;
-                let vertical_distance = distance_to_rect(point, vertical_track);
-                let horizontal_distance = distance_to_rect(point, horizontal_track);
-                if vertical_distance <= horizontal_distance {
-                    Some(AuditAxis::Vertical)
-                } else {
-                    Some(AuditAxis::Horizontal)
+    pub(crate) fn sanitize_auto_scrollbar_drag(&mut self) {
+        if let Some(drag) = self.auto_scrollbar_drag {
+            if self.focus.pressed != Some(drag.node)
+                || !self.node_in_modal_scope(drag.node, self.accessibility_modal_scope())
+                || self
+                    .auto_scrollbar_scroll_and_track(drag.node, drag.axis)
+                    .is_none()
+            {
+                self.auto_scrollbar_drag = None;
+                if self.focus.pressed == Some(drag.node) {
+                    self.focus.pressed = None;
                 }
             }
-            (false, false) => None,
         }
     }
 
-    fn drag_auto_scrollbar_to_point(
-        &mut self,
+    fn begin_auto_scrollbar_drag(
+        &self,
         id: UiNodeId,
         axis: AuditAxis,
         point: UiPoint,
-    ) -> bool {
-        let Some((scroll, track)) = self.auto_scrollbar_scroll_and_track(id, axis) else {
+    ) -> Option<AutoScrollbarDrag> {
+        let (scroll, track) = self.auto_scrollbar_scroll_and_track(id, axis)?;
+        let (position, start, length) = match axis {
+            AuditAxis::Vertical => {
+                let thumb = auto_vertical_scrollbar_thumb(scroll, track)?;
+                (point.y, thumb.y, thumb.height)
+            }
+            AuditAxis::Horizontal => {
+                let thumb = auto_horizontal_scrollbar_thumb(scroll, track)?;
+                (point.x, thumb.x, thumb.width)
+            }
+        };
+        let grab_fraction = if length > f32::EPSILON && (start..=start + length).contains(&position)
+        {
+            (position - start) / length
+        } else {
+            // A track click moves the thumb's center to the pointer.
+            0.5
+        };
+        Some(AutoScrollbarDrag {
+            node: id,
+            axis,
+            grab_fraction,
+        })
+    }
+
+    fn drag_auto_scrollbar_to_point(&mut self, drag: AutoScrollbarDrag, point: UiPoint) -> bool {
+        let Some((scroll, track)) = self.auto_scrollbar_scroll_and_track(drag.node, drag.axis)
+        else {
             return false;
         };
         let max_offset = scroll.max_offset();
         let mut offset = scroll.offset;
-        match axis {
+        match drag.axis {
             AuditAxis::Vertical => {
                 let Some(thumb) = auto_vertical_scrollbar_thumb(scroll, track) else {
                     return false;
@@ -5674,7 +6278,8 @@ impl UiDocument {
                 if travel <= f32::EPSILON || max_offset.y <= f32::EPSILON {
                     return false;
                 }
-                let ratio = ((point.y - track.y - thumb.height * 0.5) / travel).clamp(0.0, 1.0);
+                let ratio = ((point.y - track.y - thumb.height * drag.grab_fraction) / travel)
+                    .clamp(0.0, 1.0);
                 offset.y = max_offset.y * ratio;
             }
             AuditAxis::Horizontal => {
@@ -5685,11 +6290,12 @@ impl UiDocument {
                 if travel <= f32::EPSILON || max_offset.x <= f32::EPSILON {
                     return false;
                 }
-                let ratio = ((point.x - track.x - thumb.width * 0.5) / travel).clamp(0.0, 1.0);
+                let ratio = ((point.x - track.x - thumb.width * drag.grab_fraction) / travel)
+                    .clamp(0.0, 1.0);
                 offset.x = max_offset.x * ratio;
             }
         }
-        self.set_scroll_offset(id, offset)
+        self.set_scroll_offset(drag.node, offset)
     }
 
     fn auto_scrollbar_scroll_and_track(
@@ -5699,7 +6305,11 @@ impl UiDocument {
     ) -> Option<(ScrollState, UiRect)> {
         let node = self.nodes.get(id.0)?;
         let scroll = node.scroll?;
-        if !node.layout.visible || !node.auto_scrollbar {
+        if !node.layout.visible
+            || !node.auto_scrollbar
+            || !self.node_is_enabled(id)
+            || node.hit_test_behavior != HitTestBehavior::Auto
+        {
             return None;
         }
         let viewport = node.layout.rect.intersection(node.layout.clip_rect)?;
@@ -5727,102 +6337,196 @@ impl UiDocument {
         let Some(node) = self.nodes.get(id.0) else {
             return false;
         };
-        node.layout.visible
-            && node.layout.clip_rect.contains_point(position)
-            && self.node_paint_rect(id.0).contains_point(position)
-            && node_blocks_wheel_passthrough(node)
-    }
-
-    fn next_focus(&self, current: Option<UiNodeId>, direction: FocusDirection) -> Option<UiNodeId> {
-        let focusable = self.focus_navigation_order();
-        if focusable.is_empty() {
-            return None;
-        }
-        let current_index =
-            current.and_then(|id| focusable.iter().position(|candidate| *candidate == id));
-        let next_index = match (direction, current_index) {
-            (FocusDirection::Next, Some(index)) => (index + 1) % focusable.len(),
-            (FocusDirection::Previous, Some(0)) => focusable.len() - 1,
-            (FocusDirection::Previous, Some(index)) => index - 1,
-            (_, None) => 0,
+        let blocks = match node.hit_test_behavior {
+            HitTestBehavior::PassThrough => false,
+            HitTestBehavior::Block => true,
+            HitTestBehavior::Auto => {
+                self.node_or_ancestor_disabled(id) || node_blocks_wheel_passthrough(node)
+            }
         };
-        Some(focusable[next_index])
+        blocks && self.node_geometry_contains_point(id, position)
     }
 
-    fn focus_target_for_hit(&self, hit: Option<UiNodeId>) -> Option<UiNodeId> {
-        let mut current = hit;
+    pub(crate) fn next_focus(
+        &self,
+        current: Option<UiNodeId>,
+        direction: FocusDirection,
+    ) -> Option<UiNodeId> {
+        let scope = self.accessibility_modal_scope();
+        // Accessibility order comes first, followed by input-only controls in
+        // document order. Node IDs break ties without sorting or cloning a tree.
+        let order = |id: UiNodeId| {
+            let meta = self.nodes[id.0].accessibility.as_ref();
+            (
+                meta.is_none(),
+                meta.and_then(|meta| meta.focus_order).unwrap_or(i32::MAX),
+                id.0,
+            )
+        };
+        let current_order = current
+            .filter(|&id| self.is_focus_navigation_candidate(id, scope))
+            .map(order);
+        let candidates = (0..self.nodes.len())
+            .map(UiNodeId)
+            .filter(|&id| self.is_focus_navigation_candidate(id, scope));
+        match direction {
+            // Prefer candidates after/before the current one. If there are none,
+            // the same comparison selects the opposite boundary for wrapping.
+            FocusDirection::Next => candidates.min_by_key(|&id| {
+                let order = order(id);
+                (current_order.is_some_and(|current| order <= current), order)
+            }),
+            FocusDirection::Previous => candidates.max_by_key(|&id| {
+                let order = order(id);
+                (current_order.is_some_and(|current| order < current), order)
+            }),
+        }
+    }
+
+    pub(crate) fn node_is_available_modal(&self, id: UiNodeId) -> bool {
+        self.nodes.get(id.0).is_some_and(|node| {
+            node.accessibility
+                .as_ref()
+                .is_some_and(|meta| !meta.hidden && meta.modal)
+                && node.layout.visible
+                && node.layout.rect.intersects(node.layout.clip_rect)
+                && self.node_is_enabled(id)
+        })
+    }
+
+    pub(crate) fn node_in_modal_scope(&self, id: UiNodeId, scope: Option<UiNodeId>) -> bool {
+        scope.is_none_or(|scope| self.node_is_logical_descendant_or_self(scope, id))
+    }
+
+    fn modal_scope_in_paint_order(&self, order: &[usize]) -> Option<UiNodeId> {
+        order
+            .iter()
+            .rev()
+            .copied()
+            .map(UiNodeId)
+            .find(|id| self.node_is_available_modal(*id))
+    }
+
+    pub(crate) fn accessibility_modal_scope(&self) -> Option<UiNodeId> {
+        if let Some(order) = self.visual_order_cache.get() {
+            return self.modal_scope_in_paint_order(&order.nodes);
+        }
+        let mut candidates = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.node_is_available_modal(UiNodeId(*index)))
+            .map(|(index, _)| index);
+        let first = candidates.next()?;
+        if candidates.next().is_none() {
+            return Some(UiNodeId(first));
+        }
+        // A single modal needs no stacking work. Multiple modals share the
+        // ordering used by paint and input, but availability is always live.
+        self.modal_scope_in_paint_order(&self.visual_order().nodes)
+    }
+
+    fn focus_target_for_hit(
+        &self,
+        hit: Option<UiNodeId>,
+        modal_scope: Option<UiNodeId>,
+    ) -> Option<UiNodeId> {
+        let mut current = hit.filter(|id| self.node_in_modal_scope(*id, modal_scope));
         while let Some(id) = current {
             let node = self.nodes.get(id.0)?;
-            if self.node_accepts_pointer_focus(id) {
+            if self.node_accepts_focus(id) {
                 return Some(id);
+            }
+            if Some(id) == modal_scope {
+                break;
+            }
+            current = node.logical_parent();
+        }
+        // Inert background presses and nonfocusable modal surfaces cannot blur
+        // the active field. With no modal, an empty hit still clears focus.
+        modal_scope.and_then(|scope| {
+            self.focus
+                .focused
+                .filter(|id| self.is_focus_navigation_candidate(*id, Some(scope)))
+                .or_else(|| self.next_focus(None, FocusDirection::Next))
+        })
+    }
+
+    /// Text roles include read-only/custom controls without an IME snapshot.
+    /// A snapshot also declares text input independently of accessibility metadata.
+    pub(crate) fn node_is_text_control(&self, id: UiNodeId) -> bool {
+        self.nodes.get(id.0).is_some_and(|node| {
+            node.text_input.is_some()
+                || node.accessibility.as_ref().is_some_and(|accessibility| {
+                    matches!(
+                        accessibility.role,
+                        AccessibilityRole::TextBox | AccessibilityRole::SearchBox
+                    )
+                })
+        })
+    }
+
+    pub(crate) fn node_accepts_focus(&self, id: UiNodeId) -> bool {
+        let Some(node) = self.nodes.get(id.0) else {
+            return false;
+        };
+        if !node.layout.visible || !node.layout.rect.intersects(node.layout.clip_rect) {
+            return false;
+        }
+        if !self.node_is_enabled(id) {
+            return false;
+        }
+        node.input.focusable
+            || node
+                .accessibility
+                .as_ref()
+                .is_some_and(|accessibility| accessibility.focusable)
+    }
+
+    pub(crate) fn is_focus_navigation_candidate(
+        &self,
+        id: UiNodeId,
+        modal_scope: Option<UiNodeId>,
+    ) -> bool {
+        self.node_accepts_focus(id) && self.node_in_modal_scope(id, modal_scope)
+    }
+
+    // Enabled state depends on both the physical host and the source owner.
+    // A nested portal can depend on a host without being mounted below it.
+    fn node_depends_on_ancestor(&self, ancestor: UiNodeId, node: UiNodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(id) = current {
+            let Some(node) = self.nodes.get(id.0) else {
+                return false;
+            };
+            if id == ancestor
+                || node
+                    .portal_owner
+                    .is_some_and(|owner| self.node_depends_on_ancestor(ancestor, owner))
+            {
+                return true;
             }
             current = node.parent;
         }
-        None
+        false
     }
 
-    fn node_accepts_pointer_focus(&self, id: UiNodeId) -> bool {
-        let Some(node) = self.nodes.get(id.0) else {
-            return false;
-        };
-        if !node.layout.visible || !node.layout.rect.intersects(node.layout.clip_rect) {
-            return false;
-        }
-        if let Some(accessibility) = &node.accessibility {
-            if accessibility.hidden || !accessibility.enabled {
+    pub(crate) fn node_is_logical_descendant_or_self(
+        &self,
+        ancestor: UiNodeId,
+        node: UiNodeId,
+    ) -> bool {
+        let mut current = Some(node);
+        while let Some(id) = current {
+            let Some(node) = self.nodes.get(id.0) else {
                 return false;
+            };
+            if id == ancestor {
+                return true;
             }
+            current = node.logical_parent();
         }
-        node.input.focusable
-            || node
-                .accessibility
-                .as_ref()
-                .is_some_and(|accessibility| accessibility.focusable)
-    }
-
-    fn focus_navigation_order(&self) -> Vec<UiNodeId> {
-        let accessibility = self.accessibility_snapshot();
-        let mut focusable = Vec::new();
-        for id in accessibility.effective_focus_order() {
-            if self.is_focus_navigation_candidate(id, accessibility.modal_scope)
-                && !focusable.contains(&id)
-            {
-                focusable.push(id);
-            }
-        }
-        for index in 0..self.nodes.len() {
-            let id = UiNodeId(index);
-            if self.is_focus_navigation_candidate(id, accessibility.modal_scope)
-                && !focusable.contains(&id)
-            {
-                focusable.push(id);
-            }
-        }
-        focusable
-    }
-
-    fn is_focus_navigation_candidate(&self, id: UiNodeId, modal_scope: Option<UiNodeId>) -> bool {
-        let Some(node) = self.nodes.get(id.0) else {
-            return false;
-        };
-        if !node.layout.visible || !node.layout.rect.intersects(node.layout.clip_rect) {
-            return false;
-        }
-        if let Some(accessibility) = &node.accessibility {
-            if accessibility.hidden || !accessibility.enabled {
-                return false;
-            }
-        }
-        if let Some(scope) = modal_scope {
-            if !self.node_is_descendant_or_self(scope, id) {
-                return false;
-            }
-        }
-        node.input.focusable
-            || node
-                .accessibility
-                .as_ref()
-                .is_some_and(|accessibility| accessibility.focusable)
+        false
     }
 
     pub(crate) fn node_is_descendant_or_self(&self, ancestor: UiNodeId, node: UiNodeId) -> bool {
@@ -5909,16 +6613,17 @@ impl UiDocument {
         let mut list = PaintList {
             items: Vec::with_capacity(self.nodes.len() + 8),
         };
-        let layer_orders = self.effective_layer_orders();
-        let visual_order = self.visual_order_with_layer(&layer_orders);
+        let visual_order = self.visual_order();
+        let layer_orders = &visual_order.layer_orders;
+        let modal_scope = self.modal_scope_in_paint_order(&visual_order.nodes);
         let mut pending_auto_scrollbars = Vec::new();
-        for index in visual_order {
+        for &index in &visual_order.nodes {
             let id = UiNodeId(index);
             self.flush_closed_auto_scrollbars(
                 &mut list,
                 &mut pending_auto_scrollbars,
                 id,
-                &layer_orders,
+                layer_orders,
             );
             let node = &self.nodes[index];
             if !node.layout.visible
@@ -6001,18 +6706,29 @@ impl UiDocument {
                         });
                     }
                 }
-                UiContent::Canvas(canvas) => list.items.push(PaintItem {
-                    node: id,
-                    rect: node.layout.rect,
-                    clip_rect: node.layout.clip_rect,
-                    z_index,
-                    layer_order,
-                    opacity,
-                    transform,
-                    shader: node.shader.clone(),
-                    material: material.clone(),
-                    kind: PaintKind::Canvas(canvas.clone()),
-                }),
+                UiContent::Canvas(canvas) => {
+                    let mut canvas = canvas.clone();
+                    // Keep rendering inert canvases while preventing downstream
+                    // hosts from reacquiring their input or pointer lock.
+                    if !self.node_in_modal_scope(id, modal_scope)
+                        || !self.node_is_enabled(id)
+                        || node.hit_test_behavior != HitTestBehavior::Auto
+                    {
+                        canvas.interaction = CanvasInteractionPolicy::NONE;
+                    }
+                    list.items.push(PaintItem {
+                        node: id,
+                        rect: node.layout.rect,
+                        clip_rect: node.layout.clip_rect,
+                        z_index,
+                        layer_order,
+                        opacity,
+                        transform,
+                        shader: node.shader.clone(),
+                        material: material.clone(),
+                        kind: PaintKind::Canvas(canvas),
+                    });
+                }
                 UiContent::Image(image) => list.items.push(PaintItem {
                     node: id,
                     rect: node.layout.rect,
@@ -6057,7 +6773,7 @@ impl UiDocument {
                             .as_ref()
                             .and_then(AnimationMachine::active_morph_transition),
                         fill_color: animation_values.fill_color,
-                        transform,
+                        transform: self.node_content_transform(id).into(),
                         shader: node.shader.clone(),
                         material: material.clone(),
                     };
@@ -6072,7 +6788,7 @@ impl UiDocument {
             }
         }
         while let Some(id) = pending_auto_scrollbars.pop() {
-            self.push_auto_scrollbars(&mut list, id, &layer_orders);
+            self.push_auto_scrollbars(&mut list, id, layer_orders);
         }
         list
     }
@@ -6119,7 +6835,8 @@ impl UiDocument {
             && max_offset.x > f32::EPSILON
             && !self.has_visible_scrollbar_for_scroll_node(id, scroll, AuditAxis::Horizontal);
         if vertical {
-            let state = self.auto_scrollbar_paint_state(viewport, AuditAxis::Vertical, horizontal);
+            let state =
+                self.auto_scrollbar_paint_state(id, viewport, AuditAxis::Vertical, horizontal);
             if let Some(track) = state
                 .metrics()
                 .and_then(|metrics| auto_vertical_scrollbar_track(viewport, horizontal, metrics))
@@ -6131,7 +6848,8 @@ impl UiDocument {
             }
         }
         if horizontal {
-            let state = self.auto_scrollbar_paint_state(viewport, AuditAxis::Horizontal, vertical);
+            let state =
+                self.auto_scrollbar_paint_state(id, viewport, AuditAxis::Horizontal, vertical);
             if let Some(track) = state
                 .metrics()
                 .and_then(|metrics| auto_horizontal_scrollbar_track(viewport, vertical, metrics))
@@ -6146,10 +6864,17 @@ impl UiDocument {
 
     fn auto_scrollbar_paint_state(
         &self,
+        id: UiNodeId,
         viewport: UiRect,
         axis: AuditAxis,
         has_cross_axis_scrollbar: bool,
     ) -> AutoScrollbarPaintState {
+        if self
+            .auto_scrollbar_drag
+            .is_some_and(|drag| drag.node == id && drag.axis == axis)
+        {
+            return AutoScrollbarPaintState::Hovered;
+        }
         let Some(pointer) = self.pointer_position else {
             return AutoScrollbarPaintState::Hidden;
         };
@@ -6214,50 +6939,55 @@ impl UiDocument {
         }
     }
 
-    fn node_paint_rect(&self, index: usize) -> UiRect {
-        let node = &self.nodes[index];
-        Self::node_paint_transform(node).transform_rect(node.layout.rect)
+    fn visual_order(&self) -> &Arc<VisualOrder> {
+        self.visual_order_cache.get_or_init(|| {
+            let layer_orders = self.effective_layer_orders();
+            let nodes = self.compute_visual_order(&layer_orders);
+            Arc::new(VisualOrder {
+                layer_orders,
+                nodes,
+            })
+        })
     }
 
-    fn visual_order(&self) -> Vec<usize> {
-        let layer_orders = self.effective_layer_orders();
-        self.visual_order_with_layer(&layer_orders)
-    }
-
-    fn visual_order_with_layer(&self, layer_orders: &[platform::LayerOrder]) -> Vec<usize> {
+    fn compute_visual_order(&self, layer_orders: &[platform::LayerOrder]) -> Vec<usize> {
         let mut order = (0..self.nodes.len()).collect::<Vec<_>>();
         let mut stack_keys = vec![None; self.nodes.len()];
-        order.sort_by(|left, right| {
-            let left_key = self.stack_sort_key(*left, layer_orders, &mut stack_keys);
-            let right_key = self.stack_sort_key(*right, layer_orders, &mut stack_keys);
-            left_key.cmp(&right_key)
-        });
+        for index in 0..self.nodes.len() {
+            self.populate_stack_sort_key(index, layer_orders, &mut stack_keys);
+        }
+        // Comparing cached keys by reference avoids allocating on every sort comparison.
+        order.sort_by(|left, right| stack_keys[*left].cmp(&stack_keys[*right]));
         order
     }
 
-    fn stack_sort_key(
+    fn populate_stack_sort_key(
         &self,
         index: usize,
         layer_orders: &[platform::LayerOrder],
         stack_keys: &mut [Option<Vec<StackSortComponent>>],
-    ) -> Vec<StackSortComponent> {
-        if let Some(key) = stack_keys.get(index).and_then(Clone::clone) {
-            return key;
+    ) {
+        if stack_keys[index].is_some() {
+            return;
         }
-        let mut key = self.nodes[index]
+        let parent = self.nodes[index]
             .stack_parent
             .or(self.nodes[index].parent)
-            .filter(|parent| parent.0 != index)
-            .map(|parent| self.stack_sort_key(parent.0, layer_orders, stack_keys))
-            .unwrap_or_default();
+            .filter(|parent| parent.0 != index);
+        let mut key = if let Some(parent) = parent {
+            self.populate_stack_sort_key(parent.0, layer_orders, stack_keys);
+            let parent_key = stack_keys[parent.0].as_ref().unwrap();
+            let mut key = Vec::with_capacity(parent_key.len() + 1);
+            key.extend_from_slice(parent_key);
+            key
+        } else {
+            Vec::with_capacity(1)
+        };
         key.push(StackSortComponent {
             layer_order: layer_orders[index],
             index,
         });
-        if let Some(slot) = stack_keys.get_mut(index) {
-            *slot = Some(key.clone());
-        }
-        key
+        stack_keys[index] = Some(key);
     }
 
     fn effective_layer_orders(&self) -> Vec<platform::LayerOrder> {
@@ -6284,10 +7014,25 @@ impl UiDocument {
     }
 }
 
+// Only structural ordering is retained. Geometry, visibility, modal scope,
+// and interaction eligibility are evaluated from current node state.
+#[derive(Debug)]
+struct VisualOrder {
+    layer_orders: Vec<platform::LayerOrder>,
+    nodes: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct StackSortComponent {
     layer_order: platform::LayerOrder,
     index: usize,
+}
+
+fn node_hit_shape(node: &UiNode) -> &ElementShape {
+    node.material
+        .as_ref()
+        .map(|material| &material.hit_shape)
+        .unwrap_or(&ElementShape::Rect)
 }
 
 fn node_paint_material(node: &UiNode) -> Option<ElementMaterial> {
@@ -6378,24 +7123,6 @@ fn axis_ranges_overlap(a_start: f32, a_end: f32, b_start: f32, b_end: f32) -> bo
 
 fn approx_same_scalar(left: f32, right: f32) -> bool {
     (left - right).abs() <= 0.5
-}
-
-fn distance_to_rect(point: UiPoint, rect: UiRect) -> f32 {
-    let dx = if point.x < rect.x {
-        rect.x - point.x
-    } else if point.x > rect.right() {
-        point.x - rect.right()
-    } else {
-        0.0
-    };
-    let dy = if point.y < rect.y {
-        rect.y - point.y
-    } else if point.y > rect.bottom() {
-        point.y - rect.bottom()
-    } else {
-        0.0
-    };
-    (dx * dx + dy * dy).sqrt()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7133,12 +7860,33 @@ impl PaintList {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+
+    /// Visit layers and their children in paint order, without flattening their
+    /// geometry. Flat lists need no traversal allocation; nested lists use a
+    /// stack of borrowed iterators rather than recursive calls or cloned items.
+    pub(crate) fn iter_recursive(&self) -> impl Iterator<Item = &PaintItem> {
+        let mut current = self.items.iter();
+        let mut parents = Vec::new();
+        std::iter::from_fn(move || loop {
+            if let Some(item) = current.next() {
+                if let PaintKind::CompositedLayer(layer) = &item.kind {
+                    if !layer.paint.is_empty() {
+                        parents.push(std::mem::replace(&mut current, layer.paint.items.iter()));
+                    }
+                }
+                return Some(item);
+            }
+            current = parents.pop()?;
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaintItem {
     pub node: UiNodeId,
     pub rect: UiRect,
+    /// Clip in final paint coordinates. Apply target/DPI conversion, but do not
+    /// apply this item's content transform again.
     pub clip_rect: UiRect,
     pub z_index: f32,
     pub layer_order: platform::LayerOrder,
@@ -7292,6 +8040,8 @@ pub enum PaintKind {
 pub struct LayoutSnapshot {
     pub id: UiNodeId,
     pub name: String,
+    /// Source owner of a portal mounted elsewhere in this layout tree.
+    pub portal_owner: Option<UiNodeId>,
     pub rect: UiRect,
     pub clip_rect: UiRect,
     pub visible: bool,
@@ -7682,18 +8432,12 @@ impl AuditWarning {
             Self::AccessibilityActionIdMissing { .. } => {
                 "assign a stable action id so replay and assistive tech can identify it"
             }
-            Self::AccessibilityActionLabelMissing { .. } => {
-                "give the action a user-facing label"
-            }
-            Self::AccessibilityActionDuplicate { .. } => {
-                "deduplicate action ids on the node"
-            }
+            Self::AccessibilityActionLabelMissing { .. } => "give the action a user-facing label",
+            Self::AccessibilityActionDuplicate { .. } => "deduplicate action ids on the node",
             Self::AccessibilityStateMissing { .. } => {
                 "publish the role-specific checked, expanded, pressed, or selected state"
             }
-            Self::AccessibilityValueMissing { .. } => {
-                "publish the current accessible value"
-            }
+            Self::AccessibilityValueMissing { .. } => "publish the current accessible value",
             Self::AccessibilityValueRangeMissing { .. } => {
                 "publish min, max, current, and step values for range-like controls"
             }
@@ -7778,13 +8522,32 @@ impl UiDocument {
     }
 
     pub fn accessibility_snapshot(&self) -> AccessibilityTree {
+        self.accessibility_snapshot_for_displayed(&self.displayed_nodes())
+    }
+
+    fn displayed_nodes(&self) -> Vec<bool> {
+        // Layout parents and portal owners are inserted before their children.
+        // Use authored display rather than layout.visible: clipping and offscreen
+        // placement do not remove semantics, and snapshots can precede layout.
+        let mut displayed = Vec::<bool>::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let parent_displayed = node.parent.is_none_or(|parent| displayed[parent.0]);
+            let owner_displayed = node.portal_owner.is_none_or(|owner| displayed[owner.0]);
+            displayed.push(
+                parent_displayed && owner_displayed && node.style.layout.display != Display::None,
+            );
+        }
+        displayed
+    }
+
+    fn accessibility_snapshot_for_displayed(&self, displayed: &[bool]) -> AccessibilityTree {
         let accessible_nodes = self
             .nodes
             .iter()
             .enumerate()
             .filter_map(|(index, node)| {
                 let accessibility = node.accessibility.as_ref()?;
-                (!accessibility.hidden).then_some(index)
+                (displayed[index] && !accessibility.hidden).then_some(index)
             })
             .collect::<HashSet<_>>();
         let nodes = self
@@ -7793,18 +8556,45 @@ impl UiDocument {
             .enumerate()
             .filter_map(|(index, node)| {
                 let accessibility = node.accessibility.as_ref()?;
-                if accessibility.hidden {
+                if !accessible_nodes.contains(&index) {
                     return None;
                 }
+                let mut label = accessibility.label.clone();
+                let mut hint = accessibility.hint.clone();
+                let mut relations = accessibility.relations.clone();
+                let is_exported = |id: &UiNodeId| accessible_nodes.contains(&id.0);
+                // Explicit references may name hidden text. Resolve all of the
+                // reference text before removing links to excluded nodes; keeping
+                // only the visible links would override the combined name.
+                for (targets, text, description) in [
+                    (&mut relations.labelled_by, &mut label, false),
+                    (&mut relations.described_by, &mut hint, true),
+                ] {
+                    if targets.iter().any(|id| !is_exported(id)) {
+                        if let Some(resolved) =
+                            self.accessibility_relation_text(targets, description)
+                        {
+                            *text = Some(resolved);
+                        }
+                        targets.clear();
+                    }
+                }
+                relations.controls.retain(is_exported);
+                relations.owns.retain(is_exported);
+                relations.active_descendant = relations.active_descendant.filter(is_exported);
                 Some(AccessibilityNode {
                     id: UiNodeId(index),
-                    parent: nearest_accessible_parent(&self.nodes, node.parent, &accessible_nodes),
+                    parent: nearest_accessible_parent(
+                        &self.nodes,
+                        node.logical_parent(),
+                        &accessible_nodes,
+                    ),
                     role: accessibility.role,
-                    label: accessibility.label.clone(),
+                    label,
                     value: accessibility.value.clone(),
-                    hint: accessibility.hint.clone(),
+                    hint,
                     rect: node.layout.rect,
-                    enabled: accessibility.enabled,
+                    enabled: self.node_is_enabled(UiNodeId(index)),
                     focusable: accessibility.focusable || node.input.focusable,
                     modal: accessibility.modal,
                     selected: accessibility.selected,
@@ -7820,21 +8610,48 @@ impl UiDocument {
                     focus_order: accessibility.focus_order,
                     key_shortcuts: accessibility.key_shortcuts.clone(),
                     actions: accessibility.actions.clone(),
-                    relations: accessibility.relations.clone(),
+                    relations,
                     summary: accessibility.summary.clone(),
                 })
             })
             .collect::<Vec<_>>();
         let focus_order = accessibility_focus_order(&nodes);
-        let modal_scope = nodes
-            .iter()
-            .find(|node| node.modal && node.enabled)
-            .map(|node| node.id);
         AccessibilityTree {
             nodes,
             focus_order,
-            modal_scope,
+            modal_scope: self
+                .accessibility_modal_scope()
+                .filter(|id| accessible_nodes.contains(&id.0)),
         }
+    }
+
+    fn accessibility_relation_text(
+        &self,
+        targets: &[UiNodeId],
+        description: bool,
+    ) -> Option<String> {
+        let text = targets
+            .iter()
+            .filter_map(|id| self.nodes.get(id.0)?.accessibility.as_ref())
+            .filter_map(|meta| {
+                crate::accessibility::direct_accessible_name(
+                    meta.label.as_deref(),
+                    meta.summary.as_ref(),
+                )
+                .or_else(|| {
+                    description
+                        .then(|| {
+                            crate::accessibility::direct_accessible_description(
+                                meta.hint.as_deref(),
+                                meta.invalid.as_deref(),
+                            )
+                        })
+                        .flatten()
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        (!text.is_empty()).then_some(text)
     }
 
     pub fn accessibility_focus_order(&self) -> Vec<UiNodeId> {
@@ -7846,6 +8663,7 @@ impl UiDocument {
         LayoutSnapshot {
             id,
             name: node.name.clone(),
+            portal_owner: node.portal_owner,
             rect: node.layout.rect,
             clip_rect: node.layout.clip_rect,
             visible: node.layout.visible,
@@ -7865,16 +8683,20 @@ impl UiDocument {
         let mut warnings = Vec::new();
         let mut names = HashSet::new();
         let root_rect = self.nodes[self.root.0].layout.rect;
-        let accessibility_snapshot = self.accessibility_snapshot();
+        let displayed = self.displayed_nodes();
+        let accessibility_snapshot = self.accessibility_snapshot_for_displayed(&displayed);
         let focus_order = accessibility_snapshot
             .focus_order
             .iter()
             .copied()
             .collect::<HashSet<_>>();
-        let accessible_nodes = accessibility_snapshot
+        // Hidden semantic targets remain valid authored references even though
+        // the exported tree omits their nodes and resolves their text inline.
+        let relation_targets = self
             .nodes
             .iter()
-            .map(|node| node.id)
+            .enumerate()
+            .filter_map(|(index, node)| node.accessibility.as_ref().map(|_| UiNodeId(index)))
             .collect::<HashSet<_>>();
         for (index, node) in self.nodes.iter().enumerate() {
             let id = UiNodeId(index);
@@ -7888,6 +8710,9 @@ impl UiDocument {
                     node: id,
                     name: node.name.clone(),
                 });
+            }
+            if !displayed[index] {
+                continue;
             }
             if (node.input.pointer || node.input.focusable)
                 && !node.layout.visible
@@ -7966,7 +8791,7 @@ impl UiDocument {
                 if accessibility_needs_action(accessibility.role)
                     && (node.input.pointer || node.input.focusable || accessibility.focusable)
                     && accessibility.actions.is_empty()
-                    && accessibility.enabled
+                    && self.node_is_enabled(id)
                 {
                     warnings.push(AuditWarning::AccessibilityActionMissing {
                         node: id,
@@ -8020,7 +8845,7 @@ impl UiDocument {
                     &mut warnings,
                     id,
                     &node.name,
-                    &accessible_nodes,
+                    &relation_targets,
                     &accessibility.relations,
                 );
             }
@@ -8294,7 +9119,7 @@ fn nearest_accessible_parent(
         if accessible_nodes.contains(&id.0) {
             return Some(id);
         }
-        parent = nodes.get(id.0).and_then(|node| node.parent);
+        parent = nodes.get(id.0).and_then(UiNode::logical_parent);
     }
 
     None
@@ -8641,10 +9466,18 @@ fn text_underline_segment(
     scale: f32,
 ) -> (UiPoint, UiPoint) {
     let scale = normalized_scale(scale);
-    let content_width = content_size
-        .map(|size| size.width)
-        .filter(|width| width.is_finite() && *width > f32::EPSILON)
-        .unwrap_or_else(|| approximate_unwrapped_text_width(text, scale));
+    let content_width = if text.style.overflow == TextOverflow::Ellipsis {
+        content_size
+            .map(|size| size.width)
+            .filter(|width| width.is_finite())
+            .unwrap_or(0.0)
+            .min(rect.width.max(0.0))
+    } else {
+        content_size
+            .map(|size| size.width)
+            .filter(|width| width.is_finite() && *width > f32::EPSILON)
+            .unwrap_or_else(|| approximate_unwrapped_text_width(text, scale))
+    };
     let width = content_width.max(0.0);
     let line_height = (text.style.line_height * scale)
         .max(text.style.font_size * scale)
@@ -9356,7 +10189,17 @@ struct ActiveTransition {
 #[derive(Debug, Clone, PartialEq)]
 enum AnimationMorphEndpoint {
     Amount(f32),
-    Transition(Box<AnimationMorphTransition>),
+    Blend {
+        from: Box<AnimationMorphEndpoint>,
+        from_weight: f64,
+        terms: Vec<AnimationMorphTerm>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AnimationMorphTerm {
+    amount: f32,
+    weight: f64,
 }
 
 impl AnimationMorphEndpoint {
@@ -9364,10 +10207,96 @@ impl AnimationMorphEndpoint {
         Self::Amount(finite_or(amount, 0.0))
     }
 
+    fn contains_amount(&self, amount: f32) -> bool {
+        match self {
+            Self::Amount(previous) => *previous == amount,
+            Self::Blend { from, terms, .. } => {
+                terms.iter().any(|term| term.amount == amount) || from.contains_amount(amount)
+            }
+        }
+    }
+
+    fn blend_to(mut self, amount: f32, progress: f32) -> Self {
+        if matches!(&self, Self::Amount(previous) if *previous == amount) {
+            return self;
+        }
+        let weight = f64::from(progress);
+        let seen = self.contains_amount(amount);
+        if let Self::Blend {
+            from_weight, terms, ..
+        } = &mut self
+        {
+            if seen {
+                // This target cannot increase the resolved vertex count: it has
+                // already participated in the source. With no further resampling
+                // of that source, interpolation is an affine combination.
+                *from_weight *= 1.0 - weight;
+                for term in terms.iter_mut() {
+                    term.weight *= 1.0 - weight;
+                }
+                if let Some(term) = terms.iter_mut().find(|term| term.amount == amount) {
+                    term.weight += weight;
+                } else {
+                    terms.push(AnimationMorphTerm { amount, weight });
+                }
+                return self;
+            }
+        }
+
+        // A new target may require resampling the *mixed* source polygon, which
+        // is not equivalent to resampling its individual components. Preserve
+        // that boundary once per distinct amount, never once per interruption.
+        // Both depth and term counts are bounded by the machine's authored morph
+        // values plus the initial (possibly input-blended) value.
+        Self::Blend {
+            from: Box::new(self),
+            from_weight: 1.0 - weight,
+            terms: vec![AnimationMorphTerm { amount, weight }],
+        }
+    }
+
     fn points(&self, frames: &[Vec<UiPoint>], amount_offset: f32) -> Vec<UiPoint> {
         match self {
             Self::Amount(amount) => morph_polygon_keyframe_points(frames, amount_offset + *amount),
-            Self::Transition(transition) => transition.points(frames, amount_offset),
+            Self::Blend {
+                from,
+                from_weight,
+                terms,
+            } => {
+                let from = from.points(frames, amount_offset);
+                let targets: Vec<_> = terms
+                    .iter()
+                    .map(|term| morph_polygon_keyframe_points(frames, amount_offset + term.amount))
+                    .collect();
+                // Zero-weight endpoints still determine resampling and empty
+                // geometry, matching the ordinary two-polygon interpolation.
+                if from.is_empty() || targets.iter().any(Vec::is_empty) {
+                    return Vec::new();
+                }
+                let count = targets.iter().map(Vec::len).fold(from.len(), usize::max);
+                let mut points: Vec<_> = resample_closed_polygon(&from, count)
+                    .into_iter()
+                    .map(|point| {
+                        (
+                            f64::from(point.x) * from_weight,
+                            f64::from(point.y) * from_weight,
+                        )
+                    })
+                    .collect();
+                for (target, term) in targets.iter().zip(terms) {
+                    for (point, target) in points
+                        .iter_mut()
+                        .zip(resample_closed_polygon(target, count))
+                    {
+                        point.0 += f64::from(target.x) * term.weight;
+                        point.1 += f64::from(target.y) * term.weight;
+                    }
+                }
+                points
+                    .into_iter()
+                    .map(|(x, y)| UiPoint::new(x as f32, y as f32))
+                    .collect()
+            }
         }
     }
 }
@@ -9375,26 +10304,26 @@ impl AnimationMorphEndpoint {
 #[derive(Debug, Clone, PartialEq)]
 struct AnimationMorphTransition {
     from: AnimationMorphEndpoint,
-    to: AnimationMorphEndpoint,
+    to_amount: f32,
     progress: f32,
 }
 
 impl AnimationMorphTransition {
-    fn new(from: AnimationMorphEndpoint, to: AnimationMorphEndpoint, progress: f32) -> Self {
+    fn new(from: AnimationMorphEndpoint, to_amount: f32, progress: f32) -> Self {
         Self {
             from,
-            to,
+            to_amount: finite_or(to_amount, 0.0),
             progress: finite_or(progress, 0.0).clamp(0.0, 1.0),
         }
     }
 
     fn into_endpoint(self) -> AnimationMorphEndpoint {
-        AnimationMorphEndpoint::Transition(Box::new(self))
+        self.from.blend_to(self.to_amount, self.progress)
     }
 
     fn points(&self, frames: &[Vec<UiPoint>], amount_offset: f32) -> Vec<UiPoint> {
         let from = self.from.points(frames, amount_offset);
-        let to = self.to.points(frames, amount_offset);
+        let to = morph_polygon_keyframe_points(frames, amount_offset + self.to_amount);
         morph_polygon_points(&from, &to, self.progress)
     }
 }
@@ -9532,7 +10461,7 @@ impl AnimationMachine {
         };
         Some(AnimationMorphTransition::new(
             active.from_morph.clone(),
-            AnimationMorphEndpoint::amount(to_state.values.morph),
+            to_state.values.morph,
             progress,
         ))
     }
@@ -9803,51 +10732,6 @@ mod tests {
     }
 
     #[test]
-    fn layout_helpers_cover_common_taffy_shapes() {
-        let absolute = layout::absolute(12.0, 18.0, 80.0, 40.0);
-        let absolute_taffy = absolute.as_taffy_style();
-        assert_eq!(absolute_taffy.position, Position::Absolute);
-        assert_eq!(
-            absolute_taffy.inset.left,
-            LengthPercentageAuto::length(12.0)
-        );
-        assert_eq!(absolute_taffy.inset.top, LengthPercentageAuto::length(18.0));
-        assert_eq!(absolute_taffy.inset.right, LengthPercentageAuto::auto());
-        assert_eq!(absolute_taffy.size.width, layout::px(80.0));
-        assert_eq!(absolute_taffy.size.height, layout::px(40.0));
-
-        let centered = layout::with_gap_all(layout::centered_row(), 6.0);
-        let centered_taffy = centered.as_taffy_style();
-        assert_eq!(centered_taffy.display, Display::Flex);
-        assert_eq!(centered_taffy.flex_direction, FlexDirection::Row);
-        assert_eq!(centered_taffy.align_items, Some(AlignItems::Center));
-        assert_eq!(centered_taffy.justify_content, Some(JustifyContent::Center));
-        assert_eq!(centered_taffy.gap.width, layout::spacing(6.0));
-        assert_eq!(centered_taffy.gap.height, layout::spacing(6.0));
-
-        let flex = layout::flex_item(2.0, 0.5, layout::px(64.0));
-        let flex_taffy = flex.as_taffy_style();
-        assert_eq!(flex_taffy.flex_grow, 2.0);
-        assert_eq!(flex_taffy.flex_shrink, 0.5);
-        assert_eq!(flex_taffy.flex_basis, layout::px(64.0));
-
-        let constrained = layout::with_max_size(
-            layout::with_min_size(layout::fill(), layout::px(120.0), layout::px(40.0)),
-            layout::px(240.0),
-            layout::auto(),
-        );
-        let constrained_taffy = constrained.as_taffy_style();
-        assert_eq!(constrained_taffy.min_size.width, layout::px(120.0));
-        assert_eq!(constrained_taffy.min_size.height, layout::px(40.0));
-        assert_eq!(constrained_taffy.max_size.width, layout::px(240.0));
-        assert_eq!(constrained_taffy.max_size.height, layout::auto());
-
-        let node_style = layout::clipped_node_style(absolute);
-        assert_eq!(node_style.clip, ClipBehavior::Clip);
-        assert_eq!(node_style.layout.position, Position::Absolute);
-    }
-
-    #[test]
     fn color_contrast_helpers_support_accessible_text_selection() {
         let dark = ColorRgba::new(18, 22, 28, 255);
         let translucent = ColorRgba::new(255, 255, 255, 128);
@@ -9863,91 +10747,6 @@ mod tests {
             dark.highest_contrast_against(ColorRgba::WHITE, ColorRgba::BLACK),
             ColorRgba::WHITE
         );
-    }
-
-    #[test]
-    fn ui_node_factories_accept_internal_taffy_layout_styles() {
-        let legacy = Style {
-            size: TaffySize {
-                width: length(200.0),
-                height: length(40.0),
-            },
-            ..Default::default()
-        };
-        let layout = LayoutStyle::from_taffy_style(legacy.clone());
-        let container = UiNode::container("legacy-container", layout.clone());
-        let text = UiNode::text("legacy-text", "label", TextStyle::default(), layout.clone());
-        let image = UiNode::image(
-            "legacy-image",
-            ImageContent::new("icons.render"),
-            layout.clone(),
-        );
-        let scene = UiNode::scene("legacy-scene", Vec::new(), layout.clone());
-        let canvas = UiNode::canvas("legacy-canvas", "canvas_key", layout);
-
-        assert_eq!(container.style.layout.size, legacy.size);
-        assert_eq!(text.style.layout.size, legacy.size);
-        assert_eq!(image.style.layout.size, legacy.size);
-        assert_eq!(scene.style.layout.size, legacy.size);
-        assert_eq!(canvas.style.layout.size, legacy.size);
-    }
-
-    #[test]
-    fn gpu_canvas_factory_attaches_texture_backed_context() {
-        let canvas = CanvasContent::new("viewport").gpu_context();
-        assert_eq!(canvas.context.kind, CanvasContextKind::Gpu);
-        assert_eq!(canvas.render_mode, CanvasRenderMode::AttachedContext);
-        assert!(canvas.context.kind.is_texture_backed());
-        assert!(canvas.context.kind.is_gpu_backed());
-
-        let node = UiNode::gpu_canvas("viewport", "app.viewport", layout::fixed(320.0, 180.0));
-        let UiContent::Canvas(content) = node.content else {
-            panic!("expected canvas content");
-        };
-        assert_eq!(content.key, "app.viewport");
-        assert_eq!(content.surface_key(), "app.viewport");
-        assert_eq!(content.context.kind, CanvasContextKind::Gpu);
-        assert_eq!(content.render_mode, CanvasRenderMode::AttachedContext);
-    }
-
-    #[test]
-    fn document_accepts_internal_taffy_root_and_style_updates() {
-        let legacy = Style {
-            size: TaffySize {
-                width: length(800.0),
-                height: length(600.0),
-            },
-            ..Default::default()
-        };
-        let mut doc = UiDocument::new(LayoutStyle::from_taffy_style(legacy.clone()));
-        let child = doc.add_child(
-            doc.root,
-            UiNode::container(
-                "child",
-                UiNodeStyle {
-                    layout: LayoutStyle::from_taffy_style(Style {
-                        size: TaffySize {
-                            width: length(120.0),
-                            height: length(24.0),
-                        },
-                        ..Default::default()
-                    })
-                    .style,
-                    ..Default::default()
-                },
-            ),
-        );
-        let updated = Style {
-            size: TaffySize {
-                width: length(180.0),
-                height: length(36.0),
-            },
-            ..Default::default()
-        };
-        doc.set_node_style(child, LayoutStyle::from_taffy_style(updated.clone()));
-        let child_style = &doc.node(child).style.layout;
-        assert_eq!(child_style.size, updated.size);
-        assert_eq!(doc.node(doc.root).style.layout.size, legacy.size);
     }
 
     #[test]
@@ -9985,36 +10784,6 @@ mod tests {
         assert_eq!(rect.height, 64.0);
         assert!((rect.x - 220.0).abs() < 0.01, "{rect:?}");
         assert!((rect.y - 518.0).abs() < 0.01, "{rect:?}");
-    }
-
-    #[test]
-    fn text_nodes_are_measured_through_cosmic_text_facing_model() {
-        let mut doc = UiDocument::new(root_style(300.0, 200.0));
-        let text_style = TextStyle {
-            family: FontFamily::Monospace,
-            weight: FontWeight::BOLD,
-            ..Default::default()
-        };
-        let text = doc.add_child(
-            doc.root,
-            UiNode::text(
-                "label",
-                "Inventory",
-                text_style,
-                LayoutStyle::from_taffy_style(Style {
-                    size: TaffySize {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
-                }),
-            ),
-        );
-        doc.compute_layout(UiSize::new(300.0, 200.0), &mut ApproxTextMeasurer)
-            .expect("layout");
-        let rect = doc.node(text).layout.rect;
-        assert!(rect.width > 0.0);
-        assert!(rect.height > 0.0);
     }
 
     #[test]
@@ -10279,67 +11048,6 @@ mod tests {
     }
 
     #[test]
-    fn layout_pipeline_computes_sizes_before_positions_and_paint() {
-        let viewport = UiSize::new(300.0, 200.0);
-        let mut doc = UiDocument::new(root_style(viewport.width, viewport.height));
-        let control = doc.add_child(
-            doc.root,
-            UiNode::container(
-                "pipeline.control",
-                UiNodeStyle {
-                    layout: LayoutStyle::row().with_height(28.0).style,
-                    clip: ClipBehavior::Clip,
-                    ..Default::default()
-                },
-            ),
-        );
-        let label = doc.add_child(
-            control,
-            UiNode::text(
-                "pipeline.control.label",
-                "Measured before positioned",
-                TextStyle {
-                    wrap: TextWrap::None,
-                    ..Default::default()
-                },
-                LayoutStyle::new(),
-            ),
-        );
-        doc.node_mut(control).layout_constraint =
-            Some(UiNodeLayoutConstraint::InlineIntrinsicSize {
-                sources: vec![label],
-                min_size: UiSize::new(24.0, 28.0),
-            });
-
-        assert_eq!(doc.node(control).layout, ComputedLayout::default());
-        let sizing = doc
-            .compute_layout_sizing_pass(viewport, &mut ApproxTextMeasurer)
-            .expect("sizing pass");
-
-        assert_eq!(doc.node(control).layout, ComputedLayout::default());
-        assert!(
-            doc.paint_list().items.is_empty(),
-            "paint must wait until positions are applied"
-        );
-
-        let control_size = sizing.sizes.get(control.0).copied().expect("control size");
-        let label_size = sizing.sizes.get(label.0).copied().expect("label size");
-        assert!(
-            control_size.width >= label_size.width + 24.0,
-            "{control_size:?} {label_size:?}"
-        );
-
-        doc.apply_layout_position_pass(&sizing, viewport)
-            .expect("position pass");
-        let control_rect = doc.node(control).layout.rect;
-        assert!(
-            control_rect.width >= label_size.width + 24.0,
-            "{control_rect:?} {label_size:?}"
-        );
-        assert!(doc.paint_list().items.iter().any(|item| item.node == label));
-    }
-
-    #[test]
     fn document_ui_scale_applies_to_layout_and_text_paint() {
         let mut doc = UiDocument::new(
             LayoutStyle::column()
@@ -10521,9 +11229,8 @@ mod tests {
             .with_sans_serif_family("Hack")
             .with_serif_family("Hack")
             .with_monospace_family("Ubuntu");
-        let measurer = CosmicTextMeasurer::with_fonts(fonts.clone());
+        let measurer = CosmicTextMeasurer::with_fonts(fonts);
 
-        assert_eq!(measurer.font_library(), &fonts);
         assert_eq!(
             measurer
                 .font_system
@@ -10594,14 +11301,403 @@ mod tests {
     }
 
     #[test]
+    fn pointer_cancel_clears_press_and_hover_while_preserving_keyboard_focus() {
+        let mut doc = UiDocument::new(root_style(120.0, 80.0));
+        let normal = UiVisual::panel(ColorRgba::WHITE, None, 0.0);
+        let pressed = UiVisual::panel(ColorRgba::BLACK, None, 0.0);
+        let button = doc.add_child(
+            doc.root(),
+            UiNode::container("button", LayoutStyle::size(80.0, 40.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_interaction_visuals(InteractionVisuals::new(normal).pressed(pressed))
+                .with_animation(
+                    AnimationMachine::new(
+                        vec![AnimationState::new(
+                            "idle",
+                            AnimatedValues::new(1.0, UiPoint::new(0.0, 0.0), 1.0),
+                        )],
+                        Vec::new(),
+                        "idle",
+                    )
+                    .unwrap(),
+                ),
+        );
+        doc.compute_layout(UiSize::new(120.0, 80.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let point = UiPoint::new(10.0, 10.0);
+        doc.handle_input(UiInputEvent::PointerMove(point));
+        assert_eq!(
+            doc.handle_input(UiInputEvent::PointerDown(point)).pressed,
+            Some(button)
+        );
+        assert_eq!(doc.node(button).visual(), &pressed);
+        let cancelled = doc.handle_input(UiInputEvent::PointerCancel);
+        assert_eq!(
+            (cancelled.hovered, cancelled.pressed, cancelled.clicked),
+            (None, None, None)
+        );
+        assert_eq!(cancelled.focused, Some(button));
+        assert_eq!(cancelled.consumed_by, Some(button));
+        assert_eq!(doc.node(button).visual(), &normal);
+        let animation = doc.node(button).animation().unwrap();
+        for input in [ANIMATION_INPUT_HOVER, ANIMATION_INPUT_PRESSED] {
+            assert_eq!(
+                animation.input(input).and_then(|value| value.as_bool()),
+                Some(false)
+            );
+        }
+        assert_eq!(
+            doc.handle_input(UiInputEvent::PointerUp(point)).clicked,
+            None
+        );
+        doc.handle_input(UiInputEvent::PointerDown(point));
+        assert_eq!(
+            doc.handle_input(UiInputEvent::PointerUp(point)).clicked,
+            Some(button)
+        );
+    }
+
+    #[test]
+    fn pointer_cancel_stops_automatic_scrollbar_drag() {
+        let mut doc = UiDocument::new(root_style(120.0, 100.0));
+        let scroll = doc.add_child(
+            doc.root(),
+            UiNode::container("scroll", LayoutStyle::size(100.0, 80.0))
+                .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll,
+            UiNode::container(
+                "content",
+                LayoutStyle::size(80.0, 300.0).with_flex_shrink(0.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(120.0, 100.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let point = UiPoint::new(98.0, 25.0);
+        assert_eq!(
+            doc.handle_input(UiInputEvent::PointerDown(point)).pressed,
+            Some(scroll)
+        );
+        doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(98.0, 45.0)));
+        let offset = doc.scroll_state(scroll).unwrap().offset();
+        assert!(offset.y > 0.0);
+        assert_eq!(doc.handle_input(UiInputEvent::PointerCancel).pressed, None);
+        assert_eq!(
+            doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(98.0, 75.0)))
+                .scrolled,
+            None
+        );
+        assert_eq!(doc.scroll_state(scroll).unwrap().offset(), offset);
+    }
+
+    #[cfg(feature = "widgets")]
+    #[test]
+    fn disabled_button_blocks_editor_without_hover_focus_or_activation() {
+        let mut doc = UiDocument::new(root_style(200.0, 120.0));
+        let root = doc.root();
+        let editor = doc.add_child(
+            root,
+            UiNode::canvas(
+                "editor",
+                "editor",
+                LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 200.0, 120.0)),
+            )
+            .with_action("edit"),
+        );
+        let button = crate::widgets::button(
+            &mut doc,
+            root,
+            "disabled",
+            "Unavailable",
+            crate::widgets::ButtonOptions::new(LayoutStyle::absolute_rect(UiRect::new(
+                20.0, 20.0, 140.0, 40.0,
+            )))
+            .disabled()
+            .with_action("delete"),
+        );
+        doc.compute_layout(UiSize::new(200.0, 120.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let point = UiPoint::new(80.0, 40.0);
+        let blocked = doc
+            .hit_test_result(point)
+            .expect("disabled geometry blocks input");
+        assert!(matches!(blocked, HitTestResult::Blocked(_)));
+        assert!(doc.node_is_descendant_or_self(button, blocked.node()));
+        assert_eq!(doc.hit_test(point), None);
+        for event in [
+            UiInputEvent::PointerMove(point),
+            UiInputEvent::PointerDown(point),
+            UiInputEvent::PointerUp(point),
+        ] {
+            let result = doc.handle_input(event);
+            assert!(result.consumed);
+            assert_eq!(result.consumed_by, Some(blocked.node()));
+            assert_eq!(
+                (
+                    result.hovered,
+                    result.pressed,
+                    result.focused,
+                    result.clicked
+                ),
+                (None, None, None, None)
+            );
+            assert!(
+                actions::WidgetAction::activation_from_input_result_for_document(
+                    &doc,
+                    &result,
+                    |id| doc.node(id).action.clone()
+                )
+                .is_none()
+            );
+        }
+        assert_eq!(doc.hit_test(UiPoint::new(180.0, 90.0)), Some(editor));
+    }
+
+    #[test]
+    fn explicit_hit_policy_separates_blocking_from_pass_through_and_children() {
+        let mut doc = UiDocument::new(root_style(120.0, 100.0));
+        let area = LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 100.0, 80.0));
+        let editor = doc.add_child(doc.root(), UiNode::canvas("editor", "editor", area.clone()));
+        let overlay = doc.add_child(
+            doc.root(),
+            UiNode::container("overlay", area)
+                .with_input(InputBehavior::BUTTON)
+                .with_hit_test_behavior(HitTestBehavior::Block),
+        );
+        doc.compute_layout(UiSize::new(120.0, 100.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let point = UiPoint::new(60.0, 50.0);
+        assert_eq!(
+            doc.hit_test_result(point),
+            Some(HitTestResult::Blocked(overlay))
+        );
+        let result = doc.handle_input(UiInputEvent::PointerDown(point));
+        assert_eq!(result.consumed_by, Some(overlay));
+        assert_eq!(result.pressed, None);
+        doc.node_mut(overlay)
+            .set_hit_test_behavior(HitTestBehavior::PassThrough);
+        let child = doc.add_child(
+            overlay,
+            UiNode::container("overlay.action", LayoutStyle::size(20.0, 20.0))
+                .with_input(InputBehavior::BUTTON),
+        );
+        doc.compute_layout(UiSize::new(120.0, 100.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        assert_eq!(doc.hit_test(point), Some(editor));
+        assert_eq!(doc.hit_test(UiPoint::new(10.0, 10.0)), Some(child));
+        // A disabled leaf may explicitly opt out as well.
+        doc.node_mut(child).accessibility =
+            Some(AccessibilityMeta::new(AccessibilityRole::Button).disabled());
+        doc.node_mut(child)
+            .set_hit_test_behavior(HitTestBehavior::PassThrough);
+        assert_eq!(doc.hit_test(UiPoint::new(10.0, 10.0)), Some(editor));
+    }
+
+    #[test]
+    fn disabled_blocker_uses_transformed_shape_and_ancestor_clip() {
+        let mut doc = UiDocument::new(root_style(140.0, 100.0));
+        let editor = doc.add_child(
+            doc.root(),
+            UiNode::canvas(
+                "editor",
+                "editor",
+                LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 140.0, 100.0)),
+            ),
+        );
+        let clip = doc.add_child(
+            doc.root(),
+            UiNode::container(
+                "clip",
+                UiNodeStyle::clipped(LayoutStyle::absolute_rect(UiRect::new(
+                    0.0, 0.0, 60.0, 80.0,
+                ))),
+            ),
+        );
+        let blocker = doc.add_child(
+            clip,
+            UiNode::container("disabled", LayoutStyle::size(40.0, 40.0))
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button).disabled())
+                .with_material(ElementMaterial::new().with_hit_shape(ElementShape::circle()))
+                .with_animation(
+                    AnimationMachine::new(
+                        vec![AnimationState::new(
+                            "shown",
+                            AnimatedValues::new(1.0, UiPoint::new(30.0, 0.0), 1.0),
+                        )],
+                        Vec::new(),
+                        "shown",
+                    )
+                    .unwrap(),
+                ),
+        );
+        doc.compute_layout(UiSize::new(140.0, 100.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        for (point, expected) in [
+            (UiPoint::new(50.0, 20.0), HitTestResult::Blocked(blocker)),
+            (UiPoint::new(10.0, 20.0), HitTestResult::Target(editor)), // before translation
+            (UiPoint::new(31.0, 1.0), HitTestResult::Target(editor)),  // outside circle
+            (UiPoint::new(65.0, 20.0), HitTestResult::Target(editor)), // clipped portion
+        ] {
+            assert_eq!(doc.hit_test_result(point), Some(expected), "at {point:?}");
+        }
+    }
+
+    #[test]
+    fn disabling_ancestor_cancels_press_focus_and_descendant_actions() {
+        let mut doc = UiDocument::new(root_style(140.0, 100.0));
+        let group = doc.add_child(
+            doc.root(),
+            UiNode::container("group", LayoutStyle::size(80.0, 60.0))
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Group)),
+        );
+        let child = doc.add_child(
+            group,
+            UiNode::container("child", LayoutStyle::size(40.0, 30.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_action("child.activate"),
+        );
+        let next = doc.add_child(
+            doc.root(),
+            UiNode::container("next", LayoutStyle::size(40.0, 30.0))
+                .with_input(InputBehavior::BUTTON),
+        );
+        doc.compute_layout(UiSize::new(140.0, 100.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let point = UiPoint::new(10.0, 10.0);
+        assert_eq!(
+            doc.handle_input(UiInputEvent::PointerDown(point)).pressed,
+            Some(child)
+        );
+        doc.node_mut(group).accessibility_mut().unwrap().enabled = false;
+        let released = doc.handle_input(UiInputEvent::PointerUp(point));
+        assert_eq!(
+            (released.pressed, released.clicked, released.focused),
+            (None, None, None)
+        );
+        assert!(released.consumed);
+        assert!(!doc.node_is_enabled(child));
+        assert_eq!(
+            doc.handle_input(UiInputEvent::Focus(FocusDirection::Next))
+                .focused,
+            Some(next)
+        );
+        let synthetic_click = UiInputResult {
+            clicked: Some(child),
+            ..Default::default()
+        };
+        assert!(
+            actions::WidgetAction::activation_from_input_result_for_document(
+                &doc,
+                &synthetic_click,
+                |id| doc.node(id).action.clone()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn disabled_overlay_blocks_wheel_and_scrollbar_until_explicitly_passed_through() {
+        let mut doc = UiDocument::new(root_style(120.0, 100.0));
+        let scroll = doc.add_child(
+            doc.root(),
+            UiNode::container(
+                "editor.scroll",
+                LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 100.0, 80.0)),
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll,
+            UiNode::container(
+                "editor.content",
+                LayoutStyle::size(80.0, 300.0).with_flex_shrink(0.0),
+            ),
+        );
+        let blocker = doc.add_child(
+            doc.root(),
+            UiNode::container(
+                "disabled.overlay",
+                LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 100.0, 80.0)),
+            )
+            .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button).disabled()),
+        );
+        doc.compute_layout(UiSize::new(120.0, 100.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let wheel = UiInputEvent::wheel(UiPoint::new(20.0, 20.0), UiPoint::new(0.0, 30.0));
+        let blocked = doc.handle_input(wheel.clone());
+        assert_eq!(
+            (blocked.scrolled, blocked.consumed_by),
+            (None, Some(blocker))
+        );
+        let bar_point = UiPoint::new(98.0, 40.0);
+        assert_eq!(doc.auto_scrollbar_hit_target(bar_point), None);
+        assert_eq!(
+            doc.handle_input(UiInputEvent::PointerDown(bar_point))
+                .pressed,
+            None
+        );
+        assert_eq!(doc.scroll_state(scroll).unwrap().offset().y, 0.0);
+        doc.node_mut(blocker)
+            .set_hit_test_behavior(HitTestBehavior::PassThrough);
+        assert_eq!(
+            doc.auto_scrollbar_hit_target(bar_point),
+            Some((scroll, AuditAxis::Vertical))
+        );
+        assert_eq!(doc.handle_input(wheel).scrolled, Some(scroll));
+        assert!(doc.scroll_state(scroll).unwrap().offset().y > 0.0);
+    }
+
+    #[test]
+    fn disabled_child_allows_ancestor_scroll_but_explicit_block_stops_wheel() {
+        let mut doc = UiDocument::new(root_style(120.0, 100.0));
+        let scroll = doc.add_child(
+            doc.root(),
+            UiNode::container("scroll", LayoutStyle::size(100.0, 80.0))
+                .with_scroll(ScrollAxes::VERTICAL),
+        );
+        let disabled = doc.add_child(
+            scroll,
+            UiNode::container(
+                "disabled",
+                LayoutStyle::size(80.0, 300.0).with_flex_shrink(0.0),
+            )
+            .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button).disabled()),
+        );
+        let child = doc.add_child(
+            disabled,
+            UiNode::container("disabled.child", LayoutStyle::size(80.0, 80.0))
+                .with_input(InputBehavior::BUTTON),
+        );
+        doc.compute_layout(UiSize::new(120.0, 100.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let wheel = UiInputEvent::wheel(UiPoint::new(20.0, 20.0), UiPoint::new(0.0, 30.0));
+        assert_eq!(doc.handle_input(wheel.clone()).scrolled, Some(scroll));
+        doc.node_mut(disabled)
+            .set_hit_test_behavior(HitTestBehavior::Block);
+        let before = doc.scroll_state(scroll).unwrap().offset();
+        let blocked = doc.handle_input(wheel);
+        assert_eq!((blocked.scrolled, blocked.consumed_by), (None, Some(child)));
+        assert_eq!(doc.scroll_state(scroll).unwrap().offset(), before);
+    }
+
+    #[test]
     fn hit_testing_uses_animation_transform_rect() {
         let animation = AnimationMachine::new(
-            vec![AnimationState::new(
+            vec![
+                AnimationState::new("idle", AnimatedValues::default()),
+                AnimationState::new(
+                    "shown",
+                    AnimatedValues::new(1.0, UiPoint::new(30.0, 0.0), 2.0),
+                ),
+            ],
+            vec![AnimationTransition::new(
+                "idle",
                 "shown",
-                AnimatedValues::new(1.0, UiPoint::new(30.0, 0.0), 2.0),
+                AnimationTrigger::Custom("show".to_string()),
+                0.1,
             )],
-            Vec::new(),
-            "shown",
+            "idle",
         )
         .expect("animation");
         let mut doc = UiDocument::new(root_style(160.0, 100.0));
@@ -10618,6 +11714,10 @@ mod tests {
             doc.node(button).layout.rect,
             UiRect::new(0.0, 0.0, 40.0, 20.0)
         );
+        assert_eq!(doc.hit_test(UiPoint::new(20.0, 10.0)), Some(button));
+        assert_eq!(doc.hit_test(UiPoint::new(95.0, 30.0)), None);
+        assert!(doc.trigger_animation(button, AnimationTrigger::Custom("show".to_string())));
+        doc.tick_animations(0.1);
         assert_eq!(doc.hit_test(UiPoint::new(20.0, 10.0)), None);
         assert_eq!(doc.hit_test(UiPoint::new(95.0, 30.0)), Some(button));
     }
@@ -10741,6 +11841,80 @@ mod tests {
 
         assert_eq!(doc.hit_test(UiPoint::new(10.0, 10.0)), Some(over_child));
         assert_ne!(doc.hit_test(UiPoint::new(10.0, 10.0)), Some(under));
+    }
+
+    #[test]
+    fn stacking_order_tracks_edits_sections_and_runtime_nodes() {
+        let viewport = UiSize::new(160.0, 100.0);
+        let point = UiPoint::new(10.0, 10.0);
+        let control = |name| {
+            UiNode::container(
+                name,
+                LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 80.0, 40.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_visual(UiVisual::panel(ColorRgba::WHITE, None, 0.0))
+        };
+        let assert_top = |doc: &mut UiDocument, expected| {
+            doc.compute_layout(viewport, &mut ApproxTextMeasurer)
+                .unwrap();
+            assert_eq!(doc.hit_test(point), Some(expected));
+            assert_eq!(
+                doc.paint_list().items.last().map(|item| item.node),
+                Some(expected)
+            );
+            assert_eq!(
+                topmost_effective_hit(&doc.effective_geometries(), point).map(|hit| hit.node),
+                Some(expected)
+            );
+        };
+        let mut doc = UiDocument::new(root_style(viewport.width, viewport.height));
+        let first = doc.add_child(doc.root(), control("first"));
+        let second = doc.add_child(doc.root(), control("second"));
+        assert_top(&mut doc, second);
+
+        let mut style = doc.node(first).style.clone();
+        style.z_index = 10.0;
+        doc.set_node_style(first, style);
+        assert_top(&mut doc, first);
+        doc.edit_node(second, |node| node.style.z_index = 20.0);
+        assert_top(&mut doc, second);
+        doc.node_mut(first).layer = Some(platform::UiLayer::AppOverlay);
+        assert_top(&mut doc, first);
+
+        // Eligibility changes take effect even when structural ordering is unchanged.
+        doc.set_node_enabled(first, false);
+        assert_eq!(
+            doc.hit_test_result(point),
+            Some(HitTestResult::Blocked(first))
+        );
+        doc.set_node_enabled(first, true);
+        doc.set_node_input(first, InputBehavior::NONE);
+        assert_eq!(doc.hit_test(point), Some(second));
+        doc.set_node_input(first, InputBehavior::BUTTON);
+        assert_top(&mut doc, first);
+
+        let mut section = UiDocument::new(LayoutStyle::absolute_rect(UiRect::new(
+            0.0, 0.0, 80.0, 40.0,
+        )));
+        section.add_child(
+            section.root(),
+            control("section.control").with_layer(platform::UiLayer::DebugOverlay),
+        );
+        section.node_mut(section.root()).layer = Some(platform::UiLayer::DebugOverlay);
+        let section = view_fragment::ViewFragment::from_document(section);
+        let section_root = doc.append_view_fragment(doc.root(), "section".into(), &section, true);
+        let section_control = doc.node(section_root).children[0];
+        assert_top(&mut doc, section_control);
+
+        let authored_count = doc.node_count();
+        let decoration = doc.add_child(
+            doc.root(),
+            control("decoration").with_layer(platform::UiLayer::DebugOverlay),
+        );
+        assert_top(&mut doc, decoration);
+        doc.truncate_runtime_nodes(authored_count);
+        assert_top(&mut doc, section_control);
     }
 
     #[test]
@@ -11605,7 +12779,10 @@ mod tests {
         doc.compute_layout(UiSize::new(160.0, 140.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
-        assert_eq!(doc.wheel_event_scope(UiPoint::new(30.0, 30.0)), Some(front));
+        assert_eq!(
+            doc.wheel_event_scope(UiPoint::new(30.0, 30.0), None),
+            Some(front)
+        );
         let input = doc.handle_input(UiInputEvent::wheel(
             UiPoint::new(30.0, 30.0),
             UiPoint::new(0.0, 30.0),
@@ -12024,15 +13201,6 @@ mod tests {
                 && (*viewport - 120.0).abs() < 0.01
                 && (*content - 120.0).abs() < 0.01
         )));
-        let summary = warnings
-            .iter()
-            .find_map(|warning| {
-                matches!(warning, AuditWarning::ScrollbarVisibleWithoutRange { .. })
-                    .then(|| warning.diagnostic_summary())
-            })
-            .expect("scrollbar warning summary");
-        assert!(summary.contains("reason: scrollbar is visible"));
-        assert!(summary.contains("hint: hide and disable"));
     }
 
     #[test]
@@ -12204,6 +13372,43 @@ mod tests {
     }
 
     #[test]
+    fn automatic_scrollbar_drag_preserves_grab_position_and_axis() {
+        let mut doc = UiDocument::new(root_style(160.0, 120.0));
+        let scroll = doc.add_child(
+            doc.root,
+            UiNode::container("scroll", LayoutStyle::size(100.0, 100.0))
+                .with_scroll(ScrollAxes::BOTH),
+        );
+        doc.add_child(
+            scroll,
+            UiNode::container(
+                "content",
+                LayoutStyle::size(400.0, 400.0).with_flex_shrink(0.0),
+            ),
+        );
+        doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        doc.set_scroll_offset(scroll, UiPoint::new(0.0, 100.0));
+        let (state, track) = doc
+            .auto_scrollbar_scroll_and_track(scroll, AuditAxis::Vertical)
+            .unwrap();
+        let thumb = auto_vertical_scrollbar_thumb(state, track).unwrap();
+        let grab = UiPoint::new(99.0, thumb.y + 1.0);
+        doc.handle_input(UiInputEvent::PointerDown(grab));
+        assert!(
+            (doc.scroll_state(scroll).unwrap().offset.y - 100.0).abs() < 0.01,
+            "grabbing off-center must not jump the thumb"
+        );
+        doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(50.0, 99.0)));
+        let offset = doc.scroll_state(scroll).unwrap().offset;
+        assert_eq!(
+            offset.x, 0.0,
+            "crossing the other scrollbar must not switch axes"
+        );
+        assert!(offset.y > 100.0);
+    }
+
+    #[test]
     fn automatic_scrollbar_reserves_layout_gutter_for_scrolled_content() {
         let mut doc = UiDocument::new(root_style(160.0, 120.0));
         let scroll = doc.add_child(
@@ -12291,6 +13496,7 @@ mod tests {
         doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
+        doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(20.0, 20.0)));
         let paint = doc.paint_list();
         assert!(
             paint
@@ -12330,6 +13536,7 @@ mod tests {
         );
         assert_eq!(scroll_state.max_offset().x, 0.0);
         *doc.node_mut(scroll).scroll_mut().expect("scroll state") = scroll_state;
+        doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(20.0, 20.0)));
         let paint = doc.paint_list();
         assert!(
             paint
@@ -12371,7 +13578,7 @@ mod tests {
             )
             .with_visual(UiVisual::panel(ColorRgba::new(60, 90, 130, 255), None, 0.0)),
         );
-        doc.add_child(
+        let explicit = doc.add_child(
             doc.root,
             UiNode::container(
                 "explicit.scrollbar",
@@ -12387,6 +13594,7 @@ mod tests {
         doc.compute_layout(UiSize::new(160.0, 120.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
+        doc.handle_input(UiInputEvent::PointerMove(UiPoint::new(20.0, 20.0)));
         let paint = doc.paint_list();
         assert_eq!(
             paint
@@ -12396,6 +13604,13 @@ mod tests {
                 .count(),
             0
         );
+
+        doc.node_mut(explicit).scrollbar = None;
+        assert!(doc
+            .paint_list()
+            .items
+            .iter()
+            .any(|item| { item.node == scroll && matches!(item.kind, PaintKind::Rect { .. }) }));
     }
 
     #[test]
@@ -12446,7 +13661,6 @@ mod tests {
         assert_eq!(scrollbar_paint.len(), 2, "{scrollbar_paint:#?}");
         assert!(scrollbar_paint.iter().all(|item| {
             item.layer_order.layer == content_paint.layer_order.layer
-                && item.layer_order.local_z == platform::LAYER_LOCAL_Z_MAX
                 && item.layer_order > content_paint.layer_order
         }));
     }
@@ -13080,15 +14294,9 @@ mod tests {
                 role: AccessibilityRole::Meter,
             })
         );
-        assert!(
-            !warnings.contains(&AuditWarning::AccessibilityValueRangeInvalid {
-                node: complete_slider,
-                name: "complete_slider".to_string(),
-                role: AccessibilityRole::Slider,
-                issue: AccessibilityValueRangeIssue::Reversed,
-                range: AccessibilityValueRange::new(100.0, 0.0),
-            })
-        );
+        assert!(!warnings.iter().any(|warning| matches!(warning,
+            AuditWarning::AccessibilityValueRangeInvalid { node, .. } if *node == complete_slider
+        )));
     }
 
     #[test]
@@ -13492,28 +14700,105 @@ mod tests {
 
     #[test]
     fn material_hit_shape_is_used_by_document_hit_testing() {
-        let mut doc = UiDocument::new(root_style(120.0, 80.0));
-        let node = doc.add_child(
-            doc.root,
-            UiNode::container("circle", button_style(40.0, 40.0))
-                .with_input(InputBehavior::BUTTON)
-                .with_material(ElementMaterial::new().with_hit_shape(ElementShape::circle())),
-        );
-        doc.compute_layout(UiSize::new(120.0, 80.0), &mut ApproxTextMeasurer)
-            .expect("layout");
-        let rect = doc.node(node).layout().rect;
-
-        assert_eq!(
-            doc.hit_test(UiPoint::new(
-                rect.x + rect.width * 0.5,
-                rect.y + rect.height * 0.5
-            )),
-            Some(node)
-        );
-        assert_ne!(
-            doc.hit_test(UiPoint::new(rect.x + 1.0, rect.y + 1.0)),
-            Some(node)
-        );
+        for shape in [
+            None,
+            Some(ElementShape::Rect),
+            Some(ElementShape::rounded_rect(12.0)),
+            Some(ElementShape::Circle),
+            Some(ElementShape::normalized_polygon(vec![
+                UiPoint::new(0.5, 0.0),
+                UiPoint::new(1.0, 0.5),
+                UiPoint::new(0.5, 1.0),
+                UiPoint::new(0.0, 0.5),
+            ])),
+        ] {
+            for (translation, scale) in [
+                (UiPoint::new(0.0, 0.0), 1.0),
+                (UiPoint::new(30.0, 10.0), 1.0),
+                (UiPoint::new(0.0, 0.0), 2.0),
+                (UiPoint::new(100.0, 70.0), -1.0),
+                (UiPoint::new(30.0, 10.0), 0.0),
+            ] {
+                for policy in ["target", "disabled", "pass", "inert"] {
+                    let viewport = UiSize::new(140.0, 100.0);
+                    let mut doc = UiDocument::new(root_style(viewport.width, viewport.height));
+                    let background = doc.add_child(
+                        doc.root(),
+                        UiNode::container(
+                            "background",
+                            LayoutStyle::absolute_rect(UiRect::new(
+                                0.0,
+                                0.0,
+                                viewport.width,
+                                viewport.height,
+                            )),
+                        )
+                        .with_input(InputBehavior::BUTTON),
+                    );
+                    let clip = doc.add_child(
+                        doc.root(),
+                        UiNode::container(
+                            "clip",
+                            UiNodeStyle::clipped(LayoutStyle::absolute_rect(UiRect::new(
+                                0.0, 0.0, 60.0, 80.0,
+                            ))),
+                        ),
+                    );
+                    let mut control = UiNode::container("control", button_style(40.0, 40.0))
+                        .with_input(InputBehavior::BUTTON)
+                        .with_animation(
+                            AnimationMachine::new(
+                                vec![AnimationState::new(
+                                    "shown",
+                                    AnimatedValues::new(1.0, translation, scale),
+                                )],
+                                Vec::new(),
+                                "shown",
+                            )
+                            .unwrap(),
+                        );
+                    let shader = ShaderEffect::glow(ColorRgba::WHITE, 0.5, 8.0);
+                    if let Some(shape) = &shape {
+                        control = control.with_material(
+                            ElementMaterial::shader(shader).with_hit_shape(shape.clone()),
+                        );
+                    } else {
+                        // A shader without a material still has a rectangular hit region.
+                        control.shader = Some(shader);
+                    }
+                    match policy {
+                        "disabled" => control.enabled = false,
+                        "pass" => control.set_hit_test_behavior(HitTestBehavior::PassThrough),
+                        "inert" => control.input = InputBehavior::NONE,
+                        _ => {}
+                    }
+                    let target = doc.add_child(clip, control);
+                    doc.compute_layout(viewport, &mut ApproxTextMeasurer)
+                        .unwrap();
+                    let layout = doc.node(target).layout();
+                    // The diagnostic path supplies an independent, owned reference query.
+                    let reference = EffectiveGeometry::new(target, layout.rect)
+                        .transform(EffectiveTransform::new(translation, scale))
+                        .clip_rect(layout.clip_rect)
+                        .visible(layout.visible)
+                        .hit_shape(shape.clone().unwrap_or_default());
+                    for x in [0.0, 1.0, 20.0, 39.0, 50.0, 60.0, 80.0, 100.0, 120.0] {
+                        for y in [0.0, 1.0, 20.0, 39.0, 60.0, 80.0, 99.0] {
+                            let point = UiPoint::new(x, y);
+                            let inside = reference.point_hit_rejections(point).is_empty();
+                            assert_eq!(doc.node_geometry_contains_point(target, point), inside);
+                            let expected = match (inside, policy) {
+                                (true, "target") => HitTestResult::Target(target),
+                                (true, "disabled") => HitTestResult::Blocked(target),
+                                _ => HitTestResult::Target(background),
+                            };
+                            assert_eq!(doc.hit_test_result(point), Some(expected),
+                                "shape={shape:?}, translation={translation:?}, scale={scale}, policy={policy}, point={point:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -13696,6 +14981,505 @@ mod tests {
     }
 
     #[test]
+    fn modal_pointer_focus_does_not_escape_through_ancestors() {
+        for eligible in [false, true] {
+            let mut doc = UiDocument::new(LayoutStyle::size(400.0, 300.0));
+            let background = doc.add_child(
+                doc.root(),
+                UiNode::container("background", LayoutStyle::size(400.0, 300.0))
+                    .with_input(InputBehavior::BUTTON),
+            );
+            let modal = doc.add_child(
+                background,
+                UiNode::container(
+                    "dialog",
+                    LayoutStyle::absolute_rect(UiRect::new(80.0, 60.0, 240.0, 180.0)),
+                )
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Dialog).modal()),
+            );
+            let surface = doc.add_child(
+                modal,
+                UiNode::container(
+                    "surface",
+                    LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 40.0, 25.0)),
+                )
+                .with_input(InputBehavior {
+                    pointer: true,
+                    focusable: false,
+                    keyboard: false,
+                }),
+            );
+            let fields = [10.0, 80.0].map(|x| {
+                doc.add_child(
+                    modal,
+                    UiNode::container(
+                        format!("field.{x}"),
+                        LayoutStyle::absolute_rect(UiRect::new(x, 50.0, 60.0, 25.0)),
+                    )
+                    .with_input(InputBehavior {
+                        pointer: true,
+                        focusable: eligible,
+                        keyboard: eligible,
+                    }),
+                )
+            });
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            let point = UiPoint::new(100.0, 80.0);
+            assert_eq!(doc.hit_test(point), Some(surface));
+            for previous in [None, Some(background), Some(fields[0]), Some(fields[1])] {
+                doc.set_focus_state(UiFocusState {
+                    focused: previous,
+                    ..Default::default()
+                });
+                let down = doc.handle_input(UiInputEvent::PointerDown(point));
+                let expected = eligible.then_some(
+                    previous
+                        .filter(|id| fields.contains(id))
+                        .unwrap_or(fields[0]),
+                );
+                assert_eq!(
+                    down.focused, expected,
+                    "eligible={eligible}, previous={previous:?}"
+                );
+                assert_eq!(down.pressed, Some(surface));
+                assert_eq!(
+                    doc.handle_input(UiInputEvent::PointerUp(point)).clicked,
+                    Some(surface)
+                );
+            }
+            if eligible {
+                // A real focusable target still takes focus from another field.
+                let rect = doc.node(fields[0]).layout().rect;
+                let down = doc.handle_input(UiInputEvent::PointerDown(UiPoint::new(
+                    rect.x + 5.0,
+                    rect.y + 5.0,
+                )));
+                assert_eq!(down.focused, Some(fields[0]));
+            }
+            // After the modal boundary is removed, ordinary ancestor focus resumes.
+            doc.node_mut(modal).accessibility.as_mut().unwrap().modal = false;
+            assert_eq!(
+                doc.handle_input(UiInputEvent::PointerDown(point)).focused,
+                Some(background)
+            );
+        }
+    }
+
+    #[test]
+    fn modal_pointer_and_wheel_input_stays_inside_the_active_dialog() {
+        let mut doc = UiDocument::new(LayoutStyle::size(400.0, 300.0));
+        let background = doc.add_child(
+            doc.root(),
+            UiNode::container("background", LayoutStyle::size(400.0, 300.0))
+                .with_scroll(ScrollAxes::VERTICAL)
+                .with_action("background"),
+        );
+        doc.add_child(
+            background,
+            UiNode::container(
+                "content",
+                LayoutStyle::size(400.0, 800.0).with_flex_shrink(0.0),
+            ),
+        );
+        let outside = doc.add_child(
+            background,
+            UiNode::container(
+                "outside",
+                LayoutStyle::absolute_rect(UiRect::new(8.0, 8.0, 80.0, 30.0)),
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        let modal = doc.add_child(
+            background,
+            UiNode::container(
+                "dialog",
+                LayoutStyle::absolute_rect(UiRect::new(150.0, 80.0, 200.0, 160.0)),
+            )
+            .with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Dialog)
+                    .modal()
+                    .focusable(),
+            ),
+        );
+        let inside = doc.add_child(
+            modal,
+            UiNode::container(
+                "inside",
+                LayoutStyle::absolute_rect(UiRect::new(10.0, 10.0, 60.0, 24.0)),
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        let scroll = doc.add_child(
+            modal,
+            UiNode::container(
+                "scroll",
+                LayoutStyle::absolute_rect(UiRect::new(10.0, 50.0, 100.0, 80.0)),
+            )
+            .with_scroll(ScrollAxes::VERTICAL),
+        );
+        doc.add_child(
+            scroll,
+            UiNode::container(
+                "scroll.content",
+                LayoutStyle::size(100.0, 300.0).with_flex_shrink(0.0),
+            ),
+        );
+        for active in [true, false, true] {
+            doc.node_mut(modal).style.layout.display =
+                if active { Display::Flex } else { Display::None };
+            doc.set_scroll_offset(background, UiPoint::new(0.0, 0.0));
+            doc.set_scroll_offset(scroll, UiPoint::new(0.0, 0.0));
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            let point = UiPoint::new(20.0, 20.0);
+            assert_eq!(
+                doc.hit_test_result(point),
+                Some(if active {
+                    HitTestResult::Blocked(modal)
+                } else {
+                    HitTestResult::Target(outside)
+                })
+            );
+            doc.handle_input(UiInputEvent::PointerDown(point));
+            assert_eq!(
+                doc.handle_input(UiInputEvent::PointerUp(point)).clicked,
+                (!active).then_some(outside)
+            );
+            assert_eq!(
+                doc.auto_scrollbar_hit_target(UiPoint::new(399.0, 15.0))
+                    .is_some(),
+                !active
+            );
+            let result = doc.handle_input(UiInputEvent::Wheel(UiWheelEvent::pixels(
+                point,
+                UiPoint::new(0.0, 20.0),
+            )));
+            assert_eq!(result.scrolled, (!active).then_some(background));
+            if active {
+                let rect = doc.node(inside).layout().rect;
+                let point = UiPoint::new(rect.x + 10.0, rect.y + 10.0);
+                assert_eq!(doc.hit_test(point), Some(inside));
+                doc.handle_input(UiInputEvent::PointerDown(point));
+                let clicked = doc.handle_input(UiInputEvent::PointerUp(point));
+                assert_eq!(clicked.clicked, Some(inside));
+                // A dialog child without a binding must not bubble into a
+                // background action owner that happens to be its ancestor.
+                assert!(
+                    crate::WidgetAction::activation_from_input_result_for_document(
+                        &doc,
+                        &clicked,
+                        |id| doc.node(id).action().cloned()
+                    )
+                    .is_none()
+                );
+                doc.set_node_action(inside, "inside");
+                assert_eq!(
+                    crate::WidgetAction::activation_from_input_result_for_document(
+                        &doc,
+                        &clicked,
+                        |id| doc.node(id).action().cloned()
+                    )
+                    .unwrap()
+                    .target,
+                    inside
+                );
+                doc.node_mut(inside).action = None;
+                let rect = doc.node(scroll).layout().rect;
+                let point = UiPoint::new(rect.x + 10.0, rect.y + 10.0);
+                let wheel =
+                    UiInputEvent::Wheel(UiWheelEvent::pixels(point, UiPoint::new(0.0, 20.0)));
+                assert_eq!(doc.handle_input(wheel.clone()).scrolled, Some(scroll));
+                doc.set_scroll_offset(scroll, UiPoint::new(0.0, 10000.0));
+                assert_eq!(
+                    doc.handle_input(wheel).scrolled,
+                    None,
+                    "wheel must not escape through the modal's scrollable ancestor"
+                );
+                assert_eq!(doc.scroll_state(background).unwrap().offset.y, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn inactive_modals_do_not_trap_keyboard_navigation() {
+        for inactive in [
+            "display",
+            "clipped",
+            "disabled",
+            "hidden",
+            "disabled_parent",
+        ] {
+            let mut doc = UiDocument::new(LayoutStyle::size(400.0, 300.0));
+            let outside = doc.add_child(
+                doc.root,
+                UiNode::container("outside", LayoutStyle::size(80.0, 30.0))
+                    .with_input(InputBehavior::BUTTON)
+                    .with_accessibility(
+                        AccessibilityMeta::new(AccessibilityRole::Button).focus_order(-1),
+                    ),
+            );
+            let parent = doc.add_child(
+                doc.root,
+                UiNode::container(
+                    "parent",
+                    LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 300.0, 200.0)),
+                ),
+            );
+            let modal = doc.add_child(
+                parent,
+                UiNode::container("dialog", LayoutStyle::size(200.0, 100.0))
+                    .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Dialog).modal()),
+            );
+            doc.add_child(
+                modal,
+                UiNode::container("inside", LayoutStyle::size(80.0, 30.0))
+                    .with_input(InputBehavior::BUTTON)
+                    .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button)),
+            );
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            doc.paint_list();
+            assert_eq!(doc.accessibility_snapshot().modal_scope, Some(modal));
+            match inactive {
+                "display" => doc.node_mut(parent).style.layout.display = Display::None,
+                "clipped" => {
+                    doc.node_mut(parent).style.layout.inset.left =
+                        LengthPercentageAuto::length(500.0)
+                }
+                "disabled" => doc.set_node_enabled(modal, false),
+                "hidden" => doc.node_mut(modal).accessibility.as_mut().unwrap().hidden = true,
+                "disabled_parent" => doc.set_node_enabled(parent, false),
+                _ => unreachable!(),
+            }
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            assert_eq!(
+                doc.accessibility_snapshot().modal_scope,
+                None,
+                "inactive={inactive}"
+            );
+            assert_eq!(
+                doc.handle_input(UiInputEvent::Focus(FocusDirection::Next))
+                    .focused,
+                Some(outside),
+                "inactive={inactive}"
+            );
+        }
+    }
+
+    #[test]
+    fn modal_focus_scope_follows_paint_order() {
+        for ordering in [
+            "sibling",
+            "z_index",
+            "layer",
+            "ancestor",
+            "nested",
+            "stack_parent",
+        ] {
+            let mut doc = UiDocument::new(LayoutStyle::size(400.0, 300.0));
+            let parent_a = doc.add_child(
+                doc.root,
+                UiNode::container("parent.a", LayoutStyle::size(400.0, 300.0)),
+            );
+            let a = doc.add_child(
+                parent_a,
+                UiNode::container("a", LayoutStyle::size(200.0, 100.0))
+                    .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Dialog).modal()),
+            );
+            let button_a = doc.add_child(
+                a,
+                UiNode::container("a.button", LayoutStyle::size(80.0, 30.0))
+                    .with_input(InputBehavior::BUTTON),
+            );
+            let parent_b = doc.add_child(
+                if ordering == "nested" { a } else { doc.root },
+                UiNode::container(
+                    "parent.b",
+                    LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 200.0, 100.0)),
+                ),
+            );
+            let b = doc.add_child(
+                parent_b,
+                UiNode::container("b", LayoutStyle::size(200.0, 100.0))
+                    .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Dialog).modal()),
+            );
+            let button_b = doc.add_child(
+                b,
+                UiNode::container("b.button", LayoutStyle::size(80.0, 30.0))
+                    .with_input(InputBehavior::BUTTON),
+            );
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            doc.paint_list();
+            let expected = match ordering {
+                "z_index" => {
+                    doc.node_mut(parent_a).style.z_index = 20.0;
+                    (a, button_a)
+                }
+                "layer" => {
+                    doc.node_mut(parent_a).layer = Some(platform::UiLayer::AppOverlay);
+                    doc.node_mut(parent_b).style.z_index = 1000.0;
+                    (a, button_a)
+                }
+                "ancestor" => {
+                    doc.node_mut(parent_a).style.z_index = 20.0;
+                    doc.node_mut(b).style.z_index = 1000.0;
+                    (a, button_a)
+                }
+                "stack_parent" => {
+                    doc.node_mut(parent_a).style.z_index = 20.0;
+                    doc.node_mut(b).stack_parent = Some(a);
+                    (b, button_b)
+                }
+                _ => (b, button_b),
+            };
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            assert_eq!(
+                doc.accessibility_snapshot().modal_scope,
+                Some(expected.0),
+                "ordering={ordering}"
+            );
+            for direction in [FocusDirection::Next, FocusDirection::Previous] {
+                doc.focus.focused = Some(if expected.0 == a { button_b } else { button_a });
+                assert_eq!(
+                    doc.handle_input(UiInputEvent::Focus(direction)).focused,
+                    Some(expected.1),
+                    "ordering={ordering}, direction={direction:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn focus_traversal_matches_materialized_accessibility_order() {
+        for variant in 0..12 {
+            let mut doc = UiDocument::new(LayoutStyle::size(400.0, 300.0));
+            for group in 0..4 {
+                let mut meta = AccessibilityMeta::new(AccessibilityRole::Group);
+                meta.hidden = group % 2 == 0;
+                meta.modal = variant % 3 != 0 && group == 1;
+                let parent = doc.add_child(
+                    doc.root,
+                    UiNode::container(
+                        format!("group.{group}"),
+                        LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 400.0, 300.0)),
+                    )
+                    .with_accessibility(meta),
+                );
+                doc.node_mut(parent).enabled = variant % 4 != group;
+                for child in 0..8 {
+                    let index = group * 8 + child;
+                    let mut node = UiNode::container(
+                        format!("control.{index}"),
+                        LayoutStyle::absolute_rect(UiRect::new(
+                            if index % 11 == 0 { 500.0 } else { 10.0 },
+                            10.0,
+                            40.0,
+                            30.0,
+                        )),
+                    );
+                    if (index + variant) % 3 != 0 {
+                        node.input = InputBehavior::BUTTON;
+                    }
+                    if (index + variant) % 4 != 0 {
+                        let mut meta =
+                            AccessibilityMeta::new(AccessibilityRole::Button).focusable();
+                        meta.focus_order =
+                            (index % 3 != 0).then_some((index as i32 * 7 + variant as i32) % 9 - 4);
+                        meta.hidden = index % 13 == 0;
+                        meta.enabled = index % 7 != 0;
+                        node.accessibility = Some(meta);
+                    }
+                    if variant == 0 || index % 17 == 0 {
+                        node.style.layout.display = Display::None;
+                    }
+                    doc.add_child(parent, node);
+                }
+            }
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            for changed in [false, true] {
+                if changed {
+                    for (index, node) in doc.nodes.iter_mut().enumerate().skip(1) {
+                        node.enabled = index % 5 != 0;
+                        if let Some(meta) = &mut node.accessibility {
+                            meta.focus_order = Some(-(index as i32));
+                        }
+                    }
+                }
+                // Use the public accessibility tree as a materialized reference,
+                // with input-only controls appended in document order.
+                let snapshot = doc.accessibility_snapshot();
+                let mut expected = snapshot.effective_focus_order();
+                expected.extend(
+                    (0..doc.nodes.len())
+                        .map(UiNodeId)
+                        .filter(|id| doc.node(*id).accessibility.is_none()),
+                );
+                expected.retain(|&id| doc.is_focus_navigation_candidate(id, snapshot.modal_scope));
+                assert_eq!(expected.is_empty(), variant == 0);
+                let currents = std::iter::once(None)
+                    .chain(std::iter::once(Some(UiNodeId(usize::MAX))))
+                    .chain((0..doc.nodes.len()).map(|id| Some(UiNodeId(id))));
+                for current in currents {
+                    for direction in [FocusDirection::Next, FocusDirection::Previous] {
+                        let position = expected.iter().position(|&id| Some(id) == current);
+                        let target = if expected.is_empty() {
+                            None
+                        } else {
+                            let position = match (direction, position) {
+                                (FocusDirection::Next, Some(index)) => (index + 1) % expected.len(),
+                                (FocusDirection::Next, None) => 0,
+                                (FocusDirection::Previous, None | Some(0)) => expected.len() - 1,
+                                (FocusDirection::Previous, Some(index)) => index - 1,
+                            };
+                            Some(expected[position])
+                        };
+                        assert_eq!(doc.next_focus(current, direction), target,
+                            "variant={variant}, changed={changed}, current={current:?}, direction={direction:?}, order={expected:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn modified_tab_shortcuts_preserve_focus() {
+        let mut doc = UiDocument::new(root_style(240.0, 120.0));
+        let first = doc.add_child(
+            doc.root,
+            UiNode::container("first", button_style(80.0, 36.0)).with_input(InputBehavior::BUTTON),
+        );
+        doc.add_child(
+            doc.root,
+            UiNode::container("second", button_style(80.0, 36.0)).with_input(InputBehavior::BUTTON),
+        );
+        doc.compute_layout(UiSize::new(240.0, 120.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        for bits in 1..8 {
+            for shift in [false, true] {
+                for focused in [None, Some(first)] {
+                    doc.focus.focused = focused;
+                    let result = doc.handle_input(UiInputEvent::Key {
+                        key: KeyCode::Tab,
+                        modifiers: KeyModifiers {
+                            shift,
+                            ctrl: bits & 1 != 0,
+                            alt: bits & 2 != 0,
+                            meta: bits & 4 != 0,
+                        },
+                    });
+                    assert_eq!(result.focused, focused, "bits={bits}, shift={shift}");
+                    assert!(!result.consumed);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn keyboard_focus_uses_accessibility_order_and_modal_scope() {
         let mut doc = UiDocument::new(root_style(360.0, 180.0));
         let outside = doc.add_child(
@@ -13763,14 +15547,41 @@ mod tests {
             vec![a11y_only, input, modal]
         );
 
-        let first = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
-        assert_eq!(first.focused, Some(a11y_only));
-        let second = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
-        assert_eq!(second.focused, Some(input));
-        let third = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
-        assert_eq!(third.focused, Some(modal));
-        let wrapped = doc.handle_input(UiInputEvent::Focus(FocusDirection::Next));
-        assert_eq!(wrapped.focused, Some(a11y_only));
+        for keyboard in [false, true] {
+            let navigation = |backward| {
+                if keyboard {
+                    UiInputEvent::Key {
+                        key: KeyCode::Tab,
+                        modifiers: KeyModifiers {
+                            shift: backward,
+                            ..KeyModifiers::NONE
+                        },
+                    }
+                } else {
+                    UiInputEvent::Focus(if backward {
+                        FocusDirection::Previous
+                    } else {
+                        FocusDirection::Next
+                    })
+                }
+            };
+            for (backward, expected) in [
+                (false, [a11y_only, input, modal, a11y_only]),
+                (true, [modal, input, a11y_only, modal]),
+            ] {
+                doc.focus.focused = None;
+                for expected in expected {
+                    let result = doc.handle_input(navigation(backward));
+                    assert_eq!(
+                        result.focused,
+                        Some(expected),
+                        "keyboard={keyboard}, backward={backward}"
+                    );
+                    assert_eq!(result.consumed_by, Some(expected));
+                    assert!(result.clicked.is_none());
+                }
+            }
+        }
     }
 
     #[test]
@@ -14603,23 +16414,6 @@ mod tests {
 
         let blurred = doc.handle_input(UiInputEvent::PointerDown(UiPoint::new(150.0, 80.0)));
         assert_eq!(blurred.focused, None);
-    }
-
-    #[test]
-    #[should_panic(expected = "UiDocument::add_child parent received stale or invalid node id")]
-    fn invalid_add_child_parent_reports_operad_context() {
-        let mut doc = UiDocument::new(root_style(120.0, 80.0));
-        doc.add_child(
-            UiNodeId(1509),
-            UiNode::container("bad", LayoutStyle::size(20.0, 20.0)),
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "UiDocument::node received stale or invalid node id")]
-    fn invalid_node_lookup_reports_operad_context() {
-        let doc = UiDocument::new(root_style(120.0, 80.0));
-        let _ = doc.node(UiNodeId(1509));
     }
 
     #[test]

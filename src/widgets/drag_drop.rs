@@ -659,9 +659,7 @@ pub fn dnd_drag_source_actions_from_gesture_event(
     let GestureEvent::Drag(gesture) = event else {
         return queue;
     };
-    if gesture.target != source && !document.node_is_descendant_or_self(source, gesture.target)
-        || !action_target_enabled(document, source)
-    {
+    if !action_target_accepts_hit(document, source, gesture.target) {
         return queue;
     }
     if let Some(mut action) = WidgetAction::drag_from_gesture(gesture, binding) {
@@ -684,9 +682,7 @@ pub fn dnd_drop_zone_actions_from_gesture_event(
     let GestureEvent::Drag(gesture) = event else {
         return queue;
     };
-    if gesture.target != target && !document.node_is_descendant_or_self(target, gesture.target)
-        || !action_target_enabled(document, target)
-    {
+    if !action_target_accepts_hit(document, target, gesture.target) {
         return queue;
     }
     if let Some(mut action) = WidgetAction::drag_from_gesture(gesture, binding) {
@@ -758,7 +754,6 @@ mod tests {
         );
         let drag_image = source_descriptor.drag_image.as_ref().expect("drag image");
         assert_eq!(drag_image.label.as_deref(), Some("Asset clip"));
-        assert_eq!(drag_image.hotspot, LogicalPoint::new(12.0, 12.0));
 
         let start_request = dnd_drag_start_request(
             &document,

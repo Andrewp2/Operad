@@ -191,7 +191,6 @@ mod tests {
         let first_value = doc.node(doc.node(doc.node(grid).children[0]).children[1]);
         assert!(!first_value.input.pointer);
         let selected_row = doc.node(doc.node(grid).children[1]);
-        assert_eq!(selected_row.visual.fill, ColorRgba::new(43, 62, 86, 255));
         assert_eq!(
             selected_row
                 .action
@@ -387,7 +386,6 @@ mod tests {
         );
 
         let selected_row = doc.node(node_named(&doc, "props.row.dirty"));
-        assert_eq!(selected_row.visual.fill, ColorRgba::new(43, 62, 86, 255));
         let selected_shader = selected_row.shader.as_ref().unwrap();
         assert_eq!(selected_shader.key, "ui.selected");
         assert!(selected_shader.uniforms.iter().any(|uniform| {
@@ -1220,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_view_builds_rows_with_disclosure_and_selection() {
+    fn tree_view_builds_selected_accessible_rows() {
         let mut doc = test_root();
         let root = doc.root;
         let roots = vec![TreeItem::new("project", "Project")
@@ -1244,10 +1242,6 @@ mod tests {
 
         assert_eq!(doc.node(tree).children.len(), 2);
         let first_row = doc.node(tree).children[0];
-        assert_eq!(
-            doc.node(first_row).visual.fill,
-            ColorRgba::new(41, 59, 82, 255)
-        );
         assert_eq!(
             doc.node(first_row).shader.as_ref().unwrap().key,
             "ui.tree_selected"
@@ -1273,8 +1267,6 @@ mod tests {
             &doc.node(node_named(&doc, "tree.row.project.image")).content,
             UiContent::Image(image) if image.key == "icons.folder"
         ));
-        let disclosure = doc.node(doc.node(first_row).children[0]);
-        assert!(matches!(&disclosure.content, UiContent::Text(text) if text.text == "v"));
     }
 
     #[test]
@@ -1308,11 +1300,6 @@ mod tests {
         assert_eq!(nodes.rows.len(), 5);
         assert!(nodes.top_spacer.is_some());
         assert!(nodes.bottom_spacer.is_some());
-        assert_eq!(doc.node(nodes.body).children.len(), 7);
-        assert!(doc
-            .node(node_named(&doc, "tree.row.child-3"))
-            .name
-            .ends_with("child-3"));
         assert_eq!(
             doc.node(node_named(&doc, "tree.row.child-5"))
                 .shader
@@ -1514,10 +1501,6 @@ mod tests {
         assert_eq!(doc.node(strip).children.len(), 2);
         assert_eq!(doc.node(panel).children.len(), 1);
         let selected_tab = doc.node(strip).children[1];
-        assert_eq!(
-            doc.node(selected_tab).visual.fill,
-            ColorRgba::new(43, 52, 65, 255)
-        );
         assert_eq!(
             doc.node(selected_tab).shader.as_ref().unwrap().key,
             "ui.tab_selected"

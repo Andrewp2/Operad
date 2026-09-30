@@ -17631,6 +17631,7 @@ fn drag_affordance_record_value(record: &DebugDragAffordanceRecord) -> String {
 fn drag_affordance_mode_label(mode: WidgetActionMode) -> &'static str {
     match mode {
         WidgetActionMode::Activate => "activate",
+        WidgetActionMode::ActivateAnyButton => "activate-any-button",
         WidgetActionMode::Drag => "drag",
         WidgetActionMode::PointerEdit => "edit",
         WidgetActionMode::PointerEditParentRect => "parent-edit",
@@ -22452,6 +22453,28 @@ mod tests {
         text.text.clone()
     }
 
+    fn node_with_action<'a>(doc: &'a UiDocument, root: UiNodeId, action_id: &str) -> &'a UiNode {
+        doc.nodes()
+            .iter()
+            .enumerate()
+            .find(|(index, node)| {
+                node.action
+                    .as_ref()
+                    .and_then(|action| action.action_id())
+                    .is_some_and(|id| id.as_str() == action_id)
+                    && doc.node_is_descendant_or_self(root, UiNodeId::from_index(*index))
+            })
+            .map(|(_, node)| node)
+            .unwrap_or_else(|| panic!("missing action {action_id} in panel {root:?}"))
+    }
+
+    fn assert_row_action(doc: &UiDocument, root: UiNodeId, action_id: &str) {
+        assert!(
+            node_with_action(doc, root, action_id).input().pointer,
+            "row action {action_id} must accept pointer input"
+        );
+    }
+
     #[test]
     fn debug_inspector_panel_builds_layout_and_animation_grids() {
         let mut source = UiDocument::new(root_style(200.0, 120.0));
@@ -22526,20 +22549,11 @@ mod tests {
         doc.compute_layout(UiSize::new(360.0, 320.0), &mut ApproxTextMeasurer)
             .expect("inspector layout");
 
-        assert_eq!(doc.node(nodes.root).name, "debug.inspector");
         assert!(!doc.node(nodes.layout_grid).children.is_empty());
         assert!(!doc.node(nodes.animation_grid).children.is_empty());
         assert!(!doc.node(nodes.hitbox_grid).children.is_empty());
         assert!(!doc.node(nodes.overlap_grid).children.is_empty());
-        let first_animation_input = doc.node(doc.node(nodes.animation_grid).children[7]);
-        assert_eq!(
-            first_animation_input
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.inspect.animation.row.input.0")
-        );
+        assert_row_action(&doc, nodes.root, "debug.inspect.animation.row.input.0");
     }
 
     #[test]
@@ -22586,20 +22600,12 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("layout tree panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.tree");
         assert_eq!(
             text_content(&doc, "debug.tree.rows.row.issues.value"),
             tree.issue_count.to_string()
         );
         assert!(text_content(&doc, "debug.tree.rows.row.node.1.value").contains("input"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.tree.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.tree.row.summary");
     }
 
     #[test]
@@ -22643,7 +22649,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("node search panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.search");
         assert_eq!(
             text_content(&doc, "debug.search.rows.row.status.value"),
             "ok"
@@ -22656,16 +22661,10 @@ mod tests {
             text_content(&doc, "debug.search.rows.row.interactive.value"),
             "1"
         );
-        assert!(text_content(&doc, "debug.search.rows.row.match.0.value").contains("score"));
+        assert!(text_content(&doc, "debug.search.rows.row.match.0.value")
+            .contains(&format!("score {}", trace.records[0].score)));
         assert!(text_content(&doc, "debug.search.rows.row.match.0.value").contains("fields"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.search.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.search.row.summary");
     }
 
     #[test]
@@ -22713,20 +22712,15 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("layout cost panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.layout_cost");
         assert_eq!(
             text_content(&doc, "debug.layout_cost.rows.row.status.value"),
             "warning"
         );
-        assert!(text_content(&doc, "debug.layout_cost.rows.row.cost.0.value").contains("score"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.layout_cost.row.summary")
+        assert!(
+            text_content(&doc, "debug.layout_cost.rows.row.cost.0.value")
+                .contains(&format!("score {}", trace.records[0].score))
         );
+        assert_row_action(&doc, panel.root, "debug.layout_cost.row.summary");
     }
 
     #[test]
@@ -22839,26 +22833,15 @@ mod tests {
         doc.compute_layout(UiSize::new(480.0, 260.0), &mut ApproxTextMeasurer)
             .expect("layout cost timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.layout_cost.timeline");
-        assert!(
-            text_content(&doc, "debug.layout_cost.timeline.rows.row.summary.value")
-                .contains("layout cost timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.layout_cost.timeline.rows.row.new.value"),
             "1"
         );
         assert!(
-            text_content(&doc, "debug.layout_cost.timeline.rows.row.cost.0.value").contains("avg")
+            text_content(&doc, "debug.layout_cost.timeline.rows.row.cost.0.value")
+                .contains("avg 105.0")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.layout_cost.timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.layout_cost.timeline.row.summary");
     }
 
     #[test]
@@ -22907,23 +22890,15 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("layout pressure panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.pressure");
-        assert!(
-            text_content(&doc, "debug.pressure.rows.row.summary.value").contains("layout pressure")
-        );
         assert_eq!(
             text_content(&doc, "debug.pressure.rows.row.status.value"),
             "warning"
         );
-        assert!(text_content(&doc, "debug.pressure.rows.row.pressure.0.value").contains("score"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.pressure.row.summary")
+        assert!(
+            text_content(&doc, "debug.pressure.rows.row.pressure.0.value")
+                .contains(&format!("score {}", trace.records[0].pressure_score))
         );
+        assert_row_action(&doc, panel.root, "debug.pressure.row.summary");
     }
 
     #[test]
@@ -23034,26 +23009,15 @@ mod tests {
         doc.compute_layout(UiSize::new(480.0, 260.0), &mut ApproxTextMeasurer)
             .expect("layout pressure timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.pressure.timeline");
-        assert!(
-            text_content(&doc, "debug.pressure.timeline.rows.row.summary.value")
-                .contains("layout pressure timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.pressure.timeline.rows.row.new.value"),
             "1"
         );
         assert!(
-            text_content(&doc, "debug.pressure.timeline.rows.row.pressure.0.value").contains("avg")
+            text_content(&doc, "debug.pressure.timeline.rows.row.pressure.0.value")
+                .contains("avg 77.0")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.pressure.timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.pressure.timeline.row.summary");
     }
 
     #[test]
@@ -23104,7 +23068,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 260.0), &mut ApproxTextMeasurer)
             .expect("layout cost autopsy panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.layout_cost_autopsy");
         assert_eq!(
             text_content(&doc, "debug.layout_cost_autopsy.rows.row.node.value"),
             "wrapped.list"
@@ -23119,14 +23082,7 @@ mod tests {
             "debug.layout_cost_autopsy.rows.row.source.wrapping.value"
         )
         .contains("wrapping flex"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.layout_cost_autopsy.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.layout_cost_autopsy.row.summary");
     }
 
     #[test]
@@ -23173,20 +23129,15 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("hotspot panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.hotspots");
         assert_eq!(
             text_content(&doc, "debug.hotspots.rows.row.status.value"),
             "warning"
         );
-        assert!(text_content(&doc, "debug.hotspots.rows.row.hotspot.0.value").contains("score"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.hotspots.row.summary")
+        assert!(
+            text_content(&doc, "debug.hotspots.rows.row.hotspot.0.value")
+                .contains(&format!("score {}", trace.records[0].score))
         );
+        assert_row_action(&doc, panel.root, "debug.hotspots.row.summary");
     }
 
     #[test]
@@ -23240,22 +23191,14 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("slow nodes panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.slow");
         assert_eq!(
             text_content(&doc, "debug.slow.rows.row.status.value"),
             "warning"
         );
-        assert!(text_content(&doc, "debug.slow.rows.row.summary.value").contains("slow nodes"));
-        assert!(text_content(&doc, "debug.slow.rows.row.slow.0.value").contains("score"));
+        assert!(text_content(&doc, "debug.slow.rows.row.slow.0.value")
+            .contains(&format!("score {}", trace.records[0].score)));
         assert!(text_content(&doc, "debug.slow.rows.row.slow.0.value").contains("sources"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.slow.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.slow.row.summary");
     }
 
     #[test]
@@ -23269,8 +23212,8 @@ mod tests {
             node_count: 12,
             slow_node_count: 4,
             warning_count: 1,
-            max_score: 120,
-            total_score: 220,
+            max_score: 9,
+            total_score: 16,
             new_slow_node_count: 1,
             resolved_slow_node_count: 1,
             persistent_slow_node_count: 1,
@@ -23282,10 +23225,10 @@ mod tests {
                 warning_frame_count: 1,
                 first_frame_label: Some("frame #1".to_owned()),
                 latest_frame_label: Some("frame #2".to_owned()),
-                max_score: 120,
-                latest_score: 100,
-                total_score: 220,
-                average_score: 110.0,
+                max_score: 9,
+                latest_score: 7,
+                total_score: 16,
+                average_score: 8.0,
                 all_sources: vec![
                     DebugSlowNodeSource::Hotspot,
                     DebugSlowNodeSource::PaintOverdraw,
@@ -23305,7 +23248,7 @@ mod tests {
                     node_count: 4,
                     slow_node_count: 2,
                     warning_count: 1,
-                    max_score: 120,
+                    max_score: 9,
                     new_slow_node_count: 1,
                     resolved_slow_node_count: 0,
                     persistent_slow_node_count: 1,
@@ -23322,7 +23265,7 @@ mod tests {
                     node_count: 4,
                     slow_node_count: 1,
                     warning_count: 0,
-                    max_score: 40,
+                    max_score: 4,
                     new_slow_node_count: 0,
                     resolved_slow_node_count: 1,
                     persistent_slow_node_count: 1,
@@ -23347,24 +23290,14 @@ mod tests {
         doc.compute_layout(UiSize::new(480.0, 260.0), &mut ApproxTextMeasurer)
             .expect("slow node timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.slow.timeline");
-        assert!(
-            text_content(&doc, "debug.slow.timeline.rows.row.summary.value")
-                .contains("slow node timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.slow.timeline.rows.row.new.value"),
             "1"
         );
-        assert!(text_content(&doc, "debug.slow.timeline.rows.row.slow.0.value").contains("avg"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.slow.timeline.row.summary")
+        assert!(
+            text_content(&doc, "debug.slow.timeline.rows.row.slow.0.value").contains("avg 8.0")
         );
+        assert_row_action(&doc, panel.root, "debug.slow.timeline.row.summary");
     }
 
     #[test]
@@ -23402,7 +23335,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("overlap panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.overlaps");
         assert_eq!(
             text_content(&doc, "debug.overlaps.rows.row.status.value"),
             "warning"
@@ -23412,14 +23344,7 @@ mod tests {
             "1"
         );
         assert!(text_content(&doc, "debug.overlaps.rows.row.overlap.0.value").contains("hitbox"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.overlaps.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.overlaps.row.summary");
     }
 
     #[test]
@@ -23505,11 +23430,6 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 220.0), &mut ApproxTextMeasurer)
             .expect("overlap timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.overlap_timeline");
-        assert!(
-            text_content(&doc, "debug.overlap_timeline.rows.row.summary.value")
-                .contains("overlap timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.overlap_timeline.rows.row.new.value"),
             "1"
@@ -23518,14 +23438,7 @@ mod tests {
             text_content(&doc, "debug.overlap_timeline.rows.row.frame.0.value")
                 .contains("interactive")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.overlap_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.overlap_timeline.row.summary");
     }
 
     #[test]
@@ -23564,7 +23477,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("overlap autopsy panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.overlap_autopsy");
         assert_eq!(
             text_content(&doc, "debug.overlap_autopsy.rows.row.status.value"),
             "warning"
@@ -23578,14 +23490,7 @@ mod tests {
             text_content(&doc, "debug.overlap_autopsy.rows.row.source.ordering.value")
                 .contains("z order")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.overlap_autopsy.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.overlap_autopsy.row.summary");
     }
 
     #[test]
@@ -23624,7 +23529,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("focus navigation panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.focus");
         assert_eq!(
             text_content(&doc, "debug.focus.rows.row.focused.value"),
             "first"
@@ -23634,14 +23538,7 @@ mod tests {
             "fallback"
         );
         assert!(text_content(&doc, "debug.focus.rows.row.candidate.0.value").contains("nav #0"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.focus.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.focus.row.summary");
     }
 
     #[test]
@@ -23697,7 +23594,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("focus timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.focus_timeline");
         assert_eq!(
             text_content(&doc, "debug.focus_timeline.rows.row.status.value"),
             "warning"
@@ -23710,14 +23606,7 @@ mod tests {
         assert!(frame_value.contains("focus changed"), "{frame_value}");
         let candidate_value = text_content(&doc, "debug.focus_timeline.rows.row.candidate.0.value");
         assert!(candidate_value.contains("warning"), "{candidate_value}");
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.focus_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.focus_timeline.row.summary");
     }
 
     #[test]
@@ -23768,7 +23657,6 @@ mod tests {
         doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
             .expect("overlay layout");
 
-        assert_eq!(doc.node(overlay.root).name, "debug.hitboxes");
         assert_eq!(overlay.hitboxes.len(), 2);
         assert_eq!(overlay.paint_bounds.len(), 2);
         assert_eq!(overlay.overlaps.len(), 1);
@@ -23834,7 +23722,6 @@ mod tests {
         doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
             .expect("bounds overlay layout");
 
-        assert_eq!(doc.node(overlay.root).name, "debug.bounds.visual");
         assert!(
             overlay.bounds.len() >= 6,
             "expected layout, clip, visible, paint, hit, and effect rectangles"
@@ -23899,7 +23786,6 @@ mod tests {
         doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
             .expect("point overlay layout");
 
-        assert_eq!(doc.node(overlay.root).name, "debug.point.visual");
         assert_eq!(doc.node(overlay.point).name, "debug.point.visual.point");
         assert!(overlay
             .target_bounds
@@ -23966,7 +23852,6 @@ mod tests {
         doc.compute_layout(UiSize::new(240.0, 160.0), &mut ApproxTextMeasurer)
             .expect("inspect point overlay layout");
 
-        assert_eq!(doc.node(overlay.root).name, "debug.inspect.visual");
         assert_eq!(doc.node(overlay.point).name, "debug.inspect.visual.point");
         assert!(overlay
             .target_bounds
@@ -23980,39 +23865,6 @@ mod tests {
                 .and_then(|action| action.action_id())
                 .map(|id| id.as_str()),
             Some("debug.inspect.visual.point")
-        );
-    }
-
-    #[test]
-    fn frame_timing_panel_explains_slowest_stage_and_budget() {
-        let timing = FrameTiming::new()
-            .section("layout", std::time::Duration::from_millis(3))
-            .section("paint", std::time::Duration::from_millis(2))
-            .section("render", std::time::Duration::from_millis(9));
-        let mut doc = UiDocument::new(root_style(360.0, 160.0));
-        let root = doc.root;
-
-        let panel = frame_timing_panel(
-            &mut doc,
-            root,
-            "debug.timing",
-            &timing,
-            FrameTimingPanelOptions::default()
-                .budget(std::time::Duration::from_millis(12))
-                .with_action_prefix("debug.timing"),
-        );
-        doc.compute_layout(UiSize::new(360.0, 160.0), &mut ApproxTextMeasurer)
-            .expect("timing panel layout");
-
-        assert_eq!(doc.node(panel.root).name, "debug.timing");
-        assert!(!doc.node(panel.rows).children.is_empty());
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.timing.row.total")
         );
     }
 
@@ -24045,7 +23897,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("frame budget panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.budget");
         assert_eq!(
             text_content(&doc, "debug.budget.rows.row.status.value"),
             "warning"
@@ -24059,14 +23910,7 @@ mod tests {
             text_content(&doc, "debug.budget.rows.row.recompute.value"),
             "Text measure, Layout, Paint"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.budget.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.budget.row.summary");
     }
 
     #[test]
@@ -24098,9 +23942,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("frame timing waterfall panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.waterfall");
-        assert!(text_content(&doc, "debug.waterfall.rows.row.summary.value")
-            .contains("frame timing waterfall"));
         assert_eq!(
             text_content(&doc, "debug.waterfall.rows.row.status.value"),
             "warning"
@@ -24117,14 +23958,7 @@ mod tests {
             text_content(&doc, "debug.waterfall.rows.row.section.2.value")
                 .contains("crosses budget")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.waterfall.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.waterfall.row.summary");
     }
 
     #[test]
@@ -24195,10 +24029,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("slow frame panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.slow_frame");
-        assert!(
-            text_content(&doc, "debug.slow_frame.rows.row.summary.value").contains("slow frame")
-        );
         assert_eq!(
             text_content(&doc, "debug.slow_frame.rows.row.status.value"),
             "warning"
@@ -24216,14 +24046,7 @@ mod tests {
             slow_node_value.contains("sources"),
             "slow frame node row should include source details: {slow_node_value}"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.slow_frame.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.slow_frame.row.summary");
     }
 
     #[test]
@@ -24284,11 +24107,6 @@ mod tests {
         doc.compute_layout(UiSize::new(480.0, 280.0), &mut ApproxTextMeasurer)
             .expect("frame bottleneck panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.bottlenecks");
-        assert!(
-            text_content(&doc, "debug.bottlenecks.rows.row.summary.value")
-                .contains("frame bottlenecks")
-        );
         assert_eq!(
             text_content(&doc, "debug.bottlenecks.rows.row.status.value"),
             "warning"
@@ -24300,14 +24118,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.bottlenecks.rows.row.bottleneck.0.value").contains("inspect")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.bottlenecks.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.bottlenecks.row.summary");
     }
 
     #[test]
@@ -24371,8 +24182,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("frame autopsy panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.autopsy");
-        assert!(text_content(&doc, "debug.autopsy.rows.row.summary.value").contains("autopsy"));
         assert_eq!(
             text_content(&doc, "debug.autopsy.rows.row.status.value"),
             "warning"
@@ -24383,14 +24192,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.autopsy.rows.row.source.resources.value").contains("missing")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.autopsy.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.autopsy.row.summary");
     }
 
     #[test]
@@ -24451,7 +24253,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("frame timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.timeline");
         assert_eq!(
             text_content(&doc, "debug.timeline.rows.row.status.value"),
             "warning"
@@ -24462,14 +24263,7 @@ mod tests {
         );
         assert!(text_content(&doc, "debug.timeline.rows.row.frame.0.value").contains("over"));
         assert!(text_content(&doc, "debug.timeline.rows.row.frame.0.value").contains("changes"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.timeline.row.summary");
     }
 
     #[test]
@@ -24530,11 +24324,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("frame regression panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.regression");
-        assert!(
-            text_content(&doc, "debug.regression.rows.row.summary.value")
-                .contains("frame regression")
-        );
         assert_eq!(
             text_content(&doc, "debug.regression.rows.row.status.value"),
             "warning"
@@ -24552,14 +24341,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.regression.rows.row.source.timing.value").contains("over")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.regression.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.regression.row.summary");
     }
 
     #[test]
@@ -24612,11 +24394,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("performance timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.performance_timeline");
-        assert!(
-            text_content(&doc, "debug.performance_timeline.rows.row.summary.value")
-                .contains("performance timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.performance_timeline.rows.row.dominant.value"),
             "backend-draw"
@@ -24628,14 +24405,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.performance_timeline.rows.row.stage.0.value").contains("avg")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.performance_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.performance_timeline.row.summary");
     }
 
     #[test]
@@ -24706,10 +24476,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 260.0), &mut ApproxTextMeasurer)
             .expect("frame recorder panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.recorder");
-        assert!(
-            text_content(&doc, "debug.recorder.rows.row.summary.value").contains("frame recorder")
-        );
         assert_eq!(
             text_content(&doc, "debug.recorder.rows.row.retained.value"),
             "2/2"
@@ -24723,14 +24489,7 @@ mod tests {
             "recorded #3"
         );
         assert!(text_content(&doc, "debug.recorder.rows.row.frame.0.value").contains("over"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.recorder.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.recorder.row.summary");
     }
 
     #[test]
@@ -24783,13 +24542,10 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("node frame history panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.history");
         assert_eq!(
             text_content(&doc, "debug.history.rows.row.status.value"),
             "warning"
         );
-        assert!(text_content(&doc, "debug.history.rows.row.summary.value")
-            .contains("node frame history"));
         assert_eq!(
             text_content(&doc, "debug.history.rows.row.changed.value"),
             "1"
@@ -24802,14 +24558,7 @@ mod tests {
         assert!(text_content(&doc, "debug.history.rows.row.frame.1.value").contains("over"));
         assert!(text_content(&doc, "debug.history.rows.row.frame.1.value").contains("rect"));
         assert!(text_content(&doc, "debug.history.rows.row.frame.1.value").contains("paint"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.history.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.history.row.summary");
     }
 
     #[test]
@@ -24863,8 +24612,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("node change panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.change");
-        assert!(text_content(&doc, "debug.change.rows.row.summary.value").contains("node change"));
         assert_eq!(
             text_content(&doc, "debug.change.rows.row.status.value"),
             "warning"
@@ -24879,14 +24626,7 @@ mod tests {
             "layout"
         );
         assert!(layout_value.contains("rect"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.change.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.change.row.summary");
     }
 
     #[test]
@@ -24937,21 +24677,13 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("cache reuse panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.cache");
         assert_eq!(
             text_content(&doc, "debug.cache.rows.row.status.value"),
             "warning"
         );
         assert!(text_content(&doc, "debug.cache.rows.row.cache.0.value").contains("miss"));
         assert!(text_content(&doc, "debug.cache.rows.row.display.0.value").contains("MissDirty"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.cache.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.cache.row.summary");
     }
 
     #[test]
@@ -24988,7 +24720,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 180.0), &mut ApproxTextMeasurer)
             .expect("debug issue panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.issues");
         assert_eq!(
             text_content(&doc, "debug.issues.rows.row.status.value"),
             "warning"
@@ -25002,14 +24733,7 @@ mod tests {
             "warning Performance"
         );
         assert!(text_content(&doc, "debug.issues.rows.row.issue.0.value").contains("frame-budget"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.issues.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.issues.row.summary");
     }
 
     #[test]
@@ -25112,11 +24836,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("issue timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.issue_timeline");
-        assert!(
-            text_content(&doc, "debug.issue_timeline.rows.row.summary.value")
-                .contains("issue timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.issue_timeline.rows.row.new.value"),
             "2"
@@ -25134,14 +24853,7 @@ mod tests {
             text_content(&doc, "debug.issue_timeline.rows.row.frame.1.value")
                 .contains("Performance")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.issue_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.issue_timeline.row.summary");
     }
 
     #[test]
@@ -25186,7 +24898,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 180.0), &mut ApproxTextMeasurer)
             .expect("question guide panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.questions");
         assert_eq!(
             text_content(&doc, "debug.questions.rows.row.status.value"),
             "warning"
@@ -25195,14 +24906,7 @@ mod tests {
             text_content(&doc, "debug.questions.rows.row.question.performance.value")
                 .contains("frame_budget_panel")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.questions.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.questions.row.summary");
     }
 
     #[test]
@@ -25258,7 +24962,6 @@ mod tests {
         doc.compute_layout(UiSize::new(500.0, 180.0), &mut ApproxTextMeasurer)
             .expect("why trace panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.why");
         assert_eq!(
             text_content(&doc, "debug.why.rows.row.scope.value"),
             "Point"
@@ -25310,14 +25013,7 @@ mod tests {
             .map(|id| id.as_str()),
             Some("debug.why.row.why.overlay.point-marker")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.why.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.why.row.summary");
     }
 
     #[test]
@@ -25382,7 +25078,7 @@ mod tests {
         let mut doc = UiDocument::new(root_style(500.0, 190.0));
         let root = doc.root;
 
-        let panel = why_timeline_panel(
+        why_timeline_panel(
             &mut doc,
             root,
             "debug.why_timeline",
@@ -25392,11 +25088,6 @@ mod tests {
         doc.compute_layout(UiSize::new(500.0, 190.0), &mut ApproxTextMeasurer)
             .expect("why timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.why_timeline");
-        assert!(
-            text_content(&doc, "debug.why_timeline.rows.row.summary.value")
-                .contains("why timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.why_timeline.rows.row.review.value"),
             "1"
@@ -25487,7 +25178,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 190.0), &mut ApproxTextMeasurer)
             .expect("debug contract panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.contract");
         assert_eq!(
             text_content(&doc, "debug.contract.rows.row.status.value"),
             "warning"
@@ -25502,14 +25192,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.contract.rows.row.check.text-fit.value").contains("skipped")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.contract.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.contract.row.summary");
     }
 
     #[test]
@@ -25577,7 +25260,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 190.0), &mut ApproxTextMeasurer)
             .expect("debug invariant panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.invariants");
         assert_eq!(
             text_content(&doc, "debug.invariants.rows.row.status.value"),
             "warning"
@@ -25596,14 +25278,7 @@ mod tests {
             "debug.invariants.rows.row.invariant.no-unreachable-actions.value"
         )
         .contains("skipped"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.invariants.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.invariants.row.summary");
     }
 
     #[test]
@@ -25685,11 +25360,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 190.0), &mut ApproxTextMeasurer)
             .expect("invariant timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.invariant_timeline");
-        assert!(
-            text_content(&doc, "debug.invariant_timeline.rows.row.summary.value")
-                .contains("invariant timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.invariant_timeline.rows.row.new.value"),
             "1"
@@ -25697,14 +25367,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.invariant_timeline.rows.row.frame.0.value").contains("new")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.invariant_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.invariant_timeline.row.summary");
     }
 
     #[test]
@@ -25779,11 +25442,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 210.0), &mut ApproxTextMeasurer)
             .expect("constraint timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.constraint_timeline");
-        assert!(
-            text_content(&doc, "debug.constraint_timeline.rows.row.summary.value")
-                .contains("constraint timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.constraint_timeline.rows.row.new.value"),
             "1"
@@ -25794,14 +25452,7 @@ mod tests {
         );
         let first_row = text_content(&doc, "debug.constraint_timeline.rows.row.frame.0.value");
         assert!(first_row.contains("new") || first_row.contains("interactive-overlap"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.constraint_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.constraint_timeline.row.summary");
     }
 
     #[test]
@@ -25866,23 +25517,15 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 190.0), &mut ApproxTextMeasurer)
             .expect("panel recommendation layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.panel_recommendations");
         assert_eq!(
             text_content(&doc, "debug.panel_recommendations.rows.row.top_panel.value"),
             "overlap_report_panel"
         );
         assert!(
             text_content(&doc, "debug.panel_recommendations.rows.row.panel.0.value")
-                .contains("score")
+                .contains(&format!("score {}", trace.records[0].score))
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.panel_recommendations.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.panel_recommendations.row.summary");
     }
 
     #[test]
@@ -25986,7 +25629,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("session narrative panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.session");
         assert_eq!(
             text_content(&doc, "debug.session.rows.row.top_panel.value"),
             "overlap_report_panel"
@@ -25996,14 +25638,7 @@ mod tests {
             "front"
         );
         assert!(text_content(&doc, "debug.session.rows.row.event.1.value").contains("open"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.session.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.session.row.summary");
     }
 
     #[test]
@@ -26060,7 +25695,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("debug capture report panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.capture");
         assert_eq!(
             text_content(&doc, "debug.capture.rows.row.status.value"),
             "warning"
@@ -26083,14 +25717,7 @@ mod tests {
             text_content(&doc, "debug.capture.rows.row.issue.0.value").contains("frame-budget"),
             "capture report should include ranked issue next actions"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.capture.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.capture.row.summary");
     }
 
     #[test]
@@ -26114,20 +25741,11 @@ mod tests {
         doc.compute_layout(UiSize::new(360.0, 160.0), &mut ApproxTextMeasurer)
             .expect("dirty panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.dirty");
-        assert!(!doc.node(panel.rows).children.is_empty());
         assert_eq!(
             text_content(&doc, "debug.dirty.rows.row.order.value"),
             "Text measure, Layout, Paint"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.dirty.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.dirty.row.summary");
     }
 
     #[test]
@@ -26213,11 +25831,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("widget state retention panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.widget_state");
-        assert!(
-            text_content(&doc, "debug.widget_state.rows.row.summary.value")
-                .contains("widget state retention")
-        );
         assert_eq!(
             text_content(&doc, "debug.widget_state.rows.row.orphaned.value"),
             "1"
@@ -26229,14 +25842,7 @@ mod tests {
             text_content(&doc, "debug.widget_state.rows.row.keepalive.value"),
             "1"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.widget_state.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.widget_state.row.summary");
     }
 
     #[test]
@@ -26266,7 +25872,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 180.0), &mut ApproxTextMeasurer)
             .expect("invalidation blame panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.invalidation");
         assert_eq!(
             text_content(&doc, "debug.invalidation.rows.row.status.value"),
             "warning"
@@ -26279,14 +25884,7 @@ mod tests {
             text_content(&doc, "debug.invalidation.rows.row.trigger.0.value")
                 .contains("Text measure")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.invalidation.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.invalidation.row.summary");
     }
 
     #[test]
@@ -26320,14 +25918,9 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 210.0), &mut ApproxTextMeasurer)
             .expect("invalidation blast panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.invalidation_blast");
         assert_eq!(
             text_content(&doc, "debug.invalidation_blast.rows.row.status.value"),
             "warning"
-        );
-        assert!(
-            text_content(&doc, "debug.invalidation_blast.rows.row.summary.value")
-                .contains("invalidation blast")
         );
         assert!(
             text_content(&doc, "debug.invalidation_blast.rows.row.subsystem.0.value")
@@ -26337,14 +25930,7 @@ mod tests {
             text_content(&doc, "debug.invalidation_blast.rows.row.subsystem.0.value")
                 .contains("triggers")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.invalidation_blast.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.invalidation_blast.row.summary");
     }
 
     #[test]
@@ -26389,14 +25975,9 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 230.0), &mut ApproxTextMeasurer)
             .expect("invalidation timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.invalidation_timeline");
         assert_eq!(
             text_content(&doc, "debug.invalidation_timeline.rows.row.status.value"),
             "warning"
-        );
-        assert!(
-            text_content(&doc, "debug.invalidation_timeline.rows.row.summary.value")
-                .contains("invalidation timeline")
         );
         assert_eq!(
             text_content(&doc, "debug.invalidation_timeline.rows.row.reason.0.label"),
@@ -26412,14 +25993,7 @@ mod tests {
             first_frame_value.contains("top Window resize"),
             "{first_frame_value}"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.invalidation_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.invalidation_timeline.row.summary");
     }
 
     #[test]
@@ -26459,20 +26033,12 @@ mod tests {
         doc.compute_layout(UiSize::new(380.0, 180.0), &mut ApproxTextMeasurer)
             .expect("route panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.route");
         assert_eq!(
             text_content(&doc, "debug.route.rows.row.target.value"),
             "front"
         );
         assert!(text_content(&doc, "debug.route.rows.row.candidate.1.value").contains("behind"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.route.row.event")
-        );
+        assert_row_action(&doc, panel.root, "debug.route.row.event");
     }
 
     #[test]
@@ -26512,20 +26078,12 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 200.0), &mut ApproxTextMeasurer)
             .expect("probe panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.probe");
         assert_eq!(
             text_content(&doc, "debug.probe.rows.row.target.value"),
             "front"
         );
         assert!(text_content(&doc, "debug.probe.rows.row.candidate.1.value").contains("behind"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.probe.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.probe.row.summary");
     }
 
     #[test]
@@ -26615,7 +26173,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("pointer session panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.pointer_session");
         assert_eq!(
             text_content(&doc, "debug.pointer_session.rows.row.latest_target.value"),
             "front"
@@ -26627,14 +26184,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.pointer_session.rows.row.route.1.value").contains("target")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.pointer_session.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.pointer_session.row.summary");
     }
 
     #[test]
@@ -26674,7 +26224,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("pointer autopsy panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.pointer");
         assert_eq!(
             text_content(&doc, "debug.pointer.rows.row.target.value"),
             "front"
@@ -26682,14 +26231,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.pointer.rows.row.source.occlusion.value").contains("behind")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.pointer.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.pointer.row.summary");
     }
 
     #[test]
@@ -26733,12 +26275,10 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("point autopsy panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.point");
         assert_eq!(
             text_content(&doc, "debug.point.rows.row.target.value"),
             "front"
         );
-        assert!(text_content(&doc, "debug.point.rows.row.summary.value").contains("point autopsy"));
         let next_step = text_content(&doc, "debug.point.rows.row.source.next-step.value");
         assert!(next_step.contains("warning") || next_step.contains("behind"));
         assert!(
@@ -26752,14 +26292,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.point.rows.row.source.paint.value").contains("paint stack")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.point.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.point.row.summary");
     }
 
     #[test]
@@ -26803,13 +26336,9 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("inspect point panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.inspect");
         assert_eq!(
             text_content(&doc, "debug.inspect.rows.row.target.value"),
             "front"
-        );
-        assert!(
-            text_content(&doc, "debug.inspect.rows.row.summary.value").contains("inspect point")
         );
         assert!(
             text_content(&doc, "debug.inspect.rows.row.source.resolution.value")
@@ -26818,14 +26347,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.inspect.rows.row.source.paint.value").contains("paint stack")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.inspect.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.inspect.row.summary");
     }
 
     #[test]
@@ -26852,7 +26374,7 @@ mod tests {
 
         let mut doc = UiDocument::new(root_style(460.0, 240.0));
         let root = doc.root;
-        let panel = point_autopsy_panel(
+        point_autopsy_panel(
             &mut doc,
             root,
             "debug.point.visibility",
@@ -26862,7 +26384,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("point autopsy visibility panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.point.visibility");
         assert_eq!(
             text_content(&doc, "debug.point.visibility.rows.row.status.value"),
             "error"
@@ -26915,7 +26436,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("hit target panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.hit_targets");
         assert_eq!(
             text_content(&doc, "debug.hit_targets.rows.row.status.value"),
             "warning"
@@ -26928,14 +26448,7 @@ mod tests {
             text_content(&doc, "debug.hit_targets.rows.row.target.0.value")
                 .contains("small hit target")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.hit_targets.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.hit_targets.row.summary");
     }
 
     #[test]
@@ -26978,10 +26491,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("hitbox map panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.hitbox_map");
-        assert!(
-            text_content(&doc, "debug.hitbox_map.rows.row.summary.value").contains("hitbox map")
-        );
         assert_eq!(
             text_content(&doc, "debug.hitbox_map.rows.row.status.value"),
             "warning"
@@ -26991,14 +26500,7 @@ mod tests {
             "1"
         );
         assert!(text_content(&doc, "debug.hitbox_map.rows.row.hitbox.0.value").contains("clipped"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.hitbox_map.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.hitbox_map.row.summary");
     }
 
     #[test]
@@ -27080,11 +26582,6 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 240.0), &mut ApproxTextMeasurer)
             .expect("hitbox timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.hitbox_timeline");
-        assert!(
-            text_content(&doc, "debug.hitbox_timeline.rows.row.summary.value")
-                .contains("hitbox timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.hitbox_timeline.rows.row.occluded.value"),
             "1"
@@ -27092,14 +26589,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.hitbox_timeline.rows.row.frame.0.value").contains("occluded")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.hitbox_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.hitbox_timeline.row.summary");
     }
 
     #[test]
@@ -27137,27 +26627,15 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("hitbox occlusion panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.hitbox_occlusion");
         assert_eq!(
             text_content(&doc, "debug.hitbox_occlusion.rows.row.status.value"),
             "warning"
         );
         assert!(
-            text_content(&doc, "debug.hitbox_occlusion.rows.row.summary.value")
-                .contains("hitbox occlusion")
-        );
-        assert!(
             text_content(&doc, "debug.hitbox_occlusion.rows.row.occlusion.0.value")
                 .contains("covered")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.hitbox_occlusion.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.hitbox_occlusion.row.summary");
     }
 
     #[test]
@@ -27261,12 +26739,6 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 260.0), &mut ApproxTextMeasurer)
             .expect("hitbox occlusion timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.hitbox_occlusion_timeline");
-        assert!(text_content(
-            &doc,
-            "debug.hitbox_occlusion_timeline.rows.row.summary.value"
-        )
-        .contains("hitbox occlusion timeline"));
         assert_eq!(
             text_content(&doc, "debug.hitbox_occlusion_timeline.rows.row.new.value"),
             "1"
@@ -27281,13 +26753,10 @@ mod tests {
             "debug.hitbox_occlusion_timeline.rows.row.frame.1.value",
         );
         assert!(frame_value.contains("new 1"), "{frame_value}");
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.hitbox_occlusion_timeline.row.summary")
+        assert_row_action(
+            &doc,
+            panel.root,
+            "debug.hitbox_occlusion_timeline.row.summary",
         );
     }
 
@@ -27333,9 +26802,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("paint hit mismatch panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.paint_hit");
-        assert!(text_content(&doc, "debug.paint_hit.rows.row.summary.value")
-            .contains("paint/hit mismatch"));
         assert_eq!(
             text_content(&doc, "debug.paint_hit.rows.row.hit_no_paint.value"),
             "1"
@@ -27346,14 +26812,7 @@ mod tests {
                 || text_content(&doc, "debug.paint_hit.rows.row.mismatch.0.value")
                     .contains("Paint outside hit")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.paint_hit.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.paint_hit.row.summary");
     }
 
     #[test]
@@ -27465,11 +26924,6 @@ mod tests {
         doc.compute_layout(UiSize::new(500.0, 260.0), &mut ApproxTextMeasurer)
             .expect("paint hit mismatch timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.paint_hit.timeline");
-        assert!(
-            text_content(&doc, "debug.paint_hit.timeline.rows.row.summary.value")
-                .contains("paint/hit mismatch timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.paint_hit.timeline.rows.row.new.value"),
             "2"
@@ -27482,14 +26936,7 @@ mod tests {
             text_content(&doc, "debug.paint_hit.timeline.rows.row.mismatch.0.value")
                 .contains("Hit without visible paint")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.paint_hit.timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.paint_hit.timeline.row.summary");
     }
 
     #[test]
@@ -27529,13 +26976,9 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("visibility panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.visibility");
         assert_eq!(
             text_content(&doc, "debug.visibility.rows.row.status.value"),
             "error"
-        );
-        assert!(
-            text_content(&doc, "debug.visibility.rows.row.summary.value").contains("visibility")
         );
         assert_eq!(
             text_content(&doc, "debug.visibility.rows.row.transparent.value"),
@@ -27548,14 +26991,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.visibility.rows.row.visibility.1.value").contains("No paint")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.visibility.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.visibility.row.summary");
     }
 
     #[test]
@@ -27671,14 +27107,9 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 250.0), &mut ApproxTextMeasurer)
             .expect("visibility timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.visibility_timeline");
         assert_eq!(
             text_content(&doc, "debug.visibility_timeline.rows.row.status.value"),
             "error"
-        );
-        assert!(
-            text_content(&doc, "debug.visibility_timeline.rows.row.summary.value")
-                .contains("visibility timeline")
         );
         assert!(
             text_content(&doc, "debug.visibility_timeline.rows.row.issue.0.value")
@@ -27688,14 +27119,7 @@ mod tests {
             text_content(&doc, "debug.visibility_timeline.rows.row.frame.2.value")
                 .contains("resolved 1")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.visibility_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.visibility_timeline.row.summary");
     }
 
     #[test]
@@ -27752,7 +27176,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("responsive panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.responsive");
         assert_eq!(
             text_content(&doc, "debug.responsive.rows.row.status.value"),
             "warning"
@@ -27764,14 +27187,7 @@ mod tests {
         );
         let viewport_value = text_content(&doc, "debug.responsive.rows.row.viewport.0.value");
         assert!(viewport_value.contains("constraints") || viewport_value.contains("hitbox"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.responsive.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.responsive.row.summary");
     }
 
     #[test]
@@ -27830,7 +27246,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("interaction panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.interaction");
         assert_eq!(
             text_content(&doc, "debug.interaction.rows.row.status.value"),
             "info"
@@ -27852,14 +27267,7 @@ mod tests {
             text_content(&doc, "debug.interaction.rows.row.interaction.0.value")
                 .contains("hovered")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.interaction.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.interaction.row.summary");
     }
 
     #[test]
@@ -27978,11 +27386,6 @@ mod tests {
         doc.compute_layout(UiSize::new(480.0, 260.0), &mut ApproxTextMeasurer)
             .expect("interaction timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.interaction_timeline");
-        assert!(
-            text_content(&doc, "debug.interaction_timeline.rows.row.summary.value")
-                .contains("interaction state timeline")
-        );
         assert_eq!(
             text_content(
                 &doc,
@@ -27999,14 +27402,7 @@ mod tests {
             text_content(&doc, "debug.interaction_timeline.rows.row.frame.1.value")
                 .contains("new 1")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.interaction_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.interaction_timeline.row.summary");
     }
 
     #[test]
@@ -28087,24 +27483,13 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("drag affordance panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.drag");
-        assert!(
-            text_content(&doc, "debug.drag.rows.row.summary.value").contains("drag affordances")
-        );
         assert_eq!(
             text_content(&doc, "debug.drag.rows.row.edge_hugging.value"),
             "1"
         );
         assert!(text_content(&doc, "debug.drag.rows.row.drag.0.value").contains("margin 0/0"));
         assert!(text_content(&doc, "debug.drag.rows.row.drag.0.value").contains("edge"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.drag.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.drag.row.summary");
     }
 
     #[test]
@@ -28149,7 +27534,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("shortcut route panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.shortcut");
         assert_eq!(
             text_content(&doc, "debug.shortcut.rows.row.status.value"),
             "warning"
@@ -28160,14 +27544,7 @@ mod tests {
         );
         assert!(text_content(&doc, "debug.shortcut.rows.row.scope.0.value").contains("disabled"));
         assert!(text_content(&doc, "debug.shortcut.rows.row.scope.1.value").contains("selected"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.shortcut.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.shortcut.row.summary");
     }
 
     #[test]
@@ -28218,12 +27595,10 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("action map panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.actions");
         assert_eq!(
             text_content(&doc, "debug.actions.rows.row.status.value"),
             "warning"
         );
-        assert!(text_content(&doc, "debug.actions.rows.row.summary.value").contains("action map"));
         let action_values = (0..3)
             .map(|index| {
                 let name = format!("debug.actions.rows.row.record.{index}.value");
@@ -28236,14 +27611,7 @@ mod tests {
                 .any(|value| value.contains("passive") && value.contains("action:passive")),
             "action values: {action_values:?}"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.actions.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.actions.row.summary");
     }
 
     #[test]
@@ -28273,13 +27641,9 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("action dispatch panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.dispatch");
         assert_eq!(
             text_content(&doc, "debug.dispatch.rows.row.status.value"),
             "ok"
-        );
-        assert!(
-            text_content(&doc, "debug.dispatch.rows.row.summary.value").contains("action dispatch")
         );
         assert_eq!(
             text_content(&doc, "debug.dispatch.rows.row.queued.value"),
@@ -28294,14 +27658,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.dispatch.rows.row.record.1.value").contains("slider.commit")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.dispatch.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.dispatch.row.summary");
     }
 
     #[test]
@@ -28358,7 +27715,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("action map timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.action_timeline");
         assert_eq!(
             text_content(&doc, "debug.action_timeline.rows.row.status.value"),
             "info"
@@ -28375,14 +27731,7 @@ mod tests {
             text_content(&doc, "debug.action_timeline.rows.row.record.0.value")
                 .contains("secondary.activate")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.action_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.action_timeline.row.summary");
     }
 
     #[test]
@@ -28497,26 +27846,15 @@ mod tests {
         doc.compute_layout(UiSize::new(520.0, 280.0), &mut ApproxTextMeasurer)
             .expect("interaction affordance timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.affordance_timeline");
-        assert!(
-            text_content(&doc, "debug.affordance_timeline.rows.row.summary.value")
-                .contains("interaction affordance timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.affordance_timeline.rows.row.new.value"),
             "1"
         );
-        assert!(
-            text_content(&doc, "debug.affordance_timeline.rows.row.node.0.value").contains("avg")
-        );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.affordance_timeline.row.summary")
-        );
+        let node_value = text_content(&doc, "debug.affordance_timeline.rows.row.node.0.value");
+        assert!(node_value.contains("frames 2"), "{node_value}");
+        assert!(node_value.contains("issue 2"), "{node_value}");
+        assert!(node_value.contains("warnings 2"), "{node_value}");
+        assert_row_action(&doc, panel.root, "debug.affordance_timeline.row.summary");
     }
 
     #[test]
@@ -28555,20 +27893,12 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 200.0), &mut ApproxTextMeasurer)
             .expect("paint order panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.paint");
         assert_eq!(
             text_content(&doc, "debug.paint.rows.row.top.value"),
             "front"
         );
         assert!(text_content(&doc, "debug.paint.rows.row.stack.0.value").contains("visible"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.paint.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.paint.row.summary");
     }
 
     #[test]
@@ -28605,27 +27935,16 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("stacking order panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.stacking");
         assert_eq!(
             text_content(&doc, "debug.stacking.rows.row.status.value"),
             "warning"
-        );
-        assert!(
-            text_content(&doc, "debug.stacking.rows.row.summary.value").contains("stacking order")
         );
         assert!(text_content(&doc, "debug.stacking.rows.row.stack.0.value").contains("front #0"));
         assert_eq!(
             text_content(&doc, "debug.stacking.rows.row.covered.value"),
             "1"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.stacking.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.stacking.row.summary");
     }
 
     #[test]
@@ -28737,11 +28056,6 @@ mod tests {
         doc.compute_layout(UiSize::new(500.0, 260.0), &mut ApproxTextMeasurer)
             .expect("stacking order timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.stacking.timeline");
-        assert!(
-            text_content(&doc, "debug.stacking.timeline.rows.row.summary.value")
-                .contains("stacking order timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.stacking.timeline.rows.row.covered.value"),
             "1"
@@ -28755,14 +28069,7 @@ mod tests {
                 .contains("changed")
         );
         assert!(!text_content(&doc, "debug.stacking.timeline.rows.row.frame.2.value").is_empty());
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.stack.timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.stack.timeline.row.summary");
     }
 
     #[test]
@@ -28801,23 +28108,12 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("overdraw panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.overdraw");
         assert_eq!(
             text_content(&doc, "debug.overdraw.rows.row.status.value"),
             "warning"
         );
-        assert!(
-            text_content(&doc, "debug.overdraw.rows.row.summary.value").contains("paint overdraw")
-        );
         assert!(text_content(&doc, "debug.overdraw.rows.row.item.0.value").contains("covered"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.overdraw.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.overdraw.row.summary");
     }
 
     #[test]
@@ -28914,14 +28210,9 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 250.0), &mut ApproxTextMeasurer)
             .expect("overdraw timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.overdraw_timeline");
         assert_eq!(
             text_content(&doc, "debug.overdraw_timeline.rows.row.status.value"),
             "warning"
-        );
-        assert!(
-            text_content(&doc, "debug.overdraw_timeline.rows.row.summary.value")
-                .contains("paint overdraw timeline")
         );
         assert!(
             text_content(&doc, "debug.overdraw_timeline.rows.row.item.0.value")
@@ -28933,14 +28224,7 @@ mod tests {
             resolved_frame_value.contains("resolved 1"),
             "{resolved_frame_value}"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.overdraw_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.overdraw_timeline.row.summary");
     }
 
     #[test]
@@ -28990,24 +28274,13 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("paint batches panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.batches");
         assert_eq!(
             text_content(&doc, "debug.batches.rows.row.status.value"),
             "info"
         );
-        assert!(
-            text_content(&doc, "debug.batches.rows.row.summary.value").contains("paint batches")
-        );
         assert!(text_content(&doc, "debug.batches.rows.row.batch.0.value").contains("2 items"));
         assert!(text_content(&doc, "debug.batches.rows.row.break.0.value").contains("shader"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.batches.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.batches.row.summary");
     }
 
     #[test]
@@ -29097,14 +28370,9 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 250.0), &mut ApproxTextMeasurer)
             .expect("paint batch timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.batch_timeline");
         assert_eq!(
             text_content(&doc, "debug.batch_timeline.rows.row.status.value"),
             "info"
-        );
-        assert!(
-            text_content(&doc, "debug.batch_timeline.rows.row.summary.value")
-                .contains("paint batch timeline")
         );
         assert!(
             text_content(&doc, "debug.batch_timeline.rows.row.reason.shader.value")
@@ -29116,14 +28384,7 @@ mod tests {
             resolved_frame_value.contains("resolved 1"),
             "{resolved_frame_value}"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.batch_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.batch_timeline.row.summary");
     }
 
     #[test]
@@ -29167,22 +28428,13 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("render layers panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.layers");
         assert_eq!(
             text_content(&doc, "debug.layers.rows.row.status.value"),
             "info"
         );
-        assert!(text_content(&doc, "debug.layers.rows.row.summary.value").contains("render layers"));
         assert!(text_content(&doc, "debug.layers.rows.row.layer.0.value").contains("shader"));
         assert!(text_content(&doc, "debug.layers.rows.row.item.0.value").contains("shader"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.layers.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.layers.row.summary");
     }
 
     #[test]
@@ -29286,14 +28538,9 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 250.0), &mut ApproxTextMeasurer)
             .expect("render layer timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.layer_timeline");
         assert_eq!(
             text_content(&doc, "debug.layer_timeline.rows.row.status.value"),
             "info"
-        );
-        assert!(
-            text_content(&doc, "debug.layer_timeline.rows.row.summary.value")
-                .contains("render layer timeline")
         );
         assert!(
             text_content(&doc, "debug.layer_timeline.rows.row.layer.0.value").contains("shader 1")
@@ -29304,14 +28551,7 @@ mod tests {
             resolved_frame_value.contains("resolved 1"),
             "{resolved_frame_value}"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.layer_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.layer_timeline.row.summary");
     }
 
     #[test]
@@ -29347,19 +28587,8 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("visual effects panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.effects");
-        assert!(
-            text_content(&doc, "debug.effects.rows.row.summary.value").contains("visual effect")
-        );
         assert!(text_content(&doc, "debug.effects.rows.row.effect.0.value").contains("paint"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.effects.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.effects.row.summary");
     }
 
     #[test]
@@ -29457,14 +28686,9 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 250.0), &mut ApproxTextMeasurer)
             .expect("visual effect timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.effect_timeline");
         assert_eq!(
             text_content(&doc, "debug.effect_timeline.rows.row.status.value"),
             "warning"
-        );
-        assert!(
-            text_content(&doc, "debug.effect_timeline.rows.row.summary.value")
-                .contains("visual-effect timeline")
         );
         assert!(
             text_content(&doc, "debug.effect_timeline.rows.row.effect.0.value")
@@ -29474,14 +28698,7 @@ mod tests {
             text_content(&doc, "debug.effect_timeline.rows.row.frame.2.value")
                 .contains("resolved 1")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.effect_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.effect_timeline.row.summary");
     }
 
     #[test]
@@ -29524,23 +28741,12 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("bounds autopsy panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.bounds");
-        assert!(
-            text_content(&doc, "debug.bounds.rows.row.summary.value").contains("bounds autopsy")
-        );
         assert!(text_content(&doc, "debug.bounds.rows.row.source.paint.value").contains("paint"));
         assert!(
             text_content(&doc, "debug.bounds.rows.row.source.effect-outset.value")
                 .contains("declared")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.bounds.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.bounds.row.summary");
     }
 
     #[test]
@@ -29578,19 +28784,11 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("text layout panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.text");
         assert_eq!(text_content(&doc, "debug.text.rows.row.wrap.value"), "None");
         assert!(
             text_content(&doc, "debug.text.rows.row.overflow.value").contains("horizontal=true")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.text.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.text.row.summary");
     }
 
     #[test]
@@ -29618,10 +28816,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("text style panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.text_style");
-        assert!(
-            text_content(&doc, "debug.text_style.rows.row.summary.value").contains("text style")
-        );
         assert_eq!(
             text_content(&doc, "debug.text_style.rows.row.family.value"),
             "Monospace"
@@ -29638,14 +28832,7 @@ mod tests {
             text_content(&doc, "debug.text_style.rows.row.color.value"),
             "#DCE6F0FF"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.text_style.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.text_style.row.summary");
     }
 
     #[test]
@@ -29667,11 +28854,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("text input state panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.text_input_state");
-        assert!(
-            text_content(&doc, "debug.text_input_state.rows.row.summary.value")
-                .contains("text input state")
-        );
         assert!(
             text_content(&doc, "debug.text_input_state.rows.row.text.value")
                 .contains("alpha\\nbeta")
@@ -29690,14 +28872,7 @@ mod tests {
             text_content(&doc, "debug.text_input_state.rows.row.history.value"),
             "undo 1; redo 0"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.text_input_state.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.text_input_state.row.summary");
     }
 
     #[test]
@@ -29771,11 +28946,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("text input event panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.text_input_event");
-        assert!(
-            text_content(&doc, "debug.text_input_event.rows.row.summary.value")
-                .contains("text input event")
-        );
         assert!(
             text_content(&doc, "debug.text_input_event.rows.row.edit.value").contains("changed")
         );
@@ -29791,14 +28961,7 @@ mod tests {
             text_content(&doc, "debug.text_input_event.rows.row.request.1.value")
                 .contains("text IME")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.text_input_event.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.text_input_event.row.summary");
     }
 
     #[test]
@@ -29870,11 +29033,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("text localization panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.text_localization");
-        assert!(
-            text_content(&doc, "debug.text_localization.rows.row.summary.value")
-                .contains("text localization")
-        );
         assert_eq!(
             text_content(
                 &doc,
@@ -29886,14 +29044,7 @@ mod tests {
             text_content(&doc, "debug.text_localization.rows.row.text.0.value")
                 .contains("toolbar.save")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.text_localization.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.text_localization.row.summary");
     }
 
     #[test]
@@ -29956,11 +29107,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 240.0), &mut ApproxTextMeasurer)
             .expect("text contrast panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.text_contrast");
-        assert!(
-            text_content(&doc, "debug.text_contrast.rows.row.summary.value")
-                .contains("text contrast")
-        );
         assert_eq!(
             text_content(&doc, "debug.text_contrast.rows.row.low_contrast.value"),
             "1"
@@ -29968,14 +29114,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.text_contrast.rows.row.text.0.value").contains("1.70/4.5")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.text_contrast.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.text_contrast.row.summary");
     }
 
     #[test]
@@ -30015,7 +29154,6 @@ mod tests {
         doc.compute_layout(UiSize::new(440.0, 220.0), &mut ApproxTextMeasurer)
             .expect("text fit panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.text_fit");
         assert_eq!(
             text_content(&doc, "debug.text_fit.rows.row.status.value"),
             "warning"
@@ -30026,14 +29164,7 @@ mod tests {
         );
         assert!(text_content(&doc, "debug.text_fit.rows.row.text.0.value")
             .contains("horizontal overflow"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.text_fit.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.text_fit.row.summary");
     }
 
     #[test]
@@ -30157,11 +29288,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("text fit timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.text_fit_timeline");
-        assert!(
-            text_content(&doc, "debug.text_fit_timeline.rows.row.summary.value")
-                .contains("text fit timeline")
-        );
         assert_eq!(
             text_content(&doc, "debug.text_fit_timeline.rows.row.overflow.value"),
             "1"
@@ -30174,14 +29300,7 @@ mod tests {
             text_content(&doc, "debug.text_fit_timeline.rows.row.frame.2.value")
                 .contains("resolved 1")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.text_fit_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.text_fit_timeline.row.summary");
     }
 
     #[test]
@@ -30226,17 +29345,9 @@ mod tests {
         doc.compute_layout(UiSize::new(380.0, 180.0), &mut ApproxTextMeasurer)
             .expect("diff panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.diff");
         assert_eq!(text_content(&doc, "debug.diff.rows.row.changed.value"), "1");
         assert!(text_content(&doc, "debug.diff.rows.row.node.target.value").contains("layout"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.diff.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.diff.row.summary");
     }
 
     #[test]
@@ -30275,14 +29386,9 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("style compare panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.style_compare");
         assert_eq!(
             text_content(&doc, "debug.style_compare.rows.row.status.value"),
             "info"
-        );
-        assert!(
-            text_content(&doc, "debug.style_compare.rows.row.summary.value")
-                .contains("style compare")
         );
         assert!(
             text_content(&doc, "debug.style_compare.rows.row.differences.value")
@@ -30293,14 +29399,7 @@ mod tests {
             text_content(&doc, "debug.style_compare.rows.row.diff.0.value").contains("->"),
             "style compare panel should expose left-to-right field deltas"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.style_compare.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.style_compare.row.summary");
     }
 
     #[test]
@@ -30347,26 +29446,15 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("movement panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.movement");
         assert_eq!(
             text_content(&doc, "debug.movement.rows.row.status.value"),
             "info"
         );
         assert!(
-            text_content(&doc, "debug.movement.rows.row.summary.value").contains("layout movement")
-        );
-        assert!(
             text_content(&doc, "debug.movement.rows.row.node.preview.value").contains("resized")
         );
         assert!(text_content(&doc, "debug.movement.rows.row.node.label.value").contains("sibling"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.movement.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.movement.row.summary");
     }
 
     #[test]
@@ -30401,7 +29489,6 @@ mod tests {
         doc.compute_layout(UiSize::new(380.0, 180.0), &mut ApproxTextMeasurer)
             .expect("constraint panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.constraints");
         assert!(
             text_content(&doc, "debug.constraints.rows.row.total.value")
                 .parse::<usize>()
@@ -30412,14 +29499,7 @@ mod tests {
             text_content(&doc, "debug.constraints.rows.row.issue.0.value")
                 .contains("interactive-too-small")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.constraints.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.constraints.row.summary");
     }
 
     #[test]
@@ -30483,7 +29563,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 180.0), &mut ApproxTextMeasurer)
             .expect("resource panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.resources");
         assert_eq!(
             text_content(&doc, "debug.resources.rows.row.missing.value"),
             "1"
@@ -30491,14 +29570,7 @@ mod tests {
         assert!(
             text_content(&doc, "debug.resources.rows.row.resource.0.value").contains("missing")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.resources.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.resources.row.summary");
     }
 
     #[test]
@@ -30626,11 +29698,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("resource timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.resource_timeline");
-        assert!(
-            text_content(&doc, "debug.resource_timeline.rows.row.summary.value")
-                .contains("resource timeline")
-        );
         assert!(
             text_content(&doc, "debug.resource_timeline.rows.row.resource.0.value")
                 .contains("frames 3")
@@ -30647,14 +29714,7 @@ mod tests {
             text_content(&doc, "debug.resource_timeline.rows.row.frame.2.value")
                 .contains("resolved 1")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.resource_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.resource_timeline.row.summary");
     }
 
     #[test]
@@ -30706,21 +29766,13 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("node explanation panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.explain");
         assert!(text_content(&doc, "debug.explain.rows.row.summary.value").contains("target"));
         assert!(
             text_content(&doc, "debug.explain.rows.row.route.value").contains("rejected")
                 || text_content(&doc, "debug.explain.rows.row.route.value").contains("candidate")
         );
         assert!(text_content(&doc, "debug.explain.rows.row.resource.0.value").contains("missing"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.explain.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.explain.row.summary");
     }
 
     #[test]
@@ -30772,7 +29824,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("inspect node panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.inspect_node");
         assert!(text_content(&doc, "debug.inspect_node.rows.row.summary.value").contains("target"));
         assert!(
             text_content(&doc, "debug.inspect_node.rows.row.source.next-step.value")
@@ -30789,14 +29840,7 @@ mod tests {
             text_content(&doc, "debug.inspect_node.rows.row.source.overlap.value")
                 .contains("overlap")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.inspect_node.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.inspect_node.row.summary");
     }
 
     #[test]
@@ -30843,10 +29887,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("node provenance panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.provenance");
-        assert!(
-            text_content(&doc, "debug.provenance.rows.row.summary.value").contains("provenance")
-        );
         assert_eq!(
             text_content(&doc, "debug.provenance.rows.row.status.value"),
             "warning"
@@ -30859,14 +29899,7 @@ mod tests {
             text_content(&doc, "debug.provenance.rows.row.source.overlaps.value")
                 .contains("interactive")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.provenance.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.provenance.row.summary");
     }
 
     #[test]
@@ -30911,18 +29944,10 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("layout cause panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.layout");
         assert!(text_content(&doc, "debug.layout.rows.row.summary.value").contains("target"));
         assert!(text_content(&doc, "debug.layout.rows.row.chain.2.value").contains("absolute"));
         assert!(text_content(&doc, "debug.layout.rows.row.sibling.0.value").contains("overlaps"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.layout.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.layout.row.summary");
     }
 
     #[test]
@@ -30969,11 +29994,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("layout autopsy panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.layout_autopsy");
-        assert!(
-            text_content(&doc, "debug.layout_autopsy.rows.row.summary.value")
-                .contains("layout autopsy")
-        );
         assert!(
             text_content(&doc, "debug.layout_autopsy.rows.row.source.size.value").contains("size")
         );
@@ -30981,14 +30001,7 @@ mod tests {
             text_content(&doc, "debug.layout_autopsy.rows.row.source.siblings.value")
                 .contains("overlap")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.layout_autopsy.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.layout_autopsy.row.summary");
     }
 
     #[test]
@@ -31027,20 +30040,12 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("clip scroll panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.clip");
         assert_eq!(
             text_content(&doc, "debug.clip.rows.row.clipped_by.value"),
             "viewport"
         );
         assert!(text_content(&doc, "debug.clip.rows.row.chain.1.value").contains("scroll"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.clip.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.clip.row.summary");
     }
 
     #[test]
@@ -31075,24 +30080,13 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("clip chain panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.clip_chain");
-        assert!(
-            text_content(&doc, "debug.clip_chain.rows.row.summary.value").contains("clip chain")
-        );
         assert_eq!(
             text_content(&doc, "debug.clip_chain.rows.row.status.value"),
             "warning"
         );
         assert!(text_content(&doc, "debug.clip_chain.rows.row.clip.0.value").contains("clipped"));
         assert!(text_content(&doc, "debug.clip_chain.rows.row.clip.0.value").contains("clipper"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.clip_chain.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.clip_chain.row.summary");
     }
 
     #[test]
@@ -31193,14 +30187,9 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 250.0), &mut ApproxTextMeasurer)
             .expect("clip chain timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.clip_timeline");
         assert_eq!(
             text_content(&doc, "debug.clip_timeline.rows.row.status.value"),
             "warning"
-        );
-        assert!(
-            text_content(&doc, "debug.clip_timeline.rows.row.summary.value")
-                .contains("clip chain timeline")
         );
         assert!(
             text_content(&doc, "debug.clip_timeline.rows.row.clip.0.value").contains("frames 1")
@@ -31210,14 +30199,7 @@ mod tests {
             resolved_frame_value.contains("resolved 1"),
             "{resolved_frame_value}"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.clip_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.clip_timeline.row.summary");
     }
 
     #[test]
@@ -31259,7 +30241,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("scroll range panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.scroll");
         assert_eq!(
             text_content(&doc, "debug.scroll.rows.row.status.value"),
             "info"
@@ -31269,14 +30250,7 @@ mod tests {
             "1"
         );
         assert!(text_content(&doc, "debug.scroll.rows.row.range.0.value").contains("range"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.scroll.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.scroll.row.summary");
     }
 
     #[test]
@@ -31352,8 +30326,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 260.0), &mut ApproxTextMeasurer)
             .expect("wheel route panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.wheel");
-        assert!(text_content(&doc, "debug.wheel.rows.row.summary.value").contains("wheel route"));
         assert_eq!(
             text_content(&doc, "debug.wheel.rows.row.scope.value"),
             "front.panel"
@@ -31363,14 +30335,7 @@ mod tests {
             "none"
         );
         assert!(text_content(&doc, "debug.wheel.rows.row.candidate.0.value").contains("scope"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.wheel.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.wheel.row.summary");
     }
 
     #[test]
@@ -31470,14 +30435,9 @@ mod tests {
         doc.compute_layout(UiSize::new(470.0, 250.0), &mut ApproxTextMeasurer)
             .expect("scroll timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.scroll_timeline");
         assert_eq!(
             text_content(&doc, "debug.scroll_timeline.rows.row.status.value"),
             "info"
-        );
-        assert!(
-            text_content(&doc, "debug.scroll_timeline.rows.row.summary.value")
-                .contains("scroll timeline")
         );
         assert!(
             text_content(&doc, "debug.scroll_timeline.rows.row.node.0.value")
@@ -31489,14 +30449,7 @@ mod tests {
             resolved_frame_value.contains("resolved 1"),
             "{resolved_frame_value}"
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.scroll_timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.scroll_timeline.row.summary");
     }
 
     #[test]
@@ -31549,7 +30502,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 220.0), &mut ApproxTextMeasurer)
             .expect("frame trace panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "debug.trace");
         assert!(text_content(&doc, "debug.trace.rows.row.summary.value").contains("target"));
         assert_eq!(
             text_content(&doc, "debug.trace.rows.row.status.value"),
@@ -31557,14 +30509,7 @@ mod tests {
         );
         assert!(text_content(&doc, "debug.trace.rows.row.focus.value").contains("focusable"));
         assert!(text_content(&doc, "debug.trace.rows.row.timing.value").contains("backend-draw"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("debug.trace.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "debug.trace.row.summary");
     }
 
     #[test]
@@ -31635,14 +30580,7 @@ mod tests {
 
         assert_eq!(nodes.states.len(), 2);
         assert_eq!(nodes.edges.len(), 2);
-        assert_eq!(
-            doc.node(nodes.states[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("anim.inspect.state.idle")
-        );
+        node_with_action(&doc, nodes.root, "anim.inspect.state.idle");
     }
 
     #[test]
@@ -31694,22 +30632,15 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("activity panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "animation.activity");
         assert_eq!(
             text_content(&doc, "animation.activity.rows.row.status.value"),
             "info"
         );
         assert!(
-            text_content(&doc, "animation.activity.rows.row.animation.0.value").contains("score")
+            text_content(&doc, "animation.activity.rows.row.animation.0.value")
+                .contains(&format!("score {}", trace.records[0].score))
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("anim.activity.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "anim.activity.row.summary");
     }
 
     #[test]
@@ -31800,11 +30731,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("activity timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "animation.timeline");
-        assert!(
-            text_content(&doc, "animation.timeline.rows.row.summary.value")
-                .contains("animation activity timeline")
-        );
         assert!(
             text_content(&doc, "animation.timeline.rows.row.animation.0.value")
                 .contains("active 1")
@@ -31812,14 +30738,7 @@ mod tests {
         assert!(
             text_content(&doc, "animation.timeline.rows.row.frame.2.value").contains("resolved 1")
         );
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("anim.timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "anim.timeline.row.summary");
     }
 
     #[test]
@@ -31874,46 +30793,18 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("controls layout");
 
-        assert_eq!(nodes.transport.len(), 3);
-        assert_eq!(nodes.inputs.len(), 3);
+        for action in [
+            "anim.controls.transport.pause_toggle",
+            "anim.controls.transport.step",
+            "anim.controls.input.active.toggle",
+            "anim.controls.input.scrub.set",
+            "anim.controls.input.pulse.fire",
+        ] {
+            node_with_action(&doc, nodes.root, action);
+        }
         assert_eq!(
-            doc.node(nodes.transport[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("anim.controls.transport.pause_toggle")
-        );
-        assert_eq!(
-            doc.node(nodes.transport[2]).action_mode,
+            node_with_action(&doc, nodes.root, "anim.controls.transport.scrub").action_mode,
             WidgetActionMode::PointerEdit
-        );
-        assert_eq!(
-            doc.node(node_named(&doc, "animation.controls.input.active.toggle"))
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("anim.controls.input.active.toggle")
-        );
-        assert_eq!(
-            doc.node(node_named(
-                &doc,
-                "animation.controls.input.scrub.set.slider"
-            ))
-            .action
-            .as_ref()
-            .and_then(|action| action.action_id())
-            .map(|id| id.as_str()),
-            Some("anim.controls.input.scrub.set")
-        );
-        assert_eq!(
-            doc.node(node_named(&doc, "animation.controls.input.pulse.fire"))
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("anim.controls.input.pulse.fire")
         );
     }
 
@@ -31950,9 +30841,7 @@ mod tests {
         doc.compute_layout(UiSize::new(360.0, 160.0), &mut ApproxTextMeasurer)
             .expect("overlay layout");
 
-        assert_eq!(doc.node(panel).name, "a11y.overlay");
-        let grid = doc.node(panel).children[0];
-        assert!(!doc.node(grid).children.is_empty());
+        assert_row_action(&doc, panel, "a11y.inspect.row.node.1");
 
         let overlay = accessibility_debug_overlay(
             &mut doc,
@@ -32013,7 +30902,6 @@ mod tests {
         doc.compute_layout(UiSize::new(420.0, 220.0), &mut ApproxTextMeasurer)
             .expect("accessibility tree panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "a11y.tree");
         assert_eq!(
             text_content(&doc, "a11y.tree.rows.row.focusable.value"),
             "1"
@@ -32024,14 +30912,7 @@ mod tests {
             "missing"
         );
         assert_eq!(text_content(&doc, "a11y.tree.rows.row.warnings.value"), "1");
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("a11y.tree.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "a11y.tree.row.summary");
     }
 
     #[test]
@@ -32141,9 +31022,6 @@ mod tests {
         doc.compute_layout(UiSize::new(460.0, 240.0), &mut ApproxTextMeasurer)
             .expect("accessibility timeline panel layout");
 
-        assert_eq!(doc.node(panel.root).name, "a11y.timeline");
-        assert!(text_content(&doc, "a11y.timeline.rows.row.summary.value")
-            .contains("accessibility timeline"));
         assert_eq!(
             text_content(&doc, "a11y.timeline.rows.row.warnings.value"),
             "1"
@@ -32152,13 +31030,6 @@ mod tests {
             text_content(&doc, "a11y.timeline.rows.row.node.0.value").contains("warning frames 1")
         );
         assert!(text_content(&doc, "a11y.timeline.rows.row.frame.2.value").contains("resolved 1"));
-        assert_eq!(
-            doc.node(doc.node(panel.rows).children[0])
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("a11y.timeline.row.summary")
-        );
+        assert_row_action(&doc, panel.root, "a11y.timeline.row.summary");
     }
 }

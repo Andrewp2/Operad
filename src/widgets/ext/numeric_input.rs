@@ -66,9 +66,11 @@ impl NumericPrecision {
 
     pub fn quantize(self, value: f64) -> f64 {
         let value = finite_or(value, 0.0);
-        let stepped = (value / self.step).round() * self.step;
+        // At large magnitudes the requested precision is finer than an f64 can
+        // represent. Keep the finite value if scaling for rounding overflows.
+        let stepped = finite_or((value / self.step).round() * self.step, value);
         let scale = 10_f64.powi(i32::from(self.decimals));
-        let rounded = (stepped * scale).round() / scale;
+        let rounded = finite_or((stepped * scale).round() / scale, stepped);
         if rounded == 0.0 {
             0.0
         } else {
@@ -77,7 +79,35 @@ impl NumericPrecision {
     }
 
     pub fn format(self, value: f64) -> String {
-        format!("{:.*}", usize::from(self.decimals), self.quantize(value))
+        self.format_number(self.quantize(value))
+    }
+
+    pub(crate) fn normalize_in_range(self, value: f64, range: Option<NumericRange>) -> f64 {
+        let Some(range) = range else {
+            return self.quantize(value);
+        };
+        let value = range.clamp(value);
+        // Bounds are valid values even when they do not lie on the step grid.
+        // In particular, Home/End and the ends of a slider must remain reachable.
+        if value == range.min || value == range.max {
+            return value;
+        }
+        range.clamp(self.quantize(value))
+    }
+
+    pub(crate) fn format_in_range(self, value: f64, range: Option<NumericRange>) -> String {
+        self.format_number(self.normalize_in_range(value, range))
+    }
+
+    fn format_number(self, value: f64) -> String {
+        let formatted = format!("{:.*}", usize::from(self.decimals), value);
+        if formatted.parse::<f64>().ok() == Some(value) {
+            formatted
+        } else {
+            // An off-grid boundary may need more decimal places than the usual
+            // precision. Preserve its actual value in display/copy/commit text.
+            value.to_string()
+        }
     }
 }
 
@@ -135,6 +165,12 @@ impl NumericScale {
             return None;
         }
         let position = finite_or(position, 0.0).clamp(0.0, 1.0);
+        if position == 0.0 {
+            return Some(range.min);
+        }
+        if position == 1.0 {
+            return Some(range.max);
+        }
         let value = match self {
             Self::Linear => range.min + range.span() * position,
             Self::Logarithmic { base } => {
@@ -229,13 +265,15 @@ impl NumericParameterSpec {
         self
     }
 
+    /// Apply stepping within the range, preserving exact range endpoints even
+    /// when they require more precision than the interior step grid.
     pub fn normalize_value(&self, value: f64) -> f64 {
-        self.precision.quantize(self.range.clamp(value))
+        self.precision.normalize_in_range(value, Some(self.range))
     }
 
     pub fn format_value(&self, value: f64) -> String {
         self.unit
-            .format(self.precision.format(self.normalize_value(value)))
+            .format(self.precision.format_in_range(value, Some(self.range)))
     }
 
     pub fn validate_text(&self, text: &str) -> NumericTextValidation {
@@ -371,14 +409,14 @@ impl NumericInputState {
     pub fn with_range(mut self, range: NumericRange) -> Self {
         self.range = Some(range);
         self.value = self.normalize_value(self.value);
-        self.text = self.precision.format(self.value);
+        self.text = self.precision.format_in_range(self.value, self.range);
         self
     }
 
     pub fn with_precision(mut self, precision: NumericPrecision) -> Self {
         self.precision = precision;
         self.value = self.normalize_value(self.value);
-        self.text = self.precision.format(self.value);
+        self.text = self.precision.format_in_range(self.value, self.range);
         self
     }
 
@@ -418,7 +456,7 @@ impl NumericInputState {
     pub fn slider_accessibility_meta(&self, label: impl Into<String>) -> AccessibilityMeta {
         let mut meta = AccessibilityMeta::new(AccessibilityRole::Slider)
             .label(label)
-            .value(self.precision.format(self.value))
+            .value(self.precision.format_in_range(self.value, self.range))
             .focusable();
         if let Some(range) = self.range {
             meta = meta
@@ -433,7 +471,7 @@ impl NumericInputState {
     }
 
     pub fn copy_value_text(&self) -> String {
-        self.precision.format(self.value)
+        self.precision.format_in_range(self.value, self.range)
     }
 
     pub fn paste_text(&mut self, text: &str) -> NumericInputOutcome {
@@ -442,7 +480,7 @@ impl NumericInputState {
 
     pub fn begin_edit(&mut self) -> NumericInputOutcome {
         self.phase = EditPhase::BeginEdit;
-        self.text = self.precision.format(self.value);
+        self.text = self.precision.format_in_range(self.value, self.range);
         self.outcome(self.value, false)
     }
 
@@ -474,11 +512,11 @@ impl NumericInputState {
         let previous = self.value;
         if let Some(parsed) = parse_numeric_text(&self.text) {
             self.value = self.normalize_value(parsed);
-            self.text = self.precision.format(self.value);
+            self.text = self.precision.format_in_range(self.value, self.range);
             self.phase = EditPhase::CommitEdit;
             self.outcome(previous, previous != self.value)
         } else {
-            self.text = self.precision.format(self.value);
+            self.text = self.precision.format_in_range(self.value, self.range);
             self.phase = EditPhase::CancelEdit;
             self.outcome(previous, false)
         }
@@ -503,7 +541,7 @@ impl NumericInputState {
 
     pub fn cancel_edit(&mut self) -> NumericInputOutcome {
         self.phase = EditPhase::CancelEdit;
-        self.text = self.precision.format(self.value);
+        self.text = self.precision.format_in_range(self.value, self.range);
         self.outcome(self.value, false)
     }
 
@@ -519,7 +557,7 @@ impl NumericInputState {
     pub fn set_value(&mut self, value: f64, phase: EditPhase) -> NumericInputOutcome {
         let previous = self.value;
         self.value = self.normalize_value(value);
-        self.text = self.precision.format(self.value);
+        self.text = self.precision.format_in_range(self.value, self.range);
         self.phase = phase;
         self.outcome(previous, previous != self.value)
     }
@@ -609,10 +647,7 @@ impl NumericInputState {
     }
 
     fn normalize_value(&self, value: f64) -> f64 {
-        let value = self
-            .range
-            .map_or(finite_or(value, 0.0), |range| range.clamp(value));
-        self.precision.quantize(value)
+        self.precision.normalize_in_range(value, self.range)
     }
 
     fn outcome(&self, previous: f64, changed: bool) -> NumericInputOutcome {
@@ -1020,8 +1055,7 @@ pub fn drag_value(
     speed: NumericDragSpeed,
 ) -> f64 {
     let value = start_value + drag.value_delta(delta_pixels, precision, speed);
-    let value = range.map_or(finite_or(value, 0.0), |range| range.clamp(value));
-    precision.quantize(value)
+    precision.normalize_in_range(value, range)
 }
 
 fn finite_or_f32(value: f32, fallback: f32) -> f32 {
@@ -1074,8 +1108,7 @@ fn validate_numeric_text(
     };
 
     let in_range = range.is_none_or(|range| range.contains(parsed));
-    let bounded = range.map_or(parsed, |range| range.clamp(parsed));
-    let normalized = precision.quantize(bounded);
+    let normalized = precision.normalize_in_range(parsed, range);
     NumericTextValidation {
         status: if in_range {
             NumericValidationStatus::Valid
@@ -1095,9 +1128,9 @@ fn validate_numeric_text(
 fn numeric_range_hint(range: NumericRange, precision: NumericPrecision) -> String {
     format!(
         "Range {} to {}; step {}",
-        precision.format(range.min),
-        precision.format(range.max),
-        precision.format(precision.step)
+        precision.format_number(range.min),
+        precision.format_number(range.max),
+        precision.format_number(precision.step)
     )
 }
 

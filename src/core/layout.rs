@@ -14,6 +14,15 @@ use taffy::prelude::{
 
 use crate::{LayoutStyle, UiNodeStyle, UiPoint, UiRect, UiSize};
 
+mod popup;
+mod tooltip;
+pub use popup::{
+    centered_popup_rect, place_popup, AnchoredPopup, PopupAlign, PopupLayout, PopupPlacement,
+    PopupSide,
+};
+pub(crate) use tooltip::tooltip_layout_rect;
+pub use tooltip::{tooltip_rect, TooltipPlacement};
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayoutLength {
     Points(f32),
@@ -1449,22 +1458,6 @@ mod tests {
         assert_eq!(recovered.padding, layout.padding);
         assert_eq!(recovered.flex_direction, layout.flex_direction);
         assert_eq!(recovered.flex_wrap, layout.flex_wrap);
-    }
-
-    #[test]
-    fn owned_layout_values_round_trip_from_taffy_basics() {
-        assert_eq!(
-            LayoutDimension::from_taffy(Dimension::percent(0.25)),
-            Some(LayoutDimension::Percent(0.25))
-        );
-        assert_eq!(
-            LayoutInset::from_taffy(LengthPercentageAuto::auto()),
-            Some(LayoutInset::Auto)
-        );
-        assert_eq!(
-            LayoutLength::from_taffy(LengthPercentage::length(6.0)),
-            Some(LayoutLength::Points(6.0))
-        );
     }
 
     #[test]

@@ -1894,6 +1894,7 @@ dependencies = [
  "naga",
  "pollster",
  "taffy",
+ "unicode-segmentation",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

@@ -276,29 +276,24 @@ impl OverlayStack {
 
     fn dismissal_closure(&self, id: OverlayId, reason: OverlayDismissReason) -> Vec<OverlayId> {
         let mut dismissed = Vec::new();
-        self.collect_dismissal(id, reason, &mut dismissed);
+        let mut pending = vec![(id, reason)];
+        while let Some((id, reason)) = pending.pop() {
+            if dismissed.contains(&id) {
+                continue;
+            }
+            dismissed.push(id);
+            for child in self.entries.iter().filter(|entry| entry.parent == Some(id)) {
+                if reason != OverlayDismissReason::ParentClosed || child.dismiss_policy.parent_close
+                {
+                    pending.push((child.id, OverlayDismissReason::ParentClosed));
+                }
+            }
+        }
         dismissed.sort_by_key(|id| {
             self.get(*id)
                 .map(|entry| std::cmp::Reverse(self.order_key(entry)))
         });
         dismissed
-    }
-
-    fn collect_dismissal(
-        &self,
-        id: OverlayId,
-        reason: OverlayDismissReason,
-        dismissed: &mut Vec<OverlayId>,
-    ) {
-        if dismissed.contains(&id) {
-            return;
-        }
-        dismissed.push(id);
-        for child in self.entries.iter().filter(|entry| entry.parent == Some(id)) {
-            if reason != OverlayDismissReason::ParentClosed || child.dismiss_policy.parent_close {
-                self.collect_dismissal(child.id, OverlayDismissReason::ParentClosed, dismissed);
-            }
-        }
     }
 
     fn entries_by_topmost(&self) -> Vec<&OverlayEntry> {
@@ -312,7 +307,12 @@ impl OverlayStack {
     }
 
     fn is_ancestor(&self, ancestor: OverlayId, mut child: OverlayId) -> bool {
-        while let Some(entry) = self.get(child) {
+        // Entries may be replaced or inserted before their parents. After visiting
+        // at most every entry, any further parent links must repeat a cycle.
+        for _ in 0..self.entries.len() {
+            let Some(entry) = self.get(child) else {
+                return false;
+            };
             let Some(parent) = entry.parent else {
                 return false;
             };
@@ -376,6 +376,9 @@ mod tests {
 
         assert_eq!(stack.topmost(), Some(id(2)));
         assert_eq!(stack.topmost_at(UiPoint::new(12.0, 12.0)), Some(id(2)));
+        let outcome = stack.dismiss(id(1), OverlayDismissReason::Programmatic);
+        assert_eq!(outcome.dismissed, vec![id(2), id(1)]);
+        assert!(stack.entries().is_empty());
     }
 
     #[test]

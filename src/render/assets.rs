@@ -923,20 +923,11 @@ mod tests {
     #[test]
     fn common_icon_registry_resolves_built_in_action_handles() {
         let registry = AssetRegistry::with_common_icons();
-        let play = registry
-            .resolve_built_in_icon(BuiltInIcon::Play)
-            .expect("play icon");
-        let grid = registry
-            .resolve_built_in_icon(BuiltInIcon::Grid)
-            .expect("grid icon");
-
-        assert_eq!(registry.icon_count(), BuiltInIcon::COMMON.len());
-        assert_eq!(play.handle.id.domain, ResourceDomain::BuiltIn);
-        assert_eq!(play.handle.id.key, "icons.play");
-        assert_eq!(play.label, "Play");
-        assert!(play.keywords.iter().any(|keyword| keyword == "transport"));
-        assert_eq!(grid.handle.id.key, "icons.grid");
-        assert!(grid.keywords.iter().any(|keyword| keyword == "snap"));
+        for icon in BuiltInIcon::COMMON {
+            let descriptor = registry.resolve_built_in_icon(icon).expect("built-in icon");
+            assert_eq!(descriptor.handle.id.domain, ResourceDomain::BuiltIn);
+            assert_eq!(descriptor.handle.id.key, icon.key());
+        }
     }
 
     #[test]
@@ -983,24 +974,6 @@ mod tests {
             resolved_image.resource_handle().kind(),
             crate::platform::ResourceKind::Image
         );
-    }
-
-    #[test]
-    fn icon_assets_convert_to_existing_image_content_with_tint_size_and_alignment() {
-        let registry = AssetRegistry::with_common_icons();
-        let icon = registry
-            .built_in_icon_asset(BuiltInIcon::Record)
-            .expect("record icon")
-            .tint(ColorRgba::new(220, 42, 58, 255))
-            .size(UiSize::new(18.0, 18.0))
-            .alignment(ImageAlignment::End);
-        let content = icon.image_content();
-
-        assert_eq!(icon.handle.id.domain, ResourceDomain::BuiltIn);
-        assert_eq!(icon.size, UiSize::new(18.0, 18.0));
-        assert_eq!(icon.alignment, ImageAlignment::End);
-        assert_eq!(content.key, "icons.record");
-        assert_eq!(content.tint, Some(ColorRgba::new(220, 42, 58, 255)));
     }
 
     #[test]
@@ -1083,29 +1056,26 @@ mod tests {
 
     #[test]
     fn icon_search_matches_labels_keys_and_keywords_in_stable_order() {
-        let registry = AssetRegistry::with_common_icons();
+        let mut registry = AssetRegistry::new();
+        for descriptor in [
+            IconDescriptor::new(IconHandle::app("z-last"), "Same").keyword("transport"),
+            IconDescriptor::new(IconHandle::app("a-first"), "Same").keyword("transport"),
+            IconDescriptor::new(IconHandle::app("play"), "Play").keyword("transport"),
+            IconDescriptor::new(IconHandle::app("edit"), "Edit"),
+        ] {
+            registry.register_icon(descriptor);
+        }
+        let keys = |query| {
+            registry
+                .search_icons(query)
+                .iter()
+                .map(|descriptor| descriptor.handle.id.key.as_str())
+                .collect::<Vec<_>>()
+        };
 
-        let transport = registry.search_icons("transport");
-        let labels = transport
-            .iter()
-            .map(|descriptor| descriptor.label.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            labels,
-            vec![
-                "Fast forward",
-                "Loop",
-                "Metronome",
-                "Pause",
-                "Play",
-                "Record",
-                "Rewind",
-                "Stop"
-            ]
-        );
-
-        let scissors = registry.search_icons("icons.scissors");
-        assert_eq!(scissors.len(), 1);
-        assert_eq!(scissors[0].label, "Scissors");
+        assert_eq!(keys(" TRANSPORT "), vec!["play", "a-first", "z-last"]);
+        assert_eq!(keys("SAME"), vec!["a-first", "z-last"]);
+        assert_eq!(keys("z-last"), vec!["z-last"]);
+        assert!(keys("missing").is_empty());
     }
 }

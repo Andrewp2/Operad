@@ -1091,7 +1091,7 @@ fn main() -> operad::native::NativeWindowResult {
             .with_tick_rate_hz(60.0),
         GameUiApp::default(),
         GameUiApp::update,
-        GameUiApp::view,
+        |state, viewport, _views| GameUiApp::view(state, viewport),
     )
 }
 

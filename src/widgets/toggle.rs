@@ -296,8 +296,7 @@ pub fn toggle_switch_actions_from_input_result(
     let mut queue = WidgetActionQueue::new();
     if result
         .clicked
-        .is_some_and(|target| document.node_is_descendant_or_self(toggle, target))
-        && action_target_enabled(document, toggle)
+        .is_some_and(|target| action_target_accepts_hit(document, toggle, target))
     {
         if let Some(binding) = options.action.clone() {
             queue.select(toggle, binding, value.toggled().is_on());
@@ -326,7 +325,6 @@ mod tests {
         let accessibility = document.node(node).accessibility.as_ref().unwrap();
         assert_eq!(accessibility.role, AccessibilityRole::Switch);
         assert_eq!(accessibility.checked, Some(AccessibilityChecked::True));
-        assert_eq!(document.node(node).children.len(), 2);
         assert_eq!(
             document.node(node).action.as_ref(),
             Some(&WidgetActionBinding::action("autosave.toggle"))

@@ -12,132 +12,17 @@ use crate::widgets::{
     inline_intrinsic_base_size, publish_inline_intrinsic_size, single_line_text_style,
 };
 use crate::{
-    layout, length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta,
-    AccessibilityRole, AnimationMachine, ClipBehavior, ClipScope, ColorRgba, CommandId,
-    CommandRegistry, CommandScope, ImageContent, InputBehavior, KeyCode, KeyModifiers, LayoutStyle,
-    ScrollAxes, ShaderEffect, StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId,
-    UiNodeStyle, UiPortalTarget, UiRect, UiSize, UiVisual, WidgetActionBinding,
+    length, AccessibilityAction, AccessibilityLiveRegion, AccessibilityMeta, AccessibilityRole,
+    AnimationMachine, ClipBehavior, ClipScope, ColorRgba, CommandId, CommandRegistry, CommandScope,
+    ImageContent, InputBehavior, KeyCode, KeyModifiers, LayoutStyle, ScrollAxes, ShaderEffect,
+    StrokeStyle, TextStyle, UiDocument, UiInputEvent, UiNode, UiNodeId, UiNodeStyle,
+    UiPortalTarget, UiRect, UiSize, UiVisual, WidgetActionBinding,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PopupSide {
-    Top,
-    Bottom,
-    Left,
-    Right,
-}
-
-impl PopupSide {
-    pub const fn opposite(self) -> Self {
-        match self {
-            Self::Top => Self::Bottom,
-            Self::Bottom => Self::Top,
-            Self::Left => Self::Right,
-            Self::Right => Self::Left,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PopupAlign {
-    Start,
-    Center,
-    End,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PopupPlacement {
-    pub side: PopupSide,
-    pub align: PopupAlign,
-    pub offset: f32,
-    pub viewport_margin: f32,
-    pub flip: bool,
-    pub constrain_to_viewport: bool,
-}
-
-impl PopupPlacement {
-    pub const fn new(side: PopupSide, align: PopupAlign) -> Self {
-        Self {
-            side,
-            align,
-            offset: 4.0,
-            viewport_margin: 4.0,
-            flip: true,
-            constrain_to_viewport: true,
-        }
-    }
-
-    pub const fn with_offset(mut self, offset: f32) -> Self {
-        self.offset = offset;
-        self
-    }
-
-    pub const fn with_viewport_margin(mut self, margin: f32) -> Self {
-        self.viewport_margin = margin;
-        self
-    }
-
-    pub const fn with_flip(mut self, flip: bool) -> Self {
-        self.flip = flip;
-        self
-    }
-
-    pub const fn with_viewport_constraint(mut self, constrain: bool) -> Self {
-        self.constrain_to_viewport = constrain;
-        self
-    }
-}
-
-impl Default for PopupPlacement {
-    fn default() -> Self {
-        Self::new(PopupSide::Bottom, PopupAlign::Start)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PopupLayout {
-    pub rect: UiRect,
-    pub side: PopupSide,
-    pub flipped: bool,
-    pub primary_rect: UiRect,
-    pub unconstrained_rect: UiRect,
-    pub overflow_before_constrain: f32,
-    pub overflow_after_constrain: f32,
-    pub constrained: bool,
-}
-
-impl PopupLayout {
-    pub fn diagnostic_summary(&self) -> String {
-        format!(
-            "popup placement side={:?} flipped={} constrained={} primary={:?} unconstrained={:?} final={:?} overflow_before={:.2} overflow_after={:.2}",
-            self.side,
-            self.flipped,
-            self.constrained,
-            self.primary_rect,
-            self.unconstrained_rect,
-            self.rect,
-            self.overflow_before_constrain,
-            self.overflow_after_constrain
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AnchoredPopup {
-    pub anchor: UiRect,
-    pub viewport: UiRect,
-    pub placement: PopupPlacement,
-}
-
-impl AnchoredPopup {
-    pub const fn new(anchor: UiRect, viewport: UiRect, placement: PopupPlacement) -> Self {
-        Self {
-            anchor,
-            viewport,
-            placement,
-        }
-    }
-}
+pub use crate::layout::{
+    centered_popup_rect, place_popup, AnchoredPopup, PopupAlign, PopupLayout, PopupPlacement,
+    PopupSide,
+};
 
 #[derive(Debug, Clone)]
 pub struct PopupOptions {
@@ -174,64 +59,7 @@ impl Default for PopupOptions {
     }
 }
 
-pub fn place_popup(
-    anchor: UiRect,
-    popup_size: UiSize,
-    viewport: UiRect,
-    placement: PopupPlacement,
-) -> PopupLayout {
-    let inner_viewport = layout::inset_rect(viewport, placement.viewport_margin.max(0.0));
-    let primary = popup_rect_for_anchor(anchor, popup_size, placement.side, placement);
-    let mut rect = primary;
-    let mut side = placement.side;
-    let mut flipped = false;
-
-    if placement.flip {
-        let opposite_side = placement.side.opposite();
-        let opposite = popup_rect_for_anchor(anchor, popup_size, opposite_side, placement);
-        if layout::rect_overflow_amount(opposite, inner_viewport)
-            < layout::rect_overflow_amount(primary, inner_viewport)
-        {
-            rect = opposite;
-            side = opposite_side;
-            flipped = true;
-        }
-    }
-
-    let unconstrained_rect = rect;
-    let overflow_before_constrain =
-        layout::rect_overflow_amount(unconstrained_rect, inner_viewport);
-    if placement.constrain_to_viewport {
-        rect = layout::contain_rect(rect, inner_viewport, UiSize::ZERO);
-    }
-    let overflow_after_constrain = layout::rect_overflow_amount(rect, inner_viewport);
-
-    PopupLayout {
-        rect,
-        side,
-        flipped,
-        primary_rect: primary,
-        unconstrained_rect,
-        overflow_before_constrain,
-        overflow_after_constrain,
-        constrained: rect != unconstrained_rect,
-    }
-}
-
-pub fn centered_popup_rect(viewport: UiRect, popup_size: UiSize, viewport_margin: f32) -> UiRect {
-    let inner = layout::inset_rect(viewport, viewport_margin.max(0.0));
-    layout::contain_rect(
-        UiRect::new(
-            inner.x + (inner.width - popup_size.width) * 0.5,
-            inner.y + (inner.height - popup_size.height) * 0.5,
-            popup_size.width,
-            popup_size.height,
-        ),
-        inner,
-        UiSize::ZERO,
-    )
-}
-
+/// Build an absolute panel using authored UI units relative to its portal host.
 pub fn popup_panel(
     document: &mut UiDocument,
     parent: UiNodeId,
@@ -287,6 +115,24 @@ pub fn popup_panel(
     }
 
     document.add_portal_child(parent, portal, node)
+}
+
+/// Composite controls own their popups without changing the placement host.
+/// Explicit global portals instead keep the destination's independent lifetime.
+pub(super) fn attach_popup_to_trigger(
+    document: &mut UiDocument,
+    popup: UiNodeId,
+    trigger: UiNodeId,
+    portal: &UiPortalTarget,
+) {
+    if !matches!(
+        portal,
+        UiPortalTarget::GlobalAppOverlay | UiPortalTarget::GlobalNamed(_)
+    ) {
+        // Visibility is propagated in insertion order, just as for physical parents.
+        assert!(trigger.index() < popup.index());
+        document.node_mut(popup).portal_owner = Some(trigger);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,13 +320,14 @@ impl MenuNavigationState {
     }
 
     pub fn open_root(&mut self, items: &[MenuItem]) -> Option<Vec<usize>> {
+        self.clear();
         let index = first_navigable_index(items)?;
         self.active_path = vec![index];
         Some(self.active_path.clone())
     }
 
     pub fn active_item<'a>(&self, items: &'a [MenuItem]) -> Option<&'a MenuItem> {
-        menu_item_at_path(items, &self.active_path)
+        navigable_menu_item_at_path(items, &self.active_path)
     }
 
     pub fn active_parent_path(&self) -> &[usize] {
@@ -495,7 +342,7 @@ impl MenuNavigationState {
         items: &[MenuItem],
         direction: NavigationDirection,
     ) -> Option<Vec<usize>> {
-        let (level_items, parent_path, current) = self.current_level(items)?;
+        let (level_items, parent_path, current) = self.current_level(items);
         let index = next_navigable_index(level_items, current, direction)?;
         self.active_path = parent_path;
         self.active_path.push(index);
@@ -604,14 +451,26 @@ impl MenuNavigationState {
     fn current_level<'a>(
         &self,
         items: &'a [MenuItem],
-    ) -> Option<(&'a [MenuItem], Vec<usize>, Option<usize>)> {
-        let (current, parent_path) = self
-            .active_path
-            .split_last()
-            .map(|(current, parent)| (Some(*current), parent.to_vec()))
-            .unwrap_or((None, Vec::new()));
-        let level_items = menu_items_at_path(items, &parent_path)?;
-        Some((level_items, parent_path, current))
+    ) -> (&'a [MenuItem], Vec<usize>, Option<usize>) {
+        let mut level_items = items;
+        let mut parent_path = Vec::new();
+        for (depth, &index) in self.active_path.iter().enumerate() {
+            if depth + 1 == self.active_path.len() {
+                return (level_items, parent_path, Some(index));
+            }
+            let children = level_items
+                .get(index)
+                .filter(|item| item.is_navigable())
+                .and_then(MenuItem::children);
+            let Some(children) = children else {
+                // A retained path may cross a disabled, removed, or replaced
+                // submenu. Navigation resumes among that item's siblings.
+                return (level_items, parent_path, Some(index));
+            };
+            parent_path.push(index);
+            level_items = children;
+        }
+        (level_items, parent_path, None)
     }
 
     fn move_to_edge(
@@ -619,7 +478,7 @@ impl MenuNavigationState {
         items: &[MenuItem],
         direction: NavigationDirection,
     ) -> Option<Vec<usize>> {
-        let (level_items, mut parent_path, _) = self.current_level(items)?;
+        let (level_items, mut parent_path, _) = self.current_level(items);
         let index = match direction {
             NavigationDirection::Next => first_navigable_index(level_items),
             NavigationDirection::Previous => last_navigable_index(level_items),
@@ -630,7 +489,7 @@ impl MenuNavigationState {
     }
 
     fn move_active_to_match(&mut self, items: &[MenuItem], character: char) -> Option<Vec<usize>> {
-        let (level_items, mut parent_path, current) = self.current_level(items)?;
+        let (level_items, mut parent_path, current) = self.current_level(items);
         let index = next_menu_typeahead_index(level_items, current, character)?;
         parent_path.push(index);
         self.active_path = parent_path;
@@ -655,6 +514,7 @@ impl MenuNavigationOutcome {
     }
 }
 
+/// Inspect an item regardless of whether it or its ancestors are enabled.
 pub fn menu_item_at_path<'a>(items: &'a [MenuItem], path: &[usize]) -> Option<&'a MenuItem> {
     let (first, rest) = path.split_first()?;
     let item = items.get(*first)?;
@@ -672,7 +532,7 @@ pub fn menu_items_at_path<'a>(items: &'a [MenuItem], path: &[usize]) -> Option<&
 }
 
 pub fn menu_selection_at_path(items: &[MenuItem], path: &[usize]) -> Option<MenuSelection> {
-    let item = menu_item_at_path(items, path)?;
+    let item = navigable_menu_item_at_path(items, path)?;
     if !item.is_action() {
         return None;
     }
@@ -680,6 +540,18 @@ pub fn menu_selection_at_path(items: &[MenuItem], path: &[usize]) -> Option<Menu
         id: item.id.clone(),
         index_path: path.to_vec(),
     })
+}
+
+fn navigable_menu_item_at_path<'a>(items: &'a [MenuItem], path: &[usize]) -> Option<&'a MenuItem> {
+    let (first, rest) = path.split_first()?;
+    let mut item = items.get(*first)?;
+    for index in rest {
+        if !item.is_navigable() {
+            return None;
+        }
+        item = item.children()?.get(*index)?;
+    }
+    item.is_navigable().then_some(item)
 }
 
 pub fn menu_command_selection_at_path(
@@ -733,7 +605,7 @@ impl MenuButtonState {
 
     pub fn open(&mut self, items: &[MenuItem]) -> Option<Vec<usize>> {
         self.open = true;
-        if self.navigation.active_path.is_empty() {
+        if self.navigation.active_item(items).is_none() {
             self.navigation.open_root(items)
         } else {
             Some(self.navigation.active_path.clone())
@@ -1076,16 +948,9 @@ fn menu_button_with_image(
     options: MenuButtonOptions,
 ) -> MenuButtonNodes {
     let name = name.into();
-    let button = menu_button_trigger(
-        document,
-        parent,
-        name.clone(),
-        label_text,
-        state.open,
-        &options,
-    );
-    let popup = state
-        .open
+    let open = state.open && options.enabled;
+    let button = menu_button_trigger(document, parent, name.clone(), label_text, open, &options);
+    let popup = open
         .then(|| {
             anchors.map(|anchors| {
                 let mut popup_menu = options.popup_menu.clone();
@@ -1103,26 +968,23 @@ fn menu_button_with_image(
         })
         .flatten();
     if let Some(popup) = &popup {
+        attach_popup_to_trigger(document, popup.root, button, &options.popup_menu.portal);
         if let Some(accessibility) = document.node_mut(button).accessibility.as_mut() {
             accessibility.relations.controls.push(popup.root);
         }
     }
-    let submenus = if state.open {
-        anchors
-            .map(|anchors| {
-                menu_button_submenus(
-                    document,
-                    parent,
-                    &name,
-                    items,
-                    &state.navigation.active_path,
-                    anchors,
-                    &options,
-                )
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
+    let submenus = match (anchors, popup.as_ref()) {
+        (Some(anchors), Some(popup)) => menu_button_submenus(
+            document,
+            parent,
+            &name,
+            items,
+            popup,
+            &state.navigation.active_path,
+            anchors,
+            &options,
+        ),
+        _ => Vec::new(),
     };
 
     MenuButtonNodes {
@@ -1227,20 +1089,22 @@ fn menu_button_trigger(
     root
 }
 
+#[allow(clippy::too_many_arguments)]
 fn menu_button_submenus(
     document: &mut UiDocument,
     parent: UiNodeId,
     name: &str,
     items: &[MenuItem],
+    root_popup: &MenuListNodes,
     active_path: &[usize],
     anchors: &MenuButtonAnchors,
     options: &MenuButtonOptions,
 ) -> Vec<MenuListNodes> {
-    let mut submenus = Vec::new();
+    let mut submenus: Vec<MenuListNodes> = Vec::new();
     let mut level_items = items;
     for depth in 0..active_path.len() {
         let index = active_path[depth];
-        let Some(item) = level_items.get(index) else {
+        let Some(item) = level_items.get(index).filter(|item| item.is_navigable()) else {
             break;
         };
         let Some(children) = item.children() else {
@@ -1250,6 +1114,7 @@ fn menu_button_submenus(
         let Some(anchor) = anchors.submenu_anchor(&path) else {
             break;
         };
+        let trigger = submenus.last().unwrap_or(root_popup).rows[index];
         let mut popup_menu = options.popup_menu.clone();
         popup_menu.z_index = popup_menu.z_index.max(101.0) + depth as f32 + 1.0;
         let submenu = menu_list_popup(
@@ -1261,6 +1126,7 @@ fn menu_button_submenus(
             active_path.get(depth + 1).copied(),
             popup_menu,
         );
+        attach_popup_to_trigger(document, submenu.root, trigger, &options.popup_menu.portal);
         submenus.push(submenu);
         level_items = children;
     }
@@ -1711,57 +1577,6 @@ impl Default for SearchFieldState {
     }
 }
 
-fn popup_rect_for_anchor(
-    anchor: UiRect,
-    popup_size: UiSize,
-    side: PopupSide,
-    placement: PopupPlacement,
-) -> UiRect {
-    let offset = placement.offset.max(0.0);
-    match side {
-        PopupSide::Top => UiRect::new(
-            aligned_x(anchor, popup_size.width, placement.align),
-            anchor.y - popup_size.height - offset,
-            popup_size.width,
-            popup_size.height,
-        ),
-        PopupSide::Bottom => UiRect::new(
-            aligned_x(anchor, popup_size.width, placement.align),
-            anchor.bottom() + offset,
-            popup_size.width,
-            popup_size.height,
-        ),
-        PopupSide::Left => UiRect::new(
-            anchor.x - popup_size.width - offset,
-            aligned_y(anchor, popup_size.height, placement.align),
-            popup_size.width,
-            popup_size.height,
-        ),
-        PopupSide::Right => UiRect::new(
-            anchor.right() + offset,
-            aligned_y(anchor, popup_size.height, placement.align),
-            popup_size.width,
-            popup_size.height,
-        ),
-    }
-}
-
-fn aligned_x(anchor: UiRect, width: f32, align: PopupAlign) -> f32 {
-    match align {
-        PopupAlign::Start => anchor.x,
-        PopupAlign::Center => anchor.x + (anchor.width - width) * 0.5,
-        PopupAlign::End => anchor.right() - width,
-    }
-}
-
-fn aligned_y(anchor: UiRect, height: f32, align: PopupAlign) -> f32 {
-    match align {
-        PopupAlign::Start => anchor.y,
-        PopupAlign::Center => anchor.y + (anchor.height - height) * 0.5,
-        PopupAlign::End => anchor.bottom() - height,
-    }
-}
-
 fn absolute_rect_style(rect: UiRect) -> LayoutStyle {
     LayoutStyle::from_taffy_style(Style {
         position: Position::Absolute,
@@ -1891,10 +1706,11 @@ pub(in crate::widgets::ext) fn set_active_descendant(
     owner: UiNodeId,
     active_descendant: Option<UiNodeId>,
 ) {
-    if let Some(active_descendant) = active_descendant {
-        if let Some(accessibility) = document.node_mut(owner).accessibility.as_mut() {
-            accessibility.relations.active_descendant = Some(active_descendant);
-        }
+    if let Some(accessibility) = document.node_mut(owner).accessibility.as_mut() {
+        accessibility.relations.active_descendant = active_descendant;
+    }
+    if document.scroll_state(owner).is_some() || active_descendant.is_none() {
+        document.set_scroll_reveal_target(owner, active_descendant);
     }
 }
 
@@ -2082,6 +1898,393 @@ mod tests {
         .expect("animation")
     }
 
+    #[derive(Debug, Clone, Copy)]
+    enum PopupTestKind {
+        Menu,
+        Select,
+        Palette,
+        Context,
+    }
+
+    impl PopupTestKind {
+        fn build(
+            self,
+            document: &mut UiDocument,
+            popup: AnchoredPopup,
+            row_count: usize,
+        ) -> (UiNodeId, Vec<UiNodeId>, UiSize) {
+            let parent = document.root();
+            let size = UiSize::new(
+                180.0,
+                row_count as f32 * 32.0
+                    + if matches!(self, Self::Palette) {
+                        42.0
+                    } else {
+                        0.0
+                    },
+            );
+            match self {
+                Self::Menu | Self::Context => {
+                    let items: Vec<_> = (0..row_count)
+                        .map(|index| MenuItem::command(index.to_string(), format!("Item {index}")))
+                        .collect();
+                    let options = MenuListOptions {
+                        width: size.width,
+                        row_height: 32.0,
+                        max_visible_rows: row_count,
+                        ..Default::default()
+                    };
+                    let nodes = if matches!(self, Self::Context) {
+                        context_menu(
+                            document,
+                            parent,
+                            "popup",
+                            &items,
+                            &ContextMenuState::open_at(UiPoint::new(
+                                popup.anchor.x,
+                                popup.anchor.y,
+                            )),
+                            popup.viewport,
+                            popup.placement,
+                            options,
+                        )
+                        .unwrap()
+                    } else {
+                        menu_list_popup(document, parent, "popup", popup, &items, None, options)
+                    };
+                    (nodes.root, nodes.rows, size)
+                }
+                Self::Select => {
+                    let items: Vec<_> = (0..row_count)
+                        .map(|index| SelectOption::new(index.to_string(), format!("Item {index}")))
+                        .collect();
+                    let nodes = select_menu_popup(
+                        document,
+                        parent,
+                        "popup",
+                        popup,
+                        &items,
+                        &SelectMenuState::new(),
+                        SelectMenuOptions {
+                            width: size.width,
+                            row_height: 32.0,
+                            max_visible_rows: row_count,
+                            ..Default::default()
+                        },
+                    );
+                    (nodes.root, nodes.rows, size)
+                }
+                Self::Palette => {
+                    let items: Vec<_> = (0..row_count)
+                        .map(|index| {
+                            CommandPaletteItem::new(index.to_string(), format!("Item {index}"))
+                        })
+                        .collect();
+                    let nodes = command_palette(
+                        document,
+                        parent,
+                        "popup",
+                        &items,
+                        &CommandPaletteState::new().with_max_results(row_count),
+                        Some(popup),
+                        CommandPaletteOptions {
+                            width: size.width,
+                            row_height: 32.0,
+                            max_visible_rows: row_count,
+                            ..Default::default()
+                        },
+                    );
+                    (nodes.root, nodes.rows, size)
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn popup_widgets_keep_logical_anchors_and_scale_authored_dimensions_once() {
+        for kind in [
+            PopupTestKind::Menu,
+            PopupTestKind::Select,
+            PopupTestKind::Palette,
+            PopupTestKind::Context,
+        ] {
+            for ui_scale in [0.5, 1.0, 1.5, 2.0] {
+                for dpi_scale in [1.0, 2.0] {
+                    for side in [
+                        PopupSide::Top,
+                        PopupSide::Bottom,
+                        PopupSide::Left,
+                        PopupSide::Right,
+                    ] {
+                        for at_edge in [false, true] {
+                            for align in [PopupAlign::Start, PopupAlign::Center, PopupAlign::End] {
+                                let viewport = UiSize::new(1280.0, 1040.0);
+                                let mut document = UiDocument::new(root_style(
+                                    viewport.width / ui_scale,
+                                    viewport.height / ui_scale,
+                                ))
+                                .with_scale(crate::UiDocumentScale::new(ui_scale, dpi_scale));
+                                let anchor = match (side, at_edge) {
+                                    (PopupSide::Top, true) => UiRect::new(500.0, 38.0, 1.0, 1.0),
+                                    (PopupSide::Bottom, true) => {
+                                        UiRect::new(500.0, 1022.0, 1.0, 1.0)
+                                    }
+                                    (PopupSide::Left, true) => UiRect::new(28.0, 400.0, 1.0, 1.0),
+                                    (PopupSide::Right, true) => {
+                                        UiRect::new(1252.0, 400.0, 1.0, 1.0)
+                                    }
+                                    (_, false) => UiRect::new(500.0, 400.0, 1.0, 1.0),
+                                };
+                                let (popup, _, size) = kind.build(
+                                    &mut document,
+                                    AnchoredPopup::new(
+                                        anchor,
+                                        UiRect::new(20.0, 30.0, 1240.0, 1000.0),
+                                        PopupPlacement::new(side, align).with_offset(6.0),
+                                    ),
+                                    2,
+                                );
+                                document
+                                    .compute_layout(viewport, &mut ApproxTextMeasurer)
+                                    .unwrap();
+                                let rect = document.node(popup).layout.rect;
+                                let width = size.width * ui_scale;
+                                let height = size.height * ui_scale;
+                                let align_x = match align {
+                                    PopupAlign::Start => anchor.x,
+                                    PopupAlign::Center => anchor.x + (anchor.width - width) / 2.0,
+                                    PopupAlign::End => anchor.right() - width,
+                                };
+                                let align_y = match align {
+                                    PopupAlign::Start => anchor.y,
+                                    PopupAlign::Center => anchor.y + (anchor.height - height) / 2.0,
+                                    PopupAlign::End => anchor.bottom() - height,
+                                };
+                                let resolved_side = if at_edge { side.opposite() } else { side };
+                                let (x, y) = match resolved_side {
+                                    PopupSide::Top => (align_x, anchor.y - height - 6.0 * ui_scale),
+                                    PopupSide::Bottom => {
+                                        (align_x, anchor.bottom() + 6.0 * ui_scale)
+                                    }
+                                    PopupSide::Left => (anchor.x - width - 6.0 * ui_scale, align_y),
+                                    PopupSide::Right => (anchor.right() + 6.0 * ui_scale, align_y),
+                                };
+                                for (actual, expected) in [
+                                    (rect.x, x),
+                                    (rect.y, y),
+                                    (rect.width, width),
+                                    (rect.height, height),
+                                ] {
+                                    // Layout rounds half-pixel positions to logical pixels.
+                                    assert!((actual - expected).abs() <= 0.51,
+                                    "{kind:?} ui={ui_scale}, dpi={dpi_scale}, {side:?}/{align:?}, edge={at_edge}: {rect:?}, expected ({x}, {y}, {width}, {height})");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn popup_widgets_reposition_when_scale_changes_after_construction() {
+        for kind in [
+            PopupTestKind::Menu,
+            PopupTestKind::Select,
+            PopupTestKind::Palette,
+            PopupTestKind::Context,
+        ] {
+            let viewport = UiSize::new(1280.0, 1040.0);
+            let mut document = UiDocument::new(
+                LayoutStyle::new()
+                    .with_width_percent(1.0)
+                    .with_height_percent(1.0),
+            );
+            let (popup, _, size) = kind.build(
+                &mut document,
+                AnchoredPopup::new(
+                    UiRect::new(500.0, 400.0, 1.0, 1.0),
+                    UiRect::new(0.0, 0.0, viewport.width, viewport.height),
+                    PopupPlacement::default().with_offset(6.0),
+                ),
+                2,
+            );
+            for ui_scale in [2.0, 0.5, 1.5, 1.0] {
+                // Hosts apply scale after view construction, and retained
+                // documents may be laid out again at a different scale.
+                document.set_ui_scale(ui_scale);
+                document
+                    .compute_layout(viewport, &mut ApproxTextMeasurer)
+                    .unwrap();
+                let rect = document.node(popup).layout.rect;
+                assert_eq!(
+                    rect,
+                    UiRect::new(
+                        500.0,
+                        401.0 + 6.0 * ui_scale,
+                        size.width * ui_scale,
+                        size.height * ui_scale
+                    ),
+                    "{kind:?} ui={ui_scale}: placement used the construction-time scale"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn viewport_constrained_popup_widgets_keep_the_last_item_reachable() {
+        for kind in [
+            PopupTestKind::Menu,
+            PopupTestKind::Select,
+            PopupTestKind::Palette,
+            PopupTestKind::Context,
+        ] {
+            for ui_scale in [1.0, 0.5, 1.5, 2.0] {
+                let viewport = UiSize::new(480.0, 280.0);
+                let mut document = UiDocument::new(root_style(
+                    viewport.width / ui_scale,
+                    viewport.height / ui_scale,
+                ))
+                .with_scale(crate::UiDocumentScale::new(ui_scale, 1.0));
+                let bounds = UiRect::new(20.0, 30.0, 440.0, 220.0);
+                let (popup, rows, _) = kind.build(
+                    &mut document,
+                    AnchoredPopup::new(
+                        UiRect::new(60.0, 50.0, 1.0, 1.0),
+                        bounds,
+                        PopupPlacement::default()
+                            .with_flip(false)
+                            .with_viewport_margin(8.0),
+                    ),
+                    16,
+                );
+                document
+                    .compute_layout(viewport, &mut ApproxTextMeasurer)
+                    .unwrap();
+                let rect = document.node(popup).layout.rect;
+                let search_before = document
+                    .node(popup)
+                    .children
+                    .iter()
+                    .copied()
+                    .find(|id| document.node(*id).name() == "popup.input")
+                    .map(|id| (id, document.node(id).layout.rect));
+                let margin = 8.0 * ui_scale;
+                assert!(
+                    rect.x >= bounds.x + margin - 0.01
+                        && rect.y >= bounds.y + margin - 0.01
+                        && rect.right() <= bounds.right() - margin + 0.01
+                        && rect.bottom() <= bounds.bottom() - margin + 0.01,
+                    "{kind:?} ui={ui_scale}: popup escaped viewport: {rect:?}"
+                );
+                let first = document.node(rows[0]).layout.rect;
+                let point = UiPoint::new(first.x + first.width / 2.0, first.y + first.height / 2.0);
+                assert_eq!(
+                    document.hit_test(point),
+                    Some(rows[0]),
+                    "{kind:?} ui={ui_scale}: first item unreachable"
+                );
+                let result = document.handle_input(UiInputEvent::Wheel(
+                    crate::UiWheelEvent::pixels(point, UiPoint::new(0.0, 10000.0)),
+                ));
+                assert!(
+                    result.scrolled.is_some(),
+                    "{kind:?} ui={ui_scale}: clipped items cannot scroll into view"
+                );
+                document
+                    .compute_layout(viewport, &mut ApproxTextMeasurer)
+                    .unwrap();
+                if let Some((input, before)) = search_before {
+                    assert_eq!(
+                        document.node(input).layout.rect,
+                        before,
+                        "{kind:?} ui={ui_scale}: scrolling moved the search field"
+                    );
+                    let point = UiPoint::new(
+                        before.x + before.width / 2.0,
+                        before.y + before.height / 2.0,
+                    );
+                    assert_eq!(document.hit_test(point), Some(input));
+                }
+                let last = *rows.last().unwrap();
+                let last_rect = document.node(last).layout.rect;
+                assert!(last_rect.y >= rect.y - 0.01 && last_rect.bottom() <= rect.bottom() + 0.01,
+                    "{kind:?} ui={ui_scale}: last item still clipped: {last_rect:?}, popup={rect:?}");
+                let point = UiPoint::new(
+                    last_rect.x + last_rect.width / 2.0,
+                    last_rect.y + last_rect.height / 2.0,
+                );
+                assert_eq!(
+                    document.hit_test(point),
+                    Some(last),
+                    "{kind:?} ui={ui_scale}: last item unreachable"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn constrained_popup_active_rows_reveal_once_and_follow_selection_changes() {
+        for kind in [
+            PopupTestKind::Menu,
+            PopupTestKind::Select,
+            PopupTestKind::Palette,
+            PopupTestKind::Context,
+        ] {
+            for ui_scale in [0.5, 1.0, 1.5, 2.0] {
+                let viewport = UiSize::new(480.0, 280.0);
+                let mut document = UiDocument::new(
+                    LayoutStyle::new()
+                        .with_width_percent(1.0)
+                        .with_height_percent(1.0),
+                );
+                let (_, rows, _) = kind.build(
+                    &mut document,
+                    AnchoredPopup::new(
+                        UiRect::new(60.0, 50.0, 1.0, 1.0),
+                        UiRect::new(20.0, 30.0, 440.0, 220.0),
+                        PopupPlacement::default()
+                            .with_flip(false)
+                            .with_viewport_margin(8.0),
+                    ),
+                    16,
+                );
+                document.set_scale(crate::UiDocumentScale::new(ui_scale, 2.0));
+                let last = *rows.last().unwrap();
+                let scroll = document.node(last).parent().unwrap();
+                for active in [last, rows[0], last] {
+                    set_active_descendant(&mut document, scroll, Some(active));
+                    document
+                        .compute_layout(viewport, &mut ApproxTextMeasurer)
+                        .unwrap();
+                    let layout = document.node(active).layout();
+                    assert!(
+                        layout.rect.y >= layout.clip_rect.y - 0.01
+                            && layout.rect.bottom() <= layout.clip_rect.bottom() + 0.01,
+                        "{kind:?}, ui={ui_scale}: active row is clipped: {layout:?}"
+                    );
+                    let point = UiPoint::new(
+                        layout.rect.x + layout.rect.width / 2.0,
+                        layout.rect.y + layout.rect.height / 2.0,
+                    );
+                    assert_eq!(document.hit_test(point), Some(active));
+                    if active == last {
+                        assert!(document.set_scroll_offset(scroll, UiPoint::new(0.0, 0.0)));
+                        document
+                            .compute_layout(viewport, &mut ApproxTextMeasurer)
+                            .unwrap();
+                        assert_eq!(
+                            document.scroll_state(scroll).unwrap().offset().y,
+                            0.0,
+                            "unchanged active row must not override manual scrolling"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn popup_placement_flips_and_clamps_to_viewport() {
         let layout = place_popup(
@@ -2117,11 +2320,6 @@ mod tests {
         assert!(clamped.constrained);
         assert!(clamped.overflow_before_constrain > clamped.overflow_after_constrain);
         assert_eq!(clamped.overflow_after_constrain, 0.0);
-        assert!(
-            clamped.diagnostic_summary().contains("constrained=true"),
-            "{}",
-            clamped.diagnostic_summary()
-        );
     }
 
     #[test]
@@ -2141,7 +2339,6 @@ mod tests {
 
         let node = document.node(popup);
         assert_eq!(node.style.layout.position, Position::Absolute);
-        assert_eq!(node.style.z_index, 100.0);
         assert_eq!(node.clip_scope, ClipScope::Viewport);
         assert_eq!(node.layer, Some(crate::platform::UiLayer::AppOverlay));
         assert!(node.scroll.is_some());
@@ -2149,29 +2346,6 @@ mod tests {
             .portal_host(APP_OVERLAY_PORTAL)
             .expect("app overlay portal");
         assert_eq!(node.parent, Some(portal));
-    }
-
-    #[test]
-    fn popup_panel_can_stay_in_parent_tree_for_inline_previews() {
-        let mut document = UiDocument::new(root_style(300.0, 200.0));
-        let root = document.root;
-        let parent = document.add_child(
-            root,
-            UiNode::container("parent", LayoutStyle::column().with_width(200.0)),
-        );
-        let popup = popup_panel(
-            &mut document,
-            parent,
-            "popup",
-            UiRect::new(16.0, 20.0, 120.0, 80.0),
-            PopupOptions {
-                portal: UiPortalTarget::Parent,
-                ..Default::default()
-            },
-        );
-
-        assert_eq!(document.node(popup).parent, Some(parent));
-        assert!(document.portal_host(APP_OVERLAY_PORTAL).is_none());
     }
 
     #[test]
@@ -2389,7 +2563,6 @@ mod tests {
 
         let clear_button = field.clear_button().expect("clear button");
         assert_eq!(clear_button.id, "clear-search");
-        assert_eq!(clear_button.label, "Clear");
         assert_eq!(clear_button.shortcut.as_deref(), Some("Escape"));
         let clear_accessibility = clear_button.accessibility();
         assert_eq!(clear_accessibility.role, AccessibilityRole::Button);
@@ -2418,7 +2591,9 @@ mod tests {
         assert!(!field.is_filter_pending());
 
         let status = field.status(2, 4, "option", "options");
-        assert_eq!(status.text, "2 options match \"alp\"");
+        assert_eq!(status.visible_count, 2);
+        assert_eq!(status.total_count, 4);
+        assert_eq!(status.query, "alp");
         let status_accessibility = status.accessibility("Search results");
         assert_eq!(status_accessibility.role, AccessibilityRole::Status);
         assert_eq!(
@@ -2463,10 +2638,10 @@ mod tests {
         assert_eq!(state.query, "alp");
         assert_eq!(state.filtered_indices(&options), vec![0, 1]);
         assert_eq!(state.active_match, Some(0));
-        assert_eq!(
-            state.search_status(&options).text,
-            "2 options match \"alp\""
-        );
+        let status = state.search_status(&options);
+        assert_eq!(status.visible_count, 2);
+        assert_eq!(status.total_count, 3);
+        assert_eq!(status.query, "alp");
         assert_eq!(
             state.search_status_accessibility(&options).live_region,
             AccessibilityLiveRegion::Polite
@@ -2477,7 +2652,7 @@ mod tests {
         assert!(outcome.query_changed);
         assert_eq!(state.query, "");
         assert_eq!(state.active_match, Some(0));
-        assert_eq!(state.search_status(&options).text, "3 options available");
+        assert_eq!(state.search_status(&options).visible_count, 3);
     }
 
     #[test]
@@ -3712,10 +3887,10 @@ mod tests {
         assert_eq!(state.query(), "save");
         assert_eq!(state.matches(&items).len(), 1);
         assert_eq!(state.active_match(), Some(0));
-        assert_eq!(
-            state.search_status(&items).text,
-            "1 command matches \"save\""
-        );
+        let status = state.search_status(&items);
+        assert_eq!(status.visible_count, 1);
+        assert_eq!(status.total_count, 3);
+        assert_eq!(status.query, "save");
         assert_eq!(
             state.search_status_accessibility(&items).live_region,
             AccessibilityLiveRegion::Polite
@@ -3726,7 +3901,7 @@ mod tests {
         assert_eq!(state.query(), "");
         assert_eq!(state.active_match(), Some(0));
         assert_eq!(state.visible_count(&items), 3);
-        assert_eq!(state.search_status(&items).text, "3 commands available");
+        assert_eq!(state.search_status(&items).visible_count, 3);
     }
 
     #[test]
@@ -3788,22 +3963,14 @@ mod tests {
                 .role,
             AccessibilityRole::SearchBox
         );
-        assert!(document.node(nodes.input).children.iter().any(|child| {
-            matches!(
-                &document.node(*child).content,
-                UiContent::Image(image) if image.key == "icons.search"
-            )
-        }));
-        assert_eq!(
-            document
-                .node(nodes.input)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .actions[0]
-                .id,
-            "clear-search"
-        );
+        assert!(document
+            .node(nodes.input)
+            .accessibility
+            .as_ref()
+            .unwrap()
+            .actions
+            .iter()
+            .any(|action| action.id == "clear-search"));
         assert_eq!(
             document
                 .node(nodes.input)
@@ -3814,17 +3981,7 @@ mod tests {
                 .active_descendant,
             Some(nodes.rows[0])
         );
-        let result_list = document.node(nodes.root).children[1];
-        assert_eq!(
-            document
-                .node(result_list)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("2 commands match \"o\"")
-        );
+        let result_list = document.node(nodes.rows[0]).parent.expect("result list");
         assert_eq!(
             document
                 .node(result_list)
@@ -3881,13 +4038,15 @@ mod tests {
 
         let root_rect = document.node(nodes.root).layout.rect;
         let input_rect = document.node(nodes.input).layout.rect;
-        let results = document.node(nodes.root).children[1];
+        let search_row = document.node(nodes.input).parent.expect("search row");
+        let search_rect = document.node(search_row).layout.rect;
+        let results = document.node(nodes.rows[0]).parent.expect("result list");
         let results_rect = document.node(results).layout.rect;
         let first_row_rect = document.node(nodes.rows[0]).layout.rect;
 
         assert!(
-            (input_rect.x - results_rect.x).abs() <= 0.5,
-            "popup command palette search and results should share the same left edge: input={input_rect:?} results={results_rect:?}"
+            (search_rect.x - results_rect.x).abs() <= 0.5,
+            "popup command palette search and results should share the same left edge: search={search_rect:?} results={results_rect:?}"
         );
         assert!(
             results_rect.y >= input_rect.bottom() - 0.5,

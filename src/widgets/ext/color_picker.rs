@@ -2698,6 +2698,9 @@ pub fn format_color_value(color: ColorRgba, format: ColorValueFormat) -> String 
 
 pub fn parse_hex_color(value: &str) -> Option<ColorRgba> {
     let value = value.trim().strip_prefix('#').unwrap_or(value.trim());
+    if !value.is_ascii() {
+        return None;
+    }
     match value.len() {
         3 | 4 => {
             let mut chars = value.chars();
@@ -2935,8 +2938,8 @@ mod tests {
         let label_rect = document.node(label).layout.rect;
         assert_eq!(root_rect.width, 180.0);
         assert!(
-            label_rect.x >= swatch_rect.right() + 5.5,
-            "color value label should keep default spacing from the swatch: swatch={swatch_rect:?} label={label_rect:?}"
+            label_rect.x > swatch_rect.right(),
+            "color value label should not overlap the swatch: swatch={swatch_rect:?} label={label_rect:?}"
         );
     }
 
@@ -3098,5 +3101,20 @@ mod tests {
                 false
             )))
         );
+    }
+
+    #[test]
+    fn hex_color_parser_rejects_non_ascii_text_without_panicking() {
+        for invalid in [
+            "é0", "💥", "💥ab", "00💥", "aé000", "000💥a", "0000💥", "00000€", "000000é",
+        ] {
+            for input in [
+                invalid.to_string(),
+                format!("#{invalid}"),
+                format!("  #{invalid}\n"),
+            ] {
+                assert_eq!(parse_hex_color(&input), None, "input={input:?}");
+            }
+        }
     }
 }

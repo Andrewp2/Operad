@@ -1,7 +1,7 @@
 use std::borrow::Cow;
-use std::cell::RefCell;
-use std::cmp::max;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::mem;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -17,6 +17,7 @@ use glyphon::{
 };
 use pollster::block_on;
 use web_time::Instant;
+use wgpu::util::DeviceExt;
 use wgpu::{
     BufferUsages, Extent3d, Origin3d, TexelCopyBufferInfo, TexelCopyBufferLayout,
     TexelCopyTextureInfo, TextureFormat, COPY_BYTES_PER_ROW_ALIGNMENT,
@@ -36,20 +37,27 @@ use crate::renderer::{
 };
 use crate::{
     BuiltInIcon, ColorRgba, CornerRadii, FontFamily, FontStretch, FontStyle, FrameTiming,
-    ImageAlignment, ImageFit, LinearGradient, PaintBrush, PaintCompositorLayer, PaintEffectKind,
-    PaintKind, PaintTransform, ShaderEffect, StrokeStyle, TextHorizontalAlign, TextStyle,
+    ImageAlignment, ImageFit, PaintBrush, PaintCompositorLayer, PaintEffectKind, PaintKind,
+    PaintTransform, ShaderEffect, StrokeStyle, TextHorizontalAlign, TextOverflow, TextStyle,
     TextVerticalAlign, TextWrap, UiPoint, UiRect, UiSize,
 };
 
+mod sdf;
+#[cfg(test)]
+mod sdf_tests;
+use sdf::{SdfGradientStop, SdfInstance, SdfPipelineKind};
+
 const OFFSCREEN_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
-const DEFAULT_WGPU_CLEAR_COLOR: ColorRgba = ColorRgba::new(18, 18, 18, 255);
 const GLYPH_TEXT_CHUNK_SIZE: usize = 8;
+const MAX_CACHED_CANVAS_PIPELINES: usize = 128;
 const GPU_TIMESTAMP_QUERY_BYTES: u64 = 16;
 const MISSING_IMAGE_CHECKER_SIZE: f32 = 8.0;
 const MISSING_IMAGE_DARK: ColorRgba = ColorRgba::new(16, 0, 28, 255);
 const MISSING_IMAGE_PURPLE: ColorRgba = ColorRgba::new(210, 0, 255, 255);
 
-const WGPU_UI_SHADER: &str = r#"
+const WGPU_UI_SHADER: &str = concat!(
+    include_str!("wgpu_renderer/shape.wgsl"),
+    r#"
 struct Scene {
     viewport: vec2<f32>,
     _pad: vec2<f32>,
@@ -57,11 +65,6 @@ struct Scene {
 
 struct TriangleInput {
     @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
-};
-
-struct RectInput {
-    @location(0) rect: vec4<f32>,
     @location(1) color: vec4<f32>,
 };
 
@@ -82,20 +85,7 @@ struct CompositedRectInput {
     @location(7) texel_size: vec2<f32>,
     @location(8) shader_params: vec4<f32>,
     @location(9) shader_color: vec4<f32>,
-};
-
-struct SdfRectInput {
-    @location(0) rect: vec4<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) radii: vec4<f32>,
-};
-
-struct ShadowRectInput {
-    @location(0) draw_rect: vec4<f32>,
-    @location(1) shape_rect: vec4<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) params: vec4<f32>,
-    @location(4) radii: vec4<f32>,
+    @location(10) clip_radii: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -121,23 +111,7 @@ struct CompositedRectOutput {
     @location(7) texel_size: vec2<f32>,
     @location(8) shader_params: vec4<f32>,
     @location(9) shader_color: vec4<f32>,
-};
-
-struct SdfRectOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) local_position: vec2<f32>,
-    @location(2) size: vec2<f32>,
-    @location(3) radii: vec4<f32>,
-};
-
-struct ShadowRectOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) world_position: vec2<f32>,
-    @location(1) shape_rect: vec4<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) params: vec4<f32>,
-    @location(4) radii: vec4<f32>,
+    @location(10) clip_radii: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -154,26 +128,6 @@ fn vs_triangle(input: TriangleInput) -> VertexOutput {
     var output: VertexOutput;
     let x = input.position.x / scene.viewport.x * 2.0 - 1.0;
     let y = 1.0 - input.position.y / scene.viewport.y * 2.0;
-    output.clip_position = vec4<f32>(x, y, 0.0, 1.0);
-    output.color = input.color;
-    return output;
-}
-
-@vertex
-fn vs_rect(@builtin(vertex_index) vertex_index: u32, input: RectInput) -> VertexOutput {
-    let unit_positions = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 1.0)
-    );
-    let unit = unit_positions[vertex_index];
-    let position = input.rect.xy + unit * input.rect.zw;
-    var output: VertexOutput;
-    let x = position.x / scene.viewport.x * 2.0 - 1.0;
-    let y = 1.0 - position.y / scene.viewport.y * 2.0;
     output.clip_position = vec4<f32>(x, y, 0.0, 1.0);
     output.color = input.color;
     return output;
@@ -226,53 +180,7 @@ fn vs_composited_rect(@builtin(vertex_index) vertex_index: u32, input: Composite
     output.texel_size = input.texel_size;
     output.shader_params = input.shader_params;
     output.shader_color = input.shader_color;
-    return output;
-}
-
-@vertex
-fn vs_sdf_rect(@builtin(vertex_index) vertex_index: u32, input: SdfRectInput) -> SdfRectOutput {
-    let unit_positions = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 1.0)
-    );
-    let unit = unit_positions[vertex_index];
-    let position = input.rect.xy + unit * input.rect.zw;
-    var output: SdfRectOutput;
-    let x = position.x / scene.viewport.x * 2.0 - 1.0;
-    let y = 1.0 - position.y / scene.viewport.y * 2.0;
-    output.clip_position = vec4<f32>(x, y, 0.0, 1.0);
-    output.color = input.color;
-    output.local_position = unit * input.rect.zw;
-    output.size = input.rect.zw;
-    output.radii = input.radii;
-    return output;
-}
-
-@vertex
-fn vs_shadow_rect(@builtin(vertex_index) vertex_index: u32, input: ShadowRectInput) -> ShadowRectOutput {
-    let unit_positions = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 1.0)
-    );
-    let unit = unit_positions[vertex_index];
-    let position = input.draw_rect.xy + unit * input.draw_rect.zw;
-    var output: ShadowRectOutput;
-    let x = position.x / scene.viewport.x * 2.0 - 1.0;
-    let y = 1.0 - position.y / scene.viewport.y * 2.0;
-    output.clip_position = vec4<f32>(x, y, 0.0, 1.0);
-    output.world_position = position;
-    output.shape_rect = input.shape_rect;
-    output.color = input.color;
-    output.params = input.params;
-    output.radii = input.radii;
+    output.clip_radii = input.clip_radii;
     return output;
 }
 
@@ -315,47 +223,17 @@ fn fs_textured_srgb(input: TexturedVertexOutput) -> @location(0) vec4<f32> {
     return srgb_to_linear_rgba(textureSample(image_texture, image_sampler, input.uv) * input.tint);
 }
 
-fn rounded_rect_alpha(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
-    return rounded_rect_alpha_with_radii(point, rect, vec4<f32>(radius, radius, radius, radius));
-}
-
-fn rounded_rect_distance(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
-    return rounded_rect_distance_with_radii(point, rect, vec4<f32>(radius, radius, radius, radius));
-}
-
-fn corner_radius_for_point(centered: vec2<f32>, radii: vec4<f32>) -> f32 {
-    var radius = radii.x;
-    if centered.y < 0.0 {
-        if centered.x < 0.0 {
-            radius = radii.x;
-        } else {
-            radius = radii.y;
-        }
-    } else {
-        if centered.x < 0.0 {
-            radius = radii.w;
-        } else {
-            radius = radii.z;
-        }
-    }
-    return radius;
-}
 
 fn rounded_rect_alpha_with_radii(point: vec2<f32>, rect: vec4<f32>, radii: vec4<f32>) -> f32 {
     if point.x < rect.x || point.y < rect.y || point.x > rect.x + rect.z || point.y > rect.y + rect.w {
         return 0.0;
     }
-    let distance = rounded_rect_distance_with_radii(point, rect, radii);
+    let distance = rect_distance(point, rect, normalize_radii(radii, rect.zw));
     return 1.0 - smoothstep(-0.75, 0.75, distance);
 }
 
-fn rounded_rect_distance_with_radii(point: vec2<f32>, rect: vec4<f32>, radii: vec4<f32>) -> f32 {
-    let half_size = rect.zw * 0.5;
-    let centered = point - rect.xy - half_size;
-    let radius = max(corner_radius_for_point(centered, radii), 0.0);
-    let q = abs(centered) - half_size + vec2<f32>(radius, radius);
-    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
-}
+
+
 
 fn sample_composited_layer(uv: vec2<f32>, texel_size: vec2<f32>, blur_radius: f32) -> vec4<f32> {
     if blur_radius <= 0.5 {
@@ -456,7 +334,6 @@ fn composited_color(input: CompositedRectOutput) -> vec4<f32> {
     let brightness = input.filter_params.x;
     let contrast = input.filter_params.y;
     let saturate = input.filter_params.z;
-    let clip_radius = input.filter_params.w;
 
     let sampled = sample_composited_layer(input.uv, input.texel_size, blur_radius);
     var rgb = sampled.rgb;
@@ -465,7 +342,7 @@ fn composited_color(input: CompositedRectOutput) -> vec4<f32> {
         rgb = rgb / alpha;
     }
     if clip_enabled > 0.5 {
-        alpha = alpha * rounded_rect_alpha(input.world_position, input.clip_rect, clip_radius);
+        alpha = alpha * rounded_rect_alpha_with_radii(input.world_position, input.clip_rect, input.clip_radii);
     }
     if mask_enabled > 0.5 {
         let inside_mask =
@@ -494,49 +371,8 @@ fn fs_composited_srgb(input: CompositedRectOutput) -> @location(0) vec4<f32> {
     return srgb_to_linear_rgba(composited_color(input));
 }
 
-fn sdf_rect_color(input: SdfRectOutput) -> vec4<f32> {
-    let distance = rounded_rect_distance_with_radii(
-        input.local_position,
-        vec4<f32>(0.0, 0.0, input.size.x, input.size.y),
-        input.radii
-    );
-    let alpha = 1.0 - smoothstep(-0.75, 0.75, distance);
-    return vec4<f32>(input.color.rgb, input.color.a * alpha);
-}
-
-@fragment
-fn fs_sdf_rect(input: SdfRectOutput) -> @location(0) vec4<f32> {
-    return sdf_rect_color(input);
-}
-
-@fragment
-fn fs_sdf_rect_srgb(input: SdfRectOutput) -> @location(0) vec4<f32> {
-    return srgb_to_linear_rgba(sdf_rect_color(input));
-}
-
-fn shadow_rect_color(input: ShadowRectOutput) -> vec4<f32> {
-    let blur_radius = max(input.params.y, 0.0);
-    let distance = rounded_rect_distance_with_radii(input.world_position, input.shape_rect, input.radii);
-    let outside_distance = max(distance, 0.0);
-    var alpha = input.color.a;
-    if blur_radius > 0.5 {
-        alpha = alpha * (1.0 - smoothstep(0.0, blur_radius, outside_distance));
-    } else if outside_distance > 0.75 {
-        alpha = 0.0;
-    }
-    return vec4<f32>(input.color.rgb, alpha);
-}
-
-@fragment
-fn fs_shadow_rect(input: ShadowRectOutput) -> @location(0) vec4<f32> {
-    return shadow_rect_color(input);
-}
-
-@fragment
-fn fs_shadow_rect_srgb(input: ShadowRectOutput) -> @location(0) vec4<f32> {
-    return srgb_to_linear_rgba(shadow_rect_color(input));
-}
-"#;
+"#
+);
 
 #[derive(Debug)]
 pub struct WgpuRenderer {
@@ -556,7 +392,7 @@ pub struct WgpuCanvasContext<'a> {
     empty_pipeline_layout: &'a wgpu::PipelineLayout,
     uniform_bind_group_layout: &'a wgpu::BindGroupLayout,
     uniform_pipeline_layout: &'a wgpu::PipelineLayout,
-    pipeline_cache: &'a RefCell<HashMap<WgpuCanvasPipelineKey, wgpu::RenderPipeline>>,
+    pipeline_cache: &'a RefCell<WgpuCanvasPipelineCache>,
 }
 
 #[derive(Debug, Clone)]
@@ -682,14 +518,21 @@ impl<'a> WgpuCanvasRenderPass<'a> {
     }
 }
 
+// Cache lookups borrow the descriptor; only new pipelines retain owned source.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct WgpuCanvasPipelineKey {
-    shader: String,
-    vertex_entry_point: String,
-    fragment_entry_point: String,
+struct WgpuCanvasPipelineKey<'a> {
+    shader: Cow<'a, str>,
+    vertex_entry_point: Cow<'a, str>,
+    fragment_entry_point: Cow<'a, str>,
     format: TextureFormat,
     uses_uniforms: bool,
-    constants: Vec<WgpuCanvasPipelineConstant>,
+    constants: WgpuCanvasPipelineConstants<'a>,
+}
+
+#[derive(Debug, Clone)]
+enum WgpuCanvasPipelineConstants<'a> {
+    Borrowed(&'a [(&'a str, f64)]),
+    Owned(Vec<WgpuCanvasPipelineConstant>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -698,23 +541,141 @@ struct WgpuCanvasPipelineConstant {
     value_bits: u64,
 }
 
-impl<'a> WgpuCanvasPipelineKey {
-    fn new(pass: &WgpuCanvasRenderPass<'a>, format: TextureFormat) -> Self {
-        Self {
-            shader: pass.shader.to_string(),
-            vertex_entry_point: pass.vertex_entry_point.to_string(),
-            fragment_entry_point: pass.fragment_entry_point.to_string(),
-            format,
-            uses_uniforms: pass.uniforms.is_some(),
-            constants: pass
-                .constants
+impl<'a> WgpuCanvasPipelineConstants<'a> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Borrowed(constants) => constants.len(),
+            Self::Owned(constants) => constants.len(),
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&str, u64)> + use<'_, 'a> {
+        (0..self.len()).map(|index| match self {
+            Self::Borrowed(constants) => {
+                let (name, value) = constants[index];
+                (name, value.to_bits())
+            }
+            Self::Owned(constants) => {
+                let constant = &constants[index];
+                (constant.name.as_str(), constant.value_bits)
+            }
+        })
+    }
+
+    fn into_owned(self) -> WgpuCanvasPipelineConstants<'static> {
+        WgpuCanvasPipelineConstants::Owned(match self {
+            Self::Borrowed(constants) => constants
                 .iter()
                 .map(|(name, value)| WgpuCanvasPipelineConstant {
                     name: (*name).to_string(),
                     value_bits: value.to_bits(),
                 })
                 .collect(),
+            Self::Owned(constants) => constants,
+        })
+    }
+}
+
+impl PartialEq for WgpuCanvasPipelineConstants<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for WgpuCanvasPipelineConstants<'_> {}
+
+impl Hash for WgpuCanvasPipelineConstants<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.len().hash(state);
+        for (name, value_bits) in self.iter() {
+            name.hash(state);
+            value_bits.hash(state);
         }
+    }
+}
+
+impl<'a> WgpuCanvasPipelineKey<'a> {
+    fn new(pass: &'a WgpuCanvasRenderPass<'_>, format: TextureFormat) -> Self {
+        Self {
+            shader: Cow::Borrowed(pass.shader.as_ref()),
+            vertex_entry_point: Cow::Borrowed(pass.vertex_entry_point),
+            fragment_entry_point: Cow::Borrowed(pass.fragment_entry_point),
+            format,
+            uses_uniforms: pass.uniforms.is_some(),
+            constants: WgpuCanvasPipelineConstants::Borrowed(&pass.constants),
+        }
+    }
+
+    fn into_owned(self) -> WgpuCanvasPipelineKey<'static> {
+        WgpuCanvasPipelineKey {
+            shader: Cow::Owned(self.shader.into_owned()),
+            vertex_entry_point: Cow::Owned(self.vertex_entry_point.into_owned()),
+            fragment_entry_point: Cow::Owned(self.fragment_entry_point.into_owned()),
+            format: self.format,
+            uses_uniforms: self.uses_uniforms,
+            constants: self.constants.into_owned(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CachedCanvasPipeline {
+    pipeline: wgpu::RenderPipeline,
+    // Shared lookup lets a temporary descriptor borrow an owned cache key without
+    // allocating shader source or constants on every draw.
+    last_used: Cell<u64>,
+}
+
+/// Bound retained variants even for callers drawing outside the UI frame loop.
+/// Eviction only drops the cache's handle; submitted commands keep their resources.
+#[derive(Debug, Default)]
+struct WgpuCanvasPipelineCache {
+    entries: HashMap<WgpuCanvasPipelineKey<'static>, CachedCanvasPipeline>,
+    access: u64,
+}
+
+impl WgpuCanvasPipelineCache {
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn next_access(&mut self) -> u64 {
+        if self.access == u64::MAX {
+            // Avoid ambiguous ordering after counter wrap. Entries are recreatable.
+            self.entries.clear();
+            self.access = 0;
+        }
+        self.access += 1;
+        self.access
+    }
+
+    fn get(&mut self, key: &WgpuCanvasPipelineKey<'_>) -> Option<wgpu::RenderPipeline> {
+        let access = self.next_access();
+        let cached = self.entries.get(key)?;
+        cached.last_used.set(access);
+        Some(cached.pipeline.clone())
+    }
+
+    fn insert(&mut self, key: WgpuCanvasPipelineKey<'static>, pipeline: wgpu::RenderPipeline) {
+        let access = self.next_access();
+        if self.entries.len() >= MAX_CACHED_CANVAS_PIPELINES {
+            let oldest = self
+                .entries
+                .values()
+                .map(|cached| cached.last_used.get())
+                .min();
+            // Access stamps are unique. Retaining by stamp avoids copying a shader
+            // just to remove its key. Scanning this small map only happens on misses.
+            self.entries
+                .retain(|_, cached| Some(cached.last_used.get()) != oldest);
+        }
+        self.entries.insert(
+            key,
+            CachedCanvasPipeline {
+                pipeline,
+                last_used: Cell::new(access),
+            },
+        );
     }
 }
 
@@ -775,13 +736,24 @@ impl<'a> WgpuCanvasContext<'a> {
     }
 
     pub fn render_pass(&self, descriptor: WgpuCanvasRenderPass<'_>) -> Result<(), RenderError> {
+        let mut encoder = self.create_command_encoder(descriptor.label);
+        self.record_render_pass(&mut encoder, descriptor)?;
+        self.submit(encoder);
+        Ok(())
+    }
+
+    fn record_render_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        descriptor: WgpuCanvasRenderPass<'_>,
+    ) -> Result<(), RenderError> {
         let label = descriptor.label;
         let pipeline_key = WgpuCanvasPipelineKey::new(&descriptor, self.format);
         let compilation_options = wgpu::PipelineCompilationOptions {
             constants: descriptor.constants.as_slice(),
             ..Default::default()
         };
-        let cached_pipeline = self.pipeline_cache.borrow().get(&pipeline_key).cloned();
+        let cached_pipeline = self.pipeline_cache.borrow_mut().get(&pipeline_key);
         let pipeline = if let Some(pipeline) = cached_pipeline {
             pipeline
         } else {
@@ -850,7 +822,7 @@ impl<'a> WgpuCanvasContext<'a> {
             }
             self.pipeline_cache
                 .borrow_mut()
-                .insert(pipeline_key.clone(), pipeline.clone());
+                .insert(pipeline_key.into_owned(), pipeline.clone());
             pipeline
         };
         let uniform_bind_group = descriptor.uniforms.as_deref().map(|uniforms| {
@@ -871,16 +843,14 @@ impl<'a> WgpuCanvasContext<'a> {
                 }],
             })
         });
-        let mut encoder = self.create_command_encoder(label);
         {
-            let mut pass = self.begin_render_pass(&mut encoder, descriptor.clear_color);
+            let mut pass = self.begin_render_pass(encoder, descriptor.clear_color);
             pass.set_pipeline(&pipeline);
             if let Some(bind_group) = &uniform_bind_group {
                 pass.set_bind_group(0, bind_group, &[]);
             }
             pass.draw(0..3, 0..1);
         }
-        self.submit(encoder);
         Ok(())
     }
 
@@ -897,39 +867,62 @@ impl<'a> WgpuCanvasContext<'a> {
     }
 }
 
+#[derive(Debug)]
+enum GlyphPreparationError {
+    Prepare(GlyphPrepareError),
+    Render(RenderError),
+}
+
+impl From<RenderError> for GlyphPreparationError {
+    fn from(error: RenderError) -> Self {
+        Self::Render(error)
+    }
+}
+
+impl GlyphPreparationError {
+    fn into_render_error(self) -> RenderError {
+        match self {
+            Self::Prepare(error) => glyph_prepare_error(error),
+            Self::Render(error) => error,
+        }
+    }
+}
+
 struct WgpuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    limits: wgpu::Limits,
     pipeline_layout: wgpu::PipelineLayout,
     texture_pipeline_layout: wgpu::PipelineLayout,
     canvas_empty_pipeline_layout: wgpu::PipelineLayout,
     canvas_uniform_bind_group_layout: wgpu::BindGroupLayout,
     canvas_uniform_pipeline_layout: wgpu::PipelineLayout,
-    canvas_pipeline_cache: RefCell<HashMap<WgpuCanvasPipelineKey, wgpu::RenderPipeline>>,
+    canvas_pipeline_cache: RefCell<WgpuCanvasPipelineCache>,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     texture_sampler: wgpu::Sampler,
     shader: wgpu::ShaderModule,
     triangle_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
-    rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
     textured_rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
     composited_rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
-    sdf_rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
-    shadow_rect_pipelines: HashMap<TextureFormat, wgpu::RenderPipeline>,
+    sdf_shader: wgpu::ShaderModule,
+    sdf_pipeline_layout: wgpu::PipelineLayout,
+    sdf_gradient_bind_group_layout: wgpu::BindGroupLayout,
+    sdf_pipelines: HashMap<(TextureFormat, SdfPipelineKind), wgpu::RenderPipeline>,
     scene_buffer: wgpu::Buffer,
     scene_bind_group: wgpu::BindGroup,
     vertex_buffer: Option<wgpu::Buffer>,
     vertex_capacity: u64,
-    rect_buffer: Option<wgpu::Buffer>,
-    rect_capacity: u64,
     textured_rect_buffer: Option<wgpu::Buffer>,
     textured_rect_capacity: u64,
     composited_rect_buffer: Option<wgpu::Buffer>,
     composited_rect_capacity: u64,
-    sdf_rect_buffer: Option<wgpu::Buffer>,
-    sdf_rect_capacity: u64,
-    shadow_rect_buffer: Option<wgpu::Buffer>,
-    shadow_rect_capacity: u64,
+    sdf_instance_buffer: Option<wgpu::Buffer>,
+    sdf_instance_capacity: u64,
+    sdf_gradient_buffer: Option<wgpu::Buffer>,
+    sdf_gradient_capacity: u64,
+    sdf_gradient_bind_group: Option<wgpu::BindGroup>,
     textures: HashMap<String, WgpuTextureResource>,
+    layer_textures: Vec<WgpuTextureResource>,
     font_system: GlyphFontSystem,
     swash_cache: GlyphSwashCache,
     glyph_cache: GlyphCache,
@@ -947,8 +940,6 @@ struct WgpuContext {
     glyph_generation: u64,
     gpu_timer: Option<GpuTimer>,
     discard_target: Option<CachedTarget>,
-    layer_generation: u64,
-    layer_index: u64,
 }
 
 impl std::fmt::Debug for WgpuContext {
@@ -956,7 +947,6 @@ impl std::fmt::Debug for WgpuContext {
         formatter
             .debug_struct("WgpuContext")
             .field("triangle_pipelines", &self.triangle_pipelines.len())
-            .field("rect_pipelines", &self.rect_pipelines.len())
             .field(
                 "textured_rect_pipelines",
                 &self.textured_rect_pipelines.len(),
@@ -969,9 +959,9 @@ impl std::fmt::Debug for WgpuContext {
                 "canvas_pipeline_cache",
                 &self.canvas_pipeline_cache.borrow().len(),
             )
-            .field("sdf_rect_pipelines", &self.sdf_rect_pipelines.len())
-            .field("shadow_rect_pipelines", &self.shadow_rect_pipelines.len())
+            .field("sdf_pipelines", &self.sdf_pipelines.len())
             .field("textures", &self.textures.len())
+            .field("layer_textures", &self.layer_textures.len())
             .field("glyph_format", &self.glyph_format)
             .field("glyph_buffer_cache", &self.glyph_buffer_cache.len())
             .field(
@@ -993,6 +983,7 @@ impl WgpuContext {
         queue: wgpu::Queue,
         font_library: &FontLibrary,
     ) -> Result<Self, RenderError> {
+        let limits = device.limits();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("operad-wgpu-ui-shader"),
             source: wgpu::ShaderSource::Wgsl(WGPU_UI_SHADER.into()),
@@ -1015,6 +1006,34 @@ impl WgpuContext {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("operad-wgpu-ui-pipeline-layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let sdf_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("operad-sdf-shader"),
+            source: wgpu::ShaderSource::Wgsl(sdf::SHADER.into()),
+        });
+        let sdf_gradient_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("operad-sdf-gradient-layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            mem::size_of::<SdfGradientStop>() as u64
+                        ),
+                    },
+                    count: None,
+                }],
+            });
+        let sdf_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("operad-sdf-pipeline-layout"),
+            bind_group_layouts: &[
+                Some(&bind_group_layout),
+                Some(&sdf_gradient_bind_group_layout),
+            ],
             immediate_size: 0,
         });
         let texture_bind_group_layout =
@@ -1104,36 +1123,38 @@ impl WgpuContext {
         Ok(Self {
             device,
             queue,
+            limits,
             pipeline_layout,
             texture_pipeline_layout,
             canvas_empty_pipeline_layout,
             canvas_uniform_bind_group_layout,
             canvas_uniform_pipeline_layout,
-            canvas_pipeline_cache: RefCell::new(HashMap::new()),
+            canvas_pipeline_cache: RefCell::default(),
             texture_bind_group_layout,
             texture_sampler,
             shader,
             triangle_pipelines: HashMap::new(),
-            rect_pipelines: HashMap::new(),
             textured_rect_pipelines: HashMap::new(),
             composited_rect_pipelines: HashMap::new(),
-            sdf_rect_pipelines: HashMap::new(),
-            shadow_rect_pipelines: HashMap::new(),
+            sdf_shader,
+            sdf_pipeline_layout,
+            sdf_gradient_bind_group_layout,
+            sdf_pipelines: HashMap::new(),
             scene_buffer,
             scene_bind_group,
             vertex_buffer: None,
             vertex_capacity: 0,
-            rect_buffer: None,
-            rect_capacity: 0,
             textured_rect_buffer: None,
             textured_rect_capacity: 0,
             composited_rect_buffer: None,
             composited_rect_capacity: 0,
-            sdf_rect_buffer: None,
-            sdf_rect_capacity: 0,
-            shadow_rect_buffer: None,
-            shadow_rect_capacity: 0,
+            sdf_instance_buffer: None,
+            sdf_instance_capacity: 0,
+            sdf_gradient_buffer: None,
+            sdf_gradient_capacity: 0,
+            sdf_gradient_bind_group: None,
             textures,
+            layer_textures: Vec::new(),
             font_system: glyph_font_system(font_library),
             swash_cache: GlyphSwashCache::new(),
             glyph_cache,
@@ -1151,9 +1172,31 @@ impl WgpuContext {
             glyph_generation: 0,
             gpu_timer,
             discard_target: None,
-            layer_generation: 0,
-            layer_index: 0,
         })
+    }
+
+    fn create_texture_2d(
+        &self,
+        label: &str,
+        size: PixelSize,
+        format: TextureFormat,
+        usage: wgpu::TextureUsages,
+    ) -> Result<wgpu::Texture, RenderError> {
+        validate_texture_size(size, self.limits.max_texture_dimension_2d, label)?;
+        Ok(self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        }))
     }
 
     fn triangle_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
@@ -1168,23 +1211,6 @@ impl WgpuContext {
                 "vs_triangle",
                 main_fragment_entry_point(format),
                 &[GpuVertex::layout()],
-                layout,
-            )
-        })
-    }
-
-    fn rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
-        let device = &self.device;
-        let shader = &self.shader;
-        let layout = &self.pipeline_layout;
-        self.rect_pipelines.entry(format).or_insert_with(|| {
-            Self::create_pipeline_with(
-                device,
-                shader,
-                format,
-                "vs_rect",
-                main_fragment_entry_point(format),
-                &[GpuRectInstance::layout()],
                 layout,
             )
         })
@@ -1228,38 +1254,95 @@ impl WgpuContext {
             })
     }
 
-    fn sdf_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
+    fn sdf_pipeline(
+        &mut self,
+        format: TextureFormat,
+        kind: SdfPipelineKind,
+    ) -> &wgpu::RenderPipeline {
         let device = &self.device;
-        let shader = &self.shader;
-        let layout = &self.pipeline_layout;
-        self.sdf_rect_pipelines.entry(format).or_insert_with(|| {
+        let shader = &self.sdf_shader;
+        let layout = &self.sdf_pipeline_layout;
+        self.sdf_pipelines.entry((format, kind)).or_insert_with(|| {
             Self::create_pipeline_with(
                 device,
                 shader,
                 format,
-                "vs_sdf_rect",
-                sdf_fragment_entry_point(format),
-                &[GpuSdfRectInstance::layout()],
+                "vs_sdf",
+                kind.fragment_entry_point(format.is_srgb()),
+                &[SdfInstance::layout()],
                 layout,
             )
         })
     }
 
-    fn shadow_rect_pipeline(&mut self, format: TextureFormat) -> &wgpu::RenderPipeline {
-        let device = &self.device;
-        let shader = &self.shader;
-        let layout = &self.pipeline_layout;
-        self.shadow_rect_pipelines.entry(format).or_insert_with(|| {
-            Self::create_pipeline_with(
-                device,
-                shader,
-                format,
-                "vs_shadow_rect",
-                shadow_fragment_entry_point(format),
-                &[GpuShadowRectInstance::layout()],
-                layout,
-            )
-        })
+    fn sdf_buffers_for(
+        &mut self,
+        instances: &[SdfInstance],
+        stops: &[SdfGradientStop],
+        mut encoder: Option<&mut wgpu::CommandEncoder>,
+    ) -> Result<Option<(wgpu::Buffer, wgpu::BindGroup)>, RenderError> {
+        if instances.is_empty() {
+            return Ok(None);
+        }
+        let dummy = [SdfGradientStop::default()];
+        let stops = if stops.is_empty() { &dummy[..] } else { stops };
+        let bytes = sdf::instance_bytes(instances);
+        let gradient_bytes = sdf::gradient_bytes(stops);
+        let instance_limit = self.limits.max_buffer_size;
+        let gradient_limit =
+            instance_limit.min(u64::from(self.limits.max_storage_buffer_binding_size));
+        // Validate both requests before allocating either buffer.
+        sdf::buffer_capacity(bytes.len() as u64, instance_limit)?;
+        sdf::buffer_capacity(gradient_bytes.len() as u64, gradient_limit)?;
+        if self.sdf_instance_capacity < bytes.len() as u64 {
+            let capacity = sdf::buffer_capacity(bytes.len() as u64, instance_limit)?;
+            self.sdf_instance_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("operad-sdf-instances"),
+                size: capacity,
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.sdf_instance_capacity = capacity;
+        }
+        if self.sdf_gradient_capacity < gradient_bytes.len() as u64 {
+            let capacity = sdf::buffer_capacity(gradient_bytes.len() as u64, gradient_limit)?;
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("operad-sdf-gradient-stops"),
+                size: capacity,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.sdf_gradient_bind_group =
+                Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("operad-sdf-gradients"),
+                    layout: &self.sdf_gradient_bind_group_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    }],
+                }));
+            self.sdf_gradient_buffer = Some(buffer);
+            self.sdf_gradient_capacity = capacity;
+        }
+        let buffer = self
+            .sdf_instance_buffer
+            .as_ref()
+            .expect("allocated SDF instances");
+        self.write_buffer(buffer, bytes, encoder.as_deref_mut());
+        self.write_buffer(
+            self.sdf_gradient_buffer
+                .as_ref()
+                .expect("allocated gradient stops"),
+            gradient_bytes,
+            encoder,
+        );
+        Ok(Some((
+            buffer.clone(),
+            self.sdf_gradient_bind_group
+                .as_ref()
+                .expect("allocated gradients binding")
+                .clone(),
+        )))
     }
 
     fn create_pipeline_with(
@@ -1317,12 +1400,35 @@ impl WgpuContext {
         })
     }
 
-    fn write_scene_uniform(&self, size: PixelSize) {
-        self.queue
-            .write_buffer(&self.scene_buffer, 0, &pack_scene_uniform(size));
+    fn write_buffer(
+        &self,
+        buffer: &wgpu::Buffer,
+        bytes: &[u8],
+        encoder: Option<&mut wgpu::CommandEncoder>,
+    ) {
+        if let Some(encoder) = encoder {
+            let upload = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("operad-wgpu-pass-upload"),
+                    contents: bytes,
+                    usage: BufferUsages::COPY_SRC,
+                });
+            encoder.copy_buffer_to_buffer(&upload, 0, buffer, 0, bytes.len() as u64);
+        } else {
+            self.queue.write_buffer(buffer, 0, bytes);
+        }
     }
 
-    fn vertex_buffer_for(&mut self, vertices: &[GpuVertex]) -> Option<wgpu::Buffer> {
+    fn write_scene_uniform(&self, size: PixelSize, encoder: Option<&mut wgpu::CommandEncoder>) {
+        self.write_buffer(&self.scene_buffer, &pack_scene_uniform(size), encoder);
+    }
+
+    fn vertex_buffer_for(
+        &mut self,
+        vertices: &[GpuVertex],
+        encoder: Option<&mut wgpu::CommandEncoder>,
+    ) -> Option<wgpu::Buffer> {
         if vertices.is_empty() {
             return None;
         }
@@ -1341,36 +1447,14 @@ impl WgpuContext {
         }
 
         let buffer = self.vertex_buffer.as_ref()?;
-        self.queue.write_buffer(buffer, 0, vertex_bytes);
-        Some(buffer.clone())
-    }
-
-    fn rect_buffer_for(&mut self, rects: &[GpuRectInstance]) -> Option<wgpu::Buffer> {
-        if rects.is_empty() {
-            return None;
-        }
-
-        let rect_bytes = rect_instance_bytes(rects);
-        let required = u64::try_from(rect_bytes.len()).ok()?;
-        if self.rect_capacity < required {
-            let capacity = required.next_power_of_two();
-            self.rect_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("operad-wgpu-ui-rect-instances"),
-                size: capacity,
-                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.rect_capacity = capacity;
-        }
-
-        let buffer = self.rect_buffer.as_ref()?;
-        self.queue.write_buffer(buffer, 0, rect_bytes);
+        self.write_buffer(buffer, vertex_bytes, encoder);
         Some(buffer.clone())
     }
 
     fn textured_rect_buffer_for(
         &mut self,
         rects: &[GpuTexturedRectInstance],
+        encoder: Option<&mut wgpu::CommandEncoder>,
     ) -> Option<wgpu::Buffer> {
         if rects.is_empty() {
             return None;
@@ -1390,13 +1474,14 @@ impl WgpuContext {
         }
 
         let buffer = self.textured_rect_buffer.as_ref()?;
-        self.queue.write_buffer(buffer, 0, rect_bytes);
+        self.write_buffer(buffer, rect_bytes, encoder);
         Some(buffer.clone())
     }
 
     fn composited_rect_buffer_for(
         &mut self,
         rects: &[GpuCompositedRectInstance],
+        encoder: Option<&mut wgpu::CommandEncoder>,
     ) -> Option<wgpu::Buffer> {
         if rects.is_empty() {
             return None;
@@ -1417,61 +1502,21 @@ impl WgpuContext {
         }
 
         let buffer = self.composited_rect_buffer.as_ref()?;
-        self.queue.write_buffer(buffer, 0, rect_bytes);
-        Some(buffer.clone())
-    }
-
-    fn sdf_rect_buffer_for(&mut self, rects: &[GpuSdfRectInstance]) -> Option<wgpu::Buffer> {
-        if rects.is_empty() {
-            return None;
-        }
-
-        let rect_bytes = sdf_rect_instance_bytes(rects);
-        let required = u64::try_from(rect_bytes.len()).ok()?;
-        if self.sdf_rect_capacity < required {
-            let capacity = required.next_power_of_two();
-            self.sdf_rect_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("operad-wgpu-ui-sdf-rect-instances"),
-                size: capacity,
-                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.sdf_rect_capacity = capacity;
-        }
-
-        let buffer = self.sdf_rect_buffer.as_ref()?;
-        self.queue.write_buffer(buffer, 0, rect_bytes);
-        Some(buffer.clone())
-    }
-
-    fn shadow_rect_buffer_for(&mut self, rects: &[GpuShadowRectInstance]) -> Option<wgpu::Buffer> {
-        if rects.is_empty() {
-            return None;
-        }
-
-        let rect_bytes = shadow_rect_instance_bytes(rects);
-        let required = u64::try_from(rect_bytes.len()).ok()?;
-        if self.shadow_rect_capacity < required {
-            let capacity = required.next_power_of_two();
-            self.shadow_rect_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("operad-wgpu-ui-shadow-rect-instances"),
-                size: capacity,
-                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.shadow_rect_capacity = capacity;
-        }
-
-        let buffer = self.shadow_rect_buffer.as_ref()?;
-        self.queue.write_buffer(buffer, 0, rect_bytes);
+        self.write_buffer(buffer, rect_bytes, encoder);
         Some(buffer.clone())
     }
 
     fn begin_frame(&mut self) {
-        self.layer_generation = self.layer_generation.wrapping_add(1);
-        self.layer_index = 0;
-        self.textures
-            .retain(|key, _| !key.starts_with("__operad_layer_"));
+        // Only frame-owned compositor targets expire here. App images and canvas
+        // buffers live independently of paint visibility and resource names.
+        self.layer_textures.clear();
+    }
+
+    fn texture(&self, key: &WgpuTextureKey<'_>) -> Option<&WgpuTextureResource> {
+        match key {
+            WgpuTextureKey::Resource(key) => self.textures.get(key.as_ref()),
+            WgpuTextureKey::Layer(index) => self.layer_textures.get(*index),
+        }
     }
 
     fn insert_layer_texture(
@@ -1479,12 +1524,7 @@ impl WgpuContext {
         size: PixelSize,
         texture: wgpu::Texture,
         view: wgpu::TextureView,
-    ) -> String {
-        let key = format!(
-            "__operad_layer_{}_{}",
-            self.layer_generation, self.layer_index
-        );
-        self.layer_index = self.layer_index.wrapping_add(1);
+    ) -> WgpuTextureKey<'static> {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("operad-wgpu-layer-texture-bind-group"),
             layout: &self.texture_bind_group_layout,
@@ -1499,17 +1539,16 @@ impl WgpuContext {
                 },
             ],
         });
-        self.textures.insert(
-            key.clone(),
-            WgpuTextureResource {
-                size,
-                texture,
-                view,
-                bind_group,
-                render_attachment: true,
-            },
-        );
-        key
+        let index = self.layer_textures.len();
+        self.layer_textures.push(WgpuTextureResource {
+            size,
+            source_format: ResourceFormat::Rgba8,
+            texture,
+            view,
+            bind_group,
+            render_attachment: true,
+        });
+        WgpuTextureKey::Layer(index)
     }
 
     fn canvas_context(
@@ -1558,22 +1597,14 @@ impl WgpuContext {
             return Ok(());
         }
 
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("operad-wgpu-canvas-texture"),
-            size: Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: OFFSCREEN_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+        let texture = self.create_texture_2d(
+            "operad-wgpu-canvas-texture",
+            size,
+            OFFSCREEN_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        )?;
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("operad-wgpu-canvas-texture-bind-group"),
@@ -1593,6 +1624,7 @@ impl WgpuContext {
             key.to_string(),
             WgpuTextureResource {
                 size,
+                source_format: ResourceFormat::Rgba8,
                 texture,
                 view,
                 bind_group,
@@ -1602,14 +1634,22 @@ impl WgpuContext {
         Ok(())
     }
 
-    fn upload_resource_updates(&mut self, updates: &[ResourceUpdate]) -> Result<(), RenderError> {
+    fn upload_resource_updates(
+        &mut self,
+        updates: &[ResourceUpdate],
+        mut encoder: Option<&mut wgpu::CommandEncoder>,
+    ) -> Result<(), RenderError> {
         for update in updates {
-            self.upload_resource_update(update)?;
+            self.upload_resource_update(update, encoder.as_deref_mut())?;
         }
         Ok(())
     }
 
-    fn upload_resource_update(&mut self, update: &ResourceUpdate) -> Result<(), RenderError> {
+    fn upload_resource_update(
+        &mut self,
+        update: &ResourceUpdate,
+        encoder: Option<&mut wgpu::CommandEncoder>,
+    ) -> Result<(), RenderError> {
         if !update.has_expected_byte_len() || !update.dirty_rect_is_valid() {
             return Err(RenderError::InvalidResourceUpdate(
                 update.descriptor.handle.id().key.clone(),
@@ -1623,25 +1663,24 @@ impl WgpuContext {
             return Ok(());
         }
 
-        let recreate = self
-            .textures
-            .get(&key)
-            .is_none_or(|texture| texture.size != size);
+        let existing = self.textures.get(&key);
+        if update.is_partial()
+            && existing.is_none_or(|texture| {
+                texture.size != size || texture.source_format != update.descriptor.format
+            })
+        {
+            return Err(RenderError::InvalidResourceUpdate(key));
+        }
+        let recreate = existing.is_none_or(|texture| texture.size != size);
         if recreate {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("operad-wgpu-resource-texture"),
-                size: Extent3d {
-                    width: size.width,
-                    height: size.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: OFFSCREEN_FORMAT,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
+            let texture = self
+                .create_texture_2d(
+                    "operad-wgpu-resource-texture",
+                    size,
+                    OFFSCREEN_FORMAT,
+                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                )
+                .map_err(|error| RenderError::InvalidResourceUpdate(format!("{key:?}: {error}")))?;
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("operad-wgpu-resource-texture-bind-group"),
@@ -1661,6 +1700,7 @@ impl WgpuContext {
                 key.clone(),
                 WgpuTextureResource {
                     size,
+                    source_format: update.descriptor.format,
                     texture,
                     view,
                     bind_group,
@@ -1677,33 +1717,58 @@ impl WgpuContext {
             .width
             .checked_mul(4)
             .ok_or_else(|| RenderError::Backend("wgpu texture update row overflow".to_string()))?;
-        let texture = self.textures.get(&key).ok_or_else(|| {
+        let texture = self.textures.get_mut(&key).ok_or_else(|| {
             RenderError::Backend("wgpu texture upload target missing".to_string())
         })?;
-        self.queue.write_texture(
-            TexelCopyTextureInfo {
-                texture: &texture.texture,
-                mip_level: 0,
-                origin: Origin3d {
-                    x: dirty_rect.x,
-                    y: dirty_rect.y,
-                    z: 0,
+        let destination = TexelCopyTextureInfo {
+            texture: &texture.texture,
+            mip_level: 0,
+            origin: Origin3d {
+                x: dirty_rect.x,
+                y: dirty_rect.y,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        };
+        if let Some(encoder) = encoder {
+            encode_texture_upload(&self.device, encoder, destination, dirty_rect, &rgba)?;
+        } else {
+            self.queue.write_texture(
+                destination,
+                &rgba,
+                TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(dirty_rect.height),
                 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &rgba,
-            TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(dirty_rect.height),
-            },
-            Extent3d {
-                width: dirty_rect.width,
-                height: dirty_rect.height,
-                depth_or_array_layers: 1,
-            },
-        );
+                Extent3d {
+                    width: dirty_rect.width,
+                    height: dirty_rect.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        texture.source_format = update.descriptor.format;
         Ok(())
+    }
+
+    fn prepare_with_glyph_atlas_retry<T>(
+        &mut self,
+        format: TextureFormat,
+        mut prepare: impl FnMut(&mut Self) -> Result<T, GlyphPreparationError>,
+    ) -> Result<T, RenderError> {
+        self.ensure_glyphon_text(format);
+        match prepare(self) {
+            Err(GlyphPreparationError::Prepare(GlyphPrepareError::AtlasFull)) => {
+                // Cached renderers retain atlas coordinates. Rebuild the atlas
+                // and all prepared chunks together, then retry the whole pass.
+                // A working set that still cannot fit returns its error.
+                self.glyph_format = None;
+                self.ensure_glyphon_text(format);
+                prepare(self).map_err(GlyphPreparationError::into_render_error)
+            }
+            result => result.map_err(GlyphPreparationError::into_render_error),
+        }
     }
 
     fn prepare_glyphon_text(
@@ -1729,37 +1794,39 @@ impl WgpuContext {
             return Ok(false);
         }
 
-        self.ensure_glyphon_text(format);
         let render_keys = visible_texts
             .iter()
             .map(|text| TextRenderKey::new(text, size))
             .collect::<Vec<_>>();
-        self.glyph_scene_active = false;
-        self.glyph_chunks_active = false;
         self.glyph_generation = self.glyph_generation.wrapping_add(1);
         let generation = self.glyph_generation;
-        self.glyph_viewport.update(
-            &self.queue,
-            GlyphResolution {
-                width: size.width,
-                height: size.height,
-            },
-        );
+        self.update_glyph_viewport(size);
 
-        for (text, render_key) in visible_texts.iter().zip(render_keys.iter()) {
-            self.ensure_glyph_buffer(text, &render_key.buffer, generation);
-        }
+        self.prepare_with_glyph_atlas_retry(format, |context| {
+            context.glyph_scene_active = false;
+            context.glyph_chunks_active = false;
+            for (text, render_key) in visible_texts.iter().zip(render_keys.iter()) {
+                context.ensure_glyph_buffer(text, &render_key.buffer, generation);
+            }
 
-        if visible_texts.len() > GLYPH_TEXT_CHUNK_SIZE {
-            self.glyph_chunk_order =
-                self.prepare_glyphon_text_chunks(size, &visible_texts, &render_keys, generation)?;
-            self.glyph_chunks_active = true;
-        } else if self.glyph_scene_renderer.is_some() && self.glyph_scene_key == render_keys {
-            self.glyph_scene_active = true;
-        } else {
-            self.prepare_glyphon_text_scene(size, &visible_texts, &render_keys)?;
-            self.glyph_scene_active = true;
-        }
+            if visible_texts.len() > GLYPH_TEXT_CHUNK_SIZE {
+                context.glyph_chunk_order = context.prepare_glyphon_text_chunks(
+                    size,
+                    &visible_texts,
+                    &render_keys,
+                    generation,
+                )?;
+                context.glyph_chunks_active = true;
+            } else if context.glyph_scene_renderer.is_some()
+                && context.glyph_scene_key == render_keys
+            {
+                context.glyph_scene_active = true;
+            } else {
+                context.prepare_glyphon_text_scene(size, &visible_texts, &render_keys)?;
+                context.glyph_scene_active = true;
+            }
+            Ok(())
+        })?;
         self.prune_glyphon_text_cache();
 
         Ok(true)
@@ -1771,61 +1838,74 @@ impl WgpuContext {
         format: TextureFormat,
         geometry: &RenderGeometry,
     ) -> Result<Vec<Vec<TextChunkKey>>, RenderError> {
-        let mut batch_chunks = vec![Vec::new(); geometry.batches.len()];
         if geometry.texts.is_empty() || size.width == 0 || size.height == 0 {
-            return Ok(batch_chunks);
+            return Ok(vec![Vec::new(); geometry.batches.len()]);
         }
 
-        self.ensure_glyphon_text(format);
-        self.glyph_scene_active = false;
-        self.glyph_chunks_active = false;
-        self.glyph_chunk_order.clear();
         self.glyph_generation = self.glyph_generation.wrapping_add(1);
         let generation = self.glyph_generation;
-        self.glyph_viewport.update(
-            &self.queue,
-            GlyphResolution {
-                width: size.width,
-                height: size.height,
-            },
-        );
+        self.update_glyph_viewport(size);
 
         let target_rect = UiRect::new(0.0, 0.0, size.width as f32, size.height as f32);
-        for (batch_index, batch) in geometry.batches.iter().enumerate() {
-            if batch.kind != GeometryBatchKind::Text {
-                continue;
+        let batch_chunks = self.prepare_with_glyph_atlas_retry(format, |context| {
+            context.glyph_scene_active = false;
+            context.glyph_chunks_active = false;
+            context.glyph_chunk_order.clear();
+            let mut batch_chunks = vec![Vec::new(); geometry.batches.len()];
+            for (batch_index, batch) in geometry.batches.iter().enumerate() {
+                if batch.kind != GeometryBatchKind::Text {
+                    continue;
+                }
+                let Some(texts) = text_batch_slice(&geometry.texts, batch) else {
+                    continue;
+                };
+                let visible_texts = texts
+                    .iter()
+                    .filter(|text| {
+                        text.rect
+                            .intersection(text.clip)
+                            .and_then(|rect| rect.intersection(target_rect))
+                            .is_some()
+                    })
+                    .collect::<Vec<_>>();
+                if visible_texts.is_empty() {
+                    continue;
+                }
+                let render_keys = visible_texts
+                    .iter()
+                    .map(|text| TextRenderKey::new(text, size))
+                    .collect::<Vec<_>>();
+                for (text, render_key) in visible_texts.iter().zip(render_keys.iter()) {
+                    context.ensure_glyph_buffer(text, &render_key.buffer, generation);
+                }
+                let chunks = context.prepare_glyphon_text_chunks(
+                    size,
+                    &visible_texts,
+                    &render_keys,
+                    generation,
+                )?;
+                context.glyph_chunk_order.extend(chunks.iter().cloned());
+                batch_chunks[batch_index] = chunks;
+                context.glyph_chunks_active = true;
             }
-            let Some(texts) = text_batch_slice(&geometry.texts, batch) else {
-                continue;
-            };
-            let visible_texts = texts
-                .iter()
-                .filter(|text| {
-                    text.rect
-                        .intersection(text.clip)
-                        .and_then(|rect| rect.intersection(target_rect))
-                        .is_some()
-                })
-                .collect::<Vec<_>>();
-            if visible_texts.is_empty() {
-                continue;
-            }
-            let render_keys = visible_texts
-                .iter()
-                .map(|text| TextRenderKey::new(text, size))
-                .collect::<Vec<_>>();
-            for (text, render_key) in visible_texts.iter().zip(render_keys.iter()) {
-                self.ensure_glyph_buffer(text, &render_key.buffer, generation);
-            }
-            let chunks =
-                self.prepare_glyphon_text_chunks(size, &visible_texts, &render_keys, generation)?;
-            self.glyph_chunk_order.extend(chunks.iter().cloned());
-            batch_chunks[batch_index] = chunks;
-            self.glyph_chunks_active = true;
-        }
+            Ok(batch_chunks)
+        })?;
         self.prune_glyphon_text_cache();
 
         Ok(batch_chunks)
+    }
+
+    fn update_glyph_viewport(&mut self, size: PixelSize) {
+        let resolution = GlyphResolution {
+            width: size.width,
+            height: size.height,
+        };
+        if self.glyph_viewport.resolution() != resolution {
+            // Previously recorded passes can still reference the old uniform.
+            // Equal-size passes reuse it; a resize gets an immutable replacement.
+            self.glyph_viewport = GlyphViewport::new(&self.device, &self.glyph_cache);
+            self.glyph_viewport.update(&self.queue, resolution);
+        }
     }
 
     fn ensure_glyph_buffer(
@@ -1869,7 +1949,7 @@ impl WgpuContext {
         size: PixelSize,
         texts: &[&TextPaint],
         render_keys: &[TextRenderKey],
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), GlyphPreparationError> {
         let renderer = self.prepare_glyphon_text_renderer(size, texts, render_keys)?;
         self.glyph_scene_renderer = Some(renderer);
         self.glyph_scene_key = render_keys.to_vec();
@@ -1882,7 +1962,7 @@ impl WgpuContext {
         texts: &[&TextPaint],
         render_keys: &[TextRenderKey],
         generation: u64,
-    ) -> Result<Vec<TextChunkKey>, RenderError> {
+    ) -> Result<Vec<TextChunkKey>, GlyphPreparationError> {
         let mut chunk_order = Vec::with_capacity(
             render_keys.len().saturating_add(GLYPH_TEXT_CHUNK_SIZE - 1) / GLYPH_TEXT_CHUNK_SIZE,
         );
@@ -1916,7 +1996,7 @@ impl WgpuContext {
         size: PixelSize,
         texts: &[&TextPaint],
         render_keys: &[TextRenderKey],
-    ) -> Result<GlyphTextRenderer, RenderError> {
+    ) -> Result<GlyphTextRenderer, GlyphPreparationError> {
         let mut text_areas = Vec::with_capacity(texts.len());
         for (text, render_key) in texts.iter().zip(render_keys.iter()) {
             let buffer = self
@@ -1952,7 +2032,7 @@ impl WgpuContext {
                 text_areas,
                 &mut self.swash_cache,
             )
-            .map_err(glyph_prepare_error)?;
+            .map_err(GlyphPreparationError::Prepare)?;
         Ok(renderer)
     }
 
@@ -2003,6 +2083,10 @@ impl WgpuContext {
     fn set_fonts(&mut self, fonts: &FontLibrary) {
         self.font_system = glyph_font_system(fonts);
         self.swash_cache = GlyphSwashCache::new();
+        // Font IDs belong to a font database and can be reused by its replacement.
+        // Rasterized atlas entries must not outlive the database that keyed them.
+        self.glyph_atlas = None;
+        self.glyph_format = None;
         self.glyph_buffer_cache.clear();
         self.glyph_scratch_buffer_cache.clear();
         self.glyph_scene_renderer = None;
@@ -2093,20 +2177,12 @@ impl WgpuContext {
             .as_ref()
             .is_none_or(|target| target.size != size || target.format != format);
         if recreate {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("operad-wgpu-discard-texture"),
-                size: Extent3d {
-                    width: size.width,
-                    height: size.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
+            let texture = self.create_texture_2d(
+                "operad-wgpu-discard-texture",
+                size,
                 format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )?;
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             self.discard_target = Some(CachedTarget {
                 size,
@@ -2133,10 +2209,29 @@ struct CachedTarget {
 #[derive(Debug)]
 struct WgpuTextureResource {
     size: PixelSize,
+    // Upload encoding can differ from the canonical RGBA8 GPU storage format.
+    source_format: ResourceFormat,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     render_attachment: bool,
+}
+
+// Layer indices are private to one frame and cannot alias app resource names.
+// Borrow app names while batching; only a new batch needs to own its key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum WgpuTextureKey<'a> {
+    Resource(Cow<'a, str>),
+    Layer(usize),
+}
+
+impl WgpuTextureKey<'_> {
+    fn into_owned(self) -> WgpuTextureKey<'static> {
+        match self {
+            Self::Resource(key) => WgpuTextureKey::Resource(Cow::Owned(key.into_owned())),
+            Self::Layer(index) => WgpuTextureKey::Layer(index),
+        }
+    }
 }
 
 #[repr(C)]
@@ -2161,33 +2256,6 @@ impl GpuVertex {
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct GpuRectInstance {
-    rect: [f32; 4],
-    color: [f32; 4],
-}
-
-impl GpuRectInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
-
-    fn new(rect: UiRect, color: [f32; 4]) -> Self {
-        Self {
-            rect: [rect.x, rect.y, rect.width, rect.height],
-            color,
-        }
-    }
-
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
             attributes: &Self::ATTRIBUTES,
         }
     }
@@ -2235,11 +2303,12 @@ struct GpuCompositedRectInstance {
     texel_size: [f32; 2],
     shader_params: [f32; 4],
     shader_color: [f32; 4],
+    clip_radii: [f32; 4],
     _pad: [f32; 2],
 }
 
 impl GpuCompositedRectInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 11] = wgpu::vertex_attr_array![
         0 => Float32x4,
         1 => Float32x4,
         2 => Float32x4,
@@ -2249,22 +2318,23 @@ impl GpuCompositedRectInstance {
         6 => Float32x4,
         7 => Float32x2,
         8 => Float32x4,
-        9 => Float32x4
+        9 => Float32x4,
+        10 => Float32x4
     ];
 
     fn new(
         rect: UiRect,
         uv: [f32; 4],
         opacity: f32,
-        clip: Option<(UiRect, f32)>,
+        clip: Option<(UiRect, CornerRadii)>,
         mask: Option<UiRect>,
         filter_params: LayerFilterParams,
         shader_params: LayerShaderParams,
         texture_size: PixelSize,
     ) -> Self {
-        let (clip_rect, clip_radius, clip_enabled) = match clip {
-            Some((rect, radius)) => (rect, radius, 1.0),
-            None => (rect, 0.0, 0.0),
+        let (clip_rect, clip_radii, clip_enabled) = match clip {
+            Some((rect, radii)) => (rect, radii, 1.0),
+            None => (rect, CornerRadii::ZERO, 0.0),
         };
         let (mask_rect, mask_enabled) = match mask {
             Some(rect) => (rect, 1.0),
@@ -2286,7 +2356,7 @@ impl GpuCompositedRectInstance {
                 filter_params.brightness,
                 filter_params.contrast,
                 filter_params.saturate,
-                clip_radius,
+                0.0,
             ],
             texel_size: [
                 1.0 / texture_size.width.max(1) as f32,
@@ -2294,93 +2364,13 @@ impl GpuCompositedRectInstance {
             ],
             shader_params: shader_params.params,
             shader_color: shader_params.color,
-            _pad: [0.0; 2],
-        }
-    }
-
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct GpuSdfRectInstance {
-    rect: [f32; 4],
-    color: [f32; 4],
-    radii: [f32; 4],
-}
-
-impl GpuSdfRectInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
-
-    fn new(rect: UiRect, color: [f32; 4], radii: CornerRadii) -> Self {
-        Self {
-            rect: [rect.x, rect.y, rect.width, rect.height],
-            color,
-            radii: corner_radii_to_array(normalized_corner_radii_for_rect(
-                radii,
-                rect.width,
-                rect.height,
-            )),
-        }
-    }
-
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct GpuShadowRectInstance {
-    draw_rect: [f32; 4],
-    shape_rect: [f32; 4],
-    color: [f32; 4],
-    params: [f32; 4],
-    radii: [f32; 4],
-}
-
-impl GpuShadowRectInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
-        0 => Float32x4,
-        1 => Float32x4,
-        2 => Float32x4,
-        3 => Float32x4,
-        4 => Float32x4
-    ];
-
-    fn new(
-        draw_rect: UiRect,
-        shape_rect: UiRect,
-        color: [f32; 4],
-        radii: CornerRadii,
-        blur_radius: f32,
-    ) -> Self {
-        Self {
-            draw_rect: [draw_rect.x, draw_rect.y, draw_rect.width, draw_rect.height],
-            shape_rect: [
-                shape_rect.x,
-                shape_rect.y,
-                shape_rect.width,
-                shape_rect.height,
+            clip_radii: [
+                clip_radii.top_left,
+                clip_radii.top_right,
+                clip_radii.bottom_right,
+                clip_radii.bottom_left,
             ],
-            color,
-            params: [0.0, blur_radius.max(0.0), 0.0, 0.0],
-            radii: corner_radii_to_array(normalized_corner_radii_for_rect(
-                radii,
-                shape_rect.width,
-                shape_rect.height,
-            )),
+            _pad: [0.0; 2],
         }
     }
 
@@ -2395,12 +2385,10 @@ impl GpuShadowRectInstance {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GeometryBatchKind {
-    Rect,
+    Sdf(SdfPipelineKind),
     Triangle,
     TexturedRect,
     CompositedRect,
-    SdfRect,
-    ShadowRect,
     Text,
 }
 
@@ -2408,7 +2396,7 @@ enum GeometryBatchKind {
 struct GeometryBatch {
     kind: GeometryBatchKind,
     clip: UiRect,
-    texture_key: Option<String>,
+    texture_key: Option<WgpuTextureKey<'static>>,
     start: u32,
     count: u32,
 }
@@ -2548,6 +2536,7 @@ struct TextBufferKey {
     style: FontStyle,
     stretch: FontStretch,
     wrap: TextWrap,
+    overflow: TextOverflow,
     horizontal_align: TextHorizontalAlign,
 }
 
@@ -2564,6 +2553,7 @@ impl TextBufferKey {
             style: text.style.style,
             stretch: text.style.stretch,
             wrap: text.style.wrap,
+            overflow: text.style.overflow,
             horizontal_align: text.horizontal_align,
         }
     }
@@ -2578,6 +2568,7 @@ impl TextBufferKey {
             && self.style == other.style
             && self.stretch == other.stretch
             && self.wrap == other.wrap
+            && self.overflow == other.overflow
             && self.horizontal_align == other.horizontal_align
     }
 }
@@ -2624,11 +2615,10 @@ impl TextRenderKey {
 
 #[derive(Debug, Clone, Default)]
 struct RenderGeometry {
-    rects: Vec<GpuRectInstance>,
+    shapes: Vec<SdfInstance>,
+    gradient_stops: Vec<SdfGradientStop>,
     textured_rects: Vec<GpuTexturedRectInstance>,
     composited_rects: Vec<GpuCompositedRectInstance>,
-    sdf_rects: Vec<GpuSdfRectInstance>,
-    shadow_rects: Vec<GpuShadowRectInstance>,
     vertices: Vec<GpuVertex>,
     texts: Vec<TextPaint>,
     batches: Vec<GeometryBatch>,
@@ -2636,11 +2626,10 @@ struct RenderGeometry {
 
 impl RenderGeometry {
     fn clear(&mut self) {
-        self.rects.clear();
+        self.shapes.clear();
+        self.gradient_stops.clear();
         self.textured_rects.clear();
         self.composited_rects.clear();
-        self.sdf_rects.clear();
-        self.shadow_rects.clear();
         self.vertices.clear();
         self.texts.clear();
         self.batches.clear();
@@ -2650,14 +2639,14 @@ impl RenderGeometry {
         &mut self,
         kind: GeometryBatchKind,
         clip: UiRect,
-        texture_key: Option<&str>,
+        texture_key: Option<WgpuTextureKey<'_>>,
         start: u32,
         count: u32,
     ) {
         if let Some(batch) = self.batches.last_mut() {
             if batch.kind == kind
                 && batch.clip == clip
-                && batch.texture_key.as_deref() == texture_key
+                && batch.texture_key == texture_key
                 && batch
                     .start
                     .checked_add(batch.count)
@@ -2671,7 +2660,7 @@ impl RenderGeometry {
         self.batches.push(GeometryBatch {
             kind,
             clip,
-            texture_key: texture_key.map(str::to_owned),
+            texture_key: texture_key.map(WgpuTextureKey::into_owned),
             start,
             count,
         });
@@ -2698,34 +2687,20 @@ impl RenderGeometry {
         );
     }
 
-    fn push_quad(&mut self, clip: UiRect, points: [UiPoint; 4], color: [f32; 4]) {
-        self.push_gradient_quad(clip, points, [color; 4]);
-    }
-
-    fn push_gradient_quad(&mut self, clip: UiRect, points: [UiPoint; 4], colors: [[f32; 4]; 4]) {
-        let Ok(vertex_start) = u32::try_from(self.vertices.len()) else {
+    fn push_shape(&mut self, clip: UiRect, shape: SdfInstance) {
+        if !shape.intersects_clip(clip)
+            || (shape.color[3] == 0.0
+                && shape.border_color[3] == 0.0
+                && shape.gradient_range[1] == 0)
+        {
             return;
-        };
-        self.vertices.reserve(6);
-        for (point, color) in [
-            (points[0], colors[0]),
-            (points[1], colors[1]),
-            (points[2], colors[2]),
-            (points[0], colors[0]),
-            (points[2], colors[2]),
-            (points[3], colors[3]),
-        ] {
-            self.vertices.push(GpuVertex::new(point, color));
         }
-        self.push_batch(GeometryBatchKind::Triangle, clip, None, vertex_start, 6);
-    }
-
-    fn push_rect(&mut self, clip: UiRect, rect: UiRect, color: [f32; 4]) {
-        let Ok(start) = u32::try_from(self.rects.len()) else {
+        let Ok(start) = u32::try_from(self.shapes.len()) else {
             return;
         };
-        self.rects.push(GpuRectInstance::new(rect, color));
-        self.push_batch(GeometryBatchKind::Rect, clip, None, start, 1);
+        let kind = shape.pipeline_kind();
+        self.shapes.push(shape);
+        self.push_batch(GeometryBatchKind::Sdf(kind), clip, None, start, 1);
     }
 
     fn push_textured_rect(
@@ -2744,7 +2719,7 @@ impl RenderGeometry {
         self.push_batch(
             GeometryBatchKind::TexturedRect,
             clip,
-            Some(texture_key),
+            Some(WgpuTextureKey::Resource(Cow::Borrowed(texture_key))),
             start,
             1,
         );
@@ -2753,7 +2728,7 @@ impl RenderGeometry {
     fn push_composited_rect(
         &mut self,
         clip: UiRect,
-        texture_key: &str,
+        texture_key: WgpuTextureKey<'static>,
         instance: GpuCompositedRectInstance,
     ) {
         let Ok(start) = u32::try_from(self.composited_rects.len()) else {
@@ -2767,37 +2742,6 @@ impl RenderGeometry {
             start,
             1,
         );
-    }
-
-    fn push_sdf_rect(&mut self, clip: UiRect, rect: UiRect, color: [f32; 4], radii: CornerRadii) {
-        let Ok(start) = u32::try_from(self.sdf_rects.len()) else {
-            return;
-        };
-        self.sdf_rects
-            .push(GpuSdfRectInstance::new(rect, color, radii));
-        self.push_batch(GeometryBatchKind::SdfRect, clip, None, start, 1);
-    }
-
-    fn push_shadow_rect(
-        &mut self,
-        clip: UiRect,
-        draw_rect: UiRect,
-        shape_rect: UiRect,
-        color: [f32; 4],
-        radii: CornerRadii,
-        blur_radius: f32,
-    ) {
-        let Ok(start) = u32::try_from(self.shadow_rects.len()) else {
-            return;
-        };
-        self.shadow_rects.push(GpuShadowRectInstance::new(
-            draw_rect,
-            shape_rect,
-            color,
-            radii,
-            blur_radius,
-        ));
-        self.push_batch(GeometryBatchKind::ShadowRect, clip, None, start, 1);
     }
 
     fn push_text(&mut self, text: TextPaint) {
@@ -2893,11 +2837,11 @@ impl WgpuRenderer {
     pub fn warm_up(&mut self) -> Result<(), RenderError> {
         let context = self.ensure_context()?;
         let _ = context.triangle_pipeline(OFFSCREEN_FORMAT);
-        let _ = context.rect_pipeline(OFFSCREEN_FORMAT);
         let _ = context.textured_rect_pipeline(OFFSCREEN_FORMAT);
         let _ = context.composited_rect_pipeline(OFFSCREEN_FORMAT);
-        let _ = context.sdf_rect_pipeline(OFFSCREEN_FORMAT);
-        let _ = context.shadow_rect_pipeline(OFFSCREEN_FORMAT);
+        for kind in SdfPipelineKind::ALL {
+            let _ = context.sdf_pipeline(OFFSCREEN_FORMAT, kind);
+        }
         context.prepare_glyphon_text(
             PixelSize::new(512, 128),
             OFFSCREEN_FORMAT,
@@ -2945,9 +2889,9 @@ impl WgpuRenderer {
             request.options.scale_factor,
         )?;
         let target_kind = request.target.kind();
-        let clear_color = clear_color_for_request(&request);
+        let clear_color = request.options.clear_color;
         let mut context = WgpuContext::new(device.clone(), queue.clone(), &self.font_library)?;
-        context.upload_resource_updates(&request.resource_updates)?;
+        context.upload_resource_updates(&request.resource_updates, None)?;
         context.begin_frame();
         self.geometry.clear();
         build_geometry_into(
@@ -2956,6 +2900,7 @@ impl WgpuRenderer {
             &mut context,
             UiPoint::new(0.0, 0.0),
             request.options.scale_factor,
+            None,
         )?;
         let mut output = RenderFrameOutput::new(request.target);
         output.painted_items = request.paint.items.len();
@@ -2994,7 +2939,13 @@ impl WgpuRenderer {
     /// the same `wgpu::Device` and `wgpu::Queue` that created `encoder` and
     /// `target.view`. This method records commands only; the caller remains
     /// responsible for submitting the encoder and presenting the target. This
-    /// method does not record GPU timing; use
+    /// includes image uploads, embedded canvas programs, and composited layers:
+    /// multiple calls can be recorded before submission without overwriting an
+    /// earlier pass's geometry or text. Submit dependent resource updates in
+    /// recording order; later passes can reuse images updated by earlier ones.
+    /// Dropping an encoder discards its recorded uploads as well as its draws.
+    ///
+    /// This method does not record GPU timing; use
     /// [`WgpuRenderer::render_frame_into_view_with_encoder_timed`] when the
     /// caller will resolve timing after queue submission.
     pub fn render_frame_into_view_with_encoder(
@@ -3068,11 +3019,11 @@ impl WgpuRenderer {
             request.viewport,
             request.options.scale_factor,
         )?;
-        let clear_color = clear_color_for_request(&request);
+        let clear_color = request.options.clear_color;
         let load_op = target.resolved_load_op(clear_color);
         {
             let context = self.ensure_context()?;
-            context.upload_resource_updates(&request.resource_updates)?;
+            context.upload_resource_updates(&request.resource_updates, Some(&mut *encoder))?;
             context.begin_frame();
         }
         let mut geometry = mem::take(&mut self.geometry);
@@ -3083,13 +3034,14 @@ impl WgpuRenderer {
             let context = self.context.as_mut().ok_or_else(|| {
                 RenderError::Backend("wgpu backend failed to initialize".to_string())
             })?;
-            render_embedded_canvas_programs(context, &request)?;
+            render_embedded_canvas_programs(context, &request, Some(&mut *encoder))?;
             build_geometry_into(
                 &mut geometry,
                 &request.paint,
                 context,
                 UiPoint::new(0.0, 0.0),
                 request.options.scale_factor,
+                Some(&mut *encoder),
             )?;
             gpu_timer_used = record_render_pass(
                 context,
@@ -3101,6 +3053,7 @@ impl WgpuRenderer {
                 load_op,
                 true,
                 collect_gpu_timing,
+                true,
             )?;
         }
         let gpu_timing_token = if gpu_timer_used {
@@ -3123,6 +3076,62 @@ impl WgpuRenderer {
             frame: output,
             gpu_timing_token,
         })
+    }
+
+    fn prepare_frame<T>(
+        &mut self,
+        request: RenderFrameRequest,
+        resolver: &dyn ResourceResolver,
+        acquire: impl FnOnce(&mut WgpuContext, PixelSize) -> Result<T, RenderError>,
+    ) -> Result<PreparedWgpuFrame<T>, RenderError> {
+        let batch_started = Instant::now();
+        let batches = request.batches();
+        let batch_duration = batch_started.elapsed();
+        self.validate_resource_updates(&request, resolver)?;
+        let size = render_target_pixel_size(
+            &request.target,
+            request.viewport,
+            request.options.scale_factor,
+        )?;
+        self.ensure_context()?;
+        let context = self
+            .context
+            .as_mut()
+            .ok_or_else(|| RenderError::Backend("wgpu backend failed to initialize".to_string()))?;
+        // Hosts retain uploads after temporary presentation failures. Acquire
+        // first: replaying an already-applied patch followed by a full resize
+        // would try to apply the old patch against the new resource shape.
+        let acquire_started = Instant::now();
+        let acquired = acquire(context, size)?;
+        let acquire_duration = acquire_started.elapsed();
+        let mut geometry = mem::take(&mut self.geometry);
+        geometry.clear();
+        let prepared = (|| {
+            context.upload_resource_updates(&request.resource_updates, None)?;
+            context.begin_frame();
+            render_embedded_canvas_programs(context, &request, None)?;
+            build_geometry_into(
+                &mut geometry,
+                &request.paint,
+                context,
+                UiPoint::new(0.0, 0.0),
+                request.options.scale_factor,
+                None,
+            )?;
+            let mut output = RenderFrameOutput::new(request.target);
+            output.painted_items = request.paint.items.len();
+            output.batches = batches;
+            output.dirty_regions = request.dirty_regions;
+            output.timings = FrameTiming::new().section("batch", batch_duration);
+            Ok(PreparedWgpuFrame {
+                acquired,
+                acquire_duration,
+                size,
+                output,
+            })
+        })();
+        self.geometry = geometry;
+        prepared
     }
 
     fn validate_resource_updates(
@@ -3245,11 +3254,24 @@ impl Default for WgpuRenderer {
     }
 }
 
+struct PreparedWgpuFrame<T> {
+    acquired: T,
+    acquire_duration: Duration,
+    size: PixelSize,
+    output: RenderFrameOutput,
+}
+
+#[derive(Debug)]
+struct WgpuSurfaceTarget<'window> {
+    surface: wgpu::Surface<'window>,
+    surface_config: wgpu::SurfaceConfiguration,
+    surface_needs_reconfigure: bool,
+}
+
 #[derive(Debug)]
 pub struct WgpuSurfaceRenderer<'window> {
     renderer: WgpuRenderer,
-    surface: wgpu::Surface<'window>,
-    surface_config: wgpu::SurfaceConfiguration,
+    target: WgpuSurfaceTarget<'window>,
 }
 
 impl<'window> WgpuSurfaceRenderer<'window> {
@@ -3283,12 +3305,20 @@ impl<'window> WgpuSurfaceRenderer<'window> {
             let context = renderer.context.as_ref().ok_or_else(|| {
                 RenderError::Backend("wgpu surface renderer failed to initialize".to_string())
             })?;
+            validate_texture_size(
+                PixelSize::new(surface_config.width, surface_config.height),
+                context.limits.max_texture_dimension_2d,
+                "surface",
+            )?;
             surface.configure(&context.device, &surface_config);
         }
         Ok(Self {
             renderer,
-            surface,
-            surface_config,
+            target: WgpuSurfaceTarget {
+                surface,
+                surface_config,
+                surface_needs_reconfigure: false,
+            },
         })
     }
 
@@ -3331,43 +3361,14 @@ impl<'window> WgpuSurfaceRenderer<'window> {
 
     fn render_to_surface(
         &mut self,
+        frame: Option<wgpu::SurfaceTexture>,
         size: PixelSize,
         clear_color: ColorRgba,
         collect_gpu_timing: bool,
     ) -> Result<Option<Duration>, RenderError> {
-        if size.width == 0 || size.height == 0 {
+        let Some(frame) = frame else {
             return Ok(None);
-        }
-
-        self.configure_surface(size)?;
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                self.configure_surface(size)?;
-                match self.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(frame)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                    other => {
-                        return Err(RenderError::Backend(format!(
-                            "surface reacquire failed: {other:?}"
-                        )));
-                    }
-                }
-            }
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                return Err(RenderError::Backend(
-                    "surface acquire timed out".to_string(),
-                ));
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => return Ok(None),
-            other => {
-                return Err(RenderError::Backend(format!(
-                    "surface acquire failed: {other:?}"
-                )));
-            }
         };
-
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -3383,12 +3384,13 @@ impl<'window> WgpuSurfaceRenderer<'window> {
             context,
             &mut encoder,
             &view,
-            self.surface_config.format,
+            self.target.surface_config.format,
             size,
             &self.renderer.geometry,
             WgpuRenderLoadOp::Clear(clear_color),
             true,
             collect_gpu_timing,
+            false,
         )?;
         context.queue.submit(Some(encoder.finish()));
         frame.present();
@@ -3398,14 +3400,69 @@ impl<'window> WgpuSurfaceRenderer<'window> {
             Ok(None)
         }
     }
+}
 
-    fn configure_surface(&mut self, size: PixelSize) -> Result<(), RenderError> {
+impl WgpuSurfaceTarget<'_> {
+    fn acquire(
+        &mut self,
+        context: &WgpuContext,
+        size: PixelSize,
+    ) -> Result<Option<wgpu::SurfaceTexture>, RenderError> {
+        if size.width == 0 || size.height == 0 {
+            return Ok(None);
+        }
+
+        self.configure_surface(context, size)?;
+        let mut acquired = self.surface.get_current_texture();
+        if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated) {
+            // A surface can become outdated without changing pixel dimensions.
+            self.surface_needs_reconfigure = true;
+            self.configure_surface(context, size)?;
+            acquired = self.surface.get_current_texture();
+        }
+        let frame = match acquired {
+            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                // Reconfigure only after this texture has been presented/dropped.
+                self.surface_needs_reconfigure = true;
+                frame
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                return Err(RenderError::SurfaceUnavailable(
+                    "surface acquire timed out".to_string(),
+                ));
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.surface_needs_reconfigure = true;
+                return Err(RenderError::SurfaceUnavailable(
+                    "surface remained outdated after reconfiguration".to_string(),
+                ));
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => return Ok(None),
+            wgpu::CurrentSurfaceTexture::Lost => {
+                return Err(RenderError::Backend(
+                    "surface was lost and must be recreated before rendering".to_string(),
+                ));
+            }
+            other => {
+                return Err(RenderError::Backend(format!(
+                    "surface acquire failed: {other:?}"
+                )));
+            }
+        };
+
+        Ok(Some(frame))
+    }
+
+    fn configure_surface(
+        &mut self,
+        context: &WgpuContext,
+        size: PixelSize,
+    ) -> Result<(), RenderError> {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
-        let context = self.renderer.context.as_ref().ok_or_else(|| {
-            RenderError::Backend("wgpu surface renderer missing context".to_string())
-        })?;
+        validate_texture_size(size, context.limits.max_texture_dimension_2d, "surface")?;
 
         let needs_resize =
             self.surface_config.width != size.width || self.surface_config.height != size.height;
@@ -3422,9 +3479,10 @@ impl<'window> WgpuSurfaceRenderer<'window> {
             self.surface_config.width = size.width;
             self.surface_config.height = size.height;
         }
-        if needs_resize {
+        if needs_resize || self.surface_needs_reconfigure {
             self.surface
                 .configure(&context.device, &self.surface_config);
+            self.surface_needs_reconfigure = false;
         }
         Ok(())
     }
@@ -3448,51 +3506,28 @@ impl<'window> RendererAdapter for WgpuSurfaceRenderer<'window> {
             return self.renderer.render_frame(request, resolver);
         }
 
-        let batch_started = Instant::now();
-        let batches = request.batches();
-        let batch_duration = batch_started.elapsed();
-
-        self.renderer
-            .validate_resource_updates(&request, resolver)?;
-
-        let size = render_target_pixel_size(
-            &request.target,
-            request.viewport,
-            request.options.scale_factor,
-        )?;
-        let clear_color = clear_color_for_request(&request);
-        self.renderer.geometry.clear();
-        {
-            let context = self.renderer.context.as_mut().ok_or_else(|| {
-                RenderError::Backend("wgpu surface renderer missing context".to_string())
+        let clear_color = request.options.clear_color;
+        let collect_gpu_timing = request.options.collect_gpu_timing;
+        let prepared = self
+            .renderer
+            .prepare_frame(request, resolver, |context, size| {
+                self.target.acquire(context, size)
             })?;
-            context.upload_resource_updates(&request.resource_updates)?;
-            context.begin_frame();
-            render_embedded_canvas_programs(context, &request)?;
-            build_geometry_into(
-                &mut self.renderer.geometry,
-                &request.paint,
-                context,
-                UiPoint::new(0.0, 0.0),
-                request.options.scale_factor,
-            )?;
-        }
-        let mut output = RenderFrameOutput::new(request.target.clone());
-        output.painted_items = request.paint.items.len();
-        output.batches = batches;
-        output.dirty_regions = request.dirty_regions.clone();
-
+        let mut output = prepared.output;
         let render_started = Instant::now();
-        let gpu_render_duration =
-            self.render_to_surface(size, clear_color, request.options.collect_gpu_timing)?;
-
-        let mut timings = FrameTiming::new()
-            .section("batch", batch_duration)
-            .section("render", render_started.elapsed());
+        let gpu_render_duration = self.render_to_surface(
+            prepared.acquired,
+            prepared.size,
+            clear_color,
+            collect_gpu_timing,
+        )?;
+        output.timings = output.timings.section(
+            "render",
+            prepared.acquire_duration + render_started.elapsed(),
+        );
         if let Some(duration) = gpu_render_duration {
-            timings = timings.section("gpu-render", duration);
+            output.timings = output.timings.section("gpu-render", duration);
         }
-        output.timings = timings;
         Ok(output)
     }
 }
@@ -3529,45 +3564,12 @@ impl RendererAdapter for WgpuRenderer {
         request: RenderFrameRequest,
         resolver: &dyn ResourceResolver,
     ) -> Result<RenderFrameOutput, RenderError> {
-        let batch_started = Instant::now();
-        let batches = request.batches();
-        let batch_duration = batch_started.elapsed();
-
-        self.validate_resource_updates(&request, resolver)?;
-
-        let size = render_target_pixel_size(
-            &request.target,
-            request.viewport,
-            request.options.scale_factor,
-        )?;
         let target_kind = request.target.kind();
-        let clear_color = clear_color_for_request(&request);
-        {
-            let context = self.ensure_context()?;
-            context.upload_resource_updates(&request.resource_updates)?;
-            context.begin_frame();
-        }
-        let mut geometry = mem::take(&mut self.geometry);
-        geometry.clear();
-        {
-            let context = self.context.as_mut().ok_or_else(|| {
-                RenderError::Backend("wgpu backend failed to initialize".to_string())
-            })?;
-            render_embedded_canvas_programs(context, &request)?;
-            build_geometry_into(
-                &mut geometry,
-                &request.paint,
-                context,
-                UiPoint::new(0.0, 0.0),
-                request.options.scale_factor,
-            )?;
-        }
-        self.geometry = geometry;
-        let mut output = RenderFrameOutput::new(request.target);
-        output.painted_items = request.paint.items.len();
-        output.batches = batches;
-        output.dirty_regions = request.dirty_regions;
-
+        let clear_color = request.options.clear_color;
+        let collect_gpu_timing = request.options.collect_gpu_timing;
+        let prepared = self.prepare_frame(request, resolver, |_, _| Ok(()))?;
+        let size = prepared.size;
+        let mut output = prepared.output;
         let render_started = Instant::now();
         let mut gpu_render_duration = None;
         if matches!(
@@ -3578,16 +3580,12 @@ impl RendererAdapter for WgpuRenderer {
             output.snapshot = Some(RenderedImage::new(size, ResourceFormat::Rgba8, snapshot));
         } else {
             gpu_render_duration =
-                self.render_discard_frame(size, clear_color, request.options.collect_gpu_timing)?;
+                self.render_discard_frame(size, clear_color, collect_gpu_timing)?;
         }
-
-        let mut timings = FrameTiming::new()
-            .section("batch", batch_duration)
-            .section("render", render_started.elapsed());
+        output.timings = output.timings.section("render", render_started.elapsed());
         if let Some(duration) = gpu_render_duration {
-            timings = timings.section("gpu-render", duration);
+            output.timings = output.timings.section("gpu-render", duration);
         }
-        output.timings = timings;
         Ok(output)
     }
 }
@@ -3595,33 +3593,48 @@ impl RendererAdapter for WgpuRenderer {
 fn render_embedded_canvas_programs(
     context: &mut WgpuContext,
     request: &RenderFrameRequest,
+    mut encoder: Option<&mut wgpu::CommandEncoder>,
 ) -> Result<(), RenderError> {
-    for canvas_request in request.canvas_requests() {
-        let Some(program) = canvas_request.canvas.program.as_ref() else {
+    for (item, canvas) in request.canvas_items() {
+        let Some(program) = canvas.program.as_ref() else {
             continue;
         };
-        let size = canvas_surface_size(canvas_request.rect, request.options.scale_factor);
-        let canvas_context = context.canvas_context(&canvas_request.canvas, size)?;
-        if canvas_context
-            .render_pass(
-                WgpuCanvasRenderPass::wgsl(Cow::Borrowed(program.wgsl.as_str()))
-                    .label(program.label.as_deref())
-                    .vertex_entry_point(program.vertex_entry_point.as_str())
-                    .fragment_entry_point(program.fragment_entry_point.as_str())
-                    .clear_color(program.clear_color)
-                    .constants(
-                        program
-                            .constants
-                            .iter()
-                            .map(|constant| (constant.name.as_str(), constant.value)),
-                    ),
-            )
-            .is_err()
-        {
-            canvas_context.clear(ColorRgba::new(88, 20, 34, 255));
+        let size = canvas_surface_size(item.rect, request.options.scale_factor);
+        let canvas_context = context.canvas_context(canvas, size)?;
+        let descriptor = embedded_canvas_render_pass(program);
+        let result = if let Some(encoder) = encoder.as_deref_mut() {
+            canvas_context.record_render_pass(encoder, descriptor)
+        } else {
+            canvas_context.render_pass(descriptor)
+        };
+        if result.is_err() {
+            let color = ColorRgba::new(88, 20, 34, 255);
+            if let Some(encoder) = encoder.as_deref_mut() {
+                drop(canvas_context.begin_render_pass(encoder, Some(color)));
+            } else {
+                canvas_context.clear(color);
+            }
         }
     }
     Ok(())
+}
+
+fn embedded_canvas_render_pass(program: &crate::CanvasRenderProgram) -> WgpuCanvasRenderPass<'_> {
+    let mut pass = WgpuCanvasRenderPass::wgsl(Cow::Borrowed(program.wgsl.as_str()))
+        .label(program.label.as_deref())
+        .vertex_entry_point(program.vertex_entry_point.as_str())
+        .fragment_entry_point(program.fragment_entry_point.as_str())
+        .clear_color(program.clear_color)
+        .constants(
+            program
+                .constants
+                .iter()
+                .map(|constant| (constant.name.as_str(), constant.value)),
+        );
+    if let Some(uniforms) = program.uniforms.as_deref() {
+        pass = pass.uniform_bytes(Cow::Borrowed(uniforms));
+    }
+    pass
 }
 
 fn canvas_surface_size(rect: UiRect, scale_factor: f32) -> PixelSize {
@@ -3660,6 +3673,7 @@ fn record_discard_frame(
         WgpuRenderLoadOp::Clear(clear_color),
         true,
         collect_gpu_timing,
+        false,
     )
 }
 
@@ -3674,20 +3688,22 @@ fn render_snapshot_with_context(
         return Ok(Vec::new());
     }
 
-    let texture = context.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("operad-wgpu-snapshot-texture"),
-        size: Extent3d {
-            width: size.width,
-            height: size.height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: OFFSCREEN_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let padded_row_stride = upload_row_stride(size.width)?;
+    let padded_size = u64::from(padded_row_stride)
+        .checked_mul(u64::from(size.height))
+        .ok_or_else(|| RenderError::Backend("wgpu readback buffer too large".to_string()))?;
+    if padded_size > context.limits.max_buffer_size {
+        return Err(RenderError::Backend(format!(
+            "wgpu snapshot readback requires {padded_size} bytes, exceeding device buffer limit {}",
+            context.limits.max_buffer_size
+        )));
+    }
+    let texture = context.create_texture_2d(
+        "operad-wgpu-snapshot-texture",
+        size,
+        OFFSCREEN_FORMAT,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    )?;
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let mut encoder = context
         .device
@@ -3704,12 +3720,9 @@ fn render_snapshot_with_context(
         WgpuRenderLoadOp::Clear(clear_color),
         true,
         false,
+        false,
     )?;
 
-    let padded_row_stride = upload_row_stride(size.width)?;
-    let padded_size = u64::from(padded_row_stride)
-        .checked_mul(u64::from(size.height))
-        .ok_or_else(|| RenderError::Backend("wgpu readback buffer too large".to_string()))?;
     let readback_buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("operad-wgpu-readback-buffer"),
         size: padded_size,
@@ -3795,33 +3808,46 @@ fn record_render_pass(
     load_op: WgpuRenderLoadOp,
     render_text: bool,
     collect_gpu_timing: bool,
+    encode_uploads: bool,
 ) -> Result<bool, RenderError> {
     if size.width == 0 || size.height == 0 {
         return Ok(false);
     }
+    validate_texture_size(
+        size,
+        context.limits.max_texture_dimension_2d,
+        "render target",
+    )?;
 
-    context.write_scene_uniform(size);
+    // Queue writes precede all commands in a submission. Caller-owned passes
+    // instead copy their data immediately before drawing so later recordings
+    // cannot overwrite an earlier pass's shared buffers.
+    let mut uploads = encode_uploads.then_some(&mut *encoder);
+    context.write_scene_uniform(size, uploads.as_deref_mut());
     let text_batch_chunks = if render_text {
         context.prepare_glyphon_text_batches(size, format, geometry)?
     } else {
         vec![Vec::new(); geometry.batches.len()]
     };
     let bind_group = context.scene_bind_group.clone();
-    let rect_buffer = context.rect_buffer_for(&geometry.rects);
-    let textured_rect_buffer = context.textured_rect_buffer_for(&geometry.textured_rects);
-    let composited_rect_buffer = context.composited_rect_buffer_for(&geometry.composited_rects);
-    let sdf_rect_buffer = context.sdf_rect_buffer_for(&geometry.sdf_rects);
-    let shadow_rect_buffer = context.shadow_rect_buffer_for(&geometry.shadow_rects);
-    let vertex_buffer = context.vertex_buffer_for(&geometry.vertices);
+    let textured_rect_buffer =
+        context.textured_rect_buffer_for(&geometry.textured_rects, uploads.as_deref_mut());
+    let composited_rect_buffer =
+        context.composited_rect_buffer_for(&geometry.composited_rects, uploads.as_deref_mut());
+    let sdf_buffers = context.sdf_buffers_for(
+        &geometry.shapes,
+        &geometry.gradient_stops,
+        uploads.as_deref_mut(),
+    )?;
+    let vertex_buffer = context.vertex_buffer_for(&geometry.vertices, uploads.as_deref_mut());
     let texture_bind_groups = geometry
         .batches
         .iter()
         .filter_map(|batch| batch.texture_key.as_ref())
         .filter_map(|key| {
             context
-                .textures
-                .get(key)
-                .map(|texture| (key.clone(), texture.bind_group.clone()))
+                .texture(key)
+                .map(|texture| (key, texture.bind_group.clone()))
         })
         .collect::<HashMap<_, _>>();
 
@@ -3829,12 +3855,17 @@ fn record_render_pass(
         WgpuRenderLoadOp::Clear(color) => wgpu::LoadOp::Clear(wgpu_color_for_format(color, format)),
         WgpuRenderLoadOp::Load => wgpu::LoadOp::Load,
     };
-    let rect_pipeline = context.rect_pipeline(format).clone();
     let triangle_pipeline = context.triangle_pipeline(format).clone();
     let textured_rect_pipeline = context.textured_rect_pipeline(format).clone();
     let composited_rect_pipeline = context.composited_rect_pipeline(format).clone();
-    let sdf_rect_pipeline = context.sdf_rect_pipeline(format).clone();
-    let shadow_rect_pipeline = context.shadow_rect_pipeline(format).clone();
+    let mut sdf_pipelines = HashMap::new();
+    for batch in &geometry.batches {
+        if let GeometryBatchKind::Sdf(kind) = batch.kind {
+            sdf_pipelines
+                .entry(kind)
+                .or_insert_with(|| context.sdf_pipeline(format, kind).clone());
+        }
+    }
     if collect_gpu_timing && context.has_pending_gpu_timing() {
         return Err(RenderError::Backend(
             "resolve the previous WGPU GPU timing token before recording another timed pass"
@@ -3874,12 +3905,13 @@ fn record_render_pass(
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.set_bind_group(0, &bind_group, &[]);
         match batch.kind {
-            GeometryBatchKind::Rect => {
-                let Some(rect_buffer) = &rect_buffer else {
+            GeometryBatchKind::Sdf(kind) => {
+                let Some((buffer, gradients)) = &sdf_buffers else {
                     continue;
                 };
-                pass.set_pipeline(&rect_pipeline);
-                pass.set_vertex_buffer(0, rect_buffer.slice(..));
+                pass.set_pipeline(&sdf_pipelines[&kind]);
+                pass.set_bind_group(1, gradients, &[]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..6, batch.start..batch.start + batch.count);
             }
             GeometryBatchKind::Triangle => {
@@ -3920,22 +3952,6 @@ fn record_render_pass(
                 pass.set_vertex_buffer(0, composited_rect_buffer.slice(..));
                 pass.draw(0..6, batch.start..batch.start + batch.count);
             }
-            GeometryBatchKind::SdfRect => {
-                let Some(sdf_rect_buffer) = &sdf_rect_buffer else {
-                    continue;
-                };
-                pass.set_pipeline(&sdf_rect_pipeline);
-                pass.set_vertex_buffer(0, sdf_rect_buffer.slice(..));
-                pass.draw(0..6, batch.start..batch.start + batch.count);
-            }
-            GeometryBatchKind::ShadowRect => {
-                let Some(shadow_rect_buffer) = &shadow_rect_buffer else {
-                    continue;
-                };
-                pass.set_pipeline(&shadow_rect_pipeline);
-                pass.set_vertex_buffer(0, shadow_rect_buffer.slice(..));
-                pass.draw(0..6, batch.start..batch.start + batch.count);
-            }
             GeometryBatchKind::Text => {
                 context.render_glyphon_text_chunks(&mut pass, &text_batch_chunks[batch_index])?;
             }
@@ -3961,6 +3977,7 @@ fn build_geometry_into(
     context: &mut WgpuContext,
     origin: UiPoint,
     target_scale: f32,
+    mut encoder: Option<&mut wgpu::CommandEncoder>,
 ) -> Result<(), RenderError> {
     let target_scale = normalized_render_scale(target_scale);
     let occluded = paint_occlusion_mask(paint, origin, target_scale);
@@ -3973,7 +3990,15 @@ fn build_geometry_into(
         if let Some(shader) =
             paint_item_shader(item).filter(|shader| shader_effect_is_supported(shader))
         {
-            push_shadered_paint_item(geometry, item, shader, transform, clip, context)?;
+            push_shadered_paint_item(
+                geometry,
+                item,
+                shader,
+                transform,
+                clip,
+                context,
+                encoder.as_deref_mut(),
+            )?;
             continue;
         }
         match &item.kind {
@@ -3983,23 +4008,19 @@ fn build_geometry_into(
                 corner_radius,
             } => {
                 let rect = transform.transform_rect(item.rect);
-                push_fill_rect_with_radius(
-                    geometry,
+                if let Some(shape) = SdfInstance::rectangle(
                     rect,
-                    clip,
-                    *fill,
+                    color_as_vertex(*fill, item.opacity),
+                    CornerRadii::uniform(corner_radius * transform.scale),
+                    stroke.map(|s| {
+                        (
+                            scaled_stroke(s, transform.scale),
+                            crate::StrokeAlignment::Inside,
+                        )
+                    }),
                     item.opacity,
-                    corner_radius * transform.scale.max(0.0),
-                );
-                if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
-                    push_stroke_rect(
-                        geometry,
-                        rect,
-                        clip,
-                        stroke,
-                        item.opacity,
-                        corner_radius * transform.scale.max(0.0),
-                    );
+                ) {
+                    geometry.push_shape(clip, shape);
                 }
             }
             PaintKind::Text(text) => push_text(
@@ -4014,12 +4035,17 @@ fn build_geometry_into(
                 transform,
             ),
             PaintKind::SceneText(text) => {
+                let mut style = text.style.clone();
+                style.overflow = text.overflow;
+                if !text.multiline {
+                    style.wrap = TextWrap::None;
+                }
                 push_text(
                     geometry,
                     text.rect,
                     clip,
                     &text.text,
-                    &text.style,
+                    &style,
                     text.horizontal_align,
                     text.vertical_align,
                     item.opacity,
@@ -4042,7 +4068,7 @@ fn build_geometry_into(
                     transform.transform_point(*from),
                     transform.transform_point(*to),
                     clip,
-                    *stroke,
+                    scaled_stroke(*stroke, transform.scale),
                     item.opacity,
                 );
             }
@@ -4052,11 +4078,14 @@ fn build_geometry_into(
                 fill,
                 stroke,
             } => {
-                let center = transform.transform_point(*center);
-                let radius = radius * transform.scale.max(0.0);
-                push_fill_circle(geometry, center, radius, clip, *fill, item.opacity);
-                if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
-                    push_stroke_circle(geometry, center, radius, clip, stroke, item.opacity);
+                if let Some(shape) = SdfInstance::circle(
+                    transform.transform_point(*center),
+                    radius * transform.scale,
+                    *fill,
+                    stroke.map(|s| scaled_stroke(s, transform.scale)),
+                    item.opacity,
+                ) {
+                    geometry.push_shape(clip, shape);
                 }
             }
             PaintKind::Polygon {
@@ -4071,7 +4100,14 @@ fn build_geometry_into(
                     .collect::<Vec<_>>();
                 push_polygon(geometry, &points, clip, *fill, item.opacity);
                 if let Some(stroke) = stroke.filter(|stroke| stroke.is_visible()) {
-                    push_polyline(geometry, &points, clip, stroke, item.opacity, true);
+                    push_polyline(
+                        geometry,
+                        &points,
+                        clip,
+                        scaled_stroke(stroke, transform.scale),
+                        item.opacity,
+                        true,
+                    );
                 }
             }
             PaintKind::Image { key, tint } => {
@@ -4089,34 +4125,19 @@ fn build_geometry_into(
                 );
             }
             PaintKind::CompositedLayer(layer) => {
-                push_composited_layer(geometry, item, transform, layer, clip, None, context)?;
-            }
-            PaintKind::RichRect(rect_primitive) => {
-                let rect = transform.transform_rect(rect_primitive.rect);
-                let radii =
-                    scaled_corner_radii(rect_primitive.corner_radii, transform.scale.max(0.0));
-                for effect in &rect_primitive.effects {
-                    push_rich_rect_effect(geometry, rect, clip, *effect, item.opacity, radii);
-                }
-                push_fill_brush_rect_with_radii(
+                push_composited_layer(
                     geometry,
-                    rect,
-                    clip,
-                    &rect_primitive.fill,
-                    item.opacity,
-                    radii,
+                    item,
                     transform,
-                );
-                if let Some(stroke) = rect_primitive.stroke.filter(|stroke| stroke.is_visible()) {
-                    push_stroke_rect_with_radii(
-                        geometry,
-                        rect,
-                        clip,
-                        stroke.style,
-                        item.opacity,
-                        radii,
-                    );
-                }
+                    layer,
+                    clip,
+                    None,
+                    context,
+                    encoder.as_deref_mut(),
+                )?;
+            }
+            PaintKind::RichRect(primitive) => {
+                push_rich_rect(geometry, primitive, clip, item.opacity, transform)?;
             }
             PaintKind::Path(path) => {
                 if let Some(fill) = &path.fill {
@@ -4166,6 +4187,7 @@ fn push_shadered_paint_item(
     transform: crate::PaintTransform,
     clip: UiRect,
     context: &mut WgpuContext,
+    encoder: Option<&mut wgpu::CommandEncoder>,
 ) -> Result<(), RenderError> {
     let material_outset = item
         .material
@@ -4205,6 +4227,7 @@ fn push_shadered_paint_item(
         clip,
         Some(shader),
         context,
+        encoder,
     )
 }
 
@@ -4264,13 +4287,22 @@ fn opaque_cover_rect_for_item(
         return None;
     };
     if fill.a < u8::MAX
-        || item.opacity < 0.999
+        || item.opacity < 1.0
         || item.shader.is_some()
         || corner_radius.abs() > f32::EPSILON
     {
         return None;
     }
-    let rect = paint_item_visible_rect_in_target(item, origin, target_scale)?;
+    let clip = paint_rect_in_target(item.clip_rect, origin, target_scale);
+    let transform = paint_transform_in_target(item.transform, origin, target_scale);
+    let bounds = transform.transform_rect(item.rect);
+    let rect = UiRect::new(
+        bounds.x + 0.5,
+        bounds.y + 0.5,
+        bounds.width - 1.0,
+        bounds.height - 1.0,
+    )
+    .intersection(clip)?;
     (rect.width * rect.height >= OCCLUSION_COVER_MIN_AREA).then_some(rect)
 }
 
@@ -4281,11 +4313,84 @@ fn paint_item_visible_rect_in_target(
 ) -> Option<UiRect> {
     let clip = paint_rect_in_target(item.clip_rect, origin, target_scale);
     let transform = paint_transform_in_target(item.transform, origin, target_scale);
-    transform.transform_rect(item.rect).intersection(clip)
+    let bounds_for = |shape: SdfInstance| {
+        let [x, y, w, h] = shape.draw_rect;
+        UiRect::new(x, y, w, h)
+    };
+    let bounds = match &item.kind {
+        PaintKind::Circle {
+            center,
+            radius,
+            fill,
+            stroke,
+        } => bounds_for(SdfInstance::circle(
+            transform.transform_point(*center),
+            radius * transform.scale,
+            *fill,
+            stroke.map(|s| scaled_stroke(s, transform.scale)),
+            item.opacity,
+        )?),
+        PaintKind::Line { from, to, stroke } => bounds_for(SdfInstance::segment(
+            transform.transform_point(*from),
+            transform.transform_point(*to),
+            scaled_stroke(*stroke, transform.scale),
+            item.opacity,
+        )?),
+        PaintKind::RichRect(rect) => {
+            let bounds = transform.transform_rect(rect.rect);
+            let radii = scaled_corner_radii(rect.corner_radii, transform.scale);
+            let stroke = rect
+                .stroke
+                .map(|s| (scaled_stroke(s.style, transform.scale), s.alignment));
+            let mut visible = bounds_for(SdfInstance::rectangle(
+                bounds,
+                [0.0; 4],
+                radii,
+                stroke,
+                item.opacity,
+            )?);
+            for effect in rect
+                .effects
+                .iter()
+                .filter(|e| e.kind != PaintEffectKind::InsetShadow)
+            {
+                let effect = crate::PaintEffect {
+                    offset: UiPoint::new(
+                        effect.offset.x * transform.scale,
+                        effect.offset.y * transform.scale,
+                    ),
+                    spread: effect.spread * transform.scale,
+                    blur_radius: effect.blur_radius * transform.scale,
+                    ..*effect
+                };
+                if let Some(shadow) = SdfInstance::shadow(bounds, radii, effect, item.opacity) {
+                    let shadow = bounds_for(shadow);
+                    let left = visible.x.min(shadow.x);
+                    let top = visible.y.min(shadow.y);
+                    visible = UiRect::new(
+                        left,
+                        top,
+                        visible.right().max(shadow.right()) - left,
+                        visible.bottom().max(shadow.bottom()) - top,
+                    );
+                }
+            }
+            visible
+        }
+        PaintKind::Polygon {
+            stroke: Some(stroke),
+            ..
+        } => expanded_rect(
+            transform.transform_rect(item.rect),
+            1.0 + stroke.width * transform.scale * 0.5,
+        ),
+        _ => expanded_rect(transform.transform_rect(item.rect), 1.0),
+    };
+    bounds.intersection(clip)
 }
 
 fn rect_contains_rect(outer: UiRect, inner: UiRect) -> bool {
-    const EPSILON: f32 = 0.5;
+    const EPSILON: f32 = 0.0;
     inner.x + EPSILON >= outer.x
         && inner.y + EPSILON >= outer.y
         && inner.right() <= outer.right() + EPSILON
@@ -4380,6 +4485,7 @@ fn push_composited_layer(
     clip: UiRect,
     shader: Option<&ShaderEffect>,
     context: &mut WgpuContext,
+    encoder: Option<&mut wgpu::CommandEncoder>,
 ) -> Result<(), RenderError> {
     let opacity = item.opacity * layer.opacity;
     if opacity <= 0.0 || layer.bounds.width <= 0.0 || layer.bounds.height <= 0.0 {
@@ -4391,7 +4497,7 @@ fn push_composited_layer(
         return Ok(());
     };
 
-    let (texture_key, texture_size) = render_composited_layer_to_texture(context, layer)?;
+    let (texture_key, texture_size) = render_composited_layer_to_texture(context, layer, encoder)?;
     let instance = GpuCompositedRectInstance::new(
         rect,
         [0.0, 0.0, 1.0, 1.0],
@@ -4402,42 +4508,51 @@ fn push_composited_layer(
         layer_shader_params(shader),
         texture_size,
     );
-    geometry.push_composited_rect(batch_clip, &texture_key, instance);
+    geometry.push_composited_rect(batch_clip, texture_key, instance);
     Ok(())
 }
 
 fn render_composited_layer_to_texture(
     context: &mut WgpuContext,
     layer: &PaintCompositorLayer,
-) -> Result<(String, PixelSize), RenderError> {
+    mut encoder: Option<&mut wgpu::CommandEncoder>,
+) -> Result<(WgpuTextureKey<'static>, PixelSize), RenderError> {
     let size = layer_texture_size(layer.bounds)?;
+    validate_texture_size(
+        size,
+        context.limits.max_texture_dimension_2d,
+        "composited layer",
+    )?;
     let origin = UiPoint::new(layer.bounds.x, layer.bounds.y);
     let mut geometry = RenderGeometry::default();
-    build_geometry_into(&mut geometry, &layer.paint, context, origin, 1.0)?;
+    build_geometry_into(
+        &mut geometry,
+        &layer.paint,
+        context,
+        origin,
+        1.0,
+        encoder.as_deref_mut(),
+    )?;
 
-    let texture = context.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("operad-wgpu-composited-layer-texture"),
-        size: Extent3d {
-            width: size.width,
-            height: size.height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: OFFSCREEN_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
+    let texture = context.create_texture_2d(
+        "operad-wgpu-composited-layer-texture",
+        size,
+        OFFSCREEN_FORMAT,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+    )?;
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut encoder = context
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("operad-wgpu-composited-layer-encoder"),
-        });
+    let encode_uploads = encoder.is_some();
+    let mut owned_encoder = encoder.is_none().then(|| {
+        context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("operad-wgpu-composited-layer-encoder"),
+            })
+    });
+    let encoder = encoder.unwrap_or_else(|| owned_encoder.as_mut().unwrap());
     record_render_pass(
         context,
-        &mut encoder,
+        encoder,
         &view,
         OFFSCREEN_FORMAT,
         size,
@@ -4445,8 +4560,11 @@ fn render_composited_layer_to_texture(
         WgpuRenderLoadOp::Clear(ColorRgba::TRANSPARENT),
         true,
         false,
+        encode_uploads,
     )?;
-    context.queue.submit(Some(encoder.finish()));
+    if let Some(encoder) = owned_encoder {
+        context.queue.submit(Some(encoder.finish()));
+    }
     Ok((context.insert_layer_texture(size, texture, view), size))
 }
 
@@ -4469,12 +4587,14 @@ fn composited_layer_scissor(
 fn layer_clip_for_shader(
     clip: Option<&CompositorClip>,
     transform: crate::PaintTransform,
-) -> Option<(UiRect, f32)> {
+) -> Option<(UiRect, CornerRadii)> {
     match clip {
-        Some(CompositorClip::Rect(rect)) => Some((transform.transform_rect(*rect), 0.0)),
+        Some(CompositorClip::Rect(rect)) => {
+            Some((transform.transform_rect(*rect), CornerRadii::ZERO))
+        }
         Some(CompositorClip::RoundedRect { rect, radii }) => Some((
             transform.transform_rect(*rect),
-            radii.max_radius() * transform.scale.max(0.0),
+            scaled_corner_radii(*radii, transform.scale),
         )),
         None => None,
     }
@@ -4602,58 +4722,104 @@ fn shader_effect_outset(shader: &ShaderEffect) -> f32 {
     }
 }
 
-fn push_rich_rect_effect(
+fn scaled_stroke(stroke: StrokeStyle, scale: f32) -> StrokeStyle {
+    StrokeStyle::new(stroke.color, stroke.width * scale)
+}
+
+fn push_rich_rect(
     geometry: &mut RenderGeometry,
-    rect: UiRect,
+    primitive: &crate::PaintRect,
     clip: UiRect,
-    effect: crate::PaintEffect,
     opacity: f32,
-    radii: CornerRadii,
-) {
-    if effect.color.a == 0 || opacity <= 0.0 {
-        return;
+    transform: PaintTransform,
+) -> Result<(), RenderError> {
+    if opacity <= 0.0 {
+        return Ok(());
     }
-    let spread = effect.spread.max(0.0);
-    let blur_radius = effect.blur_radius.max(0.0);
-    match effect.kind {
-        PaintEffectKind::Shadow | PaintEffectKind::Glow => {
-            let shape_rect = UiRect::new(
-                rect.x + effect.offset.x - spread,
-                rect.y + effect.offset.y - spread,
-                rect.width + spread * 2.0,
-                rect.height + spread * 2.0,
-            );
-            let padding = blur_radius.max(1.0);
-            let draw_rect = UiRect::new(
-                shape_rect.x - padding,
-                shape_rect.y - padding,
-                shape_rect.width + padding * 2.0,
-                shape_rect.height + padding * 2.0,
-            );
-            if draw_rect.intersection(clip).is_none() {
-                return;
+    let rect = transform.transform_rect(primitive.rect);
+    let radii = scaled_corner_radii(primitive.corner_radii, transform.scale);
+    let stroke = primitive
+        .stroke
+        .map(|s| (scaled_stroke(s.style, transform.scale), s.alignment));
+    let has_inset = primitive
+        .effects
+        .iter()
+        .any(|e| e.kind == PaintEffectKind::InsetShadow && e.color.a > 0);
+    let effect = |e: crate::PaintEffect| crate::PaintEffect {
+        offset: UiPoint::new(e.offset.x * transform.scale, e.offset.y * transform.scale),
+        spread: e.spread * transform.scale,
+        blur_radius: e.blur_radius * transform.scale,
+        ..e
+    };
+    for e in primitive
+        .effects
+        .iter()
+        .filter(|e| e.kind != PaintEffectKind::InsetShadow)
+    {
+        if let Some(shape) = SdfInstance::shadow(rect, radii, effect(*e), opacity) {
+            geometry.push_shape(clip, shape);
+        }
+    }
+    if let Some(mut shape) = SdfInstance::rectangle(
+        rect,
+        color_as_vertex(primitive.fill.fallback_color(), opacity),
+        radii,
+        if has_inset { None } else { stroke },
+        opacity,
+    )
+    .filter(|shape| shape.intersects_clip(clip))
+    {
+        if let PaintBrush::LinearGradient(gradient) = &primitive.fill {
+            let start = transform.transform_point(gradient.start);
+            let end = transform.transform_point(gradient.end);
+            shape.gradient_line = [
+                finite_or(start.x, rect.x),
+                finite_or(start.y, rect.y),
+                finite_or(end.x, rect.x),
+                finite_or(end.y, rect.y),
+            ];
+            let base = geometry.gradient_stops.len();
+            let stop_end = base
+                .checked_add(gradient.stops.len())
+                .filter(|end| *end <= u32::MAX as usize)
+                .ok_or_else(|| {
+                    RenderError::Backend(
+                        "SDF gradient stop count exceeds GPU indexing limits".into(),
+                    )
+                })?;
+            geometry
+                .gradient_stops
+                .extend(gradient.stops.iter().map(|stop| SdfGradientStop {
+                    position: [finite_or(stop.offset, 0.0).clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+                    color: color_as_vertex(stop.color, opacity),
+                }));
+            // Public paint data can be constructed directly, bypassing the sorted builder.
+            let stops = &mut geometry.gradient_stops[base..stop_end];
+            if !stops
+                .windows(2)
+                .all(|w| w[0].position[0] <= w[1].position[0])
+            {
+                stops.sort_by(|a, b| a.position[0].total_cmp(&b.position[0]));
             }
-            geometry.push_shadow_rect(
-                clip,
-                draw_rect,
-                shape_rect,
-                color_as_vertex(effect.color, opacity),
-                outset_corner_radii(radii, spread),
-                blur_radius,
-            );
+            shape.gradient_range = [base as u32, gradient.stops.len() as u32];
         }
-        PaintEffectKind::InsetShadow => {
-            let width = (effect.spread.max(1.0) + effect.blur_radius.max(0.0) * 0.25).max(1.0);
-            push_stroke_rect_with_radii(
-                geometry,
-                rect,
-                clip,
-                StrokeStyle::new(effect.color, width),
-                opacity,
-                radii,
-            );
+        geometry.push_shape(clip, shape);
+    }
+    if has_inset {
+        for e in primitive
+            .effects
+            .iter()
+            .filter(|e| e.kind == PaintEffectKind::InsetShadow)
+        {
+            if let Some(shape) = SdfInstance::shadow(rect, radii, effect(*e), opacity) {
+                geometry.push_shape(clip, shape);
+            }
+        }
+        if let Some(shape) = SdfInstance::rectangle(rect, [0.0; 4], radii, stroke, opacity) {
+            geometry.push_shape(clip, shape);
         }
     }
+    Ok(())
 }
 
 fn push_fill_rect(
@@ -4663,128 +4829,7 @@ fn push_fill_rect(
     color: ColorRgba,
     opacity: f32,
 ) {
-    if color.a == 0 || opacity <= 0.0 {
-        return;
-    }
     push_fill_rect_with_color(geometry, rect, clip, color_as_vertex(color, opacity));
-}
-
-fn push_fill_rect_with_radius(
-    geometry: &mut RenderGeometry,
-    rect: UiRect,
-    clip: UiRect,
-    color: ColorRgba,
-    opacity: f32,
-    radius: f32,
-) {
-    push_fill_rect_with_radii(
-        geometry,
-        rect,
-        clip,
-        color,
-        opacity,
-        CornerRadii::uniform(radius),
-    );
-}
-
-fn push_fill_rect_with_radii(
-    geometry: &mut RenderGeometry,
-    rect: UiRect,
-    clip: UiRect,
-    color: ColorRgba,
-    opacity: f32,
-    radii: CornerRadii,
-) {
-    if color.a == 0 || opacity <= 0.0 {
-        return;
-    }
-    let radii = normalized_corner_radii_for_rect(radii, rect.width, rect.height);
-    if radii.max_radius() <= f32::EPSILON {
-        push_fill_rect_with_color(geometry, rect, clip, color_as_vertex(color, opacity));
-        return;
-    }
-    if rect.width <= 0.0 || rect.height <= 0.0 || rect.intersection(clip).is_none() {
-        return;
-    }
-    geometry.push_sdf_rect(clip, rect, color_as_vertex(color, opacity), radii);
-}
-
-fn push_fill_brush_rect_with_radii(
-    geometry: &mut RenderGeometry,
-    rect: UiRect,
-    clip: UiRect,
-    brush: &PaintBrush,
-    opacity: f32,
-    radii: CornerRadii,
-    transform: crate::PaintTransform,
-) {
-    let radii = normalized_corner_radii_for_rect(radii, rect.width, rect.height);
-    match brush {
-        PaintBrush::Solid(color) => {
-            push_fill_rect_with_radii(geometry, rect, clip, *color, opacity, radii);
-        }
-        PaintBrush::LinearGradient(gradient) if radii.max_radius() <= f32::EPSILON => {
-            let gradient = transform_linear_gradient(gradient, transform);
-            push_linear_gradient_rect(geometry, rect, clip, &gradient, opacity);
-        }
-        PaintBrush::LinearGradient(_) => {
-            push_fill_rect_with_radii(geometry, rect, clip, brush.fallback_color(), opacity, radii);
-        }
-    }
-}
-
-fn push_linear_gradient_rect(
-    geometry: &mut RenderGeometry,
-    rect: UiRect,
-    clip: UiRect,
-    gradient: &LinearGradient,
-    opacity: f32,
-) {
-    if opacity <= 0.0 {
-        return;
-    }
-    let Some(rect) = snapped_intersection(rect, clip) else {
-        return;
-    };
-    if gradient.stops.is_empty() {
-        push_fill_rect_with_color(
-            geometry,
-            rect,
-            clip,
-            color_as_vertex(gradient.fallback, opacity),
-        );
-        return;
-    }
-
-    let dx = (gradient.end.x - gradient.start.x).abs();
-    let dy = (gradient.end.y - gradient.start.y).abs();
-    let segments = gradient_rect_segments(rect, gradient);
-    for index in 0..segments {
-        let start = index as f32 / segments as f32;
-        let end = (index + 1) as f32 / segments as f32;
-        let points = if dx >= dy {
-            let x0 = rect.x + rect.width * start;
-            let x1 = rect.x + rect.width * end;
-            [
-                UiPoint::new(x0, rect.y),
-                UiPoint::new(x1, rect.y),
-                UiPoint::new(x1, rect.bottom()),
-                UiPoint::new(x0, rect.bottom()),
-            ]
-        } else {
-            let y0 = rect.y + rect.height * start;
-            let y1 = rect.y + rect.height * end;
-            [
-                UiPoint::new(rect.x, y0),
-                UiPoint::new(rect.right(), y0),
-                UiPoint::new(rect.right(), y1),
-                UiPoint::new(rect.x, y1),
-            ]
-        };
-        let colors =
-            points.map(|point| color_as_vertex(sample_linear_gradient(gradient, point), opacity));
-        geometry.push_gradient_quad(clip, points, colors);
-    }
 }
 
 fn push_fill_rect_with_color(
@@ -4793,160 +4838,9 @@ fn push_fill_rect_with_color(
     clip: UiRect,
     color: [f32; 4],
 ) {
-    let Some(rect) = snapped_intersection(rect, clip) else {
-        return;
-    };
-    geometry.push_rect(clip, rect, color);
-}
-
-fn push_stroke_rect(
-    geometry: &mut RenderGeometry,
-    rect: UiRect,
-    clip: UiRect,
-    stroke: StrokeStyle,
-    opacity: f32,
-    radius: f32,
-) {
-    push_stroke_rect_with_radii(
-        geometry,
-        rect,
-        clip,
-        stroke,
-        opacity,
-        CornerRadii::uniform(radius),
-    );
-}
-
-fn push_stroke_rect_with_radii(
-    geometry: &mut RenderGeometry,
-    rect: UiRect,
-    clip: UiRect,
-    stroke: StrokeStyle,
-    opacity: f32,
-    radii: CornerRadii,
-) {
-    if !stroke.is_visible() || opacity <= 0.0 {
-        return;
+    if let Some(shape) = SdfInstance::rectangle(rect, color, CornerRadii::ZERO, None, 1.0) {
+        geometry.push_shape(clip, shape);
     }
-    let radii = normalized_corner_radii_for_rect(radii, rect.width, rect.height);
-    if radii.max_radius() > f32::EPSILON {
-        push_rounded_rect_stroke_with_radii(geometry, rect, clip, stroke, opacity, radii);
-        return;
-    }
-    let width = stroke.width.max(1.0);
-    push_fill_rect(
-        geometry,
-        UiRect::new(rect.x, rect.y, rect.width, width),
-        clip,
-        stroke.color,
-        opacity,
-    );
-    push_fill_rect(
-        geometry,
-        UiRect::new(rect.x, rect.bottom() - width, rect.width, width),
-        clip,
-        stroke.color,
-        opacity,
-    );
-    push_fill_rect(
-        geometry,
-        UiRect::new(rect.x, rect.y, width, rect.height),
-        clip,
-        stroke.color,
-        opacity,
-    );
-    push_fill_rect(
-        geometry,
-        UiRect::new(rect.right() - width, rect.y, width, rect.height),
-        clip,
-        stroke.color,
-        opacity,
-    );
-}
-
-fn push_rounded_rect_stroke_with_radii(
-    geometry: &mut RenderGeometry,
-    rect: UiRect,
-    clip: UiRect,
-    stroke: StrokeStyle,
-    opacity: f32,
-    radii: CornerRadii,
-) {
-    if !stroke.is_visible() || opacity <= 0.0 || rect.width <= 0.0 || rect.height <= 0.0 {
-        return;
-    }
-    if rect.intersection(clip).is_none() {
-        return;
-    }
-    let width = stroke.width.max(1.0);
-    let half = width * 0.5;
-    let x0 = rect.x + half;
-    let y0 = rect.y + half;
-    let x1 = rect.right() - half;
-    let y1 = rect.bottom() - half;
-    if x1 <= x0 || y1 <= y0 {
-        return;
-    }
-    let radii = normalized_corner_radii_for_rect(inset_corner_radii(radii, half), x1 - x0, y1 - y0);
-    if radii.max_radius() <= f32::EPSILON {
-        push_stroke_rect(geometry, rect, clip, stroke, opacity, 0.0);
-        return;
-    }
-    let segments = ((radii.max_radius() * 0.5).ceil() as usize).clamp(4, 16);
-    let mut points = Vec::with_capacity((segments + 1) * 4);
-    push_corner_points(
-        &mut points,
-        UiPoint::new(x1 - radii.top_right, y0 + radii.top_right),
-        radii.top_right,
-        -std::f32::consts::FRAC_PI_2,
-        0.0,
-        segments,
-        UiPoint::new(x1, y0),
-    );
-    push_corner_points(
-        &mut points,
-        UiPoint::new(x1 - radii.bottom_right, y1 - radii.bottom_right),
-        radii.bottom_right,
-        0.0,
-        std::f32::consts::FRAC_PI_2,
-        segments,
-        UiPoint::new(x1, y1),
-    );
-    push_corner_points(
-        &mut points,
-        UiPoint::new(x0 + radii.bottom_left, y1 - radii.bottom_left),
-        radii.bottom_left,
-        std::f32::consts::FRAC_PI_2,
-        std::f32::consts::PI,
-        segments,
-        UiPoint::new(x0, y1),
-    );
-    push_corner_points(
-        &mut points,
-        UiPoint::new(x0 + radii.top_left, y0 + radii.top_left),
-        radii.top_left,
-        std::f32::consts::PI,
-        std::f32::consts::PI + std::f32::consts::FRAC_PI_2,
-        segments,
-        UiPoint::new(x0, y0),
-    );
-    push_polyline(geometry, &points, clip, stroke, opacity, true);
-}
-
-fn push_corner_points(
-    points: &mut Vec<UiPoint>,
-    center: UiPoint,
-    radius: f32,
-    start: f32,
-    end: f32,
-    segments: usize,
-    square_corner: UiPoint,
-) {
-    if radius <= f32::EPSILON {
-        points.push(square_corner);
-        return;
-    }
-    push_arc_points(points, center, radius, start, end, segments);
 }
 
 fn scaled_corner_radii(radii: CornerRadii, scale: f32) -> CornerRadii {
@@ -4956,26 +4850,6 @@ fn scaled_corner_radii(radii: CornerRadii, scale: f32) -> CornerRadii {
         radii.top_right * scale,
         radii.bottom_right * scale,
         radii.bottom_left * scale,
-    )
-}
-
-fn outset_corner_radii(radii: CornerRadii, amount: f32) -> CornerRadii {
-    let amount = amount.max(0.0);
-    CornerRadii::new(
-        radii.top_left + amount,
-        radii.top_right + amount,
-        radii.bottom_right + amount,
-        radii.bottom_left + amount,
-    )
-}
-
-fn inset_corner_radii(radii: CornerRadii, amount: f32) -> CornerRadii {
-    let amount = amount.max(0.0);
-    CornerRadii::new(
-        (radii.top_left - amount).max(0.0),
-        (radii.top_right - amount).max(0.0),
-        (radii.bottom_right - amount).max(0.0),
-        (radii.bottom_left - amount).max(0.0),
     )
 }
 
@@ -5008,33 +4882,6 @@ fn normalized_corner_radii_for_rect(radii: CornerRadii, width: f32, height: f32)
     radii
 }
 
-fn corner_radii_to_array(radii: CornerRadii) -> [f32; 4] {
-    [
-        radii.top_left,
-        radii.top_right,
-        radii.bottom_right,
-        radii.bottom_left,
-    ]
-}
-
-fn push_arc_points(
-    points: &mut Vec<UiPoint>,
-    center: UiPoint,
-    radius: f32,
-    start: f32,
-    end: f32,
-    segments: usize,
-) {
-    for index in 0..=segments {
-        let t = index as f32 / segments.max(1) as f32;
-        let angle = start + (end - start) * t;
-        points.push(UiPoint::new(
-            center.x + angle.cos() * radius,
-            center.y + angle.sin() * radius,
-        ));
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn push_text(
     geometry: &mut RenderGeometry,
@@ -5062,6 +4909,12 @@ fn push_text(
     let mut style = style.clone();
     style.font_size = (style.font_size * scale).max(1.0);
     style.line_height = (style.line_height * scale).max(style.font_size);
+    let clip = if style.overflow == TextOverflow::Ellipsis {
+        // Advances fit the box; italic glyph ink can still overhang them.
+        clip.intersection(rect).expect("visible text rectangle")
+    } else {
+        clip
+    };
     geometry.push_text(TextPaint {
         rect,
         clip,
@@ -5302,108 +5155,9 @@ fn push_line(
     stroke: StrokeStyle,
     opacity: f32,
 ) {
-    if !stroke.is_visible() || opacity <= 0.0 {
-        return;
+    if let Some(shape) = SdfInstance::segment(from, to, stroke, opacity) {
+        geometry.push_shape(clip, shape);
     }
-
-    let width = stroke.width.max(1.0);
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    let length = (dx * dx + dy * dy).sqrt();
-    if length <= f32::EPSILON {
-        push_fill_rect(
-            geometry,
-            UiRect::new(from.x, from.y, width, width),
-            clip,
-            stroke.color,
-            opacity,
-        );
-        return;
-    }
-
-    let half = width * 0.5 + 0.75;
-    let nx = -dy / length * half;
-    let ny = dx / length * half;
-    let points = [
-        UiPoint::new(from.x + nx, from.y + ny),
-        UiPoint::new(to.x + nx, to.y + ny),
-        UiPoint::new(to.x - nx, to.y - ny),
-        UiPoint::new(from.x - nx, from.y - ny),
-    ];
-    push_quad(
-        geometry,
-        points,
-        clip,
-        color_as_vertex(stroke.color, opacity),
-    );
-    push_fill_circle(geometry, from, half, clip, stroke.color, opacity);
-    push_fill_circle(geometry, to, half, clip, stroke.color, opacity);
-}
-
-fn push_fill_circle(
-    geometry: &mut RenderGeometry,
-    center: UiPoint,
-    radius: f32,
-    clip: UiRect,
-    color: ColorRgba,
-    opacity: f32,
-) {
-    if radius <= 0.0 || color.a == 0 || opacity <= 0.0 {
-        return;
-    }
-    let color = color_as_vertex(color, opacity);
-    let segments = circle_segments(radius);
-    let mut vertices = Vec::with_capacity(segments.saturating_mul(3));
-    for index in 0..segments {
-        let a0 = std::f32::consts::TAU * index as f32 / segments as f32;
-        let a1 = std::f32::consts::TAU * (index + 1) as f32 / segments as f32;
-        vertices.push(GpuVertex::new(center, color));
-        vertices.push(GpuVertex::new(
-            UiPoint::new(center.x + radius * a0.cos(), center.y + radius * a0.sin()),
-            color,
-        ));
-        vertices.push(GpuVertex::new(
-            UiPoint::new(center.x + radius * a1.cos(), center.y + radius * a1.sin()),
-            color,
-        ));
-    }
-    geometry.push_triangle_vertices(clip, &vertices);
-}
-
-fn push_stroke_circle(
-    geometry: &mut RenderGeometry,
-    center: UiPoint,
-    radius: f32,
-    clip: UiRect,
-    stroke: StrokeStyle,
-    opacity: f32,
-) {
-    if radius <= 0.0 || !stroke.is_visible() || opacity <= 0.0 {
-        return;
-    }
-    let half = stroke.width.max(1.0) * 0.5;
-    let inner = (radius - half).max(0.0);
-    let outer = radius + half;
-    let color = color_as_vertex(stroke.color, opacity);
-    let segments = circle_segments(outer);
-    let mut vertices = Vec::with_capacity(segments.saturating_mul(6));
-    for index in 0..segments {
-        let a0 = std::f32::consts::TAU * index as f32 / segments as f32;
-        let a1 = std::f32::consts::TAU * (index + 1) as f32 / segments as f32;
-        let outer0 = UiPoint::new(center.x + outer * a0.cos(), center.y + outer * a0.sin());
-        let outer1 = UiPoint::new(center.x + outer * a1.cos(), center.y + outer * a1.sin());
-        let inner0 = UiPoint::new(center.x + inner * a0.cos(), center.y + inner * a0.sin());
-        let inner1 = UiPoint::new(center.x + inner * a1.cos(), center.y + inner * a1.sin());
-        vertices.extend_from_slice(&[
-            GpuVertex::new(outer0, color),
-            GpuVertex::new(outer1, color),
-            GpuVertex::new(inner1, color),
-            GpuVertex::new(outer0, color),
-            GpuVertex::new(inner1, color),
-            GpuVertex::new(inner0, color),
-        ]);
-    }
-    geometry.push_triangle_vertices(clip, &vertices);
 }
 
 fn push_polygon(
@@ -5472,28 +5226,6 @@ fn push_polyline(
     }
 }
 
-fn push_quad(geometry: &mut RenderGeometry, points: [UiPoint; 4], clip: UiRect, color: [f32; 4]) {
-    geometry.push_quad(clip, points, color);
-}
-
-fn snapped_intersection(rect: UiRect, clip: UiRect) -> Option<UiRect> {
-    if rect.width <= 0.0 || rect.height <= 0.0 {
-        return None;
-    }
-    let rect = rect.intersection(clip)?;
-    let left = rect.x.floor();
-    let top = rect.y.floor();
-    let right = rect.right().ceil();
-    let bottom = rect.bottom().ceil();
-    if !left.is_finite() || !top.is_finite() || !right.is_finite() || !bottom.is_finite() {
-        return None;
-    }
-    if left >= right || top >= bottom {
-        return None;
-    }
-    Some(UiRect::new(left, top, right - left, bottom - top))
-}
-
 fn scissor_rect(clip: UiRect, size: PixelSize) -> Option<PixelRect> {
     let left = finite_or(clip.x.floor(), 0.0).max(0.0);
     let top = finite_or(clip.y.floor(), 0.0).max(0.0);
@@ -5528,10 +5260,6 @@ fn expanded_rect(rect: UiRect, amount: f32) -> UiRect {
     )
 }
 
-fn circle_segments(radius: f32) -> usize {
-    max(12, (radius.abs().sqrt() * 8.0).ceil() as usize).min(96)
-}
-
 fn color_as_vertex(color: ColorRgba, opacity: f32) -> [f32; 4] {
     [
         f32::from(color.r) / 255.0,
@@ -5539,69 +5267,6 @@ fn color_as_vertex(color: ColorRgba, opacity: f32) -> [f32; 4] {
         f32::from(color.b) / 255.0,
         (f32::from(color.a) / 255.0 * opacity.clamp(0.0, 1.0)).clamp(0.0, 1.0),
     ]
-}
-
-fn transform_linear_gradient(
-    gradient: &LinearGradient,
-    transform: crate::PaintTransform,
-) -> LinearGradient {
-    let mut gradient = gradient.clone();
-    gradient.start = transform.transform_point(gradient.start);
-    gradient.end = transform.transform_point(gradient.end);
-    gradient
-}
-
-fn gradient_rect_segments(rect: UiRect, gradient: &LinearGradient) -> usize {
-    let longest_axis = rect.width.abs().max(rect.height.abs()).ceil() as usize;
-    let stop_segments = gradient.stops.len().saturating_sub(1).max(1) * 8;
-    longest_axis.clamp(1, 64).max(stop_segments.min(64))
-}
-
-fn sample_linear_gradient(gradient: &LinearGradient, point: UiPoint) -> ColorRgba {
-    if gradient.stops.is_empty() {
-        return gradient.fallback;
-    }
-
-    let dx = gradient.end.x - gradient.start.x;
-    let dy = gradient.end.y - gradient.start.y;
-    let length_squared = dx * dx + dy * dy;
-    if length_squared <= f32::EPSILON {
-        return gradient
-            .stops
-            .last()
-            .map(|stop| stop.color)
-            .unwrap_or(gradient.fallback);
-    }
-
-    let t = (((point.x - gradient.start.x) * dx + (point.y - gradient.start.y) * dy)
-        / length_squared)
-        .clamp(0.0, 1.0);
-    if t <= gradient.stops[0].offset {
-        return gradient.stops[0].color;
-    }
-    for stops in gradient.stops.windows(2) {
-        let left = stops[0];
-        let right = stops[1];
-        if t <= right.offset {
-            let span = (right.offset - left.offset).max(f32::EPSILON);
-            return lerp_color(left.color, right.color, (t - left.offset) / span);
-        }
-    }
-    gradient
-        .stops
-        .last()
-        .map(|stop| stop.color)
-        .unwrap_or(gradient.fallback)
-}
-
-fn lerp_color(left: ColorRgba, right: ColorRgba, t: f32) -> ColorRgba {
-    let t = t.clamp(0.0, 1.0);
-    ColorRgba::new(
-        lerp_channel(left.r, right.r, t),
-        lerp_channel(left.g, right.g, t),
-        lerp_channel(left.b, right.b, t),
-        lerp_channel(left.a, right.a, t),
-    )
 }
 
 #[cfg(test)]
@@ -5639,12 +5304,6 @@ fn glyph_font_bytes_source(font: &crate::fonts::FontBytes) -> glyphon::cosmic_te
     glyphon::cosmic_text::fontdb::Source::Binary(data)
 }
 
-fn lerp_channel(left: u8, right: u8, t: f32) -> u8 {
-    (f32::from(left) + (f32::from(right) - f32::from(left)) * t)
-        .round()
-        .clamp(0.0, 255.0) as u8
-}
-
 fn sync_glyph_buffer(
     buffer: &mut GlyphBuffer,
     font_system: &mut GlyphFontSystem,
@@ -5663,16 +5322,52 @@ fn sync_glyph_buffer(
             Some(text.rect.width.max(0.0)),
             Some(text.rect.height.max(0.0)),
         );
-        buffer.set_wrap(font_system, glyph_wrap(text.style.wrap));
+        buffer.set_wrap(
+            font_system,
+            if text.style.overflow == TextOverflow::Ellipsis {
+                GlyphWrap::None
+            } else {
+                glyph_wrap(text.style.wrap)
+            },
+        );
     }
     let attrs = glyph_attrs(&text.style);
+    let fitted;
+    let value = if text.style.overflow == TextOverflow::Ellipsis {
+        fitted = fit_glyph_text(font_system, text);
+        fitted.text.as_str()
+    } else {
+        &text.text
+    };
     buffer.set_text(
         font_system,
-        &text.text,
+        value,
         &attrs,
-        glyph_shaping(&text.text),
+        glyph_shaping(value),
         glyph_horizontal_align(text.horizontal_align),
     );
+}
+
+fn fit_glyph_text(
+    font_system: &mut GlyphFontSystem,
+    text: &TextPaint,
+) -> crate::core::text::FittedText {
+    let line_height = text.style.line_height.max(text.style.font_size).max(1.0);
+    let mut measurement = GlyphBuffer::new(
+        font_system,
+        GlyphMetrics::new(text.style.font_size.max(1.0), line_height),
+    );
+    measurement.set_wrap(font_system, GlyphWrap::None);
+    let attrs = glyph_attrs(&text.style);
+    crate::core::text::fit_single_line(&text.text, text.rect.width, |value| {
+        measurement.set_text(font_system, value, &attrs, glyph_shaping(value), None);
+        let mut size = UiSize::new(0.0, line_height);
+        for run in measurement.layout_runs() {
+            size.width = size.width.max(run.line_w);
+            size.height = size.height.max(run.line_top + run.line_height);
+        }
+        size
+    })
 }
 
 fn glyph_horizontal_align(align: TextHorizontalAlign) -> Option<glyphon::cosmic_text::Align> {
@@ -5777,20 +5472,89 @@ fn glyph_text_bounds(clip: UiRect, size: PixelSize) -> GlyphTextBounds {
     }
 }
 
+fn encode_texture_upload(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    destination: TexelCopyTextureInfo<'_>,
+    rect: PixelRect,
+    rgba: &[u8],
+) -> Result<(), RenderError> {
+    if rect.width == 0 || rect.height == 0 {
+        return Ok(());
+    }
+    // Encoded copies need aligned rows. Tile large uploads so padding never
+    // makes a valid texture update exceed the device's staging-buffer limit.
+    let budget = device.limits().max_buffer_size.min(usize::MAX as u64);
+    let columns = (budget / 4).min(u64::from(rect.width)) as u32;
+    if columns == 0 {
+        return Err(RenderError::Backend(
+            "device buffer limit cannot hold one image pixel".into(),
+        ));
+    }
+    let source_stride = rect.width as usize * 4;
+    for x in (0..rect.width).step_by(columns as usize) {
+        let width = columns.min(rect.width - x);
+        let row_bytes = u64::from(width) * 4;
+        let stride = upload_row_stride(width)?;
+        let rows =
+            (1 + (budget - row_bytes) / u64::from(stride)).min(u64::from(rect.height)) as u32;
+        for y in (0..rect.height).step_by(rows as usize) {
+            let height = rows.min(rect.height - y);
+            let byte_len = u64::from(stride) * u64::from(height - 1) + row_bytes;
+            let source_start = y as usize * source_stride + x as usize * 4;
+            let bytes = if height == 1 || (width == rect.width && u64::from(stride) == row_bytes) {
+                Cow::Borrowed(&rgba[source_start..source_start + byte_len as usize])
+            } else {
+                let mut padded = vec![0; byte_len as usize];
+                for row in 0..height as usize {
+                    let start = source_start + row * source_stride;
+                    let destination = row * stride as usize;
+                    padded[destination..destination + row_bytes as usize]
+                        .copy_from_slice(&rgba[start..start + row_bytes as usize]);
+                }
+                Cow::Owned(padded)
+            };
+            let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("operad-wgpu-image-upload"),
+                contents: &bytes,
+                usage: BufferUsages::COPY_SRC,
+            });
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &upload,
+                    layout: TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(stride),
+                        rows_per_image: Some(height),
+                    },
+                },
+                TexelCopyTextureInfo {
+                    texture: destination.texture,
+                    mip_level: destination.mip_level,
+                    origin: Origin3d {
+                        x: destination.origin.x + x,
+                        y: destination.origin.y + y,
+                        z: destination.origin.z,
+                    },
+                    aspect: destination.aspect,
+                },
+                Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 fn glyph_prepare_error(error: GlyphPrepareError) -> RenderError {
     RenderError::Backend(format!("glyphon text prepare failed: {error}"))
 }
 
 fn glyph_render_error(error: GlyphRenderError) -> RenderError {
     RenderError::Backend(format!("glyphon text render failed: {error}"))
-}
-
-fn clear_color_for_request(request: &RenderFrameRequest) -> ColorRgba {
-    if request.options.clear_color == ColorRgba::TRANSPARENT {
-        DEFAULT_WGPU_CLEAR_COLOR
-    } else {
-        request.options.clear_color
-    }
 }
 
 fn wgpu_color_for_format(color: ColorRgba, format: TextureFormat) -> wgpu::Color {
@@ -5848,22 +5612,6 @@ fn composited_fragment_entry_point(format: TextureFormat) -> &'static str {
     }
 }
 
-fn sdf_fragment_entry_point(format: TextureFormat) -> &'static str {
-    if format.is_srgb() {
-        "fs_sdf_rect_srgb"
-    } else {
-        "fs_sdf_rect"
-    }
-}
-
-fn shadow_fragment_entry_point(format: TextureFormat) -> &'static str {
-    if format.is_srgb() {
-        "fs_shadow_rect_srgb"
-    } else {
-        "fs_shadow_rect"
-    }
-}
-
 fn glyph_color_mode(format: TextureFormat) -> GlyphColorMode {
     if format.is_srgb() {
         GlyphColorMode::Accurate
@@ -5883,6 +5631,21 @@ fn render_target_pixel_size(
             pixel_size_from_viewport(viewport, scale_factor)
         }
     }
+}
+
+fn validate_texture_size(size: PixelSize, limit: u32, label: &str) -> Result<(), RenderError> {
+    if size.width == 0 || size.height == 0 {
+        return Err(RenderError::Backend(format!(
+            "wgpu {label} requires non-zero dimensions"
+        )));
+    }
+    if size.width > limit || size.height > limit {
+        return Err(RenderError::Backend(format!(
+            "wgpu {label} dimensions {}x{} exceed device texture limit {limit}x{limit}",
+            size.width, size.height
+        )));
+    }
+    Ok(())
 }
 
 fn pixel_size_from_viewport(viewport: UiSize, scale_factor: f32) -> Result<PixelSize, RenderError> {
@@ -5951,15 +5714,6 @@ fn vertex_bytes(vertices: &[GpuVertex]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), byte_len) }
 }
 
-fn rect_instance_bytes(rects: &[GpuRectInstance]) -> &[u8] {
-    let byte_len = rects
-        .len()
-        .saturating_mul(mem::size_of::<GpuRectInstance>());
-    // GpuRectInstance is #[repr(C)] and contains only f32 arrays matching the
-    // instance buffer layout described to wgpu.
-    unsafe { std::slice::from_raw_parts(rects.as_ptr().cast::<u8>(), byte_len) }
-}
-
 fn textured_rect_instance_bytes(rects: &[GpuTexturedRectInstance]) -> &[u8] {
     let byte_len = rects
         .len()
@@ -5978,25 +5732,7 @@ fn composited_rect_instance_bytes(rects: &[GpuCompositedRectInstance]) -> &[u8] 
     unsafe { std::slice::from_raw_parts(rects.as_ptr().cast::<u8>(), byte_len) }
 }
 
-fn sdf_rect_instance_bytes(rects: &[GpuSdfRectInstance]) -> &[u8] {
-    let byte_len = rects
-        .len()
-        .saturating_mul(mem::size_of::<GpuSdfRectInstance>());
-    // GpuSdfRectInstance is #[repr(C)] and contains only f32 values matching
-    // the SDF instance buffer layout described to wgpu.
-    unsafe { std::slice::from_raw_parts(rects.as_ptr().cast::<u8>(), byte_len) }
-}
-
-fn shadow_rect_instance_bytes(rects: &[GpuShadowRectInstance]) -> &[u8] {
-    let byte_len = rects
-        .len()
-        .saturating_mul(mem::size_of::<GpuShadowRectInstance>());
-    // GpuShadowRectInstance is #[repr(C)] and contains only f32 arrays matching
-    // the shadow instance buffer layout described to wgpu.
-    unsafe { std::slice::from_raw_parts(rects.as_ptr().cast::<u8>(), byte_len) }
-}
-
-fn rgba_bytes_for_update(update: &ResourceUpdate) -> Result<Vec<u8>, RenderError> {
+fn rgba_bytes_for_update(update: &ResourceUpdate) -> Result<Cow<'_, [u8]>, RenderError> {
     if !update.has_expected_byte_len() {
         return Err(RenderError::InvalidResourceUpdate(
             update.descriptor.handle.id().key.clone(),
@@ -6004,20 +5740,20 @@ fn rgba_bytes_for_update(update: &ResourceUpdate) -> Result<Vec<u8>, RenderError
     }
 
     match update.descriptor.format {
-        ResourceFormat::Rgba8 => Ok(update.bytes.clone()),
+        ResourceFormat::Rgba8 => Ok(Cow::Borrowed(&update.bytes)),
         ResourceFormat::Bgra8 => {
             let mut rgba = Vec::with_capacity(update.bytes.len());
             for bgra in update.bytes.chunks_exact(4) {
                 rgba.extend_from_slice(&[bgra[2], bgra[1], bgra[0], bgra[3]]);
             }
-            Ok(rgba)
+            Ok(Cow::Owned(rgba))
         }
         ResourceFormat::Alpha8 => {
             let mut rgba = Vec::with_capacity(update.bytes.len().saturating_mul(4));
-            for alpha in &update.bytes {
+            for alpha in update.bytes.iter() {
                 rgba.extend_from_slice(&[255, 255, 255, *alpha]);
             }
-            Ok(rgba)
+            Ok(Cow::Owned(rgba))
         }
     }
 }
@@ -6040,6 +5776,318 @@ mod tests {
     use crate::renderer::EmptyResourceResolver;
     use crate::renderer::RenderOptions;
     use crate::{PaintItem, PaintList, TextContent, UiNodeId};
+
+    #[test]
+    fn oversized_gpu_textures_return_errors_and_leave_renderer_usable() {
+        #[derive(Debug, Clone, Copy)]
+        enum Allocation {
+            Image,
+            Canvas,
+            Snapshot,
+            Offscreen,
+            Discard,
+            Compositor,
+        }
+        fn attempt(
+            renderer: &mut WgpuRenderer,
+            allocation: Allocation,
+            size: PixelSize,
+        ) -> Result<(), RenderError> {
+            let viewport = UiSize::new(size.width as f32, size.height as f32);
+            let mut request = RenderFrameRequest::new(
+                RenderTarget::snapshot(PixelSize::new(1, 1)),
+                UiSize::new(1.0, 1.0),
+                PaintList::default(),
+            );
+            match allocation {
+                Allocation::Image => {
+                    request.resource_updates.push(ResourceUpdate::rgba8_image(
+                        crate::platform::ImageHandle::app("size-limited-image"),
+                        size,
+                        vec![255; size.width as usize * size.height as usize * 4],
+                    ));
+                }
+                Allocation::Canvas => {
+                    return renderer
+                        .get_gpu_context(
+                            &crate::CanvasContent::new("size-limited-canvas").gpu_context(),
+                            size,
+                        )
+                        .map(|_| ());
+                }
+                Allocation::Snapshot => request.target = RenderTarget::snapshot(size),
+                Allocation::Offscreen => request.target = RenderTarget::offscreen(size),
+                Allocation::Discard => {
+                    request.target = RenderTarget::window("size-limited-window", viewport);
+                    request.viewport = viewport;
+                }
+                Allocation::Compositor => {
+                    let bounds = UiRect::new(0.0, 0.0, viewport.width, viewport.height);
+                    let mut item = test_rect_item(UiNodeId(1), bounds, ColorRgba::WHITE, 0.0, 1.0);
+                    item.kind = PaintKind::CompositedLayer(PaintCompositorLayer::new(
+                        bounds,
+                        PaintList::default(),
+                    ));
+                    request.paint.items.push(item);
+                }
+            }
+            renderer
+                .render_frame(request, &EmptyResourceResolver)
+                .map(|_| ())
+        }
+
+        let mut renderer = WgpuRenderer::default();
+        let limit = renderer
+            .ensure_context()
+            .expect("GPU context")
+            .device
+            .limits()
+            .max_texture_dimension_2d;
+        for allocation in [
+            Allocation::Image,
+            Allocation::Canvas,
+            Allocation::Snapshot,
+            Allocation::Offscreen,
+            Allocation::Discard,
+            Allocation::Compositor,
+        ] {
+            // One row or column exercises the real device boundary with little memory.
+            for size in [PixelSize::new(limit + 1, 1), PixelSize::new(1, limit + 1)] {
+                assert!(
+                    attempt(&mut renderer, allocation, size).is_err(),
+                    "{allocation:?} accepted {size:?}"
+                );
+                attempt(&mut renderer, allocation, PixelSize::new(1, 1))
+                    .expect("a rejected size must not poison the renderer");
+            }
+            attempt(&mut renderer, allocation, PixelSize::new(limit, 1))
+                .expect("exact device limit is supported");
+        }
+    }
+
+    #[test]
+    fn snapshot_readback_respects_device_buffer_limit_with_row_padding() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("GPU adapter");
+        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits {
+                max_buffer_size: 65_536,
+                max_storage_buffer_binding_size: 65_536,
+                ..Default::default()
+            },
+            ..Default::default()
+        }))
+        .expect("device with a small readback budget");
+        let limits = device.limits();
+        let rows = (limits.max_buffer_size / u64::from(COPY_BYTES_PER_ROW_ALIGNMENT)) as u32;
+        assert!(rows + 1 < limits.max_texture_dimension_2d);
+        let mut renderer = WgpuRenderer::with_device_queue(device, queue).expect("renderer");
+        for offscreen in [false, true] {
+            let mut render = |height| {
+                let size = PixelSize::new(1, height);
+                renderer.render_frame(
+                    RenderFrameRequest::new(
+                        if offscreen {
+                            RenderTarget::offscreen(size)
+                        } else {
+                            RenderTarget::snapshot(size)
+                        },
+                        UiSize::new(1.0, height as f32),
+                        PaintList::default(),
+                    ),
+                    &EmptyResourceResolver,
+                )
+            };
+            assert!(
+                render(rows + 1).is_err(),
+                "padded readback must fit the device buffer limit"
+            );
+            let image = render(rows)
+                .expect("exact padded buffer limit")
+                .snapshot
+                .expect("snapshot");
+            assert_eq!(image.pixels.len(), rows as usize * 4);
+        }
+    }
+
+    #[test]
+    fn upload_preparation_borrows_rgba_and_converts_other_pixel_formats() {
+        let pixels = vec![0, 1, 127, 255, 255, 128, 2, 0];
+        for format in [
+            ResourceFormat::Rgba8,
+            ResourceFormat::Bgra8,
+            ResourceFormat::Alpha8,
+        ] {
+            let (bytes, expected) = match format {
+                ResourceFormat::Rgba8 => (pixels.clone(), pixels.clone()),
+                ResourceFormat::Bgra8 => (vec![127, 1, 0, 255, 2, 128, 255, 0], pixels.clone()),
+                ResourceFormat::Alpha8 => {
+                    (vec![0, 255], vec![255, 255, 255, 0, 255, 255, 255, 255])
+                }
+            };
+            let update = ResourceUpdate::full(
+                crate::renderer::ResourceDescriptor::new(
+                    crate::platform::ImageHandle::app("upload"),
+                    PixelSize::new(2, 1),
+                    format,
+                ),
+                bytes,
+            );
+            let rgba = rgba_bytes_for_update(&update).expect("pixel conversion");
+            assert_eq!(&rgba[..], expected.as_slice(), "{format:?}");
+            if format == ResourceFormat::Rgba8 {
+                assert_eq!(
+                    rgba.as_ptr(),
+                    update.bytes.as_ptr(),
+                    "already-RGBA pixels must not be copied for the upload"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canvas_pipeline_cache_preserves_variants_with_borrowed_lookups() {
+        type Change = fn(&mut WgpuCanvasRenderPass<'static>, &mut TextureFormat);
+        let changes: &[(&str, Change)] = &[
+            ("unchanged", |_, _| {}),
+            ("shader", |pass, _| {
+                pass.shader = Cow::Owned("other source".into())
+            }),
+            ("vertex entry", |pass, _| pass.vertex_entry_point = "vertex"),
+            ("fragment entry", |pass, _| {
+                pass.fragment_entry_point = "fragment"
+            }),
+            ("format", |_, format| *format = TextureFormat::Bgra8Unorm),
+            ("uniform binding", |pass, _| {
+                pass.uniforms = Some(Cow::Owned(vec![0; 16]))
+            }),
+            ("constant name", |pass, _| pass.constants[0].0 = "OTHER"),
+            ("constant value", |pass, _| pass.constants[0].1 = 2.0),
+            ("extra constant", |pass, _| {
+                pass.constants.push(("EXTRA", 1.0))
+            }),
+            ("missing constant", |pass, _| {
+                pass.constants.pop();
+            }),
+            ("no constants", |pass, _| pass.constants.clear()),
+            ("negative zero", |pass, _| pass.constants[1].1 = -0.0),
+            ("nan payload one", |pass, _| {
+                pass.constants[1].1 = f64::from_bits(0x7ff8000000000001)
+            }),
+            ("nan payload two", |pass, _| {
+                pass.constants[1].1 = f64::from_bits(0x7ff8000000000002)
+            }),
+        ];
+        fn check_cache<S: std::hash::BuildHasher + Default>(changes: &[(&str, Change)]) {
+            let mut cache: HashMap<WgpuCanvasPipelineKey<'static>, usize, S> =
+                HashMap::with_hasher(S::default());
+            for (index, (name, change)) in changes.iter().enumerate() {
+                let mut pass = WgpuCanvasRenderPass::wgsl(String::from("shader source"))
+                    .constant("QUALITY", 1.0)
+                    .constant("MODE", 0.0);
+                let mut format = TextureFormat::Rgba8Unorm;
+                change(&mut pass, &mut format);
+                let key = WgpuCanvasPipelineKey::new(&pass, format);
+                assert!(cache.get(&key).is_none(), "variant aliased: {name}");
+                cache.insert(key.into_owned(), index);
+                // The retained key must outlive this descriptor and its shader allocation.
+            }
+            for (index, (name, change)) in changes.iter().enumerate() {
+                let mut pass = WgpuCanvasRenderPass::wgsl(String::from("shader source"))
+                    .constant("QUALITY", 1.0)
+                    .constant("MODE", 0.0);
+                let mut format = TextureFormat::Rgba8Unorm;
+                change(&mut pass, &mut format);
+                pass.label = Some("different label");
+                pass.clear_color = Some(ColorRgba::WHITE);
+                if pass.uniforms.is_some() {
+                    pass.uniforms = Some(Cow::Owned(vec![42; 32]));
+                }
+                assert_eq!(
+                    cache.get(&WgpuCanvasPipelineKey::new(&pass, format)),
+                    Some(&index),
+                    "equivalent descriptor missed: {name}"
+                );
+            }
+        }
+        #[derive(Default)]
+        struct CollidingHasher;
+        impl Hasher for CollidingHasher {
+            fn finish(&self) -> u64 {
+                0
+            }
+            fn write(&mut self, _: &[u8]) {}
+        }
+        check_cache::<std::collections::hash_map::RandomState>(changes);
+        check_cache::<std::hash::BuildHasherDefault<CollidingHasher>>(changes);
+    }
+
+    #[test]
+    fn embedded_canvas_uniform_updates_reuse_pipelines() {
+        let mut keys = std::collections::HashSet::new();
+        for frame in 0..256 {
+            let bytes = (frame as f32 / 120.0).to_le_bytes();
+            let program = crate::CanvasRenderProgram::wgsl("shader source")
+                .vertex_entry_point("vertex")
+                .fragment_entry_point("fragment")
+                .constant("QUALITY", 2.0)
+                .uniform_bytes(bytes);
+            let pass = embedded_canvas_render_pass(&program);
+            assert_eq!(pass.uniforms.as_deref(), Some(bytes.as_slice()));
+            assert_eq!(
+                (pass.vertex_entry_point, pass.fragment_entry_point),
+                ("vertex", "fragment")
+            );
+            keys.insert(WgpuCanvasPipelineKey::new(&pass, TextureFormat::Rgba8Unorm).into_owned());
+            let padded = padded_uniform_bytes(pass.uniforms.as_deref().unwrap());
+            assert_eq!(&padded[..4], bytes.as_slice());
+            assert!(padded[4..].iter().all(|byte| *byte == 0));
+            assert_eq!(padded.len() % 16, 0);
+        }
+        assert_eq!(
+            keys.len(),
+            1,
+            "uniform contents must not specialize a pipeline"
+        );
+        let program = crate::CanvasRenderProgram::wgsl("shader source")
+            .vertex_entry_point("vertex")
+            .fragment_entry_point("fragment")
+            .constant("QUALITY", 2.0)
+            .uniform_bytes(Vec::new());
+        let pass = embedded_canvas_render_pass(&program);
+        assert_eq!(pass.uniforms.as_deref(), Some([].as_slice()));
+        assert_eq!(
+            padded_uniform_bytes(pass.uniforms.as_deref().unwrap()),
+            vec![0; 16]
+        );
+        assert!(keys.contains(&WgpuCanvasPipelineKey::new(
+            &pass,
+            TextureFormat::Rgba8Unorm
+        )));
+
+        let mut no_uniforms = program.clone();
+        no_uniforms.uniforms = None;
+        let pass = embedded_canvas_render_pass(&no_uniforms);
+        assert!(pass.uniforms.is_none());
+        assert!(
+            !keys.contains(&WgpuCanvasPipelineKey::new(
+                &pass,
+                TextureFormat::Rgba8Unorm
+            )),
+            "removing the uniform binding changes the pipeline layout"
+        );
+        let mut specialized = program;
+        specialized.constants[0].value = 3.0;
+        let pass = embedded_canvas_render_pass(&specialized);
+        assert!(
+            !keys.contains(&WgpuCanvasPipelineKey::new(
+                &pass,
+                TextureFormat::Rgba8Unorm
+            )),
+            "compile-time constants must still select a different pipeline"
+        );
+    }
 
     fn test_text_paint(text: impl Into<String>, rect: UiRect) -> TextPaint {
         TextPaint {
@@ -6241,6 +6289,13 @@ mod tests {
         ));
         items.push(test_rect_item(
             UiNodeId(5),
+            UiRect::new(160.0, 20.0, 20.0, 20.0),
+            ColorRgba::new(220, 40, 40, 255),
+            0.0,
+            1.0,
+        ));
+        items.push(test_rect_item(
+            UiNodeId(6),
             UiRect::new(130.0, 18.0, 72.0, 72.0),
             ColorRgba::new(20, 120, 80, 240),
             0.0,
@@ -6270,16 +6325,61 @@ mod tests {
         renderer.warm_up().expect("wgpu renderer warm-up");
         let context = renderer.context.as_mut().expect("wgpu context");
 
-        let _ = context.rect_pipeline(TextureFormat::Rgba8UnormSrgb);
         let _ = context.triangle_pipeline(TextureFormat::Rgba8UnormSrgb);
         let _ = context.textured_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
         let _ = context.composited_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
-        let _ = context.sdf_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
-        let _ = context.shadow_rect_pipeline(TextureFormat::Rgba8UnormSrgb);
+        for kind in SdfPipelineKind::ALL {
+            let _ = context.sdf_pipeline(TextureFormat::Rgba8UnormSrgb, kind);
+        }
     }
 
     #[test]
-    fn app_owned_view_encoder_path_loads_existing_attachment() {
+    fn snapshots_and_offscreen_targets_honor_explicit_clear_alpha() {
+        let mut renderer = WgpuRenderer::default();
+        let size = PixelSize::new(4, 4);
+        for target in [RenderTarget::snapshot(size), RenderTarget::offscreen(size)] {
+            for (clear, expected) in [
+                (None, [18, 18, 18, 255]),
+                (Some(ColorRgba::TRANSPARENT), [0, 0, 0, 0]),
+                (Some(ColorRgba::new(30, 60, 90, 128)), [30, 60, 90, 128]),
+            ] {
+                let mut request = RenderFrameRequest::new(
+                    target.clone(),
+                    UiSize::new(4.0, 4.0),
+                    PaintList {
+                        items: vec![test_rect_item(
+                            UiNodeId(1),
+                            UiRect::new(1.0, 1.0, 2.0, 2.0),
+                            ColorRgba::new(255, 0, 0, 255),
+                            0.0,
+                            1.0,
+                        )],
+                    },
+                );
+                if let Some(clear) = clear {
+                    request.options.clear_color = clear;
+                }
+                let snapshot = renderer
+                    .render_frame(request, &EmptyResourceResolver)
+                    .expect("clear alpha frame")
+                    .snapshot
+                    .expect("snapshot");
+                assert_eq!(
+                    pixel_rgba(&snapshot.pixels, 4, 0, 0),
+                    expected,
+                    "clear {clear:?}, target {target:?}"
+                );
+                assert_eq!(
+                    pixel_rgba(&snapshot.pixels, 4, 2, 2),
+                    [255, 0, 0, 255],
+                    "geometry must still render over clear {clear:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn app_owned_view_encoder_honors_load_request_clear_and_override() {
         let mut renderer = WgpuRenderer::default();
         renderer.warm_up().expect("wgpu renderer warm-up");
         let context = renderer.context.as_ref().expect("wgpu context");
@@ -6310,132 +6410,159 @@ mod tests {
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("operad-wgpu-app-owned-test-encoder"),
-        });
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("operad-wgpu-app-owned-test-background"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 1.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
+        for (name, clear_color, load_op, expected_background) in [
+            (
+                "load",
+                ColorRgba::TRANSPARENT,
+                Some(WgpuRenderLoadOp::Load),
+                [0, 0, 255, 255],
+            ),
+            ("request clear", ColorRgba::TRANSPARENT, None, [0, 0, 0, 0]),
+            (
+                "transparent override",
+                ColorRgba::WHITE,
+                Some(WgpuRenderLoadOp::Clear(ColorRgba::TRANSPARENT)),
+                [0, 0, 0, 0],
+            ),
+            (
+                "translucent override",
+                ColorRgba::TRANSPARENT,
+                Some(WgpuRenderLoadOp::Clear(ColorRgba::new(0, 255, 0, 128))),
+                [0, 255, 0, 128],
+            ),
+        ] {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("operad-wgpu-app-owned-test-encoder"),
             });
-        }
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("operad-wgpu-app-owned-test-background"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 1.0,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+            }
 
-        let request = RenderFrameRequest::new(
-            RenderTarget::app_owned("app-owned-test", UiSize::new(4.0, 4.0)),
-            UiSize::new(4.0, 4.0),
-            PaintList {
-                items: vec![test_rect_item(
-                    UiNodeId(9),
-                    UiRect::new(1.0, 1.0, 2.0, 2.0),
-                    ColorRgba::new(240, 20, 40, 255),
-                    0.0,
-                    1.0,
-                )],
-            },
-        )
-        .options(RenderOptions {
-            collect_gpu_timing: true,
-            ..RenderOptions::default()
-        });
-        let timed_output = renderer
-            .render_frame_into_view_with_encoder_timed(
-                request,
-                &EmptyResourceResolver,
-                &mut encoder,
-                WgpuRenderTargetView::new(&view, format).load(),
-            )
-            .expect("render into app-owned view");
-        let gpu_timing_token = timed_output.gpu_timing_token;
-        let output = timed_output.frame;
-        assert_eq!(output.target.kind(), RenderTargetKind::AppOwned);
-        assert_eq!(output.painted_items, 1);
-        assert!(output.snapshot.is_none());
-
-        encoder.copy_texture_to_buffer(
-            TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_row_stride),
-                    rows_per_image: Some(size.height),
+            let request = RenderFrameRequest::new(
+                RenderTarget::app_owned("app-owned-test", UiSize::new(4.0, 4.0)),
+                UiSize::new(4.0, 4.0),
+                PaintList {
+                    items: vec![test_rect_item(
+                        UiNodeId(9),
+                        UiRect::new(1.0, 1.0, 2.0, 2.0),
+                        ColorRgba::new(240, 20, 40, 255),
+                        0.0,
+                        1.0,
+                    )],
                 },
-            },
-            Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit(Some(encoder.finish()));
-        if let Some(token) = gpu_timing_token {
-            assert!(
-                renderer
-                    .resolve_gpu_timing(token)
-                    .expect("resolve caller-owned GPU timing")
-                    .is_some(),
-                "timestamp-capable devices should resolve app-owned pass timing"
-            );
-        } else {
-            assert!(
-                renderer
-                    .context
-                    .as_ref()
-                    .expect("wgpu context")
-                    .gpu_timer
-                    .is_none(),
-                "timestamp-capable devices should return a timing token"
-            );
-        }
-        let _ = device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("wgpu poll");
-        let readback_slice = readback.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        readback_slice.map_async(wgpu::MapMode::Read, move |status| {
-            tx.send(status).ok();
-        });
-        let _ = device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("wgpu poll");
-        rx.recv().expect("map callback").expect("map readback");
-        let mapped = readback_slice.get_mapped_range();
-        let mut pixels = vec![0_u8; render_byte_len(size).expect("render byte len")];
-        for y in 0..usize::try_from(size.height).expect("height") {
-            let source = y * usize::try_from(padded_row_stride).expect("stride");
-            let destination = y * usize::try_from(size.width).expect("width") * 4;
-            pixels[destination..destination + usize::try_from(size.width).expect("width") * 4]
-                .copy_from_slice(
-                    &mapped[source..source + usize::try_from(size.width).expect("width") * 4],
-                );
-        }
-        drop(mapped);
-        readback.unmap();
+            )
+            .options(RenderOptions {
+                collect_gpu_timing: true,
+                clear_color,
+                ..RenderOptions::default()
+            });
+            let timed_output = renderer
+                .render_frame_into_view_with_encoder_timed(
+                    request,
+                    &EmptyResourceResolver,
+                    &mut encoder,
+                    WgpuRenderTargetView {
+                        view: &view,
+                        format,
+                        load_op,
+                    },
+                )
+                .expect("render into app-owned view");
+            let gpu_timing_token = timed_output.gpu_timing_token;
+            let output = timed_output.frame;
+            assert_eq!(output.target.kind(), RenderTargetKind::AppOwned);
+            assert_eq!(output.painted_items, 1);
+            assert!(output.snapshot.is_none());
 
-        assert_eq!(pixel_rgba(&pixels, 4, 0, 0), [0, 0, 255, 255]);
-        assert_eq!(pixel_rgba(&pixels, 4, 2, 2), [240, 20, 40, 255]);
+            encoder.copy_texture_to_buffer(
+                TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row_stride),
+                        rows_per_image: Some(size.height),
+                    },
+                },
+                Extent3d {
+                    width: size.width,
+                    height: size.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit(Some(encoder.finish()));
+            if let Some(token) = gpu_timing_token {
+                assert!(
+                    renderer
+                        .resolve_gpu_timing(token)
+                        .expect("resolve caller-owned GPU timing")
+                        .is_some(),
+                    "timestamp-capable devices should resolve app-owned pass timing"
+                );
+            } else {
+                assert!(
+                    renderer
+                        .context
+                        .as_ref()
+                        .expect("wgpu context")
+                        .gpu_timer
+                        .is_none(),
+                    "timestamp-capable devices should return a timing token"
+                );
+            }
+            let _ = device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("wgpu poll");
+            let readback_slice = readback.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback_slice.map_async(wgpu::MapMode::Read, move |status| {
+                tx.send(status).ok();
+            });
+            let _ = device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("wgpu poll");
+            rx.recv().expect("map callback").expect("map readback");
+            let mapped = readback_slice.get_mapped_range();
+            let mut pixels = vec![0_u8; render_byte_len(size).expect("render byte len")];
+            for y in 0..usize::try_from(size.height).expect("height") {
+                let source = y * usize::try_from(padded_row_stride).expect("stride");
+                let destination = y * usize::try_from(size.width).expect("width") * 4;
+                pixels[destination..destination + usize::try_from(size.width).expect("width") * 4]
+                    .copy_from_slice(
+                        &mapped[source..source + usize::try_from(size.width).expect("width") * 4],
+                    );
+            }
+            drop(mapped);
+            readback.unmap();
+
+            assert_eq!(pixel_rgba(&pixels, 4, 0, 0), expected_background, "{name}");
+            assert_eq!(pixel_rgba(&pixels, 4, 2, 2), [240, 20, 40, 255]);
+        }
     }
 
     fn test_rect_item(
@@ -6460,6 +6587,354 @@ mod tests {
                 stroke: None,
                 corner_radius,
             },
+        }
+    }
+
+    #[test]
+    fn unavailable_surface_does_not_apply_uploads_before_retrying_shape_changes() {
+        use crate::platform::ImageHandle;
+        use crate::renderer::ResourceDescriptor;
+
+        let make_request = |updates: Vec<ResourceUpdate>| {
+            let mut item = test_rect_item(
+                UiNodeId(1),
+                UiRect::new(0.0, 0.0, 8.0, 4.0),
+                ColorRgba::WHITE,
+                0.0,
+                1.0,
+            );
+            item.kind = PaintKind::Image {
+                key: "retry-image".to_owned(),
+                tint: None,
+            };
+            RenderFrameRequest::new(
+                RenderTarget::snapshot(PixelSize::new(8, 4)),
+                UiSize::new(8.0, 4.0),
+                PaintList { items: vec![item] },
+            )
+            .resource_updates(updates)
+        };
+        let base = ResourceDescriptor::new(
+            ImageHandle::app("retry-image"),
+            PixelSize::new(4, 4),
+            ResourceFormat::Rgba8,
+        );
+        let replacement = ResourceDescriptor::new(
+            base.handle.clone(),
+            PixelSize::new(8, 4),
+            ResourceFormat::Bgra8,
+        );
+        let updates = vec![
+            ResourceUpdate::partial(
+                base.clone(),
+                PixelRect::new(0, 0, 1, 1),
+                vec![0, 255, 0, 255],
+            ),
+            ResourceUpdate::full(replacement.clone(), [255, 0, 0, 255].repeat(32)),
+            ResourceUpdate::partial(
+                replacement,
+                PixelRect::new(2, 1, 3, 2),
+                [0, 255, 255, 255].repeat(6),
+            ),
+        ];
+        let mut renderer = WgpuRenderer::default();
+        renderer
+            .render_frame(
+                make_request(vec![ResourceUpdate::full(
+                    base,
+                    [255, 0, 0, 255].repeat(16),
+                )]),
+                &EmptyResourceResolver,
+            )
+            .expect("initial image");
+
+        for reason in ["timeout", "outdated", "timeout"] {
+            let error = renderer
+                .prepare_frame(
+                    make_request(updates.clone()),
+                    &EmptyResourceResolver,
+                    |_, _| Err::<(), _>(RenderError::SurfaceUnavailable(reason.to_owned())),
+                )
+                .err()
+                .expect("injected surface failure");
+            assert_eq!(
+                error,
+                RenderError::SurfaceUnavailable(reason.to_owned()),
+                "retry must not fail because a previous failed attempt changed the image shape"
+            );
+        }
+
+        let unchanged = renderer
+            .render_frame(make_request(Vec::new()), &EmptyResourceResolver)
+            .expect("read image after failed acquisition")
+            .snapshot
+            .expect("snapshot");
+        assert!(unchanged
+            .pixels
+            .chunks_exact(4)
+            .all(|pixel| pixel == [255, 0, 0, 255]));
+
+        let prepared = renderer
+            .prepare_frame(make_request(updates), &EmptyResourceResolver, |_, _| Ok(()))
+            .expect("acquisition recovered");
+        let pixels = renderer
+            .render_snapshot(prepared.size, ColorRgba::TRANSPARENT)
+            .expect("render recovered frame");
+        for y in 0..4 {
+            for x in 0..8 {
+                let expected = if (2..5).contains(&x) && (1..3).contains(&y) {
+                    [255, 255, 0, 255]
+                } else {
+                    [0, 0, 255, 255]
+                };
+                assert_eq!(pixel_rgba(&pixels, 8, x, y), expected, "pixel ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn partial_resource_uploads_preserve_the_base_and_reject_shape_changes() {
+        use crate::platform::ImageHandle;
+        use crate::renderer::ResourceDescriptor;
+
+        let descriptor = ResourceDescriptor::new(
+            ImageHandle::app("patched-image"),
+            PixelSize::new(4, 4),
+            ResourceFormat::Rgba8,
+        );
+        let render = |renderer: &mut WgpuRenderer, update: Option<ResourceUpdate>| {
+            let mut item = test_rect_item(
+                UiNodeId(1),
+                UiRect::new(0.0, 0.0, 4.0, 4.0),
+                ColorRgba::WHITE,
+                0.0,
+                1.0,
+            );
+            item.kind = PaintKind::Image {
+                key: "patched-image".to_owned(),
+                tint: None,
+            };
+            let mut request = RenderFrameRequest::new(
+                RenderTarget::snapshot(PixelSize::new(4, 4)),
+                UiSize::new(4.0, 4.0),
+                PaintList { items: vec![item] },
+            );
+            request.resource_updates.extend(update);
+            renderer
+                .render_frame(request, &EmptyResourceResolver)
+                .map(|output| output.snapshot.expect("snapshot"))
+        };
+        let mut renderer = WgpuRenderer::default();
+        render(
+            &mut renderer,
+            Some(ResourceUpdate::full(
+                descriptor.clone(),
+                [255, 0, 0, 255].repeat(16),
+            )),
+        )
+        .expect("full base upload");
+
+        for (label, size, format) in [
+            ("resize", PixelSize::new(6, 4), ResourceFormat::Rgba8),
+            ("BGRA format change", descriptor.size, ResourceFormat::Bgra8),
+            (
+                "alpha format change",
+                descriptor.size,
+                ResourceFormat::Alpha8,
+            ),
+        ] {
+            let mut changed = descriptor.clone();
+            changed.size = size;
+            changed.format = format;
+            let result = render(
+                &mut renderer,
+                Some(ResourceUpdate::partial(
+                    changed,
+                    PixelRect::new(1, 1, 2, 2),
+                    vec![255; 4 * format.bytes_per_pixel()],
+                )),
+            );
+            assert!(
+                matches!(result, Err(RenderError::InvalidResourceUpdate(_))),
+                "{label} must require a full upload"
+            );
+            let image = render(&mut renderer, None).expect("base after rejected update");
+            for pixel in image.pixels.chunks_exact(4) {
+                assert_eq!(pixel, [255, 0, 0, 255], "{label} changed the base");
+            }
+        }
+
+        // Default-version uploads are ordered writes; a patch changes only its rectangle.
+        let image = render(
+            &mut renderer,
+            Some(ResourceUpdate::partial(
+                descriptor.clone(),
+                PixelRect::new(1, 1, 2, 2),
+                [0, 255, 0, 255].repeat(4),
+            )),
+        )
+        .expect("same-shape patch");
+        for y in 0..4 {
+            for x in 0..4 {
+                let expected = if (1..3).contains(&x) && (1..3).contains(&y) {
+                    [0, 255, 0, 255]
+                } else {
+                    [255, 0, 0, 255]
+                };
+                assert_eq!(pixel_rgba(&image.pixels, 4, x, y), expected);
+            }
+        }
+
+        // A full replacement establishes the format for subsequent partial writes,
+        // even when the GPU allocation can be reused at the same dimensions.
+        let mut bgra = descriptor.clone();
+        bgra.format = ResourceFormat::Bgra8;
+        render(
+            &mut renderer,
+            Some(ResourceUpdate::full(
+                bgra.clone(),
+                [255, 0, 0, 255].repeat(16),
+            )),
+        )
+        .expect("full format replacement");
+        let image = render(
+            &mut renderer,
+            Some(ResourceUpdate::partial(
+                bgra,
+                PixelRect::new(0, 0, 1, 1),
+                vec![0, 255, 255, 255],
+            )),
+        )
+        .expect("patch after format replacement");
+        assert_eq!(pixel_rgba(&image.pixels, 4, 0, 0), [255, 255, 0, 255]);
+        assert_eq!(pixel_rgba(&image.pixels, 4, 3, 3), [0, 0, 255, 255]);
+
+        render(
+            &mut renderer,
+            Some(ResourceUpdate::rgba8_image(
+                ImageHandle::app("patched-image"),
+                PixelSize::ZERO,
+                Vec::new(),
+            )),
+        )
+        .expect("release image");
+        let result = render(
+            &mut renderer,
+            Some(ResourceUpdate::partial(
+                descriptor,
+                PixelRect::new(0, 0, 1, 1),
+                vec![255; 4],
+            )),
+        );
+        assert!(
+            matches!(result, Err(RenderError::InvalidResourceUpdate(_))),
+            "a patch cannot establish a missing base"
+        );
+    }
+
+    #[test]
+    fn compositor_cleanup_preserves_app_images_and_canvas_buffers() {
+        let mut renderer = WgpuRenderer::default();
+        // App names must not share the namespace or lifetime of generated layers.
+        let image_key = "__operad_layer_1_0";
+        let canvas = crate::CanvasContent::new("__operad_layer_1_1").gpu_context();
+        renderer
+            .get_gpu_context(&canvas, PixelSize::new(4, 4))
+            .expect("persistent canvas")
+            .clear(ColorRgba::new(0, 255, 0, 255));
+        let image = ResourceUpdate::rgba8_image(
+            crate::platform::ImageHandle::app(image_key),
+            PixelSize::new(1, 1),
+            vec![255, 0, 0, 255],
+        );
+        let item = |x, kind| {
+            let mut item = test_rect_item(
+                UiNodeId(1),
+                UiRect::new(x, 0.0, 4.0, 4.0),
+                ColorRgba::WHITE,
+                0.0,
+                1.0,
+            );
+            item.kind = kind;
+            item
+        };
+        for (frame, with_layers) in [true, true, false, true, false].into_iter().enumerate() {
+            let mut items = vec![
+                item(
+                    0.0,
+                    PaintKind::Image {
+                        key: image_key.to_owned(),
+                        tint: None,
+                    },
+                ),
+                item(4.0, PaintKind::Canvas(canvas.clone())),
+            ];
+            let blue = 40 + frame as u8 * 40;
+            if with_layers {
+                let bounds = UiRect::new(8.0, 0.0, 4.0, 4.0);
+                let child = test_rect_item(
+                    UiNodeId(2),
+                    bounds,
+                    ColorRgba::new(0, 0, blue, 255),
+                    0.0,
+                    1.0,
+                );
+                let inner = PaintCompositorLayer::new(bounds, PaintList { items: vec![child] });
+                let outer = PaintCompositorLayer::new(
+                    bounds,
+                    PaintList {
+                        items: vec![item(8.0, PaintKind::CompositedLayer(inner))],
+                    },
+                );
+                items.push(item(8.0, PaintKind::CompositedLayer(outer)));
+            }
+            let mut request = RenderFrameRequest::new(
+                RenderTarget::snapshot(PixelSize::new(12, 4)),
+                UiSize::new(12.0, 4.0),
+                PaintList { items },
+            )
+            .options(RenderOptions {
+                clear_color: ColorRgba::new(3, 4, 5, 255),
+                ..Default::default()
+            });
+            if frame == 0 {
+                request.resource_updates.push(image.clone());
+            }
+            let snapshot = renderer
+                .render_frame(request, &EmptyResourceResolver)
+                .expect("compositor frame")
+                .snapshot
+                .expect("snapshot");
+            assert_eq!(
+                pixel_rgba(&snapshot.pixels, 12, 2, 2),
+                [255, 0, 0, 255],
+                "app image lost on frame {frame}"
+            );
+            assert_eq!(
+                pixel_rgba(&snapshot.pixels, 12, 6, 2),
+                [0, 255, 0, 255],
+                "canvas buffer lost on frame {frame}"
+            );
+            assert_eq!(
+                pixel_rgba(&snapshot.pixels, 12, 10, 2),
+                if with_layers {
+                    [0, 0, blue, 255]
+                } else {
+                    [3, 4, 5, 255]
+                },
+                "nested layer contents on frame {frame}"
+            );
+            let context = renderer.context.as_ref().expect("wgpu context");
+            assert_eq!(
+                context.textures.len(),
+                2,
+                "app resources changed on frame {frame}"
+            );
+            assert_eq!(
+                context.layer_textures.len(),
+                if with_layers { 2 } else { 0 },
+                "retained compositor targets from an earlier frame {frame}"
+            );
         }
     }
 
@@ -6533,44 +7008,82 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn canvas_render_pass_applies_shader_override_constants() {
-        let mut renderer = WgpuRenderer::default();
-        let canvas = crate::CanvasContent::new("constant.canvas").gpu_context();
-        {
-            let context = renderer
-                .get_gpu_context(&canvas, PixelSize::new(4, 4))
-                .expect("gpu canvas context");
-            context
-                .render_pass(
-                    WgpuCanvasRenderPass::wgsl(
-                        r#"
+    fn canvas_pipeline_cache_bounds_shader_edits_and_recreates_evicted_variants() {
+        const CACHE_LIMIT: usize = MAX_CACHED_CANVAS_PIPELINES;
+        const SHADER: &str = r#"
 override RED: f32 = 0.2;
 
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-};
-
 @vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     let positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0)
+        vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0)
     );
-    var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    return output;
+    return vec4<f32>(positions[index], 0.0, 1.0);
 }
 
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return vec4<f32>(RED, 0.0, 0.0, 1.0);
 }
-"#,
+"#;
+        let mut renderer = WgpuRenderer::default();
+        let canvas = crate::CanvasContent::new("constant.canvas").gpu_context();
+        {
+            let context = renderer
+                .get_gpu_context(&canvas, PixelSize::new(4, 4))
+                .expect("gpu canvas context");
+            let cold = WgpuCanvasRenderPass::wgsl(SHADER).constant("RED", 0.25);
+            let hot = WgpuCanvasRenderPass::wgsl(SHADER).constant("RED", 0.75);
+            let cached_pipeline = |pass: &WgpuCanvasRenderPass<'_>| {
+                context
+                    .pipeline_cache
+                    .borrow_mut()
+                    .get(&WgpuCanvasPipelineKey::new(pass, context.format()))
+            };
+            context.render_pass(cold.clone()).expect("cold variant");
+            let original_cold = cached_pipeline(&cold).expect("cached cold variant");
+            context.render_pass(hot.clone()).expect("hot variant");
+            let original_hot = cached_pipeline(&hot).expect("cached hot variant");
+            // Direct canvas users need bounded retention even without UI frame boundaries.
+            // Exercise both changing WGSL source and specialization-only changes.
+            for revision in 0..CACHE_LIMIT * 3 {
+                let shader = if revision % 2 == 0 {
+                    Cow::Owned(format!("{SHADER}\n// revision {revision}"))
+                } else {
+                    Cow::Borrowed(SHADER)
+                };
+                context
+                    .render_pass(
+                        WgpuCanvasRenderPass::wgsl(shader)
+                            .constant("RED", revision as f64 / (CACHE_LIMIT * 3) as f64),
                     )
-                    .constant("RED", 0.8),
-                )
-                .expect("canvas shader pass");
+                    .expect("edited shader");
+                context
+                    .render_pass(hot.clone())
+                    .expect("reused hot variant");
+            }
+            let retained = context.pipeline_cache.borrow().len();
+            assert!(
+                retained <= CACHE_LIMIT,
+                "shader edits retained {retained} pipelines; cache budget is {CACHE_LIMIT}"
+            );
+            assert_eq!(
+                cached_pipeline(&hot),
+                Some(original_hot),
+                "hot pipeline recompiled"
+            );
+            assert!(
+                cached_pipeline(&cold).is_none(),
+                "unused variant never retired"
+            );
+            context
+                .render_pass(cold.clone())
+                .expect("recreated cold variant");
+            assert_ne!(
+                cached_pipeline(&cold),
+                Some(original_cold),
+                "cold variant was not recreated"
+            );
         }
 
         let output = renderer
@@ -6599,13 +7112,11 @@ fn fs_main() -> @location(0) vec4<f32> {
         let snapshot = output.snapshot.expect("snapshot");
         let pixel = pixel_rgba(&snapshot.pixels, 4, 2, 2);
 
-        assert!(
-            pixel[0] > 180,
-            "override constant was not applied: {pixel:?}"
+        assert_eq!(
+            pixel,
+            [64, 0, 0, 255],
+            "recreated shader must preserve its specialization"
         );
-        assert_eq!(pixel[1], 0);
-        assert_eq!(pixel[2], 0);
-        assert_eq!(pixel[3], 255);
     }
 
     #[test]
@@ -6632,7 +7143,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.1, 0.6, 0.9, 1.0);
+    return vec4<f32>(0.0, 1.0, 1.0, 1.0);
 }
 "#,
             )
@@ -6663,7 +7174,9 @@ fn fs_main() -> @location(0) vec4<f32> {
             .expect("embedded canvas program frame");
         let snapshot = output.snapshot.expect("snapshot");
 
-        assert_eq!(pixel_rgba(&snapshot.pixels, 4, 2, 2), [25, 153, 229, 255]);
+        // Exact UNORM endpoints avoid implementation-dependent rounding of
+        // decimal shader colors. This tests canvas/composite order.
+        assert_eq!(pixel_rgba(&snapshot.pixels, 4, 2, 2), [0, 255, 255, 255]);
     }
 
     #[test]
@@ -6825,28 +7338,142 @@ fn fs_main() -> @location(0) vec4<f32> {
         assert_eq!(text.vertical_align, TextVerticalAlign::Center);
     }
 
+    #[cfg(feature = "text-cosmic")]
+    #[test]
+    fn glyphon_ellipsis_matches_layout_fitting_and_invalidates_cached_clip() {
+        let mut fonts = default_glyph_font_system();
+        let mut measurer = crate::CosmicTextMeasurer::new();
+        let mut buffer = GlyphBuffer::new(&mut fonts, GlyphMetrics::new(14.0, 20.0));
+        for source in [
+            "WWW iii long label",
+            "e\u{301}e\u{301} emoji 👩🏽‍💻 family",
+            "אבג abc דהו",
+        ] {
+            for family in [FontFamily::SansSerif, FontFamily::Monospace] {
+                let mut text = test_text_paint(source, UiRect::new(0.0, 0.0, 65.0, 24.0));
+                text.style.family = family;
+                text.style.wrap = TextWrap::None;
+                let clipped_key = TextBufferKey::new(&text);
+                sync_glyph_buffer(&mut buffer, &mut fonts, &text, None, &clipped_key);
+                text.style.overflow = TextOverflow::Ellipsis;
+                let ellipsis_key = TextBufferKey::new(&text);
+                sync_glyph_buffer(
+                    &mut buffer,
+                    &mut fonts,
+                    &text,
+                    Some(&clipped_key),
+                    &ellipsis_key,
+                );
+                let expected = measurer.fit_text(
+                    &TextContent::new(source, text.style.clone()),
+                    text.rect.width,
+                );
+                assert!(expected.truncated);
+                assert_eq!(
+                    buffer
+                        .lines
+                        .iter()
+                        .map(|line| line.text())
+                        .collect::<String>(),
+                    expected.text
+                );
+                let runs: Vec<_> = buffer.layout_runs().collect();
+                assert_eq!(runs.len(), 1);
+                assert!(runs[0].line_w <= text.rect.width);
+                assert!((runs[0].line_w - expected.size.width).abs() < 0.001);
+                assert_ne!(
+                    clipped_key, ellipsis_key,
+                    "cache must observe overflow changes"
+                );
+                sync_glyph_buffer(
+                    &mut buffer,
+                    &mut fonts,
+                    &TextPaint {
+                        style: TextStyle {
+                            overflow: TextOverflow::Clip,
+                            ..text.style
+                        },
+                        ..text
+                    },
+                    Some(&ellipsis_key),
+                    &clipped_key,
+                );
+                assert_eq!(buffer.lines[0].text(), source);
+            }
+        }
+    }
+
+    #[cfg(feature = "text-cosmic")]
+    #[test]
+    fn scene_text_ellipsis_renders_the_measured_presentation() {
+        let mut renderer = WgpuRenderer::new();
+        let rect = UiRect::new(2.0, 2.0, 70.0, 24.0);
+        let style = TextStyle {
+            wrap: TextWrap::None,
+            ..Default::default()
+        };
+        let source = "A long label that needs fitting";
+        let expected = crate::CosmicTextMeasurer::new()
+            .fit_text(&TextContent::new(source, style.clone()), rect.width);
+        assert!(expected.truncated && !expected.text.is_empty());
+        let mut render = |value: &str, overflow| {
+            renderer
+                .render_frame(
+                    RenderFrameRequest::new(
+                        RenderTarget::snapshot(PixelSize::new(80, 30)),
+                        UiSize::new(80.0, 30.0),
+                        PaintList {
+                            items: vec![PaintItem {
+                                node: UiNodeId(1),
+                                rect,
+                                clip_rect: rect,
+                                z_index: 0.0,
+                                layer_order: LayerOrder::DEFAULT,
+                                opacity: 1.0,
+                                transform: Default::default(),
+                                shader: None,
+                                material: None,
+                                kind: PaintKind::SceneText(
+                                    crate::PaintText::new(value, rect, style.clone())
+                                        .overflow(overflow),
+                                ),
+                            }],
+                        },
+                    ),
+                    &EmptyResourceResolver,
+                )
+                .unwrap()
+                .snapshot
+                .unwrap()
+                .pixels
+        };
+        let ellipsized = render(source, TextOverflow::Ellipsis);
+        assert_eq!(ellipsized, render(&expected.text, TextOverflow::Clip));
+        assert_ne!(ellipsized, render(source, TextOverflow::Clip));
+    }
+
     #[test]
     fn missing_image_placeholder_uses_clear_checkerboard() {
         let mut geometry = RenderGeometry::default();
         let rect = UiRect::new(0.0, 0.0, 16.0, 16.0);
         push_image_placeholder(&mut geometry, rect, rect, "assets.missing", None, 1.0);
 
-        assert_eq!(geometry.rects.len(), 4);
+        assert_eq!(geometry.shapes.len(), 4);
         assert_eq!(geometry.vertices.len(), 0);
         assert_eq!(
-            geometry.rects[0].color,
+            geometry.shapes[0].color,
             color_as_vertex(MISSING_IMAGE_DARK, 1.0)
         );
         assert_eq!(
-            geometry.rects[1].color,
+            geometry.shapes[1].color,
             color_as_vertex(MISSING_IMAGE_PURPLE, 1.0)
         );
         assert_eq!(
-            geometry.rects[2].color,
+            geometry.shapes[2].color,
             color_as_vertex(MISSING_IMAGE_PURPLE, 1.0)
         );
         assert_eq!(
-            geometry.rects[3].color,
+            geometry.shapes[3].color,
             color_as_vertex(MISSING_IMAGE_DARK, 1.0)
         );
     }
@@ -6854,11 +7481,15 @@ fn fs_main() -> @location(0) vec4<f32> {
     #[test]
     fn push_polygon_uses_concave_tessellation() {
         let mut geometry = RenderGeometry::default();
+        // A U shape cannot be triangulated correctly as a fan from its first vertex.
         let points = [
             UiPoint::new(0.0, 0.0),
             UiPoint::new(16.0, 0.0),
             UiPoint::new(16.0, 16.0),
-            UiPoint::new(8.0, 8.0),
+            UiPoint::new(12.0, 16.0),
+            UiPoint::new(12.0, 4.0),
+            UiPoint::new(4.0, 4.0),
+            UiPoint::new(4.0, 16.0),
             UiPoint::new(0.0, 16.0),
         ];
         push_polygon(
@@ -6869,16 +7500,17 @@ fn fs_main() -> @location(0) vec4<f32> {
             1.0,
         );
 
-        let expected = tessellate_polygon_points(&points)
-            .into_iter()
-            .flat_map(|triangle| triangle.into_iter().map(|point| [point.x, point.y]))
-            .collect::<Vec<_>>();
-        let actual = geometry
+        let area = geometry
             .vertices
-            .iter()
-            .map(|vertex| vertex.position)
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
+            .chunks_exact(3)
+            .map(|triangle| {
+                let [ax, ay] = triangle[0].position;
+                let [bx, by] = triangle[1].position;
+                let [cx, cy] = triangle[2].position;
+                ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)).abs() * 0.5
+            })
+            .sum::<f32>();
+        assert!((area - 160.0).abs() < 0.001, "concave polygon area: {area}");
     }
 
     #[test]
@@ -6896,18 +7528,26 @@ fn fs_main() -> @location(0) vec4<f32> {
         );
 
         assert!(
-            geometry.rects.is_empty(),
+            geometry
+                .shapes
+                .iter()
+                .all(|s| s.color != color_as_vertex(MISSING_IMAGE_DARK, 1.0)
+                    && s.color != color_as_vertex(MISSING_IMAGE_PURPLE, 1.0)),
             "built-in icon fell back to checkerboard"
         );
         assert!(
-            !geometry.vertices.is_empty(),
-            "built-in icon should render vector fallback vertices"
+            !geometry.vertices.is_empty() || !geometry.shapes.is_empty(),
+            "built-in icon should render vector fallback primitives"
         );
         assert!(
             geometry
                 .vertices
                 .iter()
-                .any(|vertex| vertex.color == color_as_vertex(tint, 1.0)),
+                .any(|vertex| vertex.color == color_as_vertex(tint, 1.0))
+                || geometry
+                    .shapes
+                    .iter()
+                    .any(|s| s.color == color_as_vertex(tint, 1.0)),
             "built-in icon fallback did not carry the image tint"
         );
     }

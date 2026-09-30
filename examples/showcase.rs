@@ -50,13 +50,11 @@ use operad::display::{
 use operad::forms::FormValidationResult;
 use operad::host::{HostInteractionState, HostShortcutRoute};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
-use operad::native::{
-    NativeWgpuCanvasRenderRegistry, NativeWindowHooks, NativeWindowOptions, NativeWindowResult,
-};
+use operad::native::{NativeWindowOptions, NativeWindowResult};
 use operad::platform::{
     ClipboardResponse, CursorRequest, CursorShape, DragBytes, DragOperation, DragPayload,
-    ImageHandle, PixelSize, PlatformRequest, PlatformResponse, PlatformServiceResponse,
-    ResourceHandle,
+    ImageHandle, PixelSize, PlatformRequest, PlatformRequestId, PlatformResponse,
+    PlatformServiceResponse, ResourceHandle,
 };
 use operad::renderer::ResourceUpdate;
 use operad::runtime::{PlatformServiceClient, RuntimeInvalidation, RuntimeInvalidationReason};
@@ -194,10 +192,8 @@ fn showcase_user_image_update() -> Option<ResourceUpdate> {
     .ok()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
-fn main() -> NativeWindowResult {
-    let canvas_renderers = NativeWgpuCanvasRenderRegistry::new();
-    let hooks = NativeWindowHooks::new()
+fn application() -> operad::runtime::Application<ShowcaseState> {
+    let hooks = operad::runtime::RuntimeHooks::new()
         .with_before_render(|state: &mut ShowcaseState, metrics| {
             state.prepare_frame(metrics.viewport);
         })
@@ -207,46 +203,37 @@ fn main() -> NativeWindowResult {
         .with_platform_responses(|state: &mut ShowcaseState, responses| {
             state.apply_platform_responses(responses);
         });
-    operad::native::run_app_with_canvas_renderers_and_hooks(
+    operad::runtime::Application::new(
+        ShowcaseState::default(),
+        ShowcaseState::update,
+        |state, viewport, _views| ShowcaseState::view(state, viewport),
+    )
+    .with_hooks(hooks)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-window"))]
+fn main() -> NativeWindowResult {
+    application().run_native(
         NativeWindowOptions::new("showcase")
             .with_size(900.0, 760.0)
             .with_min_size(720.0, 560.0)
             .with_tick_action("runtime.tick")
             .with_tick_rate_hz(SHOWCASE_TICK_RATE_HZ),
-        ShowcaseState::default(),
-        ShowcaseState::update,
-        ShowcaseState::view,
-        canvas_renderers,
-        hooks,
     )
 }
 
 #[cfg(target_arch = "wasm32")]
 pub async fn run_web() -> Result<(), wasm_bindgen::JsValue> {
-    let hooks = operad::web::WebRuntimeHooks::new()
-        .with_before_render(|state: &mut ShowcaseState, metrics| {
-            state.prepare_frame(metrics.viewport);
-        })
-        .with_platform_service_requests(|state: &mut ShowcaseState, _metrics| {
-            state.platform.drain_requests()
-        })
-        .with_platform_responses(|state: &mut ShowcaseState, responses| {
-            state.apply_platform_responses(responses);
-        });
-
-    operad::web::run_app_with_hooks(
-        operad::web::WebRuntimeOptions::new("Operad showcase")
-            .with_canvas_id("operad-showcase-canvas")
-            .with_status_id("operad-showcase-status")
-            .with_target_name("showcase")
-            .with_tick_action("runtime.tick")
-            .with_tick_rate_hz(SHOWCASE_TICK_RATE_HZ),
-        ShowcaseState::default(),
-        ShowcaseState::update,
-        ShowcaseState::view,
-        hooks,
-    )
-    .await
+    application()
+        .run_web(
+            operad::web::WebRuntimeOptions::new("Operad showcase")
+                .with_canvas_id("operad-showcase-canvas")
+                .with_status_id("operad-showcase-status")
+                .with_target_name("showcase")
+                .with_tick_action("runtime.tick")
+                .with_tick_rate_hz(SHOWCASE_TICK_RATE_HZ),
+        )
+        .await
 }
 
 struct ShowcaseState {
@@ -305,8 +292,7 @@ struct ShowcaseState {
     password_text: TextInputState,
     focused_text: Option<FocusedTextInput>,
     platform: PlatformServiceClient,
-    clipboard_text: String,
-    pending_clipboard_paste: Option<FocusedTextInput>,
+    pending_clipboard_paste: Option<(PlatformRequestId, FocusedTextInput)>,
     last_button: &'static str,
     toggle_button: bool,
     table_selection: ext_widgets::DataTableSelection,
@@ -548,6 +534,7 @@ impl StylingState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FocusedTextInput {
+    CommandPalette,
     Editable,
     Selectable,
     Singleline,
@@ -570,6 +557,27 @@ enum FocusedTextInput {
 }
 
 impl FocusedTextInput {
+    const fn window_id(self) -> &'static str {
+        match self {
+            Self::CommandPalette => "command_palette",
+            Self::FormName | Self::FormEmail | Self::FormRole => "forms",
+            Self::NumericValue | Self::NumericRangeMin | Self::NumericRangeMax => "numeric",
+            Self::SliderValue
+            | Self::SliderRangeLeft
+            | Self::SliderRangeRight
+            | Self::SliderStep => "slider",
+            Self::ShaderLabSource => "shader_lab",
+            Self::Editable
+            | Self::Selectable
+            | Self::Singleline
+            | Self::Multiline
+            | Self::TextArea
+            | Self::CodeEditor
+            | Self::Search
+            | Self::Password => "text_input",
+        }
+    }
+
     const fn is_read_only(self) -> bool {
         matches!(self, Self::Selectable)
     }
@@ -897,7 +905,7 @@ fn shader_lab_material_geometry_options() -> Vec<ext_widgets::SelectOption> {
         .collect()
 }
 
-const SHADER_LAB_PLASMA_WGSL: &str = r#"override TIME: f32 = 0.0;
+const SHADER_LAB_PLASMA_WGSL: &str = r#"@group(0) @binding(0) var<uniform> time: f32;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -921,9 +929,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let p = input.uv * 2.0 - vec2<f32>(1.0, 1.0);
-    let a = sin((p.x * 7.0 + TIME * 2.4));
-    let b = sin((p.y * 8.0 - TIME * 1.8));
-    let c = sin((length(p) * 12.0 - TIME * 3.2));
+    let a = sin((p.x * 7.0 + time * 2.4));
+    let b = sin((p.y * 8.0 - time * 1.8));
+    let c = sin((length(p) * 12.0 - time * 3.2));
     let value = (a + b + c) / 3.0;
     let cold = vec3<f32>(0.05, 0.16, 0.42);
     let hot = vec3<f32>(0.10, 0.78, 0.92);
@@ -932,7 +940,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-const SHADER_LAB_RINGS_WGSL: &str = r#"override TIME: f32 = 0.0;
+const SHADER_LAB_RINGS_WGSL: &str = r#"@group(0) @binding(0) var<uniform> time: f32;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -955,10 +963,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let center = vec2<f32>(0.5 + sin(TIME * 1.1) * 0.08, 0.5 + cos(TIME * 0.9) * 0.08);
+    let center = vec2<f32>(0.5 + sin(time * 1.1) * 0.08, 0.5 + cos(time * 0.9) * 0.08);
     let p = input.uv - center;
     let d = length(p);
-    let ring = 0.5 + 0.5 * cos((d * 18.0 - TIME * 2.0) * 6.28318);
+    let ring = 0.5 + 0.5 * cos((d * 18.0 - time * 2.0) * 6.28318);
     let fade = 1.0 - smoothstep(0.15, 0.74, d);
     let base = vec3<f32>(0.08, 0.06, 0.15);
     let color = base + vec3<f32>(1.0, 0.55, 0.18) * ring * fade;
@@ -966,7 +974,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-const SHADER_LAB_GRID_WGSL: &str = r#"override TIME: f32 = 0.0;
+const SHADER_LAB_GRID_WGSL: &str = r#"@group(0) @binding(0) var<uniform> time: f32;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -994,7 +1002,7 @@ fn grid_line(value: f32) -> f32 {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = input.uv + vec2<f32>(TIME * 0.04, TIME * -0.03);
+    let uv = input.uv + vec2<f32>(time * 0.04, time * -0.03);
     let major = max(grid_line(uv.x * 8.0), grid_line(uv.y * 8.0));
     let minor = max(grid_line(uv.x * 24.0), grid_line(uv.y * 24.0)) * 0.28;
     let glow = max(major, minor);
@@ -1004,7 +1012,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-const SHADER_LAB_VERTEX_WARP_WGSL: &str = r#"override TIME: f32 = 0.0;
+const SHADER_LAB_VERTEX_WARP_WGSL: &str = r#"@group(0) @binding(0) var<uniform> time: f32;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -1020,10 +1028,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     );
     let uv = uv_points[vertex_index];
     let p = uv * 2.0 - vec2<f32>(1.0, 1.0);
-    let wave = sin(TIME * 2.2 + f32(vertex_index) * 2.1);
+    let wave = sin(time * 2.2 + f32(vertex_index) * 2.1);
     let bend = vec2<f32>(
         0.12 * wave,
-        0.10 * cos(TIME * 1.7 + f32(vertex_index) * 1.6),
+        0.10 * cos(time * 1.7 + f32(vertex_index) * 1.6),
     );
     var output: VertexOutput;
     output.position = vec4<f32>(p + bend, 0.0, 1.0);
@@ -1033,7 +1041,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let stripes = 0.5 + 0.5 * sin((input.uv.x + input.uv.y) * 24.0 - TIME * 4.0);
+    let stripes = 0.5 + 0.5 * sin((input.uv.x + input.uv.y) * 24.0 - time * 4.0);
     let edge = smoothstep(0.02, 0.12, min(min(input.uv.x, input.uv.y), 1.0 - max(input.uv.x, input.uv.y)));
     let base = vec3<f32>(0.18, 0.10, 0.42);
     let hot = vec3<f32>(0.98, 0.65, 0.20);
@@ -1042,7 +1050,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-const SHADER_LAB_ERROR_WGSL: &str = r#"override TIME: f32 = 0.0;
+const SHADER_LAB_ERROR_WGSL: &str = r#"@group(0) @binding(0) var<uniform> time: f32;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -1065,7 +1073,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let stripe = step(0.5, fract((input.uv.x + input.uv.y + TIME * 0.04) * 14.0));
+    let stripe = step(0.5, fract((input.uv.x + input.uv.y + time * 0.04) * 14.0));
     let dark = vec3<f32>(0.10, 0.02, 0.04);
     let hot = vec3<f32>(0.58, 0.05, 0.12);
     return vec4<f32>(mix(dark, hot, stripe), 1.0);
@@ -1414,7 +1422,6 @@ impl Default for ShowcaseState {
             password_text: TextInputState::new("correct horse"),
             focused_text: None,
             platform: PlatformServiceClient::new(),
-            clipboard_text: String::new(),
             pending_clipboard_paste: None,
             last_button: "None",
             toggle_button: false,
@@ -2137,6 +2144,7 @@ impl ShowcaseState {
         }
 
         if action_id == "window.clear_all" {
+            self.set_focused_text(None);
             self.windows.clear_all();
             for id in SHOWCASE_WIDGET_WINDOW_IDS {
                 self.desktop.close(id);
@@ -2169,6 +2177,7 @@ impl ShowcaseState {
                     self.reset_progress_loading();
                 }
             } else {
+                self.clear_window_text_focus(id);
                 self.desktop.close(id);
             }
             if id == "command_palette" {
@@ -2177,6 +2186,7 @@ impl ShowcaseState {
             return;
         }
         if let Some(id) = action_id.strip_prefix("window.close.") {
+            self.clear_window_text_focus(id);
             self.windows.close(id);
             self.desktop.close(id);
             if id == "command_palette" {
@@ -2203,6 +2213,9 @@ impl ShowcaseState {
         }
         if let Some(id) = action_id.strip_prefix("window.collapse.") {
             self.desktop.toggle_collapsed(id);
+            if self.desktop.is_collapsed(id) {
+                self.clear_window_text_focus(id);
+            }
             return;
         }
         if let Some(id) = window_for_action(action_id) {
@@ -2225,19 +2238,26 @@ impl ShowcaseState {
             return;
         }
         if action_id == "command_palette.search" {
-            if let WidgetActionKind::TextEdit(edit) = kind {
-                self.apply_command_palette_event(edit.event);
+            match kind {
+                WidgetActionKind::TextEdit(edit) => self.apply_command_palette_edit(edit),
+                WidgetActionKind::Focus(change) => {
+                    self.apply_text_focus(FocusedTextInput::CommandPalette, change.focused);
+                }
+                _ => {}
             }
             return;
         }
         if action_id == "command_palette.open" {
+            self.cancel_clipboard_paste(FocusedTextInput::CommandPalette);
             let items = command_palette_items_with_history(&self.command_history);
             self.command_palette.refresh_active_match(&items);
             self.command_palette_open = true;
+            self.set_focused_text(Some(FocusedTextInput::CommandPalette));
             return;
         }
         if action_id == "command_palette.close" {
             self.command_palette_open = false;
+            self.apply_text_focus(FocusedTextInput::CommandPalette, false);
             return;
         }
         if let Some(id) = action_id.strip_prefix("command_palette.item.") {
@@ -3012,11 +3032,8 @@ impl ShowcaseState {
         }
         if let Some(option_id) = action_id.strip_prefix("shader_lab.preset.option.") {
             if let Some(preset) = ShaderLabPreset::from_id(option_id) {
-                self.shader_lab_preset_menu
-                    .select_id_and_close(&shader_lab_preset_options(), option_id);
-                self.shader_lab_preset = preset;
-                self.shader_lab_source.set_text(preset.source());
-                self.refresh_shader_lab_validation();
+                self.set_shader_lab_preset(preset);
+                self.shader_lab_preset_menu.close();
             }
             return;
         }
@@ -3385,11 +3402,24 @@ impl ShowcaseState {
         }
     }
 
-    fn apply_command_palette_event(&mut self, event: operad::UiInputEvent) {
+    fn apply_command_palette_edit(&mut self, edit: WidgetTextEdit) {
+        self.cancel_clipboard_paste(FocusedTextInput::CommandPalette);
+        if !self.command_palette_open {
+            return;
+        }
         let items = command_palette_items_with_history(&self.command_history);
-        let outcome = self.command_palette.handle_event(&items, &event);
+        let options = command_palette_options(self);
+        let outcome = self
+            .command_palette
+            .apply_widget_text_edit(&items, &edit, &options);
+        if let Some(edit) = outcome.edit {
+            self.apply_text_clipboard_outcome(FocusedTextInput::CommandPalette, edit);
+        }
         if let Some(selection) = outcome.selected {
             self.select_command_palette_item(&selection.id);
+        } else if outcome.closed {
+            self.command_palette_open = false;
+            self.apply_text_focus(FocusedTextInput::CommandPalette, false);
         }
     }
 
@@ -3403,6 +3433,7 @@ impl ShowcaseState {
             let items = command_palette_items_with_history(&self.command_history);
             self.command_palette.set_query("", &items);
             self.command_palette_open = false;
+            self.apply_text_focus(FocusedTextInput::CommandPalette, false);
         }
     }
 
@@ -3411,6 +3442,9 @@ impl ShowcaseState {
         options.focused = self.focused_text == Some(input);
         options.caret_visible = caret_visible(self.caret_phase);
         match input {
+            FocusedTextInput::CommandPalette => {
+                options.text_style = command_palette_options(self).text_style;
+            }
             FocusedTextInput::Editable => {
                 options.layout = LayoutStyle::new().with_width(300.0).with_height(36.0);
                 options.text_style = text(13.0, color(230, 236, 246));
@@ -3509,6 +3543,7 @@ impl ShowcaseState {
     }
 
     fn apply_text_edit(&mut self, input: FocusedTextInput, edit: WidgetTextEdit) {
+        self.cancel_clipboard_paste(input);
         self.set_focused_text(Some(input));
         let options = self.text_edit_options(input);
         let outcome = self.text_state_mut(input).map(|state| {
@@ -3516,11 +3551,13 @@ impl ShowcaseState {
             state.apply_widget_text_edit(&edit, &options)
         });
         if let Some(outcome) = outcome {
-            self.sync_text_input_value(input, outcome.committed, outcome.canceled);
-            self.apply_text_clipboard_outcome(input, outcome);
-            if input == FocusedTextInput::ShaderLabSource {
+            if outcome.changed || outcome.committed || outcome.canceled {
+                self.sync_text_input_value(input, outcome.committed, outcome.canceled);
+            }
+            if input == FocusedTextInput::ShaderLabSource && outcome.changed {
                 self.refresh_shader_lab_validation();
             }
+            self.apply_text_clipboard_outcome(input, outcome);
         }
     }
 
@@ -3535,6 +3572,7 @@ impl ShowcaseState {
 
     fn set_focused_text(&mut self, next: Option<FocusedTextInput>) {
         if self.focused_text != next {
+            self.pending_clipboard_paste = None;
             if let Some(previous) = self.focused_text {
                 if let Some(state) = self.text_state_mut(previous) {
                     state.clear_selection();
@@ -3555,8 +3593,8 @@ impl ShowcaseState {
                 self.copy_text_to_clipboard(&text);
             }
             Some(widgets::text_input::TextInputClipboardAction::Paste) => {
-                self.pending_clipboard_paste = Some(input);
-                self.platform.read_clipboard_text();
+                let id = self.platform.read_clipboard_text();
+                self.pending_clipboard_paste = Some((id, input));
             }
             None => {}
         }
@@ -3564,6 +3602,7 @@ impl ShowcaseState {
 
     fn text_state_mut(&mut self, input: FocusedTextInput) -> Option<&mut TextInputState> {
         match input {
+            FocusedTextInput::CommandPalette => None,
             FocusedTextInput::Editable => Some(&mut self.text),
             FocusedTextInput::Selectable => Some(&mut self.selectable_text),
             FocusedTextInput::Singleline => Some(&mut self.singleline_text),
@@ -3681,6 +3720,7 @@ impl ShowcaseState {
     }
 
     fn set_shader_lab_preset(&mut self, preset: ShaderLabPreset) {
+        self.cancel_clipboard_paste(FocusedTextInput::ShaderLabSource);
         self.shader_lab_preset = preset;
         self.shader_lab_preset_menu
             .select_id(&shader_lab_preset_options(), preset.id());
@@ -3703,6 +3743,7 @@ impl ShowcaseState {
     }
 
     fn set_numeric_range_min(&mut self, value: f32) {
+        self.cancel_clipboard_paste(FocusedTextInput::NumericRangeMin);
         let domain = self.numeric_unit_domain();
         let min_domain = domain.min as f32;
         let max_domain = domain.max as f32;
@@ -3716,6 +3757,7 @@ impl ShowcaseState {
     }
 
     fn set_numeric_range_max(&mut self, value: f32) {
+        self.cancel_clipboard_paste(FocusedTextInput::NumericRangeMax);
         let domain = self.numeric_unit_domain();
         let min_domain = domain.min as f32;
         let max_domain = domain.max as f32;
@@ -3728,6 +3770,8 @@ impl ShowcaseState {
     }
 
     fn reset_numeric_range_for_unit(&mut self) {
+        self.cancel_clipboard_paste(FocusedTextInput::NumericRangeMin);
+        self.cancel_clipboard_paste(FocusedTextInput::NumericRangeMax);
         let range = self.numeric_unit_domain();
         self.numeric_range_min = range.min as f32;
         self.numeric_range_max = range.max as f32;
@@ -3738,6 +3782,7 @@ impl ShowcaseState {
     }
 
     fn sync_numeric_text_to_value(&mut self) {
+        self.cancel_clipboard_paste(FocusedTextInput::NumericValue);
         self.numeric_text.set_text(self.formatted_numeric_value());
     }
 
@@ -3758,6 +3803,7 @@ impl ShowcaseState {
     }
 
     fn sync_numeric_range_min_from_text(&mut self, committed: bool, canceled: bool) {
+        self.cancel_clipboard_paste(FocusedTextInput::NumericRangeMin);
         if canceled {
             self.numeric_range_min_text
                 .set_text(self.format_numeric_range_bound(self.numeric_range_min));
@@ -3777,6 +3823,7 @@ impl ShowcaseState {
     }
 
     fn sync_numeric_range_max_from_text(&mut self, committed: bool, canceled: bool) {
+        self.cancel_clipboard_paste(FocusedTextInput::NumericRangeMax);
         if canceled {
             self.numeric_range_max_text
                 .set_text(self.format_numeric_range_bound(self.numeric_range_max));
@@ -3847,6 +3894,9 @@ impl ShowcaseState {
     }
 
     fn sync_profile_form_text_fields(&mut self) {
+        self.cancel_clipboard_paste(FocusedTextInput::FormName);
+        self.cancel_clipboard_paste(FocusedTextInput::FormEmail);
+        self.cancel_clipboard_paste(FocusedTextInput::FormRole);
         self.form_name_text = TextInputState::new(profile_form_value(&self.form, "name"));
         self.form_email_text = TextInputState::new(profile_form_value(&self.form, "email"));
         self.form_role_text = TextInputState::new(profile_form_value(&self.form, "role"));
@@ -3890,43 +3940,61 @@ impl ShowcaseState {
     }
 
     fn copy_text_to_clipboard(&mut self, text: &str) {
-        self.clipboard_text = text.to_string();
         self.platform.write_clipboard_text(text);
+    }
+
+    fn cancel_clipboard_paste(&mut self, input: FocusedTextInput) {
+        if self
+            .pending_clipboard_paste
+            .is_some_and(|(_, target)| target == input)
+        {
+            self.pending_clipboard_paste = None;
+        }
+    }
+
+    fn clear_window_text_focus(&mut self, window: &str) {
+        if self
+            .focused_text
+            .is_some_and(|input| input.window_id() == window)
+        {
+            self.set_focused_text(None);
+        }
     }
 
     fn apply_platform_responses(&mut self, responses: &[PlatformServiceResponse]) {
         self.platform.record_responses(responses.iter().cloned());
-        for response in responses {
-            match &response.response {
-                PlatformResponse::Clipboard(ClipboardResponse::Text(text)) => {
-                    let pasted = text
-                        .as_deref()
-                        .filter(|text| !text.is_empty())
-                        .unwrap_or(&self.clipboard_text)
-                        .to_string();
-                    self.apply_pending_clipboard_paste(&pasted);
+        for response in self.platform.drain_responses() {
+            let Some((id, input)) = self.pending_clipboard_paste else {
+                continue;
+            };
+            if response.id != id {
+                continue;
+            }
+            self.pending_clipboard_paste = None;
+            if self.focused_text != Some(input)
+                || input.is_read_only()
+                || !self.windows.is_visible(input.window_id())
+                || self.desktop.is_collapsed(input.window_id())
+                || (input == FocusedTextInput::CommandPalette && !self.command_palette_open)
+            {
+                continue;
+            }
+            if let PlatformResponse::Clipboard(ClipboardResponse::Text(Some(text))) =
+                response.response
+            {
+                // Empty and unavailable clipboards must not delete a selection
+                // or substitute text from an earlier copy operation.
+                if text.is_empty() {
+                    continue;
                 }
-                PlatformResponse::Clipboard(ClipboardResponse::Unsupported)
-                | PlatformResponse::Clipboard(ClipboardResponse::Error(_)) => {
-                    let pasted = self.clipboard_text.clone();
-                    self.apply_pending_clipboard_paste(&pasted);
+                let edit = WidgetTextEdit::new(operad::UiInputEvent::TextInput(text));
+                if input == FocusedTextInput::CommandPalette {
+                    self.apply_command_palette_edit(edit);
+                } else {
+                    self.apply_text_edit(input, edit);
                 }
-                _ => {}
             }
         }
-    }
-
-    fn apply_pending_clipboard_paste(&mut self, pasted: &str) {
-        let Some(input) = self.pending_clipboard_paste.take() else {
-            return;
-        };
-        if input.is_read_only() {
-            return;
-        }
-        if let Some(state) = self.text_state_mut(input) {
-            state.paste_text(pasted);
-        }
-        self.sync_text_input_value(input, false, false);
     }
 
     fn apply_menu_item(&mut self, id: &str) {
@@ -4021,6 +4089,7 @@ impl ShowcaseState {
     }
 
     fn set_slider_value(&mut self, value: f32) {
+        self.cancel_clipboard_paste(FocusedTextInput::SliderValue);
         let value = self.slider_value_spec().adjust_value(value);
         self.slider = value;
         self.slider_value_text
@@ -4036,6 +4105,7 @@ impl ShowcaseState {
     }
 
     fn set_slider_left(&mut self, value: f32) {
+        self.cancel_clipboard_paste(FocusedTextInput::SliderRangeLeft);
         self.slider_left = value.min(self.slider_right - 1.0).max(0.0);
         self.slider_left_text
             .set_text(widgets::slider::format_slider_value(self.slider_left));
@@ -4058,6 +4128,7 @@ impl ShowcaseState {
     }
 
     fn set_slider_right(&mut self, value: f32) {
+        self.cancel_clipboard_paste(FocusedTextInput::SliderRangeRight);
         self.slider_right = value.max(self.slider_left + 1.0).min(10000.0);
         self.slider_right_text
             .set_text(widgets::slider::format_slider_value(self.slider_right));
@@ -4119,7 +4190,7 @@ impl ShowcaseState {
             SHOWCASE_DOCUMENT_NODE_CAPACITY,
         );
         if let Some(update) = self.user_image_update.clone() {
-            ui.add_resource_update(update);
+            ui.set_resource(update.descriptor, update.bytes);
         }
         ui.node_mut(ui.root())
             .set_visual(UiVisual::panel(theme.colors.canvas, None, 0.0));
@@ -5162,7 +5233,10 @@ fn window_toggle(
         Some(theme.stroke.focus),
         3.0,
     ));
-    options.check_color = theme.colors.accent_text;
+    options.check_color = theme
+        .colors
+        .accent
+        .highest_contrast_against(theme.colors.accent_text, ColorRgba::BLACK);
     widgets::checkbox(
         ui,
         parent,
@@ -7163,14 +7237,7 @@ fn command_palette(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
     );
     if state.command_palette_open {
         let palette_width = command_palette_popup_width(state.last_desktop_size);
-        let mut options =
-            ext_widgets::CommandPaletteOptions::default().with_action_prefix("command_palette");
-        options.width = palette_width;
-        options.row_height = 44.0;
-        options.max_visible_rows = 5;
-        options.text_style = text(13.0, color(238, 244, 252));
-        options.muted_text_style = text(12.0, color(166, 178, 196));
-        options.z_index = SHOWCASE_WINDOW_Z_MAX + 40.0;
+        let options = command_palette_options(state);
         ext_widgets::command_palette(
             ui,
             body,
@@ -7183,6 +7250,20 @@ fn command_palette(ui: &mut UiDocument, parent: UiNodeId, state: &ShowcaseState)
             )),
             options,
         );
+    }
+}
+
+fn command_palette_options(state: &ShowcaseState) -> ext_widgets::CommandPaletteOptions {
+    ext_widgets::CommandPaletteOptions {
+        width: command_palette_popup_width(state.last_desktop_size),
+        row_height: 44.0,
+        max_visible_rows: 5,
+        text_style: text(13.0, color(238, 244, 252)),
+        muted_text_style: text(12.0, color(166, 178, 196)),
+        z_index: SHOWCASE_WINDOW_Z_MAX + 40.0,
+        focused: state.focused_text == Some(FocusedTextInput::CommandPalette),
+        caret_visible: caret_visible(state.caret_phase),
+        ..ext_widgets::CommandPaletteOptions::default().with_action_prefix("command_palette")
     }
 }
 
@@ -17092,7 +17173,7 @@ fn shader_lab_canvas_program(state: &ShowcaseState, source_valid: bool) -> Canva
     };
     CanvasRenderProgram::wgsl(source)
         .label("showcase.shader_lab.canvas")
-        .constant("TIME", state.progress_phase as f64)
+        .uniform_bytes(state.progress_phase.to_le_bytes())
         .clear_color(Some(color(8, 12, 18)))
 }
 
@@ -18730,8 +18811,12 @@ fn canvas_option_checkbox(
 fn showcase_canvas_program(cube: CanvasCubeState) -> CanvasRenderProgram {
     CanvasRenderProgram::wgsl(include_str!("shaders/showcase_canvas.wgsl"))
         .label("showcase.canvas")
-        .constant("CUBE_YAW", cube.yaw as f64)
-        .constant("CUBE_PITCH", cube.pitch as f64)
+        .uniform_bytes(
+            [cube.yaw, cube.pitch]
+                .into_iter()
+                .flat_map(f32::to_le_bytes)
+                .collect::<Vec<_>>(),
+        )
         .clear_color(Some(color(18, 22, 28)))
 }
 

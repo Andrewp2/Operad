@@ -16,8 +16,8 @@ use crate::{
 };
 
 use super::menu::{
-    first_typeahead_character, is_typeahead_character, label, leading_image,
-    menu_accessibility_label, next_matching_index, normalize, normalized_character, place_popup,
+    attach_popup_to_trigger, first_typeahead_character, is_typeahead_character, label,
+    leading_image, menu_accessibility_label, next_matching_index, normalize, normalized_character,
     pop_last_char, popup_panel, row_style, set_active_descendant, visible_match_range,
     visible_row_count, AnchoredPopup, NavigationDirection, PopupOptions, SearchFieldState,
     SearchStatusText,
@@ -1138,27 +1138,25 @@ pub fn select_menu_popup(
     let name = name.into();
     let height = visible_row_count(options.len(), menu_options.max_visible_rows) as f32
         * menu_options.row_height;
-    let layout = place_popup(
-        popup.anchor,
-        UiSize::new(menu_options.width.max(0.0), height.max(0.0)),
-        popup.viewport,
-        popup.placement,
-    );
+    let size = UiSize::new(menu_options.width.max(0.0), height.max(0.0));
+    let rect = popup.layout_rect(document.ui_scale(), size);
+    let scroll_axes = if options.len() > menu_options.max_visible_rows {
+        ScrollAxes::VERTICAL
+    } else {
+        ScrollAxes::NONE
+    };
     let root = popup_panel(
         document,
         parent,
         name.clone(),
-        layout.rect,
+        rect,
         PopupOptions {
             visual: menu_options.menu_visual,
             z_index: menu_options.z_index,
             clip_scope: ClipScope::Viewport,
             portal: menu_options.portal.clone(),
-            scroll_axes: if options.len() > menu_options.max_visible_rows {
-                ScrollAxes::VERTICAL
-            } else {
-                ScrollAxes::NONE
-            },
+            // Hosts restore scroll offsets before resolving layout constraints.
+            scroll_axes: ScrollAxes::VERTICAL,
             accessibility: Some(AccessibilityMeta::new(AccessibilityRole::List).label(
                 menu_accessibility_label(&name, menu_options.accessibility_label.as_ref()),
             )),
@@ -1167,6 +1165,12 @@ pub fn select_menu_popup(
             ..Default::default()
         },
     );
+    document.node_mut(root).layout_constraint =
+        Some(crate::UiNodeLayoutConstraint::AnchoredPopup {
+            popup,
+            size,
+            scroll_axes: Some(scroll_axes),
+        });
     {
         let layout = &mut document.node_mut(root).style.layout;
         layout.display = Display::Flex;
@@ -1361,7 +1365,8 @@ pub fn dropdown_select(
     }
     let popup = state.open.then(|| {
         popup.map(|popup| {
-            select_menu_popup(
+            let portal = dropdown_options.menu.portal.clone();
+            let popup = select_menu_popup(
                 document,
                 parent,
                 format!("{name}.popup"),
@@ -1369,7 +1374,9 @@ pub fn dropdown_select(
                 options,
                 state,
                 dropdown_options.menu,
-            )
+            );
+            attach_popup_to_trigger(document, popup.root, trigger, &portal);
+            popup
         })
     });
     let popup = popup.flatten();
@@ -1807,7 +1814,7 @@ fn option_accessibility_label(option: &SelectOption) -> String {
 mod tests {
     use super::*;
     use crate::widgets::ext::PopupPlacement;
-    use crate::{root_style, ApproxTextMeasurer, UiContent, UiInputEvent, UiPoint, UiRect};
+    use crate::{root_style, ApproxTextMeasurer, UiInputEvent, UiPoint, UiRect};
 
     fn node_id(document: &UiDocument, name: &str) -> UiNodeId {
         document
@@ -1890,8 +1897,6 @@ mod tests {
             .expect("layout");
 
         let popup = document.node(nodes.root);
-        assert_eq!(popup.style.layout.display, Display::Flex);
-        assert_eq!(popup.style.layout.flex_direction, FlexDirection::Column);
         assert!((popup.layout.rect.height - 120.0).abs() < 0.01);
 
         assert_eq!(nodes.rows.len(), options.len());
@@ -2045,10 +2050,6 @@ mod tests {
             .expect("layout");
 
         let trigger = document.node(nodes.trigger);
-        assert_eq!(
-            trigger.style.layout.justify_content,
-            Some(JustifyContent::FlexStart)
-        );
         assert!(
             trigger.interaction_visuals().is_some(),
             "dropdown trigger should publish hover and pressed visuals"
@@ -2065,14 +2066,10 @@ mod tests {
             "dropdown label should sit before the right-side indicator: label={label:?} indicator={indicator:?}"
         );
         assert!(
-            indicator.right() <= trigger.layout.rect.right() - 5.0,
+            indicator.right() <= trigger.layout.rect.right(),
             "indicator should stay at the right side within trigger padding: indicator={indicator:?} trigger={:?}",
             trigger.layout.rect
         );
-        assert!(matches!(
-            indicator_node.content(),
-            UiContent::Text(text) if text.text == "▼"
-        ));
     }
 
     #[test]

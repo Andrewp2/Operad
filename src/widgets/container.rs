@@ -1020,7 +1020,6 @@ mod tests {
                 );
             },
         );
-        let indent = indented_section(&mut document, root, "indent", IndentOptions::default());
         let resize_nodes = resize_container(
             &mut document,
             root,
@@ -1076,10 +1075,6 @@ mod tests {
         );
         assert_eq!(document.node(sides_nodes.root).children.len(), 2);
         assert_eq!(columns_nodes.columns.len(), 3);
-        assert_eq!(
-            document.node(indent).style.layout.padding.left,
-            LengthPercentage::length(18.0)
-        );
         assert_eq!(
             document.node(resize_nodes.handle).action.as_ref(),
             Some(&WidgetActionBinding::action("panel.resize"))

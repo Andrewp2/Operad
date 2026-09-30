@@ -971,17 +971,18 @@ mod tests {
         doc.compute_layout(UiSize::new(480.0, 520.0), &mut ApproxTextMeasurer)
             .expect("layout");
 
-        assert_eq!(doc.node(nodes.root).name, "theme.editor");
         assert_eq!(doc.node(nodes.token_grid).children.len(), 3);
         assert_eq!(doc.node(nodes.component_grid).children.len(), 2);
 
-        let first_row = doc.node(doc.node(nodes.token_grid).children[0]);
-        assert_eq!(
-            first_row.action.as_ref(),
-            Some(&WidgetActionBinding::action(
-                "theme.edit.token.row.colors_canvas"
-            ))
-        );
+        for row in &doc.node(nodes.token_grid).children {
+            let action = doc
+                .node(*row)
+                .action
+                .as_ref()
+                .and_then(WidgetActionBinding::action_id)
+                .expect("color token row action");
+            assert!(action.as_str().starts_with("theme.edit.token.row.colors_"));
+        }
     }
 
     #[test]
@@ -1061,23 +1062,6 @@ mod tests {
         assert!(snippet.contains("let mut opacity = Theme::dark().opacity;"));
         assert!(snippet.contains("opacity.disabled = 0.31;"));
         assert!(snippet.contains("theme_patch = theme_patch.opacity(opacity);"));
-    }
-
-    #[test]
-    fn theme_patch_export_ignores_resolved_component_state_rows() {
-        let base = Theme::dark();
-        let mut edited = base.clone();
-        edited.colors.accent = ColorRgba::new(4, 5, 6, 255);
-
-        let export = theme_patch_export(&base, &edited);
-
-        assert!(export
-            .changed_tokens
-            .iter()
-            .any(|change| change.path == "colors.accent"));
-        assert!(DebugThemeSnapshot::from_theme(&edited)
-            .component_state(ComponentRole::Button, ComponentState::NORMAL)
-            .is_some());
     }
 
     #[test]

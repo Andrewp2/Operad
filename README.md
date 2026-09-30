@@ -60,13 +60,66 @@ parent starts a new lifetime. Explicit focus and scroll settings in a rebuilt
 view take precedence over retained state.
 
 Custom hosts can use `runtime::session::RuntimeSession` for the same lifecycle.
-Call `invalidate_view` when application state changes, obtain the document with
-`build_document`, process input and finish the frame, then return the document
+Call `begin_frame` once with monotonic elapsed time before processing a host
+frame. Call `invalidate_view` when application state changes, obtain the document
+with `build_document`, process input and finish the frame, then return the document
 with `retain_document`. Call `frame_presented` after successful rendering to
-acknowledge resource uploads. Keep a separate session for each independent UI.
+acknowledge resource uploads, or `frame_failed(now)` to retain them and retry.
+Custom hosts honor `frame_retry_delay(now)` before retrying temporary failures.
+Use `request_repaint` and `next_frame_delay` for immediate, delayed, or continuous
+presentation. View invalidation marks the description stale; it does not wake
+the platform event loop by itself. Keep a separate session for each independent UI.
 Use `RuntimeSessionOptions` to configure host accessibility capabilities,
 rendering preferences, and layout animation. See [Architecture](ARCHITECTURE.md)
 for the ownership and invalidation rules.
+
+Use `runtime::Application::new(state, update, view).with_hooks(hooks)` to define
+an application once. Launch it with `run_native(NativeWindowOptions)` or
+`run_web(WebRuntimeOptions)`. Both hosts accept `runtime::RuntimeHooks` and supply
+`RuntimeMetrics`, normalized keyboard events, and `CanvasInput`. The showcase
+uses one application definition for both platforms.
+
+The view callback takes `(&State, UiSize, &mut runtime::ViewContext)`. Use
+`views.section(&mut document, parent, name, &inputs, builder)` to rebuild an
+expensive panel only when its inputs change. Sections preserve normal document
+inspection and interaction, and layout retains unchanged text measurements
+across revisions. See [selective rebuilding](docs/runtime-integration.md#selective-rebuilding)
+for dependency rules and an example.
+
+Canvas hooks run in event order. A canvas with pointer capture keeps receiving
+moves and release outside its bounds, even when its hook consumes the press or
+the view rebuilds. If its owner disappears or becomes disabled, its hook receives
+a cancellation with no current node ID. Widget edits receive equivalent cleanup
+through `with_interaction_cancelled`. Use stable action bindings for application
+transactions; never save a `UiNodeId` across views.
+
+`RuntimeHooks::with_frame_observer` borrows the final laid-out document and frame
+that the host is about to submit. Use it for control geometry, accessibility,
+text diagnostics, or paint capture without calling the view again. It is a
+submission observation, not a successful-presentation notification. Custom hosts
+call `hooks.observe(...)` at the same point; between frames, `session.document()`
+provides the retained document. See [runtime integration](docs/runtime-integration.md)
+for migration and lifecycle details.
+
+Native and web runners sleep when idle. Input, resize, asynchronous service
+responses, background completions, active animations, tick actions, and explicit
+repaint requests wake them. Use `runtime::task_channel` with
+`RuntimeHooks::with_task_completions` to receive typed job results on the UI
+thread and rebuild the view. Applications choose their own threads or async
+executor; see [background work](docs/runtime-integration.md#background-work)
+for queue limits, cancellation, and custom hosts.
+Frame hooks run when a frame is requested; use a tick action or continuous
+repaint request for application state that changes with time.
+
+Text inputs support native and browser IME drafts, candidate positioning,
+cancellation, and one undoable commit. Draft text is separate from the committed
+editing model and follows the editor across document rebuilds. See
+[text composition](docs/runtime-integration.md#text-composition) for action
+handling, custom editors, and cleanup when removing an active field.
+
+Embedded web hosts should size their canvas through CSS and disable the default
+document chrome with `with_document_chrome(false)`. The runner observes that
+canvas's size and display scale independently of the browser window.
 
 Web apps use the same retained document contract through the `web-runtime`
 feature:
@@ -166,6 +219,13 @@ scripts/test-full.sh
 
 That adds the full all-feature test suite and the supported WASM showcase check
 for `wasm32-unknown-unknown`.
+
+Browser-runner connection and cleanup regressions use Node.js 22 without Chrome,
+a display, or a GPU:
+
+```bash
+node --test scripts/*.test.mjs
+```
 
 ## Learn More
 

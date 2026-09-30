@@ -656,7 +656,8 @@ mod tests {
         assert_eq!(meta.role, AccessibilityRole::ListItem);
         assert_eq!(meta.label.as_deref(), Some("Asset bin"));
         let text = meta.summary.unwrap().screen_reader_text();
-        assert!(text.contains("Accepts: files, image/*"));
-        assert!(text.contains("Operations: copy, move, link"));
+        for policy in ["files", "image/*", "copy", "move", "link"] {
+            assert!(text.contains(policy), "missing {policy} in {text}");
+        }
     }
 }

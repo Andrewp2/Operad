@@ -550,8 +550,7 @@ pub fn push_checkbox_state_input_result_actions<'a>(
 ) -> &'a mut WidgetActionQueue {
     if !result
         .clicked
-        .is_some_and(|target| document.node_is_descendant_or_self(checkbox, target))
-        || !action_target_enabled(document, checkbox)
+        .is_some_and(|target| action_target_accepts_hit(document, checkbox, target))
     {
         return queue;
     }

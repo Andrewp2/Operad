@@ -1,4 +1,6 @@
 use super::*;
+use crate::layout::tooltip_layout_rect;
+pub use crate::layout::tooltip_rect;
 use crate::tooltips::{
     resolve_tooltip_request, HelpItemState, HelpTimingPolicy, TooltipAnchor, TooltipContent,
     TooltipInvocationKind, TooltipPlacement, TooltipRequest, TooltipResolution,
@@ -209,6 +211,7 @@ pub fn tooltip_fade_slide_animation(
     .unwrap_or_else(|_| AnimationMachine::single_state(initial, fallback_values))
 }
 
+/// Resolve hover or focus help using the target's painted bounds.
 pub fn tooltip_trigger_resolution(
     document: &UiDocument,
     target: UiNodeId,
@@ -217,127 +220,39 @@ pub fn tooltip_trigger_resolution(
     now_ms: u64,
     options: TooltipTriggerOptions,
 ) -> TooltipResolution {
-    let anchor = TooltipAnchor::new(target, document.node(target).layout.rect);
-    let hover = (options.mode.allows_hover()
-        && input
-            .hovered
-            .is_some_and(|node| document.node_is_descendant_or_self(target, node)))
-    .then(|| {
-        TooltipRequest::new(anchor, content.clone())
-            .placement(options.placement)
-            .invocation(TooltipInvocationKind::Hover)
-    });
-    let focus = (options.mode.allows_focus()
-        && input
-            .focused
-            .is_some_and(|node| document.node_is_descendant_or_self(target, node)))
-    .then(|| {
-        TooltipRequest::new(anchor, content)
-            .placement(options.placement)
-            .invocation(TooltipInvocationKind::Focus)
-    });
+    let modal_scope = document.accessibility_modal_scope();
+    if !document.node_in_modal_scope(target, modal_scope) {
+        return TooltipResolution::hidden();
+    }
+    // Disabled controls may still explain why they are unavailable. HelpItemState
+    // governs that policy; action eligibility is deliberately not used here.
+    let matches_target = |node| {
+        document.node_in_modal_scope(node, modal_scope)
+            && document.node_is_logical_descendant_or_self(target, node)
+    };
+    let anchor = tooltip_anchor(document, target);
+    let hover =
+        (options.mode.allows_hover() && input.hovered.is_some_and(matches_target)).then(|| {
+            TooltipRequest::new(anchor, content.clone())
+                .placement(options.placement)
+                .invocation(TooltipInvocationKind::Hover)
+        });
+    let focus =
+        (options.mode.allows_focus() && input.focused.is_some_and(matches_target)).then(|| {
+            TooltipRequest::new(anchor, content)
+                .placement(options.placement)
+                .invocation(TooltipInvocationKind::Focus)
+        });
     resolve_tooltip_request(hover, focus, options.item_state, options.timing, now_ms)
 }
 
-pub fn tooltip_rect(
-    anchor: UiRect,
-    tooltip_size: UiSize,
-    viewport: UiRect,
-    placement: TooltipPlacement,
-    offset: f32,
-    cursor: Option<UiPoint>,
-) -> UiRect {
-    let offset = finite_or(offset, 0.0).max(0.0);
-    let tooltip_size = UiSize::new(
-        finite_or(tooltip_size.width, 0.0).max(0.0),
-        finite_or(tooltip_size.height, 0.0).max(0.0),
-    );
-    let origin = tooltip_origin(anchor, tooltip_size, viewport, placement, offset, cursor);
-    UiRect::new(
-        clamp_tooltip_axis(origin.x, tooltip_size.width, viewport.x, viewport.right()),
-        clamp_tooltip_axis(origin.y, tooltip_size.height, viewport.y, viewport.bottom()),
-        tooltip_size.width,
-        tooltip_size.height,
+fn tooltip_anchor(document: &UiDocument, target: UiNodeId) -> TooltipAnchor {
+    TooltipAnchor::new(
+        target,
+        document
+            .node_effective_transform(target)
+            .transform_rect_bounds(document.node(target).layout.rect),
     )
-}
-
-fn tooltip_origin(
-    anchor: UiRect,
-    tooltip_size: UiSize,
-    viewport: UiRect,
-    placement: TooltipPlacement,
-    offset: f32,
-    cursor: Option<UiPoint>,
-) -> UiPoint {
-    match placement {
-        TooltipPlacement::Above => {
-            let above = anchor.y - tooltip_size.height - offset;
-            let below = anchor.bottom() + offset;
-            let above_space = tooltip_side_space(viewport.y, anchor.y, offset);
-            let below_space = tooltip_side_space(anchor.bottom(), viewport.bottom(), offset);
-            if above_space < tooltip_size.height && below_space > above_space {
-                UiPoint::new(anchor.x, below)
-            } else {
-                UiPoint::new(anchor.x, above)
-            }
-        }
-        TooltipPlacement::Below => {
-            let below = anchor.bottom() + offset;
-            let above = anchor.y - tooltip_size.height - offset;
-            let below_space = tooltip_side_space(anchor.bottom(), viewport.bottom(), offset);
-            let above_space = tooltip_side_space(viewport.y, anchor.y, offset);
-            if below_space < tooltip_size.height && above_space > below_space {
-                UiPoint::new(anchor.x, above)
-            } else {
-                UiPoint::new(anchor.x, below)
-            }
-        }
-        TooltipPlacement::Left => {
-            let left = anchor.x - tooltip_size.width - offset;
-            let right = anchor.right() + offset;
-            let left_space = tooltip_side_space(viewport.x, anchor.x, offset);
-            let right_space = tooltip_side_space(anchor.right(), viewport.right(), offset);
-            if left_space < tooltip_size.width && right_space > left_space {
-                UiPoint::new(right, anchor.y)
-            } else {
-                UiPoint::new(left, anchor.y)
-            }
-        }
-        TooltipPlacement::Right => {
-            let right = anchor.right() + offset;
-            let left = anchor.x - tooltip_size.width - offset;
-            let right_space = tooltip_side_space(anchor.right(), viewport.right(), offset);
-            let left_space = tooltip_side_space(viewport.x, anchor.x, offset);
-            if right_space < tooltip_size.width && left_space > right_space {
-                UiPoint::new(left, anchor.y)
-            } else {
-                UiPoint::new(right, anchor.y)
-            }
-        }
-        TooltipPlacement::Cursor => cursor
-            .map(|point| UiPoint::new(point.x + offset, point.y + offset))
-            .unwrap_or_else(|| UiPoint::new(anchor.right() + offset, anchor.bottom() + offset)),
-    }
-}
-
-fn tooltip_side_space(start: f32, end: f32, offset: f32) -> f32 {
-    (end - start - offset).max(0.0)
-}
-
-fn clamp_tooltip_axis(value: f32, extent: f32, min: f32, max: f32) -> f32 {
-    let min = finite_or(min, 0.0);
-    let max = finite_or(max, min).max(min);
-    let extent = finite_or(extent, 0.0).max(0.0);
-    let upper = (max - extent).max(min);
-    finite_or(value, min).clamp(min, upper)
-}
-
-fn finite_or(value: f32, fallback: f32) -> f32 {
-    if value.is_finite() {
-        value
-    } else {
-        fallback
-    }
 }
 
 pub fn tooltip_box(
@@ -416,6 +331,8 @@ pub fn tooltip_box(
     tooltip
 }
 
+/// Place help using an anchor, viewport, and cursor in logical window coordinates.
+/// `tooltip_size` uses document UI units, like other authored widget dimensions.
 #[allow(clippy::too_many_arguments)]
 pub fn tooltip_box_from_request(
     document: &mut UiDocument,
@@ -427,7 +344,8 @@ pub fn tooltip_box_from_request(
     cursor: Option<UiPoint>,
     options: TooltipBoxOptions,
 ) -> UiNodeId {
-    let rect = tooltip_rect(
+    let rect = tooltip_layout_rect(
+        document.ui_scale(),
         request.anchor.rect,
         tooltip_size,
         viewport,
@@ -435,7 +353,7 @@ pub fn tooltip_box_from_request(
         8.0,
         cursor,
     );
-    tooltip_box(
+    let tooltip = tooltip_box(
         document,
         parent,
         name,
@@ -443,7 +361,16 @@ pub fn tooltip_box_from_request(
         options
             .at_rect(rect)
             .with_portal(UiPortalTarget::AppOverlay),
-    )
+    );
+    document.node_mut(tooltip).layout_constraint = Some(UiNodeLayoutConstraint::Tooltip {
+        anchor: request.anchor.rect,
+        viewport,
+        size: tooltip_size,
+        placement: request.placement,
+        offset: 8.0,
+        cursor,
+    });
+    tooltip
 }
 
 pub(crate) fn add_active_node_tooltip(
@@ -451,29 +378,23 @@ pub(crate) fn add_active_node_tooltip(
     viewport: UiSize,
     cursor: Option<UiPoint>,
 ) -> Option<UiNodeId> {
-    let active = document
-        .focus_state()
-        .hovered
-        .or(document.focus_state().focused)?;
-    let (target, tooltip) = node_tooltip_for(document, active)?;
-    let anchor = TooltipAnchor::new(target, document.node(target).layout.rect);
-    let invocation = if document
-        .focus_state()
-        .hovered
-        .is_some_and(|hovered| document.node_is_descendant_or_self(target, hovered))
-    {
-        TooltipInvocationKind::Hover
-    } else {
-        TooltipInvocationKind::Focus
-    };
-    let request = TooltipRequest::new(anchor, tooltip.content.clone())
-        .placement(tooltip.placement)
-        .invocation(invocation);
-    let rect = tooltip_rect(
-        request.anchor.rect,
+    let focus = document.focus_state();
+    let (target, tooltip) = focus
+        .focused
+        .and_then(|active| node_tooltip_for(document, active))
+        .or_else(|| {
+            focus
+                .hovered
+                .and_then(|active| node_tooltip_for(document, active))
+        })?;
+    let anchor = tooltip_anchor(document, target).rect;
+    let bounds = UiRect::new(0.0, 0.0, viewport.width, viewport.height);
+    let rect = tooltip_layout_rect(
+        document.ui_scale(),
+        anchor,
         tooltip.size,
-        UiRect::new(0.0, 0.0, viewport.width, viewport.height),
-        request.placement,
+        bounds,
+        tooltip.placement,
         tooltip.offset,
         cursor,
     );
@@ -481,19 +402,28 @@ pub(crate) fn add_active_node_tooltip(
     if document
         .nodes()
         .iter()
-        .any(|node| node.name() == tooltip_name)
+        .any(|node| node.name() == tooltip_name && node.logical_parent() == Some(target))
     {
         return None;
     }
-    Some(tooltip_box(
+    let help = tooltip_box(
         document,
-        UiNodeId::root(),
+        target,
         tooltip_name,
-        request.content,
+        tooltip.content,
         TooltipBoxOptions::default()
             .at_rect(rect)
             .with_portal(UiPortalTarget::AppOverlay),
-    ))
+    );
+    document.node_mut(help).layout_constraint = Some(UiNodeLayoutConstraint::Tooltip {
+        anchor,
+        viewport: bounds,
+        size: tooltip.size,
+        placement: tooltip.placement,
+        offset: tooltip.offset,
+        cursor,
+    });
+    Some(help)
 }
 
 fn node_tooltip_for(
@@ -501,10 +431,16 @@ fn node_tooltip_for(
     mut active: UiNodeId,
 ) -> Option<(UiNodeId, crate::core::document::UiNodeTooltip)> {
     loop {
-        if let Some(tooltip) = document.node(active).tooltip().cloned() {
-            return Some((active, tooltip));
+        let node = document.nodes().get(active.0)?;
+        if let Some(tooltip) = node.tooltip() {
+            // Resolve the modal only when there is help to show. A candidate
+            // above that boundary cannot provide help for the active modal.
+            let modal_scope = document.accessibility_modal_scope();
+            return document
+                .node_in_modal_scope(active, modal_scope)
+                .then(|| (active, tooltip.clone()));
         }
-        active = document.node(active).parent()?;
+        active = node.logical_parent()?;
     }
 }
 
@@ -512,6 +448,464 @@ fn node_tooltip_for(
 mod tests {
     use super::*;
     use crate::tooltips::TooltipVisibility;
+
+    #[test]
+    fn tooltip_anchors_and_boxes_match_painted_controls_at_every_scale() {
+        let viewport = UiSize::new(1200.0, 900.0);
+        let size = UiSize::new(96.0, 48.0);
+        for ui_scale in [0.5, 1.0, 1.5, 2.0] {
+            for dpi_scale in [1.0, 2.0] {
+                for paint_scale in [0.5, 1.0, 2.0, -1.0] {
+                    for placement in [TooltipPlacement::Right, TooltipPlacement::Below] {
+                        let mut document = UiDocument::new(
+                            LayoutStyle::new()
+                                .with_width_percent(1.0)
+                                .with_height_percent(1.0),
+                        )
+                        .with_scale(UiDocumentScale::new(ui_scale, dpi_scale));
+                        let translation = if paint_scale < 0.0 {
+                            UiPoint::new(600.0, 500.0)
+                        } else {
+                            UiPoint::new(80.0, 90.0)
+                        };
+                        let control = document.add_child(
+                            document.root(),
+                            UiNode::container(
+                                "control",
+                                LayoutStyle::absolute_rect(UiRect::new(60.0, 80.0, 80.0, 40.0)),
+                            )
+                            .with_input(InputBehavior::BUTTON)
+                            .with_visual(UiVisual::panel(ColorRgba::WHITE, None, 0.0))
+                            .with_animation(AnimationMachine::single_state(
+                                "pose",
+                                AnimatedValues::new(1.0, translation, paint_scale),
+                            ))
+                            .with_tooltip(TooltipContent::new("Help"))
+                            .with_tooltip_size(size)
+                            .with_tooltip_placement(placement),
+                        );
+                        document
+                            .compute_layout(viewport, &mut ApproxTextMeasurer)
+                            .unwrap();
+                        let paint = document.paint_list();
+                        let item = paint
+                            .items
+                            .iter()
+                            .find(|item| item.node == control)
+                            .unwrap();
+                        let bounds =
+                            crate::effective_geometry::EffectiveGeometry::from_paint_item(item, 0)
+                                .transformed_bounds();
+                        let input = document.handle_input(UiInputEvent::PointerMove(UiPoint::new(
+                            bounds.x + bounds.width / 2.0,
+                            bounds.y + bounds.height / 2.0,
+                        )));
+                        assert_eq!(input.hovered, Some(control));
+                        let request = tooltip_trigger_resolution(
+                            &document,
+                            control,
+                            TooltipContent::new("Help"),
+                            &input,
+                            0,
+                            TooltipTriggerOptions::default()
+                                .immediate()
+                                .placement(placement),
+                        )
+                        .request
+                        .unwrap();
+                        assert_eq!(request.anchor.rect, bounds,
+                            "anchor disagrees with paint: ui={ui_scale}, dpi={dpi_scale}, paint={paint_scale}");
+                        let manual = tooltip_box_from_request(
+                            &mut document,
+                            control,
+                            "manual.help",
+                            &request,
+                            UiRect::new(0.0, 0.0, viewport.width, viewport.height),
+                            size,
+                            None,
+                            TooltipBoxOptions::default(),
+                        );
+                        let automatic =
+                            add_active_node_tooltip(&mut document, viewport, None).unwrap();
+                        document
+                            .compute_layout(viewport, &mut ApproxTextMeasurer)
+                            .unwrap();
+                        let expected = match placement {
+                            TooltipPlacement::Right => UiRect::new(
+                                bounds.right() + 8.0 * ui_scale,
+                                bounds.y,
+                                size.width * ui_scale,
+                                size.height * ui_scale,
+                            ),
+                            TooltipPlacement::Below => UiRect::new(
+                                bounds.x,
+                                bounds.bottom() + 8.0 * ui_scale,
+                                size.width * ui_scale,
+                                size.height * ui_scale,
+                            ),
+                            _ => unreachable!(),
+                        };
+                        for tooltip in [manual, automatic] {
+                            assert_eq!(document.node(tooltip).layout().rect, expected,
+                                "tooltip detached from paint: ui={ui_scale}, dpi={dpi_scale}, paint={paint_scale}, placement={placement:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tooltip_placement_clamps_scaled_boxes_in_window_coordinates() {
+        let viewport = UiRect::new(0.0, 0.0, 320.0, 240.0);
+        let size = UiSize::new(96.0, 48.0);
+        for ui_scale in [0.5, 1.0, 1.5, 2.0] {
+            for placement in [
+                TooltipPlacement::Above,
+                TooltipPlacement::Below,
+                TooltipPlacement::Left,
+                TooltipPlacement::Right,
+                TooltipPlacement::Cursor,
+            ] {
+                for apply_scale_after_build in [false, true] {
+                    for origin in [
+                        UiPoint::new(20.0, 20.0),
+                        UiPoint::new(300.0, 20.0),
+                        UiPoint::new(20.0, 190.0),
+                        UiPoint::new(300.0, 190.0),
+                    ] {
+                        let mut document = UiDocument::new(
+                            LayoutStyle::new()
+                                .with_width_percent(1.0)
+                                .with_height_percent(1.0),
+                        )
+                        .with_scale(UiDocumentScale::new(
+                            if apply_scale_after_build {
+                                1.0
+                            } else {
+                                ui_scale
+                            },
+                            1.0,
+                        ));
+                        let root = document.root();
+                        let anchor = UiRect::new(origin.x, origin.y, 20.0, 20.0);
+                        let cursor = UiPoint::new(origin.x + 10.0, origin.y + 10.0);
+                        let request = TooltipRequest::new(
+                            TooltipAnchor::new(root, anchor),
+                            TooltipContent::new("Help"),
+                        )
+                        .placement(placement);
+                        let tooltip = tooltip_box_from_request(
+                            &mut document,
+                            root,
+                            "help",
+                            &request,
+                            viewport,
+                            size,
+                            Some(cursor),
+                            TooltipBoxOptions::default(),
+                        );
+                        document.set_ui_scale(ui_scale);
+                        document
+                            .compute_layout(
+                                UiSize::new(viewport.width, viewport.height),
+                                &mut ApproxTextMeasurer,
+                            )
+                            .unwrap();
+                        let rect = document.node(tooltip).layout().rect;
+                        assert_eq!(
+                            (rect.width, rect.height),
+                            (size.width * ui_scale, size.height * ui_scale)
+                        );
+                        assert!(viewport.contains_rect(rect),
+                        "tooltip escaped viewport: ui={ui_scale}, placement={placement:?}, anchor={anchor:?}, rect={rect:?}");
+                        if placement == TooltipPlacement::Cursor {
+                            assert_eq!(
+                                (rect.x, rect.y),
+                                (
+                                    (cursor.x + 8.0 * ui_scale)
+                                        .clamp(viewport.x, viewport.right() - rect.width),
+                                    (cursor.y + 8.0 * ui_scale)
+                                        .clamp(viewport.y, viewport.bottom() - rect.height)
+                                )
+                            );
+                        } else {
+                            assert!(!rect.intersects(anchor), "side tooltip covers its anchor: ui={ui_scale}, placement={placement:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tooltips_follow_portal_ownership_and_stop_at_modal_boundaries() {
+        let viewport = UiSize::new(400.0, 300.0);
+        for portal in [
+            UiPortalTarget::Parent,
+            UiPortalTarget::AppOverlay,
+            UiPortalTarget::named("host"),
+            UiPortalTarget::GlobalAppOverlay,
+            UiPortalTarget::global_named("host"),
+        ] {
+            for modal in [false, true] {
+                for owner_help in [true, false] {
+                    for focus in [false, true] {
+                        let mut document = UiDocument::new(root_style(400.0, 300.0));
+                        let root = document.root();
+                        document
+                            .node_mut(root)
+                            .set_tooltip(TooltipContent::new("Root help"));
+                        let mut metadata = AccessibilityMeta::new(AccessibilityRole::Group);
+                        if modal {
+                            metadata = metadata.modal();
+                        }
+                        let owner = document.add_child(
+                            root,
+                            UiNode::container(
+                                "owner",
+                                LayoutStyle::absolute_rect(UiRect::new(8.0, 8.0, 100.0, 80.0)),
+                            )
+                            .with_accessibility(metadata),
+                        );
+                        if owner_help {
+                            document
+                                .node_mut(owner)
+                                .set_tooltip(TooltipContent::new("Owner help"));
+                        }
+                        let host = document.add_child(
+                            root,
+                            UiNode::container("host", LayoutStyle::size(400.0, 300.0))
+                                .with_tooltip(TooltipContent::new("Host help")),
+                        );
+                        document.register_portal_host("host", host);
+                        let popup = document.add_portal_child(
+                            owner,
+                            portal.clone(),
+                            UiNode::container("popup", LayoutStyle::size(80.0, 32.0)),
+                        );
+                        let active = document.add_child(
+                            popup,
+                            UiNode::container("active", LayoutStyle::size(40.0, 24.0))
+                                .with_input(InputBehavior::BUTTON),
+                        );
+                        document
+                            .compute_layout(viewport, &mut ApproxTextMeasurer)
+                            .unwrap();
+                        let input = UiInputResult {
+                            hovered: (!focus).then_some(active),
+                            focused: focus.then_some(active),
+                            ..Default::default()
+                        };
+                        let owned = matches!(
+                            portal,
+                            UiPortalTarget::Parent
+                                | UiPortalTarget::AppOverlay
+                                | UiPortalTarget::Named(_)
+                        );
+                        for target in [owner, root] {
+                            let resolution = tooltip_trigger_resolution(
+                                &document,
+                                target,
+                                TooltipContent::new("Explicit help"),
+                                &input,
+                                0,
+                                TooltipTriggerOptions::default().immediate(),
+                            );
+                            let expected = if target == owner { owned } else { !modal };
+                            assert_eq!(resolution.request.is_some(), expected,
+                                "manual target={target:?}, portal={portal:?}, modal={modal}, focus={focus}");
+                        }
+                        document.set_focus_state(UiFocusState {
+                            hovered: input.hovered,
+                            focused: input.focused,
+                            ..Default::default()
+                        });
+                        let expected = if modal && !owned {
+                            None
+                        } else if owned && owner_help {
+                            Some(owner)
+                        } else if owned && modal {
+                            None
+                        } else if matches!(portal, UiPortalTarget::GlobalNamed(_)) {
+                            Some(host)
+                        } else {
+                            Some(root)
+                        };
+                        let tooltip = add_active_node_tooltip(&mut document, viewport, None);
+                        assert_eq!(tooltip.is_some(), expected.is_some(),
+                            "automatic portal={portal:?}, modal={modal}, owner_help={owner_help}, focus={focus}");
+                        if let (Some(tooltip), Some(expected)) = (tooltip, expected) {
+                            assert_eq!(
+                                document.node(tooltip).logical_parent(),
+                                Some(expected),
+                                "tooltip lost its owner: portal={portal:?}, modal={modal}"
+                            );
+                            assert_eq!(
+                                document
+                                    .node(tooltip)
+                                    .accessibility()
+                                    .unwrap()
+                                    .label
+                                    .as_deref(),
+                                Some(
+                                    document
+                                        .node(expected)
+                                        .tooltip()
+                                        .unwrap()
+                                        .content
+                                        .title
+                                        .as_str()
+                                )
+                            );
+                        }
+                        if portal == UiPortalTarget::Parent && !modal && owner_help && !focus {
+                            document.set_node_enabled(owner, false);
+                            for allow_disabled_help in [true, false] {
+                                let resolution = tooltip_trigger_resolution(
+                                    &document,
+                                    owner,
+                                    TooltipContent::new("Disabled help"),
+                                    &input,
+                                    0,
+                                    TooltipTriggerOptions::default().immediate().item_state(
+                                        HelpItemState {
+                                            allow_disabled_help,
+                                            ..HelpItemState::disabled()
+                                        },
+                                    ),
+                                );
+                                assert_eq!(resolution.request.is_some(), allow_disabled_help);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_tooltip_names_are_scoped_to_their_owner() {
+        let viewport = UiSize::new(400.0, 300.0);
+        for foreign_owner in [true, false] {
+            let mut document = UiDocument::new(root_style(400.0, 300.0));
+            let first_panel = document.add_child(
+                document.root(),
+                UiNode::container("first", LayoutStyle::size(160.0, 80.0)),
+            );
+            let second_panel = document.add_child(
+                document.root(),
+                UiNode::container("second", LayoutStyle::size(160.0, 80.0)),
+            );
+            let first = document.add_child(
+                first_panel,
+                UiNode::container("control", LayoutStyle::size(80.0, 32.0)),
+            );
+            let active = document.add_child(
+                second_panel,
+                UiNode::container("control", LayoutStyle::size(80.0, 32.0))
+                    .with_input(InputBehavior::BUTTON)
+                    .with_tooltip(TooltipContent::new("Active help")),
+            );
+            tooltip_box(
+                &mut document,
+                if foreign_owner { first } else { active },
+                "control.tooltip",
+                TooltipContent::new("Authored help"),
+                TooltipBoxOptions::default().with_portal(UiPortalTarget::AppOverlay),
+            );
+            document
+                .compute_layout(viewport, &mut ApproxTextMeasurer)
+                .unwrap();
+            document.set_focus_state(UiFocusState {
+                focused: Some(active),
+                ..Default::default()
+            });
+            let tooltip = add_active_node_tooltip(&mut document, viewport, None);
+            assert_eq!(
+                tooltip.is_some(),
+                foreign_owner,
+                "only a tooltip for the same owner should suppress automatic help"
+            );
+            if let Some(tooltip) = tooltip {
+                assert_eq!(document.node(tooltip).logical_parent(), Some(active));
+            }
+            let count = document.node_count();
+            assert!(add_active_node_tooltip(&mut document, viewport, None).is_none());
+            assert_eq!(
+                document.node_count(),
+                count,
+                "repeated resolution must not add a duplicate"
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_tooltips_prefer_focus_and_fall_back_to_available_hover_help() {
+        for focus_help in [true, false] {
+            for hover_help in [false, true] {
+                let viewport = UiSize::new(400.0, 300.0);
+                let mut document = UiDocument::new(root_style(400.0, 300.0));
+                let root = document.root();
+                let focused = document.add_child(
+                    root,
+                    UiNode::container("focused", LayoutStyle::size(80.0, 32.0))
+                        .with_input(InputBehavior::BUTTON),
+                );
+                let hovered = document.add_child(
+                    root,
+                    UiNode::container("hovered", LayoutStyle::size(80.0, 32.0))
+                        .with_input(InputBehavior::BUTTON),
+                );
+                if focus_help {
+                    document
+                        .node_mut(focused)
+                        .set_tooltip(TooltipContent::new("Focus help"));
+                }
+                if hover_help {
+                    document
+                        .node_mut(hovered)
+                        .set_tooltip(TooltipContent::new("Hover help"));
+                }
+                document
+                    .compute_layout(viewport, &mut ApproxTextMeasurer)
+                    .unwrap();
+                document.set_focus_state(UiFocusState {
+                    focused: Some(focused),
+                    hovered: Some(hovered),
+                    ..Default::default()
+                });
+                let tooltip = add_active_node_tooltip(&mut document, viewport, None);
+                let expected = focus_help
+                    .then_some(focused)
+                    .or_else(|| hover_help.then_some(hovered));
+                assert_eq!(
+                    tooltip.is_some(),
+                    expected.is_some(),
+                    "focus_help={focus_help}, hover_help={hover_help}"
+                );
+                if let (Some(tooltip), Some(expected)) = (tooltip, expected) {
+                    assert_eq!(
+                        document
+                            .node(tooltip)
+                            .accessibility()
+                            .unwrap()
+                            .label
+                            .as_deref(),
+                        Some(
+                            document
+                                .node(expected)
+                                .tooltip()
+                                .unwrap()
+                                .content
+                                .title
+                                .as_str()
+                        )
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn tooltip_rect_falls_back_before_clamping_to_viewport() {
@@ -561,14 +955,17 @@ mod tests {
         );
 
         let node = document.node(tooltip);
-        assert_eq!(node.style.z_index, 100.0);
         assert_eq!(node.layer, Some(crate::platform::UiLayer::AppOverlay));
         assert_eq!(node.clip_scope, ClipScope::Viewport);
         assert_eq!(
             node.accessibility.as_ref().unwrap().role,
             AccessibilityRole::Tooltip
         );
-        assert_eq!(node.children.len(), 3);
+        for expected in ["Save", "Write changes to disk", "Ctrl+S"] {
+            assert!(document.nodes().iter().any(|child| {
+                matches!(&child.content, UiContent::Text(text) if text.text == expected)
+            }));
+        }
         assert_eq!(
             node.animation.as_ref().unwrap().current_state_name(),
             "visible"
@@ -640,5 +1037,11 @@ mod tests {
         assert!(animation.trigger(AnimationTrigger::Custom(TOOLTIP_SHOW_TRIGGER.to_owned())));
         animation.tick(0.0);
         assert_eq!(animation.current_state_name(), "visible");
+        assert!(
+            !animation.is_animating(),
+            "reduced motion must finish immediately"
+        );
+        assert_eq!(animation.values().opacity, 1.0);
+        assert_eq!(animation.values().translate, UiPoint::new(0.0, 0.0));
     }
 }

@@ -1421,25 +1421,35 @@ fn next_focus_in_order(
 
 impl AccessibilityNode {
     pub fn direct_accessible_name(&self) -> Option<String> {
-        non_empty_text(self.label.as_deref()).or_else(|| {
-            self.summary.as_ref().and_then(|summary| {
-                let text = summary.screen_reader_text();
-                non_empty_text(Some(&text))
-            })
-        })
+        direct_accessible_name(self.label.as_deref(), self.summary.as_ref())
     }
 
     pub fn direct_accessible_description(&self) -> Option<String> {
-        non_empty_text(self.hint.as_deref()).or_else(|| {
-            self.invalid.as_ref().map(|reason| {
-                if reason.trim().is_empty() {
-                    "Invalid".to_string()
-                } else {
-                    format!("Invalid: {}", reason.trim())
-                }
-            })
-        })
+        direct_accessible_description(self.hint.as_deref(), self.invalid.as_deref())
     }
+}
+
+pub(crate) fn direct_accessible_name(
+    label: Option<&str>,
+    summary: Option<&AccessibilitySummary>,
+) -> Option<String> {
+    non_empty_text(label)
+        .or_else(|| summary.and_then(|summary| non_empty_text(Some(&summary.screen_reader_text()))))
+}
+
+pub(crate) fn direct_accessible_description(
+    hint: Option<&str>,
+    invalid: Option<&str>,
+) -> Option<String> {
+    non_empty_text(hint).or_else(|| {
+        invalid.map(|reason| {
+            if reason.trim().is_empty() {
+                "Invalid".to_string()
+            } else {
+                format!("Invalid: {}", reason.trim())
+            }
+        })
+    })
 }
 
 fn live_region_message(node: &AccessibilityNode) -> String {
@@ -1574,29 +1584,201 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct RecordingAdapter {
-        capabilities: AccessibilityCapabilities,
-        handled: Vec<AccessibilityRequestKind>,
+    #[test]
+    fn display_none_subtrees_are_excluded_from_accessibility_and_announcements() {
+        for hide_root in [false, true] {
+            let mut doc = UiDocument::new(fixed_style(400.0, 300.0));
+            let outside = doc.add_child(
+                doc.root,
+                UiNode::container("outside", fixed_style(80.0, 30.0))
+                    .with_input(InputBehavior::BUTTON)
+                    .with_accessibility(
+                        AccessibilityMeta::new(AccessibilityRole::Button)
+                            .label("Outside")
+                            .focusable(),
+                    ),
+            );
+            let wrapper = doc.add_child(
+                doc.root,
+                UiNode::container("wrapper", fixed_style(200.0, 100.0)),
+            );
+            let panel = doc.add_child(
+                wrapper,
+                UiNode::container("panel", fixed_style(200.0, 100.0)).with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Group).label("Panel"),
+                ),
+            );
+            let control = doc.add_child(
+                panel,
+                UiNode::container("inside", fixed_style(80.0, 30.0))
+                    .with_input(InputBehavior::BUTTON)
+                    .with_accessibility(
+                        AccessibilityMeta::new(AccessibilityRole::Button)
+                            .label("Inside")
+                            .focusable(),
+                    ),
+            );
+            let status = doc.add_child(
+                panel,
+                UiNode::container("status", fixed_style(80.0, 30.0)).with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Label)
+                        .label("Ready")
+                        .live_region(AccessibilityLiveRegion::Polite),
+                ),
+            );
+            let offscreen = doc.add_child(
+                doc.root,
+                UiNode::container("offscreen", crate::layout::absolute(500.0, 0.0, 80.0, 30.0))
+                    .with_accessibility(
+                        AccessibilityMeta::new(AccessibilityRole::Button)
+                            .label("Offscreen")
+                            .focusable(),
+                    ),
+            );
+            let hide = if hide_root { doc.root } else { wrapper };
+            let mut previous = AccessibilityLiveRegionSnapshot::default();
+            for (displayed, message) in [
+                (false, "Hidden update"),
+                (true, "Shown update"),
+                (false, "Hidden again"),
+            ] {
+                doc.node_mut(hide).style.layout.display = if displayed {
+                    taffy::prelude::Display::Flex
+                } else {
+                    taffy::prelude::Display::None
+                };
+                doc.node_mut(status).accessibility.as_mut().unwrap().label = Some(message.into());
+                // Visibility must also be correct before recomputing geometry.
+                let authored = doc.accessibility_snapshot();
+                assert_eq!(authored.node(control).is_some(), displayed);
+                doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                    .unwrap();
+                let tree = doc.accessibility_snapshot();
+                assert_eq!(tree.node(control).is_some(), displayed);
+                assert_eq!(tree.focus_order.contains(&control), displayed);
+                assert_eq!(tree.node(panel).is_some(), displayed);
+                assert_eq!(tree.node(status).is_some(), displayed);
+                assert_eq!(tree.node(outside).is_some(), displayed || !hide_root);
+                assert_eq!(
+                    tree.node(offscreen).is_some(),
+                    displayed || !hide_root,
+                    "offscreen is not display:none"
+                );
+                let live = AccessibilityLiveRegionSnapshot::from_tree(&tree);
+                let announcements = live.announcements_since(&previous);
+                assert_eq!(announcements.len(), usize::from(displayed));
+                if displayed {
+                    assert_eq!(announcements[0].message, message);
+                } else {
+                    assert!(!doc.audit_layout().iter().any(|warning| matches!(warning,
+                        crate::core::document::AuditWarning::FocusableMissingFromAccessibilityTree { node, .. }
+                        | crate::core::document::AuditWarning::AccessibleNameMissing { node, .. }
+                        | crate::core::document::AuditWarning::InvisibleInteractiveNode { node, .. }
+                        if *node == control)));
+                }
+                previous = live;
+            }
+        }
     }
 
-    impl AccessibilityAdapter for RecordingAdapter {
-        fn accessibility_capabilities(&self) -> AccessibilityCapabilities {
-            self.capabilities
-        }
-
-        fn handle_accessibility_request(
-            &mut self,
-            request: AccessibilityAdapterRequest,
-        ) -> AccessibilityAdapterResponse {
-            let kind = request.kind();
-            if !self.capabilities.supports(kind) {
-                return AccessibilityAdapterResponse::Unsupported(kind);
+    #[test]
+    fn excluded_relation_targets_preserve_names_without_dangling_published_links() {
+        let mut doc = UiDocument::new(fixed_style(400.0, 300.0));
+        let visible_label = doc.add_child(
+            doc.root,
+            UiNode::container("label", fixed_style(80.0, 20.0))
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label("Save")),
+        );
+        let panel = doc.add_child(
+            doc.root,
+            UiNode::container("details", fixed_style(200.0, 100.0)),
+        );
+        let hidden_label = doc.add_child(
+            panel,
+            UiNode::container("suffix", fixed_style(80.0, 20.0))
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Label).label("File")),
+        );
+        let hidden_help = doc.add_child(
+            panel,
+            UiNode::container("help", fixed_style(80.0, 20.0)).with_accessibility(
+                AccessibilityMeta::new(AccessibilityRole::Tooltip).hint("Keep changes"),
+            ),
+        );
+        let control = doc.add_child(
+            doc.root,
+            UiNode::container("save", fixed_style(80.0, 30.0))
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(
+                    AccessibilityMeta::new(AccessibilityRole::Button)
+                        .label("Fallback")
+                        .hint("Fallback help")
+                        .labelled_by(visible_label)
+                        .labelled_by(hidden_label)
+                        .described_by(hidden_help)
+                        .controls(hidden_help)
+                        .owns(hidden_label)
+                        .active_descendant(hidden_label),
+                ),
+        );
+        for (hidden, metadata_hidden) in
+            [(false, false), (true, false), (false, true), (false, false)]
+        {
+            doc.node_mut(panel).style.layout.display = if hidden {
+                taffy::prelude::Display::None
+            } else {
+                taffy::prelude::Display::Flex
+            };
+            for target in [hidden_label, hidden_help] {
+                doc.node_mut(target).accessibility.as_mut().unwrap().hidden = metadata_hidden;
             }
-
-            self.handled.push(kind);
-            AccessibilityAdapterResponse::Applied
+            doc.compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            let tree = doc.accessibility_snapshot();
+            assert_eq!(tree.node(hidden_label).is_none(), hidden || metadata_hidden);
+            assert_eq!(tree.accessible_name(control).as_deref(), Some("Save File"));
+            assert_eq!(
+                tree.accessible_description(control).as_deref(),
+                Some("Keep changes")
+            );
+            let item = AccessibilityNavigableItem::from_node(&tree, tree.node(control).unwrap());
+            assert_eq!(item.label.as_deref(), Some("Save File"));
+            assert_eq!(item.hint.as_deref(), Some("Keep changes"));
+            for node in &tree.nodes {
+                for target in node
+                    .parent
+                    .iter()
+                    .chain(&node.relations.labelled_by)
+                    .chain(&node.relations.described_by)
+                    .chain(&node.relations.controls)
+                    .chain(&node.relations.owns)
+                    .chain(node.relations.active_descendant.iter())
+                {
+                    assert!(tree.node(*target).is_some(), "dangling target {target:?}");
+                }
+            }
+            assert!(!doc.audit_layout().iter().any(|warning| matches!(warning,
+                crate::core::document::AuditWarning::AccessibilityRelationTargetMissing { node, .. }
+                | crate::core::document::AuditWarning::AccessibleNameMissing { node, .. } if *node == control)));
         }
+        // Projection must not conceal invalid authored references from the audit.
+        let missing = UiNodeId(usize::MAX);
+        doc.node_mut(control)
+            .accessibility
+            .as_mut()
+            .unwrap()
+            .relations
+            .controls
+            .push(missing);
+        let tree = doc.accessibility_snapshot();
+        assert!(!tree
+            .node(control)
+            .unwrap()
+            .relations
+            .controls
+            .contains(&missing));
+        assert!(doc.audit_layout().iter().any(|warning| matches!(warning,
+            crate::core::document::AuditWarning::AccessibilityRelationTargetMissing { node, target, .. }
+            if *node == control && *target == missing)));
     }
 
     #[test]
@@ -1941,49 +2123,6 @@ mod tests {
                 AccessibilityKeyboardTraceBlockedReason::MissingFocusedAction("missing".to_owned())
             )
         );
-    }
-
-    #[test]
-    fn capabilities_gate_adapter_request_kinds() {
-        let caps = AccessibilityCapabilities::SCREEN_READER;
-        assert!(caps.supports(AccessibilityRequestKind::PublishTree));
-        assert!(caps.supports(AccessibilityRequestKind::SetFocusTrap));
-        assert!(!caps.screenshots);
-
-        let request =
-            AccessibilityAdapterRequest::Announce(AccessibilityAnnouncement::assertive("Saved"));
-        assert_eq!(request.kind(), AccessibilityRequestKind::Announce);
-        assert!(caps.supports(request.kind()));
-        assert!(!AccessibilityCapabilities::NONE.supports(request.kind()));
-    }
-
-    #[test]
-    fn adapter_trait_routes_typed_requests_by_capability() {
-        let mut adapter = RecordingAdapter {
-            capabilities: AccessibilityCapabilities {
-                announcements: true,
-                ..AccessibilityCapabilities::NONE
-            },
-            handled: Vec::new(),
-        };
-
-        let announce =
-            AccessibilityAdapterRequest::Announce(AccessibilityAnnouncement::polite("Ready"));
-        let publish = AccessibilityAdapterRequest::PublishTree {
-            tree: AccessibilityTree::default(),
-            focused: None,
-            preferences: AccessibilityPreferences::DEFAULT,
-        };
-
-        assert_eq!(
-            adapter.handle_accessibility_request(announce),
-            AccessibilityAdapterResponse::Applied
-        );
-        assert_eq!(
-            adapter.handle_accessibility_request(publish),
-            AccessibilityAdapterResponse::Unsupported(AccessibilityRequestKind::PublishTree)
-        );
-        assert_eq!(adapter.handled, vec![AccessibilityRequestKind::Announce]);
     }
 
     #[test]

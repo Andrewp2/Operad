@@ -122,24 +122,9 @@ pub fn add_enabled_ui(
     root
 }
 
+/// Set a subtree override while preserving each descendant's own disabled state.
 pub fn set_subtree_enabled(document: &mut UiDocument, root: UiNodeId, enabled: bool) {
-    if enabled {
-        return;
-    }
-    let children = document.node(root).children.clone();
-    {
-        let node = document.node_mut(root);
-        node.input = InputBehavior::NONE;
-        if let Some(accessibility) = node.accessibility.take() {
-            node.accessibility = Some(accessibility.disabled());
-        }
-        if let Some(visuals) = node.interaction_visuals {
-            node.visual = visuals.resolve(false, false, false, false);
-        }
-    }
-    for child in children {
-        set_subtree_enabled(document, child, enabled);
-    }
+    document.set_node_enabled(root, enabled);
 }
 
 pub fn set_subtree_visible(document: &mut UiDocument, root: UiNodeId, visible: bool) {
@@ -342,76 +327,118 @@ mod tests {
                 Default::default(),
             )
         });
-        assert!(!document.node(disabled).input.pointer);
-        assert!(
-            !document
-                .node(disabled)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .enabled
+        document
+            .compute_layout(UiSize::new(320.0, 200.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let rect = document.node(disabled).layout().rect;
+        let point = UiPoint::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        assert!(!document.node_is_enabled(disabled));
+        assert!(matches!(
+            document.hit_test_result(point),
+            Some(crate::HitTestResult::Blocked(_))
+        ));
+        assert_eq!(
+            document
+                .handle_input(UiInputEvent::PointerDown(point))
+                .pressed,
+            None
         );
     }
 
     #[test]
-    fn allocation_and_scroll_helpers_wrap_core_primitives() {
+    fn subtree_enable_override_restores_custom_controls_without_enabling_disabled_children() {
+        let mut document = UiDocument::new(root_style(120.0, 100.0));
+        let group = document.add_child(
+            document.root(),
+            UiNode::container("group", LayoutStyle::size(100.0, 80.0)),
+        );
+        let normal = UiVisual::panel(ColorRgba::WHITE, None, 0.0);
+        let disabled_visual = UiVisual::panel(ColorRgba::BLACK, None, 0.0);
+        let custom = document.add_child(
+            group,
+            UiNode::container(
+                "custom",
+                LayoutStyle::absolute_rect(UiRect::new(0.0, 0.0, 30.0, 30.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_interaction_visuals(InteractionVisuals::new(normal).disabled(disabled_visual)),
+        );
+        let accessible = document.add_child(
+            group,
+            UiNode::container(
+                "accessible",
+                LayoutStyle::absolute_rect(UiRect::new(35.0, 0.0, 30.0, 30.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button).label("Action")),
+        );
+        let independently_disabled = document.add_child(
+            group,
+            UiNode::container(
+                "independently.disabled",
+                LayoutStyle::absolute_rect(UiRect::new(70.0, 0.0, 30.0, 30.0)),
+            )
+            .with_input(InputBehavior::BUTTON),
+        );
+        set_subtree_enabled(&mut document, independently_disabled, false);
+        document
+            .compute_layout(UiSize::new(120.0, 100.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let point = UiPoint::new(10.0, 10.0);
+        assert_eq!(
+            document
+                .handle_input(UiInputEvent::PointerDown(point))
+                .pressed,
+            Some(custom)
+        );
+        for enabled in [false, false, true, false, true] {
+            set_subtree_enabled(&mut document, group, enabled);
+            assert_eq!(document.node_is_enabled(custom), enabled);
+            assert!(!document.node_is_enabled(independently_disabled));
+            assert_eq!(
+                document.node(custom).visual(),
+                if enabled { &normal } else { &disabled_visual }
+            );
+            let snapshot = document.accessibility_snapshot();
+            assert_eq!(
+                snapshot
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == accessible)
+                    .unwrap()
+                    .enabled,
+                enabled
+            );
+            let hit = document.hit_test_result(point);
+            assert_eq!(
+                hit,
+                Some(if enabled {
+                    crate::HitTestResult::Target(custom)
+                } else {
+                    crate::HitTestResult::Blocked(custom)
+                })
+            );
+            let result = document.handle_input(UiInputEvent::PointerUp(point));
+            assert_eq!((result.clicked, result.pressed), (None, None));
+        }
+        assert_eq!(
+            document
+                .handle_input(UiInputEvent::PointerDown(point))
+                .pressed,
+            Some(custom)
+        );
+        assert_eq!(
+            document
+                .handle_input(UiInputEvent::PointerUp(point))
+                .clicked,
+            Some(custom)
+        );
+    }
+
+    #[test]
+    fn scroll_helpers_reveal_rect_and_leave_visible_cursor_in_place() {
         let mut document = UiDocument::new(root_style(400.0, 260.0));
         let root = document.root;
-
-        let exact = allocate_exact_size(
-            &mut document,
-            root,
-            "exact",
-            UiSize::new(64.0, 32.0),
-            AllocationOptions::default(),
-        );
-        let at_least = allocate_at_least(
-            &mut document,
-            root,
-            "min",
-            UiSize::new(80.0, 40.0),
-            AllocationOptions::default(),
-        );
-        let sized = add_sized(
-            &mut document,
-            root,
-            "sized",
-            UiSize::new(96.0, 48.0),
-            AllocationOptions::default(),
-            |document, parent| {
-                label(
-                    document,
-                    parent,
-                    "sized.label",
-                    "Sized",
-                    TextStyle::default(),
-                    LayoutStyle::new(),
-                );
-            },
-        );
-        let painter = allocate_painter(
-            &mut document,
-            root,
-            "painter",
-            UiSize::new(72.0, 36.0),
-            vec![ScenePrimitive::Line {
-                from: UiPoint::new(0.0, 0.0),
-                to: UiPoint::new(72.0, 36.0),
-                stroke: StrokeStyle::new(ColorRgba::WHITE, 1.0),
-            }],
-            SceneOptions::default(),
-        );
-
-        assert_eq!(document.node(exact).style.layout.size.width, length(64.0));
-        assert_eq!(
-            document.node(at_least).style.layout.min_size.width,
-            length(80.0)
-        );
-        assert_eq!(document.node(sized).children.len(), 1);
-        assert!(matches!(
-            document.node(painter).content,
-            UiContent::Scene(_)
-        ));
 
         let scroll = document.add_child(
             root,

@@ -414,6 +414,9 @@ pub struct WidgetTextEdit {
     pub position: Option<UiPoint>,
     pub local_position: Option<UiPoint>,
     pub target_rect: Option<UiRect>,
+    /// Content coordinates resolved by document routing. The raw viewport
+    /// position and owner rectangle remain available above.
+    pub geometry: Option<crate::TextInputPointerGeometry>,
     pub selecting: bool,
 }
 
@@ -425,6 +428,7 @@ impl WidgetTextEdit {
             position: None,
             local_position: None,
             target_rect: None,
+            geometry: None,
             selecting: false,
         }
     }
@@ -443,6 +447,7 @@ impl WidgetTextEdit {
             position: Some(position),
             local_position: Some(local_position),
             target_rect: Some(target_rect),
+            geometry: None,
             selecting,
         }
     }
@@ -450,10 +455,20 @@ impl WidgetTextEdit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WidgetActionMode {
+    /// Activate on primary clicks, keyboard, accessibility, or programmatic input.
     Activate,
+    /// Also activate on other pointer buttons, preserving their button metadata.
+    /// Use for custom controls with deliberate secondary or auxiliary actions.
+    ActivateAnyButton,
     Drag,
     PointerEdit,
     PointerEditParentRect,
+}
+
+impl WidgetActionMode {
+    pub(crate) fn accepts_pointer_click(self, button: PointerButton) -> bool {
+        button == PointerButton::Primary || self == Self::ActivateAnyButton
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -524,6 +539,8 @@ impl WidgetAction {
         )
     }
 
+    /// Explicitly map a wheel event to an application activation.
+    /// Standard gesture dispatch leaves wheel events to scrolling and input hooks.
     pub fn wheel_activate(
         target: UiNodeId,
         binding: impl Into<WidgetActionBinding>,
@@ -700,7 +717,12 @@ impl WidgetAction {
     ) -> Option<Self> {
         let target = result.clicked?;
         let (target, binding, mode) = resolve_action_target(document, target, binding_for)?;
-        if mode != WidgetActionMode::Activate {
+        if document.node_is_text_control(target)
+            || !matches!(
+                mode,
+                WidgetActionMode::Activate | WidgetActionMode::ActivateAnyButton
+            )
+        {
             return None;
         }
         Some(Self::pointer_activate(target, binding, 1))
@@ -731,13 +753,6 @@ impl WidgetAction {
                     click.modifiers,
                 ))
             }
-            GestureEvent::WheelTargeted {
-                target: Some(target),
-                event,
-            } => {
-                let binding = binding_for(*target)?;
-                Some(Self::wheel_activate(*target, binding, *event))
-            }
             GestureEvent::Drag(gesture) => {
                 let binding = binding_for(gesture.target)?;
                 Self::drag_from_gesture(gesture, binding)
@@ -755,14 +770,24 @@ impl WidgetAction {
             GestureEvent::Click(click) => {
                 let (target, binding, mode) =
                     resolve_action_target(document, click.target, binding_for)?;
+                if !mode.accepts_pointer_click(click.button) {
+                    return None;
+                }
                 match mode {
-                    WidgetActionMode::Activate => Some(Self::pointer_button_activate(
-                        target,
-                        binding,
-                        click.button,
-                        click.count,
-                        click.modifiers,
-                    )),
+                    WidgetActionMode::Activate | WidgetActionMode::ActivateAnyButton => {
+                        // Text controls already receive the pointer selection edits.
+                        // Their edit binding must not also run as a button command.
+                        if document.node_is_text_control(target) {
+                            return None;
+                        }
+                        Some(Self::pointer_button_activate(
+                            target,
+                            binding,
+                            click.button,
+                            click.count,
+                            click.modifiers,
+                        ))
+                    }
                     WidgetActionMode::Drag => None,
                     WidgetActionMode::PointerEdit if click.button == PointerButton::Primary => {
                         Some(pointer_edit_action(
@@ -789,26 +814,11 @@ impl WidgetAction {
                     WidgetActionMode::PointerEdit | WidgetActionMode::PointerEditParentRect => None,
                 }
             }
-            GestureEvent::WheelTargeted {
-                target: Some(target),
-                event,
-            } => {
-                let (target, binding, mode) =
-                    resolve_action_target(document, *target, binding_for)?;
-                match mode {
-                    WidgetActionMode::Activate => {
-                        Some(Self::wheel_activate(target, binding, *event))
-                    }
-                    WidgetActionMode::Drag
-                    | WidgetActionMode::PointerEdit
-                    | WidgetActionMode::PointerEditParentRect => None,
-                }
-            }
             GestureEvent::Drag(gesture) => {
                 let (target, binding, mode) =
                     resolve_action_target(document, gesture.target, binding_for)?;
                 match mode {
-                    WidgetActionMode::Activate => None,
+                    WidgetActionMode::Activate | WidgetActionMode::ActivateAnyButton => None,
                     WidgetActionMode::Drag => {
                         let mut gesture = *gesture;
                         gesture.target = target;
@@ -831,22 +841,46 @@ impl WidgetAction {
     }
 }
 
-fn resolve_action_target(
+pub(crate) fn action_target_accepts_pointer_click(
     document: &UiDocument,
     target: UiNodeId,
-    mut binding_for: impl FnMut(UiNodeId) -> Option<WidgetActionBinding>,
-) -> Option<(UiNodeId, WidgetActionBinding, WidgetActionMode)> {
+    button: PointerButton,
+) -> bool {
+    // A label may hit independently while its logical parent owns the action.
+    let mode = resolve_action_target(document, target, |id| document.node(id).action.as_ref())
+        .map(|(_, _, mode)| mode)
+        .or_else(|| {
+            document
+                .nodes()
+                .get(target.index())
+                .map(|node| node.action_mode)
+        });
+    mode.is_some_and(|mode| mode.accepts_pointer_click(button))
+}
+
+pub(crate) fn resolve_action_target<T>(
+    document: &UiDocument,
+    target: UiNodeId,
+    mut binding_for: impl FnMut(UiNodeId) -> Option<T>,
+) -> Option<(UiNodeId, T, WidgetActionMode)> {
+    let modal_scope = document.accessibility_modal_scope();
+    if !document.node_is_enabled(target) || !document.node_in_modal_scope(target, modal_scope) {
+        return None;
+    }
     let mut current = Some(target);
     while let Some(candidate) = current {
+        if !document.node_in_modal_scope(candidate, modal_scope) {
+            return None;
+        }
         let node = document.nodes().get(candidate.0)?;
         if let Some(binding) = binding_for(candidate) {
-            return action_target_enabled(document, candidate).then_some((
+            return document.node_is_enabled(candidate).then_some((
                 candidate,
                 binding,
                 node.action_mode,
             ));
         }
-        current = node.parent;
+        current = node.logical_parent();
     }
     None
 }
@@ -1099,11 +1133,27 @@ impl WidgetActionQueue {
 }
 
 pub fn action_target_enabled(document: &UiDocument, target: UiNodeId) -> bool {
-    document.nodes().get(target.0).is_some_and(|node| {
-        node.accessibility
-            .as_ref()
-            .is_none_or(|accessibility| accessibility.enabled && !accessibility.hidden)
-    })
+    document.node_is_enabled(target)
+        && document.node_in_modal_scope(target, document.accessibility_modal_scope())
+}
+
+/// Explicit widget helpers follow ownership, including portals, and reject
+/// stale events from disabled targets or outside the current modal boundary.
+#[cfg(feature = "widgets")]
+pub(crate) fn action_target_accepts_hit(
+    document: &UiDocument,
+    owner: UiNodeId,
+    hit: UiNodeId,
+) -> bool {
+    if !document.node_is_logical_descendant_or_self(owner, hit)
+        || !document.node_is_enabled(owner)
+        || !document.node_is_enabled(hit)
+    {
+        return false;
+    }
+    let modal_scope = document.accessibility_modal_scope();
+    document.node_in_modal_scope(owner, modal_scope)
+        && document.node_in_modal_scope(hit, modal_scope)
 }
 
 pub const fn keyboard_activation_key(key: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -1217,23 +1267,14 @@ mod tests {
     }
 
     #[test]
-    fn wheel_gesture_maps_to_pointer_activation_source() {
+    fn wheel_gesture_does_not_activate_action_bindings() {
         let wheel = RawWheelEvent::lines(UiPoint::new(10.0, 12.0), UiPoint::new(0.0, -1.0), 8);
         let event = GestureEvent::WheelTargeted {
             target: Some(UiNodeId(4)),
             event: wheel,
         };
 
-        let action = WidgetAction::from_gesture_event(&event, binding("grid.cycle")).unwrap();
-
-        assert_eq!(
-            action.kind,
-            WidgetActionKind::Activate(WidgetActivation::wheel(wheel))
-        );
-        let WidgetActionKind::Activate(activation) = action.kind else {
-            panic!("expected activation");
-        };
-        assert_eq!(activation.wheel_event(), Some(wheel));
+        assert!(WidgetAction::from_gesture_event(&event, binding("grid.cycle")).is_none());
     }
 
     #[test]
@@ -1254,6 +1295,44 @@ mod tests {
         queue.push_input_result_for_document(&document, &result, binding("disabled.action"));
 
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn disabled_child_does_not_bubble_a_stale_activation_to_enabled_parent() {
+        let mut document = fixed_doc();
+        let parent = document.add_child(
+            document.root(),
+            UiNode::container("parent", LayoutStyle::new())
+                .with_input(InputBehavior::BUTTON)
+                .with_action("parent.activate"),
+        );
+        let child = document.add_child(
+            parent,
+            UiNode::container("child", LayoutStyle::new())
+                .with_input(InputBehavior::BUTTON)
+                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button)),
+        );
+        let result = UiInputResult {
+            clicked: Some(child),
+            ..Default::default()
+        };
+        assert!(WidgetAction::activation_from_input_result_for_document(
+            &document,
+            &result,
+            |id| { document.node(id).action.clone() },
+        )
+        .is_some());
+        document
+            .node_mut(child)
+            .accessibility_mut()
+            .unwrap()
+            .enabled = false;
+        assert!(WidgetAction::activation_from_input_result_for_document(
+            &document,
+            &result,
+            |id| { document.node(id).action.clone() },
+        )
+        .is_none());
     }
 
     #[test]
@@ -1364,13 +1443,14 @@ mod tests {
     }
 
     #[test]
-    fn activate_mode_emits_secondary_and_wheel_actions_for_document_actions() {
+    fn any_button_mode_dispatches_secondary_clicks_but_not_wheel_gestures() {
         let mut document = UiDocument::new(LayoutStyle::size(200.0, 100.0));
         let target = document.add_child(
             document.root,
             UiNode::container("grid.cycle", LayoutStyle::size(100.0, 20.0))
                 .with_input(InputBehavior::BUTTON)
-                .with_action("grid.cycle"),
+                .with_action("grid.cycle")
+                .with_action_mode(crate::WidgetActionMode::ActivateAnyButton),
         );
         let click = GestureEvent::Click(crate::PointerClick {
             pointer_id: PointerId::MOUSE,
@@ -1394,8 +1474,7 @@ mod tests {
         let wheel_action =
             WidgetAction::from_gesture_event_for_document(&document, &wheel_event, |id| {
                 document.nodes()[id.0].action.clone()
-            })
-            .expect("wheel action");
+            });
 
         assert_eq!(
             click_action.kind,
@@ -1405,10 +1484,7 @@ mod tests {
                 KeyModifiers::NONE,
             ))
         );
-        assert_eq!(
-            wheel_action.kind,
-            WidgetActionKind::Activate(WidgetActivation::wheel(wheel))
-        );
+        assert!(wheel_action.is_none());
     }
 
     #[test]
@@ -1570,39 +1646,6 @@ mod tests {
     }
 
     #[test]
-    fn command_binding_preserves_command_id() {
-        let action = WidgetAction::pointer_activate(
-            UiNodeId(4),
-            WidgetActionBinding::command("file.save"),
-            1,
-        );
-
-        assert_eq!(
-            action.binding.command_id(),
-            Some(&CommandId::from("file.save"))
-        );
-        assert_eq!(action.binding.action_id(), None);
-    }
-
-    #[test]
-    fn queue_preserves_action_order() {
-        let mut queue = WidgetActionQueue::new();
-        queue
-            .activate(UiNodeId(1), WidgetActionBinding::action("one"))
-            .select(UiNodeId(2), WidgetActionBinding::action("two"), true)
-            .command_activate(UiNodeId(3), "three");
-
-        let actions = queue.as_slice();
-        assert_eq!(actions[0].target, UiNodeId(1));
-        assert_eq!(actions[1].target, UiNodeId(2));
-        assert_eq!(actions[2].target, UiNodeId(3));
-        assert_eq!(
-            actions[2].binding.command_id(),
-            Some(&CommandId::from("three"))
-        );
-    }
-
-    #[test]
     fn drag_gesture_phases_map_to_drag_actions() {
         for (gesture_phase, expected_phase) in [
             (GesturePhase::Begin, WidgetDragPhase::Begin),
@@ -1659,30 +1702,6 @@ mod tests {
     }
 
     #[test]
-    fn secondary_gesture_click_maps_to_secondary_activation() {
-        let click = GestureEvent::Click(crate::PointerClick {
-            pointer_id: PointerId::MOUSE,
-            target: UiNodeId(3),
-            position: UiPoint::new(10.0, 12.0),
-            button: PointerButton::Secondary,
-            count: 1,
-            modifiers: KeyModifiers::NONE,
-            timestamp_millis: 5,
-        });
-
-        let action = WidgetAction::from_gesture_event(&click, binding("context")).unwrap();
-
-        assert_eq!(
-            action.kind,
-            WidgetActionKind::Activate(WidgetActivation::pointer_click(
-                PointerButton::Secondary,
-                1,
-                KeyModifiers::NONE,
-            ))
-        );
-    }
-
-    #[test]
     fn preview_gesture_is_not_a_drag_action_but_maps_to_value_edit_preview() {
         let preview = drag(GesturePhase::Preview);
 
@@ -1695,27 +1714,6 @@ mod tests {
                 .kind,
             WidgetActionKind::ValueEdit(WidgetValueEditPhase::Preview)
         );
-    }
-
-    #[test]
-    fn enabled_document_target_allows_activation() {
-        let mut document = fixed_doc();
-        let enabled = document.add_child(
-            document.root,
-            UiNode::container("enabled", LayoutStyle::new())
-                .with_input(InputBehavior::BUTTON)
-                .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button)),
-        );
-        let result = UiInputResult {
-            clicked: Some(enabled),
-            ..Default::default()
-        };
-        let mut queue = WidgetActionQueue::new();
-
-        queue.push_input_result_for_document(&document, &result, binding("enabled.action"));
-
-        assert_eq!(queue.len(), 1);
-        assert_eq!(queue.as_slice()[0].target, enabled);
     }
 
     #[test]

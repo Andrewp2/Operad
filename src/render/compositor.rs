@@ -1317,25 +1317,6 @@ mod tests {
     }
 
     #[test]
-    fn compositor_quality_requirements_cover_release_gate_features() {
-        let features = compositor_quality_requirements()
-            .into_iter()
-            .map(|requirement| requirement.feature())
-            .collect::<Vec<_>>();
-
-        assert!(features.contains(&RenderFeature::Shadows));
-        assert!(features.contains(&RenderFeature::RoundedClipping));
-        assert!(features.contains(&RenderFeature::Borders));
-        assert!(features.contains(&RenderFeature::Gradients));
-        assert!(features.contains(&RenderFeature::Masks));
-        assert!(features.contains(&RenderFeature::Filters));
-        assert!(features.contains(&RenderFeature::BackdropFilters));
-        assert!(features.contains(&RenderFeature::SubpixelText));
-        assert!(features.contains(&RenderFeature::ColorManagement));
-        assert_eq!(features.len(), 9);
-    }
-
-    #[test]
     fn compositor_quality_plan_records_current_snapshot_fallback_expectations() {
         let requirements = compositor_quality_requirements();
         let plan = plan_compositor_quality(

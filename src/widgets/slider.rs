@@ -28,8 +28,11 @@ impl SliderThumbShape {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SliderClamping {
+    /// Keep values unconstrained after stepping.
     Never,
+    /// Clamp interactive position edits, while preserving supplied values.
     Edits,
+    /// Clamp both supplied values and interactive edits.
     Always,
 }
 
@@ -96,7 +99,15 @@ impl SliderValueSpec {
     }
 
     pub fn value_at_unit(self, unit_value: f32) -> f32 {
-        let unit_value = unit_value.clamp(0.0, 1.0);
+        let unit_value = finite_or_f32(unit_value, 0.0).clamp(0.0, 1.0);
+        if self.clamping != SliderClamping::Never {
+            if unit_value == 0.0 {
+                return self.min;
+            }
+            if unit_value == 1.0 {
+                return self.max;
+            }
+        }
         let min = self.min.min(self.max - f32::EPSILON);
         let value = if self.logarithmic {
             let positive_min = min.max(0.0001);
@@ -105,7 +116,15 @@ impl SliderValueSpec {
         } else {
             min + (self.max - min) * unit_value
         };
-        self.adjust_value(value)
+        let edits = if self.clamping == SliderClamping::Edits {
+            Self {
+                clamping: SliderClamping::Always,
+                ..self
+            }
+        } else {
+            self
+        };
+        edits.adjust_value(value)
     }
 
     pub fn value_from_control_point(self, control: UiRect, point: UiPoint) -> f32 {
@@ -118,6 +137,9 @@ impl SliderValueSpec {
         } else {
             finite_or_f32(value, self.min)
         };
+        if self.clamping != SliderClamping::Never && (value == self.min || value == self.max) {
+            return value;
+        }
         if let Some(step) = self.step {
             value = round_slider_to_step(value, step);
             if self.smart_aim && !self.logarithmic {
@@ -446,7 +468,7 @@ pub fn slider_value_from_control_point(control: UiRect, point: UiPoint, range: R
 }
 
 pub fn format_slider_value(value: f32) -> String {
-    if (value - value.round()).abs() < 0.000_5 {
+    let formatted = if (value - value.round()).abs() < 0.000_5 {
         format!("{value:.0}")
     } else if value.abs() < 10.0 {
         format!("{value:.3}")
@@ -454,6 +476,11 @@ pub fn format_slider_value(value: f32) -> String {
         format!("{value:.2}")
     } else {
         format!("{value:.1}")
+    };
+    if formatted.parse::<f32>().ok() == Some(value) {
+        formatted
+    } else {
+        value.to_string()
     }
 }
 
@@ -461,7 +488,7 @@ pub fn round_slider_to_step(value: f32, step: f32) -> f32 {
     if step <= f32::EPSILON {
         return value;
     }
-    (value / step).round() * step
+    finite_or_f32((value / step).round() * step, value)
 }
 
 pub fn smart_aim_slider_value(value: f32, step: f32) -> f32 {
@@ -503,9 +530,7 @@ pub fn push_slider_gesture_event_actions<'a>(
     let GestureEvent::Drag(gesture) = event else {
         return queue;
     };
-    if !document.node_is_descendant_or_self(slider, gesture.target)
-        || !action_target_enabled(document, slider)
-    {
+    if !action_target_accepts_hit(document, slider, gesture.target) {
         return queue;
     }
     let mut gesture = *gesture;

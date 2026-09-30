@@ -1,4 +1,12 @@
 use super::*;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
+
+#[cfg(test)]
+mod composition_tests;
+#[cfg(test)]
+mod geometry_tests;
+#[cfg(test)]
+mod unicode_editing_tests;
 
 use crate::host::text_input_id_for_node;
 use crate::transactions::{
@@ -17,6 +25,16 @@ const TEXT_INPUT_CONTENT_INSET_X: f32 = 6.0;
 const TEXT_INPUT_CONTENT_INSET_Y: f32 = 6.0;
 const TEXT_INPUT_APPROX_CHAR_WIDTH_FACTOR: f32 = 0.50;
 
+/// A draft replacing a range of committed text. Its selection is relative to
+/// the draft; all offsets are UTF-8 bytes. The committed model stays unchanged
+/// until the input method commits, so cancellation needs no undo transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextInputComposition {
+    pub text: String,
+    pub selection: Option<Range<usize>>,
+    pub replacement: Range<usize>,
+}
+
 #[cfg(feature = "text-cosmic")]
 thread_local! {
     static TEXT_INPUT_FONT_SYSTEM: RefCell<FontSystem> =
@@ -29,7 +47,7 @@ pub struct TextInputState {
     pub(crate) caret: usize,
     pub(crate) selection_anchor: Option<usize>,
     pub(crate) multiline: bool,
-    pub(crate) composing: Option<String>,
+    pub(crate) composing: Option<TextInputComposition>,
     pub(crate) history: TextEditHistory,
     pub(crate) history_sequence: u64,
 }
@@ -69,16 +87,14 @@ impl TextInputState {
     }
 
     pub fn set_multiline(&mut self, multiline: bool) {
+        if self.multiline != multiline {
+            self.composing = None;
+        }
         self.multiline = multiline;
         if !self.multiline {
             self.text = filter_text_input(&self.text, false);
         }
         self.normalize_selection();
-        self.composing = self
-            .composing
-            .take()
-            .map(|text| filter_text_input(&text, self.multiline))
-            .filter(|text| !text.is_empty());
     }
 
     pub fn caret(&self) -> usize {
@@ -86,6 +102,7 @@ impl TextInputState {
     }
 
     pub fn set_caret(&mut self, caret: usize) {
+        self.composing = None;
         self.caret = clamp_to_char_boundary(&self.text, caret);
         self.selection_anchor = None;
     }
@@ -96,18 +113,141 @@ impl TextInputState {
     }
 
     pub fn set_selection(&mut self, anchor: usize, caret: usize) {
+        self.composing = None;
         self.selection_anchor = Some(clamp_to_char_boundary(&self.text, anchor));
         self.caret = clamp_to_char_boundary(&self.text, caret);
     }
 
     pub fn composing(&self) -> Option<&str> {
-        self.composing.as_deref()
+        self.composing
+            .as_ref()
+            .map(|composition| composition.text.as_str())
     }
 
     pub fn set_composing(&mut self, composing: Option<String>) {
-        self.composing = composing
-            .map(|text| filter_text_input(&text, self.multiline))
-            .filter(|text| !text.is_empty());
+        match composing {
+            Some(text) => {
+                self.apply_composition(&TextCompositionEvent::Preedit {
+                    selection: Some(text.len()..text.len()),
+                    text,
+                    replacement: None,
+                });
+            }
+            None => self.composing = None,
+        }
+    }
+
+    pub fn composition(&self) -> Option<&TextInputComposition> {
+        self.composing.as_ref()
+    }
+
+    /// Text for rendering and surrounding-text queries, including the draft.
+    pub fn display_text(&self) -> String {
+        let mut text = self.text.clone();
+        if let Some(composition) = &self.composing {
+            text.replace_range(composition.replacement.clone(), &composition.text);
+        }
+        text
+    }
+
+    pub fn display_selection(&self) -> Option<Range<usize>> {
+        if let Some(composition) = &self.composing {
+            return composition.selection.as_ref().map(|selection| {
+                (composition.replacement.start + selection.start)
+                    ..(composition.replacement.start + selection.end)
+            });
+        }
+        Some(self.selection_anchor().unwrap_or(self.caret())..self.caret())
+    }
+
+    pub fn marked_range(&self) -> Option<Range<usize>> {
+        self.composing.as_ref().map(|composition| {
+            composition.replacement.start..(composition.replacement.start + composition.text.len())
+        })
+    }
+
+    pub fn text_input_snapshot(&self, cursor_rect: UiRect) -> TextInputSnapshot {
+        let mut snapshot = TextInputSnapshot::new(
+            self.display_text(),
+            self.display_selection().unwrap_or_else(|| {
+                let start = self
+                    .composing
+                    .as_ref()
+                    .map_or(self.caret(), |composition| composition.replacement.start);
+                start..start
+            }),
+            cursor_rect,
+        );
+        snapshot.composition = self.marked_range();
+        snapshot.multiline = self.multiline;
+        snapshot
+    }
+
+    pub fn apply_composition(&mut self, event: &TextCompositionEvent) -> TextInputOutcome {
+        self.apply_composition_for_target(event, TransactionTarget::none())
+    }
+
+    fn apply_composition_for_target(
+        &mut self,
+        event: &TextCompositionEvent,
+        target: TransactionTarget,
+    ) -> TextInputOutcome {
+        use crate::core::text_input::{clamp_range, ordered_range};
+        let mut before = None;
+        let mut phase = EditPhase::Preview;
+        match event {
+            TextCompositionEvent::Preedit {
+                text,
+                selection,
+                replacement,
+            } => {
+                let replacement = replacement
+                    .clone()
+                    .or_else(|| {
+                        self.composing
+                            .as_ref()
+                            .map(|composition| composition.replacement.clone())
+                    })
+                    .or_else(|| self.selected_range())
+                    .unwrap_or(self.caret()..self.caret());
+                let filtered = filter_text_input(text, self.multiline);
+                // Filtering can shift offsets (for example CRLF in a single-line
+                // field); transform each prefix before clamping to UTF-8 boundaries.
+                let selection = selection.as_ref().map(|range| {
+                    let range = clamp_range(text, range.clone());
+                    filter_text_input(&text[..range.start], self.multiline).len()
+                        ..filter_text_input(&text[..range.end], self.multiline).len()
+                });
+                self.composing = (!filtered.is_empty()).then(|| TextInputComposition {
+                    text: filtered,
+                    selection,
+                    replacement: ordered_range(&self.text, replacement),
+                });
+            }
+            TextCompositionEvent::Commit { text, replacement } => {
+                before = Some(self.text.clone());
+                let replacement = replacement
+                    .clone()
+                    .or_else(|| {
+                        self.composing
+                            .take()
+                            .map(|composition| composition.replacement)
+                    })
+                    .or_else(|| self.selected_range())
+                    .unwrap_or(self.caret()..self.caret());
+                self.composing = None;
+                let replacement = ordered_range(&self.text, replacement);
+                let text = filter_text_input(text, self.multiline);
+                self.caret = replacement.start + text.len();
+                self.text.replace_range(replacement, &text);
+                self.selection_anchor = None;
+                phase = EditPhase::UpdateEdit;
+            }
+            TextCompositionEvent::Cancel => self.composing = None,
+        }
+        let changed = before.as_ref().is_some_and(|before| before != &self.text);
+        let transaction = before.and_then(|before| self.record_text_history(before, target));
+        TextInputOutcome::new(phase, changed, None).with_transaction(transaction)
     }
 
     pub fn history(&self) -> &TextEditHistory {
@@ -161,14 +301,46 @@ impl TextInputState {
         metrics: TextInputLayoutMetrics,
         point: UiPoint,
     ) -> TextInputPosition {
-        text_position_at(
-            &self.text,
-            text_input_byte_index_at_point(&self.text, self.multiline, metrics, point),
-        )
+        text_position_at(&self.text, self.byte_index_at_point(metrics, point))
     }
 
+    /// Hit-test displayed text and return a committed-text byte offset. During
+    /// composition, points inside the draft map to the replacement start;
+    /// points after it map back to the unchanged suffix. This does not cancel
+    /// composition; `move_caret_to_point` applies the resulting selection.
     pub fn byte_index_at_point(&self, metrics: TextInputLayoutMetrics, point: UiPoint) -> usize {
-        text_input_byte_index_at_point(&self.text, self.multiline, metrics, point)
+        self.committed_pointer_index(|display| {
+            text_input_byte_index_at_point(display, self.multiline, metrics, point)
+        })
+    }
+
+    // Pointer geometry belongs to the displayed draft. Cancellation restores
+    // the original replacement, so project suffix offsets back into that text.
+    // A point inside the discarded draft has no committed counterpart.
+    fn committed_pointer_index(&self, hit_test: impl FnOnce(&str) -> usize) -> usize {
+        let Some(composition) = &self.composing else {
+            return hit_test(&self.text);
+        };
+        let index = hit_test(&self.display_text());
+        let draft_end = composition.replacement.start + composition.text.len();
+        let index = if index <= composition.replacement.start {
+            index
+        } else if index >= draft_end {
+            composition.replacement.end + (index - draft_end)
+        } else {
+            composition.replacement.start
+        };
+        // IME replacement ranges may start/end inside a grapheme even though
+        // pointer selection must stay at whole-grapheme boundaries.
+        grapheme_boundary_at_or_before(&self.text, index)
+    }
+
+    fn move_pointer_caret(&mut self, index: usize, selecting: bool) {
+        self.composing = None;
+        self.normalize_selection();
+        let anchor = self.selection_anchor.unwrap_or(self.caret);
+        self.caret = index;
+        self.selection_anchor = selecting.then_some(anchor);
     }
 
     pub fn move_caret_to_point(
@@ -177,10 +349,8 @@ impl TextInputState {
         point: UiPoint,
         selecting: bool,
     ) {
-        self.normalize_selection();
-        let anchor = self.selection_anchor.unwrap_or(self.caret);
-        self.caret = self.byte_index_at_point(metrics, point);
-        self.selection_anchor = selecting.then_some(anchor);
+        let index = self.byte_index_at_point(metrics, point);
+        self.move_pointer_caret(index, selecting);
     }
 
     pub fn selection_rects(&self, metrics: TextInputLayoutMetrics) -> Vec<TextInputSelectionRect> {
@@ -197,9 +367,13 @@ impl TextInputState {
     }
 
     pub fn ime_session(&self, context: TextInputPlatformContext) -> TextImeSession {
-        TextImeSession::new(context.input, context.cursor_rect)
-            .surrounding_text(self.text.clone(), self.platform_selection_range())
-            .multiline(self.multiline)
+        let mut session = TextImeSession::new(context.input, context.cursor_rect)
+            .surrounding_text(self.display_text(), self.platform_selection_range())
+            .multiline(self.multiline);
+        session.composition = self
+            .marked_range()
+            .map(|range| TextRange::new(range.start, range.end));
+        session
     }
 
     pub fn activate_ime_request(&self, context: TextInputPlatformContext) -> TextImeRequest {
@@ -258,36 +432,47 @@ impl TextInputState {
             }
             return TextInputOutcome::new(EditPhase::Preview, false, None);
         }
-        let before = self.text.clone();
+        let composition = match response {
+            TextImeResponse::Commit { text, .. } => Some(TextCompositionEvent::Commit {
+                text: text.clone(),
+                replacement: None,
+            }),
+            TextImeResponse::Preedit {
+                text, selection, ..
+            } => Some(TextCompositionEvent::Preedit {
+                text: text.clone(),
+                selection: selection.map(|range| range.start..range.end),
+                replacement: None,
+            }),
+            TextImeResponse::Deactivated { .. } => Some(TextCompositionEvent::Cancel),
+            _ => None,
+        };
+        if let Some(event) = composition {
+            return self.apply_composition_for_target(&event, target);
+        }
+        let mut before = None;
         let mut phase = EditPhase::Preview;
         match response {
-            TextImeResponse::Commit { text, .. } => {
-                self.composing = None;
-                self.insert_text(text);
-                phase = EditPhase::UpdateEdit;
-            }
-            TextImeResponse::Preedit { text, .. } => {
-                self.composing = (!text.is_empty()).then_some(text.clone());
-            }
             TextImeResponse::DeleteSurrounding {
                 before_chars,
                 after_chars,
                 ..
             } => {
+                before = Some(self.text.clone());
                 if self.delete_surrounding_chars(*before_chars, *after_chars) {
                     phase = EditPhase::UpdateEdit;
                 }
             }
-            TextImeResponse::Deactivated { .. } => {
-                self.composing = None;
-            }
             TextImeResponse::Activated { .. }
+            | TextImeResponse::Commit { .. }
+            | TextImeResponse::Preedit { .. }
+            | TextImeResponse::Deactivated { .. }
             | TextImeResponse::Unsupported
             | TextImeResponse::Error(_) => {}
         }
-        let changed = before != self.text;
+        let changed = before.as_ref().is_some_and(|before| before != &self.text);
         let transaction = (phase == EditPhase::UpdateEdit)
-            .then(|| self.record_text_history(before, target))
+            .then(|| before.and_then(|before| self.record_text_history(before, target)))
             .flatten();
         TextInputOutcome::new(phase, changed, None).with_transaction(transaction)
     }
@@ -337,11 +522,13 @@ impl TextInputState {
     }
 
     pub fn select_all(&mut self) {
+        self.composing = None;
         self.selection_anchor = Some(0);
         self.caret = self.text.len();
     }
 
     pub fn clear_selection(&mut self) {
+        self.composing = None;
         self.selection_anchor = None;
     }
 
@@ -377,12 +564,13 @@ impl TextInputState {
     ) -> TextInputOutcome {
         let before = self.text.clone();
         self.paste_text(text);
-        let transaction = self.record_text_history(before.clone(), target);
-        TextInputOutcome::new(EditPhase::UpdateEdit, before != self.text, None)
-            .with_transaction(transaction)
+        let changed = before != self.text;
+        let transaction = self.record_text_history(before, target);
+        TextInputOutcome::new(EditPhase::UpdateEdit, changed, None).with_transaction(transaction)
     }
 
     pub fn replace_selection(&mut self, text: &str) {
+        self.composing = None;
         self.normalize_selection();
         if let Some(range) = self.selected_range() {
             self.text.replace_range(range.clone(), text);
@@ -395,7 +583,9 @@ impl TextInputState {
         self.selection_anchor = None;
     }
 
+    /// Deletes the selection, or the preceding Unicode code point.
     pub fn backspace(&mut self) -> bool {
+        self.composing = None;
         self.normalize_selection();
         if self.selected_range().is_some() {
             self.replace_selection("");
@@ -410,7 +600,10 @@ impl TextInputState {
         true
     }
 
+    /// Deletes the selected bytes, or the containing extended grapheme cluster
+    /// when there is no selection.
     pub fn delete(&mut self) -> bool {
+        self.composing = None;
         self.normalize_selection();
         if self.selected_range().is_some() {
             self.replace_selection("");
@@ -419,21 +612,36 @@ impl TextInputState {
         if self.caret >= self.text.len() {
             return false;
         }
-        let next = next_char_boundary(&self.text, self.caret);
-        self.text.replace_range(self.caret..next, "");
+        let start = grapheme_boundary_at_or_before(&self.text, self.caret);
+        let next = next_grapheme_boundary(&self.text, self.caret);
+        self.text.replace_range(start..next, "");
+        self.caret = start;
         true
     }
 
+    /// Moves the active caret, extending the selection when `selecting` is true.
+    /// Without extension, left/right movement collapses a nonempty selection to
+    /// its start/end before subsequent movements step through extended grapheme
+    /// clusters. Explicit selection and IME offsets remain UTF-8 byte offsets.
+    /// Collapsing a partial-cluster selection snaps outward to a cluster edge.
     pub fn move_caret(&mut self, movement: CaretMovement, selecting: bool) {
+        self.composing = None;
         self.normalize_selection();
         let anchor = self.selection_anchor.unwrap_or(self.caret);
+        let selection = self.selected_range().filter(|_| !selecting);
         self.caret = match movement {
             CaretMovement::Start => 0,
             CaretMovement::End => self.text.len(),
             CaretMovement::LineStart => line_range_at(&self.text, self.caret).start,
             CaretMovement::LineEnd => line_range_at(&self.text, self.caret).end,
-            CaretMovement::Left => previous_char_boundary(&self.text, self.caret),
-            CaretMovement::Right => next_char_boundary(&self.text, self.caret),
+            CaretMovement::Left => selection.map_or_else(
+                || previous_grapheme_boundary(&self.text, self.caret),
+                |range| grapheme_boundary_at_or_before(&self.text, range.start),
+            ),
+            CaretMovement::Right => selection.map_or_else(
+                || next_grapheme_boundary(&self.text, self.caret),
+                |range| grapheme_boundary_at_or_after(&self.text, range.end),
+            ),
             CaretMovement::Up => move_caret_vertically(&self.text, self.caret, -1),
             CaretMovement::Down => move_caret_vertically(&self.text, self.caret, 1),
         };
@@ -451,12 +659,27 @@ impl TextInputState {
         options: &TextInputOptions,
     ) -> TextInputOutcome {
         let policy = options.interaction_policy();
+        if matches!(
+            edit.event,
+            UiInputEvent::Composition {
+                event: TextCompositionEvent::Cancel,
+                ..
+            }
+        ) {
+            return self.apply_composition(&TextCompositionEvent::Cancel);
+        }
         if !policy.enabled {
             return TextInputOutcome::new(EditPhase::Preview, false, None);
         }
 
-        if let Some(point) = edit.local_position {
+        if let Some(point) = edit
+            .geometry
+            .as_ref()
+            .map(|geometry| geometry.point)
+            .or(edit.local_position)
+        {
             if !policy.can_move_caret() {
+                self.composing = None;
                 if !policy.selectable {
                     self.clear_selection();
                 }
@@ -465,28 +688,41 @@ impl TextInputState {
             let target_rect = edit
                 .target_rect
                 .unwrap_or_else(|| UiRect::new(0.0, 0.0, 180.0, 30.0));
-            let local_rect = UiRect::new(
-                0.0,
-                0.0,
-                target_rect.width.max(1.0),
-                target_rect.height.max(1.0),
-            );
+            let local_rect = edit
+                .geometry
+                .as_ref()
+                .map(|geometry| geometry.bounds)
+                .unwrap_or_else(|| {
+                    UiRect::new(
+                        0.0,
+                        0.0,
+                        target_rect.width.max(1.0),
+                        target_rect.height.max(1.0),
+                    )
+                });
+            let style = edit
+                .geometry
+                .as_ref()
+                .and_then(|geometry| geometry.text_style.as_ref())
+                .unwrap_or(&options.text_style);
             let metrics = TextInputLayoutMetrics::from_style(
-                text_input_content_rect(local_rect, &options.text_style),
-                &options.text_style,
+                text_input_content_rect(local_rect, style),
+                style,
             );
-            self.normalize_selection();
-            let anchor = self.selection_anchor.unwrap_or(self.caret);
-            let measured = TextInputMeasuredLayout::measure(&self.text, &options.text_style);
-            self.caret = text_input_byte_index_at_point_with_layout(
-                &self.text,
-                self.multiline,
-                metrics,
-                point,
-                measured.as_ref(),
-            );
-            self.selection_anchor = (edit.selecting && policy.can_select()).then_some(anchor);
-            return TextInputOutcome::new(edit.phase.edit_phase(), false, None);
+            let index = self.committed_pointer_index(|display| {
+                text_input_byte_index_at_display_point(
+                    display,
+                    self.multiline,
+                    metrics,
+                    point,
+                    style,
+                    edit.geometry.as_ref().and_then(|geometry| geometry.mask),
+                )
+            });
+            self.move_pointer_caret(index, edit.selecting && policy.can_select());
+            // Pointer phases describe the selection gesture, not completion
+            // of the text edit. Match the direct input helper's semantics.
+            return TextInputOutcome::new(EditPhase::Preview, false, None);
         }
 
         self.handle_event_with_policy(&edit.event, policy)
@@ -518,18 +754,49 @@ impl TextInputState {
         target: TransactionTarget,
         policy: TextInputInteractionPolicy,
     ) -> TextInputOutcome {
+        if matches!(
+            event,
+            UiInputEvent::Composition {
+                event: TextCompositionEvent::Cancel,
+                ..
+            }
+        ) {
+            return self.apply_composition_for_target(&TextCompositionEvent::Cancel, target);
+        }
         if !policy.enabled {
             return TextInputOutcome::new(EditPhase::Preview, false, None);
         }
         if !policy.selectable {
             self.clear_selection();
         }
-        let before = self.text.clone();
+        if let UiInputEvent::Composition { event, .. } = event {
+            return if policy.can_edit() {
+                self.apply_composition_for_target(event, target)
+            } else {
+                TextInputOutcome::new(EditPhase::Preview, false, None)
+            };
+        }
+        if self.composing.is_some() && matches!(event, UiInputEvent::Key { .. }) {
+            if matches!(
+                event,
+                UiInputEvent::Key {
+                    key: KeyCode::Escape,
+                    ..
+                }
+            ) {
+                self.composing = None;
+            }
+            return TextInputOutcome::new(EditPhase::Preview, false, None);
+        }
+        // Text snapshots belong to edits. Navigation, clipboard reads, and
+        // unhandled keys must not copy the entire document for change detection.
+        let mut before = None;
         let mut phase = EditPhase::Preview;
         let mut clipboard = None;
         let mut history_apply = None;
         match event {
-            UiInputEvent::TextInput(text) if policy.can_edit() => {
+            UiInputEvent::TextInput(text) if policy.can_edit() && self.composing.is_none() => {
+                before = Some(self.text.clone());
                 self.insert_text(text);
                 phase = EditPhase::UpdateEdit;
             }
@@ -545,6 +812,7 @@ impl TextInputState {
                         }
                         'x' if policy.can_edit() => {
                             if policy.can_copy() {
+                                before = Some(self.text.clone());
                                 clipboard = self.cut_selection().map(TextInputClipboardAction::Cut);
                             }
                             if clipboard.is_some() {
@@ -555,18 +823,21 @@ impl TextInputState {
                             clipboard = Some(TextInputClipboardAction::Paste);
                         }
                         'y' if policy.can_edit() => {
+                            before = Some(self.text.clone());
                             history_apply = self.redo_text_edit();
                             if history_apply.is_some() {
                                 phase = EditPhase::UpdateEdit;
                             }
                         }
                         'z' if modifiers.shift && policy.can_edit() => {
+                            before = Some(self.text.clone());
                             history_apply = self.redo_text_edit();
                             if history_apply.is_some() {
                                 phase = EditPhase::UpdateEdit;
                             }
                         }
                         'z' if policy.can_edit() => {
+                            before = Some(self.text.clone());
                             history_apply = self.undo_text_edit();
                             if history_apply.is_some() {
                                 phase = EditPhase::UpdateEdit;
@@ -576,11 +847,13 @@ impl TextInputState {
                     }
                 }
                 KeyCode::Backspace if policy.can_edit() => {
+                    before = Some(self.text.clone());
                     if self.backspace() {
                         phase = EditPhase::UpdateEdit;
                     }
                 }
                 KeyCode::Delete if policy.can_edit() => {
+                    before = Some(self.text.clone());
                     if self.delete() {
                         phase = EditPhase::UpdateEdit;
                     }
@@ -614,6 +887,7 @@ impl TextInputState {
                     self.move_caret(movement, modifiers.shift && policy.can_select());
                 }
                 KeyCode::Enter if self.multiline && policy.can_edit() => {
+                    before = Some(self.text.clone());
                     self.insert_text("\n");
                     phase = EditPhase::UpdateEdit;
                 }
@@ -623,10 +897,11 @@ impl TextInputState {
             },
             _ => {}
         }
+        let changed = before.as_ref().is_some_and(|before| before != &self.text);
         let transaction = (phase == EditPhase::UpdateEdit && history_apply.is_none())
-            .then(|| self.record_text_history(before.clone(), target))
+            .then(|| before.and_then(|before| self.record_text_history(before, target)))
             .flatten();
-        TextInputOutcome::new(phase, before != self.text, clipboard)
+        TextInputOutcome::new(phase, changed, clipboard)
             .with_transaction(transaction)
             .with_history_apply(history_apply)
     }
@@ -644,7 +919,7 @@ impl TextInputState {
     }
 
     fn platform_selection_range(&self) -> TextRange {
-        self.selected_range()
+        self.display_selection()
             .map(|range| TextRange::new(range.start, range.end))
             .unwrap_or_else(|| TextRange::caret(clamp_to_char_boundary(&self.text, self.caret)))
     }
@@ -722,6 +997,7 @@ pub enum CaretMovement {
 pub struct TextInputPosition {
     pub byte_index: usize,
     pub line: usize,
+    /// Zero-based count of extended grapheme clusters on the line.
     pub column: usize,
 }
 
@@ -983,6 +1259,7 @@ pub struct TextInputRenderPlan {
     pub selection_rects: Vec<TextInputSelectionRect>,
     pub caret_paint: Option<PaintRect>,
     pub selection_paint: Vec<PaintRect>,
+    pub composition_paint: Vec<PaintRect>,
 }
 
 impl TextInputRenderPlan {
@@ -993,19 +1270,61 @@ impl TextInputRenderPlan {
         paint: TextInputPaintOptions,
     ) -> Self {
         let text_style = text_input_render_text_style(text_style);
-        let measured = TextInputMeasuredLayout::measure(&state.text, &text_style);
-        let text = PaintText::new(state.text.clone(), metrics.text_rect, text_style)
+        let display = state.display_text();
+        let measured = TextInputMeasuredLayout::measure(&display, &text_style);
+        Self::with_measured_text(
+            state,
+            &display,
+            metrics,
+            text_style,
+            paint,
+            measured.as_ref(),
+        )
+    }
+
+    fn with_measured_text(
+        state: &TextInputState,
+        display: &str,
+        metrics: TextInputLayoutMetrics,
+        text_style: TextStyle,
+        paint: TextInputPaintOptions,
+        measured: Option<&TextInputMeasuredLayout>,
+    ) -> Self {
+        let selection = state.display_selection();
+        let text = PaintText::new(display, metrics.text_rect, text_style)
             .multiline(state.multiline)
             .overflow(TextOverflow::Clip);
-        let caret = paint.show_caret.then(|| {
-            text_input_caret_rect_with_layout(&state.text, state.caret, metrics, measured.as_ref())
-        });
+        let caret = selection
+            .as_ref()
+            .filter(|_| paint.show_caret)
+            .map(|selection| {
+                text_input_caret_rect_with_layout(display, selection.end, metrics, measured)
+            });
         let selection_rects = text_input_selection_rects_with_layout(
-            &state.text,
-            state.selected_range(),
+            display,
+            selection.map(|selection| crate::core::text_input::ordered_range(display, selection)),
             metrics,
-            measured.as_ref(),
+            measured,
         );
+        let composition_paint = text_input_selection_rects_with_layout(
+            display,
+            state.marked_range(),
+            metrics,
+            measured,
+        )
+        .into_iter()
+        .map(|selection| {
+            PaintRect::solid(
+                UiRect::new(
+                    selection.rect.x,
+                    selection.rect.bottom() - 1.0,
+                    selection.rect.width.max(1.0),
+                    1.0,
+                ),
+                paint.caret_fill,
+            )
+        })
+        .collect();
         let selection_paint = selection_rects
             .iter()
             .map(|selection| {
@@ -1020,6 +1339,7 @@ impl TextInputRenderPlan {
             selection_rects,
             caret_paint,
             selection_paint,
+            composition_paint,
         }
     }
 
@@ -1028,6 +1348,12 @@ impl TextInputRenderPlan {
             .iter()
             .cloned()
             .map(ScenePrimitive::Rect)
+            .chain(
+                self.composition_paint
+                    .iter()
+                    .cloned()
+                    .map(ScenePrimitive::Rect),
+            )
             .chain(self.caret_paint.iter().cloned().map(ScenePrimitive::Rect))
             .collect()
     }
@@ -1038,6 +1364,12 @@ impl TextInputRenderPlan {
             .cloned()
             .map(ScenePrimitive::Rect)
             .chain(std::iter::once(ScenePrimitive::Text(self.text.clone())))
+            .chain(
+                self.composition_paint
+                    .iter()
+                    .cloned()
+                    .map(ScenePrimitive::Rect),
+            )
             .chain(self.caret_paint.iter().cloned().map(ScenePrimitive::Rect))
             .collect()
     }
@@ -1217,7 +1549,8 @@ impl Default for TextInputOptions {
                     width: length(180.0),
                     height: length(30.0),
                 },
-                padding: taffy::prelude::Rect::length(6.0_f32),
+                // The text scene supplies its own content inset.
+                padding: taffy::prelude::Rect::length(0.0_f32),
                 ..Default::default()
             }),
             visual: UiVisual::panel(
@@ -1322,9 +1655,7 @@ pub fn singleline_text_input(
     state: &TextInputState,
     options: TextInputOptions,
 ) -> UiNodeId {
-    let mut state = state.clone();
-    state.multiline = false;
-    text_input(document, parent, name, &state, options)
+    text_input_with_mode(document, parent, name, state, options, false)
 }
 
 pub fn multiline_text_input(
@@ -1334,13 +1665,11 @@ pub fn multiline_text_input(
     state: &TextInputState,
     options: TextInputOptions,
 ) -> UiNodeId {
-    let mut state = state.clone();
-    state.multiline = true;
     let mut options = options;
     if text_input_dimension_is_default(options.layout.as_taffy_style().size.height, 30.0) {
         options.layout = options.layout.with_height(120.0);
     }
-    text_input(document, parent, name, &state, options)
+    text_input_with_mode(document, parent, name, state, options, true)
 }
 
 pub fn text_area(
@@ -1413,8 +1742,21 @@ pub fn password_input(
     if options.accessibility_label.is_none() {
         options.accessibility_label = Some("Password".to_string());
     }
-    let masked = password_display_state(state);
-    singleline_text_input(document, parent, name, &masked, options)
+    let masked = masked_display_state(state, '*');
+    let root = singleline_text_input(document, parent, name, &masked, options);
+    if let Some(mut content) = document.node(root).text_input_content().cloned() {
+        content.mask = Some('*');
+        document
+            .node_mut(root)
+            .set_text_input_content(Some(content));
+    }
+    if let Some(snapshot) = document.node(root).text_input() {
+        let mut snapshot = state.text_input_snapshot(snapshot.cursor_rect);
+        snapshot.multiline = false;
+        snapshot.sensitive = true;
+        document.node_mut(root).set_text_input(Some(snapshot));
+    }
+    root
 }
 
 pub fn text_input(
@@ -1424,6 +1766,19 @@ pub fn text_input(
     state: &TextInputState,
     options: TextInputOptions,
 ) -> UiNodeId {
+    text_input_with_mode(document, parent, name, state, options, state.multiline)
+}
+
+fn text_input_with_mode(
+    document: &mut UiDocument,
+    parent: UiNodeId,
+    name: impl Into<String>,
+    state: &TextInputState,
+    options: TextInputOptions,
+    multiline: bool,
+) -> UiNodeId {
+    // Display mode belongs to the widget. Borrow the editing model so building
+    // its current presentation never copies the undo/redo history.
     let name = name.into();
     let mut accessibility = AccessibilityMeta::new(AccessibilityRole::TextBox)
         .label(
@@ -1491,9 +1846,21 @@ pub fn text_input(
             ..Default::default()
         },
     )
+    .with_scroll(if multiline {
+        ScrollAxes::BOTH
+    } else {
+        ScrollAxes::HORIZONTAL
+    })
+    .without_auto_scrollbar()
     .with_input(input_behavior)
     .with_visual(initial_visual)
     .with_accessibility(accessibility);
+    // The editing viewport owns its size. Its contents may exceed that size,
+    // just as in a scroll area, without becoming the field's minimum width.
+    root_node.style.layout.overflow = taffy::geometry::Point {
+        x: taffy::style::Overflow::Scroll,
+        y: taffy::style::Overflow::Hidden,
+    };
     if let Some(shader) = options.shader {
         root_node = root_node.with_shader(shader);
     }
@@ -1519,32 +1886,95 @@ pub fn text_input(
     };
     document.set_node_visual(root, visual);
     let show_caret = focused && options.caret_visible && interaction_policy.can_move_caret();
-    let display_text = if state.text.is_empty() {
+    let composed_text = state.display_text();
+    let display_text = if composed_text.is_empty() {
         options.placeholder
     } else {
-        state.text.clone()
+        composed_text.clone()
     };
-    let style = text_input_render_text_style(if state.text.is_empty() {
+    let style = text_input_render_text_style(if composed_text.is_empty() {
         placeholder_style_for_text_style(options.placeholder_style, options.text_style)
     } else {
         options.text_style
     });
+    // Intrinsic sizing, platform caret geometry, and scene painting share the
+    // same shaped text. A placeholder is separate from the empty editing model.
+    let measured = TextInputMeasuredLayout::measure(&composed_text, &style);
+    let has_placeholder = composed_text.is_empty() && !display_text.is_empty();
+    let placeholder_measured = if has_placeholder {
+        TextInputMeasuredLayout::measure(&display_text, &style)
+    } else {
+        None
+    };
+    let display_measured = if has_placeholder {
+        placeholder_measured.as_ref()
+    } else {
+        measured.as_ref()
+    };
     let text_metrics = TextInputLayoutMetrics::from_style(
-        text_input_scene_text_rect(state, &display_text, &style),
+        text_input_scene_text_rect(state, &display_text, &style, multiline, display_measured),
         &style,
     );
     let paint = TextInputPaintOptions {
-        show_caret,
+        show_caret: show_caret || interaction_policy.can_edit(),
         ..TextInputPaintOptions::default()
     };
-    let primitives = text_input_scene_primitives(
+    let mut plan = TextInputRenderPlan::with_measured_text(
         state,
-        display_text,
-        style,
+        &composed_text,
         text_metrics,
+        style,
         paint,
-        focused && interaction_policy.can_select(),
+        measured.as_ref(),
     );
+    if interaction_policy.can_edit() {
+        let cursor_rect = plan.caret.map(|caret| caret.rect).unwrap_or_else(|| {
+            let position = state
+                .marked_range()
+                .map_or(state.caret(), |range| range.start);
+            text_input_caret_rect_with_layout(
+                &composed_text,
+                position,
+                text_metrics,
+                measured.as_ref(),
+            )
+            .rect
+        });
+        let mut snapshot = state.text_input_snapshot(cursor_rect);
+        snapshot.multiline = multiline;
+        document.node_mut(root).set_text_input(Some(snapshot));
+    }
+    plan.text.text = display_text;
+    plan.text.multiline = multiline;
+    if !show_caret {
+        plan.caret_paint = None;
+    }
+    if !focused || !interaction_policy.can_select() {
+        plan.selection_paint.clear();
+    }
+    let primitives = plan.scene_primitives();
+    let caret = plan.caret.map(|caret| caret.rect);
+    let content_width =
+        plan.text.rect.right().max(caret.map_or(0.0, UiRect::right)) + TEXT_INPUT_CONTENT_INSET_X;
+    let content_height = plan
+        .text
+        .rect
+        .bottom()
+        .max(caret.map_or(0.0, UiRect::bottom))
+        + TEXT_INPUT_CONTENT_INSET_Y;
+    let chrome = inline_intrinsic_chrome_size(&options.layout.style, 1);
+    let minimum_height = chrome.height + TEXT_INPUT_CONTENT_INSET_Y + plan.text.style.line_height;
+    let root_layout = &mut document.node_mut(root).style.layout;
+    if root_layout.min_size.height == Dimension::auto()
+        || dimension_points(root_layout.min_size.height).is_some()
+    {
+        root_layout.min_size.height = length(
+            dimension_points(root_layout.min_size.height)
+                .unwrap_or(0.0)
+                .max(minimum_height)
+                .ceil(),
+        );
+    }
     let text_scene = document.add_child(
         root,
         UiNode::scene(
@@ -1552,34 +1982,65 @@ pub fn text_input(
             primitives,
             LayoutStyle::from_taffy_style(Style {
                 size: TaffySize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+                    width: length(content_width),
+                    height: if multiline {
+                        length(content_height)
+                    } else {
+                        Dimension::percent(1.0)
+                    },
                 },
+                flex_shrink: 0.0,
                 ..Default::default()
             }),
         ),
     );
-    publish_inline_intrinsic_size(
-        document,
-        root,
-        vec![text_scene],
-        inline_intrinsic_base_size(&options.layout.style, &[], 1),
-    );
+    document
+        .node_mut(root)
+        .set_text_input_content(Some(crate::TextInputContent {
+            node: text_scene,
+            text_style: plan.text.style.clone(),
+            mask: None,
+        }));
+    if let Some(caret) = caret.filter(|_| focused) {
+        // A small reveal margin keeps subpixel carets fully visible even when
+        // the layout engine rounds the invisible reveal target to pixels.
+        let target = document.add_child(
+            text_scene,
+            UiNode::container(
+                format!("{name}.caret"),
+                crate::layout::absolute(
+                    (caret.x - 2.0).max(0.0),
+                    caret.y,
+                    caret.width + 4.0,
+                    caret.height,
+                ),
+            ),
+        );
+        document.set_scroll_reveal_target(root, Some(target));
+    }
     root
 }
 
-fn password_display_state(state: &TextInputState) -> TextInputState {
-    let mut masked = state.clone();
-    masked.text = "*".repeat(state.text.chars().count());
-    masked.caret = char_count_before_byte(&state.text, state.caret);
+fn masked_display_state(state: &TextInputState, mask: char) -> TextInputState {
+    let mask_text = |text: &str| mask.to_string().repeat(text.chars().count());
+    let mask_offset = |text: &str, byte| char_count_before_byte(text, byte) * mask.len_utf8();
+    let mut masked = TextInputState::new(mask_text(&state.text));
+    masked.caret = mask_offset(&state.text, state.caret);
     masked.selection_anchor = state
         .selection_anchor
-        .map(|anchor| char_count_before_byte(&state.text, anchor));
-    masked.multiline = false;
+        .map(|anchor| mask_offset(&state.text, anchor));
     masked.composing = state
         .composing
         .as_ref()
-        .map(|text| "*".repeat(text.chars().count()));
+        .map(|composition| TextInputComposition {
+            text: mask_text(&composition.text),
+            selection: composition.selection.as_ref().map(|range| {
+                mask_offset(&composition.text, range.start)
+                    ..mask_offset(&composition.text, range.end)
+            }),
+            replacement: mask_offset(&state.text, composition.replacement.start)
+                ..mask_offset(&state.text, composition.replacement.end),
+        });
     masked
 }
 
@@ -1601,8 +2062,10 @@ fn text_input_scene_text_rect(
     state: &TextInputState,
     display_text: &str,
     style: &TextStyle,
+    multiline: bool,
+    measured: Option<&TextInputMeasuredLayout>,
 ) -> UiRect {
-    let line_count = if state.multiline {
+    let line_count = if multiline {
         display_text
             .chars()
             .filter(|character| *character == '\n')
@@ -1619,7 +2082,7 @@ fn text_input_scene_text_rect(
         .max(state.caret_position().column);
     let char_width =
         sanitize_positive_dimension(style.font_size * TEXT_INPUT_APPROX_CHAR_WIDTH_FACTOR, 1.0);
-    let estimated_text_width = TextInputMeasuredLayout::measure(display_text, style)
+    let estimated_text_width = measured
         .map(|layout| layout.max_width())
         .unwrap_or_else(|| {
             display_text
@@ -1667,71 +2130,19 @@ fn text_input_content_rect(rect: UiRect, style: &TextStyle) -> UiRect {
     )
 }
 
-fn text_input_scene_primitives(
-    state: &TextInputState,
-    display_text: String,
-    style: TextStyle,
-    metrics: TextInputLayoutMetrics,
-    paint: TextInputPaintOptions,
-    show_selection: bool,
-) -> Vec<ScenePrimitive> {
-    let measured = TextInputMeasuredLayout::measure(state.text(), &style);
-    let text = PaintText::new(display_text, metrics.text_rect, style)
-        .multiline(state.multiline)
-        .overflow(TextOverflow::Clip);
-    let selection_rects = if show_selection {
-        text_input_selection_rects_with_layout(
-            state.text(),
-            state.selected_range(),
-            metrics,
-            measured.as_ref(),
-        )
-    } else {
-        Vec::new()
-    };
-    let mut primitives = selection_rects
-        .into_iter()
-        .map(|selection| {
-            ScenePrimitive::Rect(
-                PaintRect::solid(selection.rect, paint.selection_fill)
-                    .corner_radii(CornerRadii::uniform(paint.selection_corner_radius as f32)),
-            )
-        })
-        .collect::<Vec<_>>();
-    primitives.push(ScenePrimitive::Text(text));
-    if paint.show_caret {
-        primitives.push(ScenePrimitive::Rect(PaintRect::solid(
-            text_input_caret_rect_with_layout(
-                state.text(),
-                state.caret,
-                metrics,
-                measured.as_ref(),
-            )
-            .rect,
-            paint.caret_fill,
-        )));
-    }
-    primitives
-}
-
 fn text_input_layout_metrics_from_document(
     document: &UiDocument,
     node: UiNodeId,
-    options: &TextInputOptions,
+    style: &TextStyle,
 ) -> Option<TextInputLayoutMetrics> {
-    let node = document.nodes.get(node.0)?;
-    let rect = node
-        .children
-        .first()
-        .and_then(|child| document.nodes.get(child.0))
-        .map(|child| child.layout.rect)
-        .unwrap_or(node.layout.rect);
+    document.nodes.get(node.0)?;
+    let rect = document.text_input_content_bounds(node);
     if !rect_is_finite(rect) || rect.width <= 0.0 || rect.height <= 0.0 {
         return None;
     }
     Some(TextInputLayoutMetrics::from_style(
-        text_input_content_rect(rect, &options.text_style),
-        &options.text_style,
+        text_input_content_rect(rect, style),
+        style,
     ))
 }
 
@@ -1807,8 +2218,22 @@ pub fn handle_text_input_event_with_metrics_and_options(
     layout_metrics: Option<TextInputLayoutMetrics>,
 ) -> TextInputEventOutcome {
     let policy = options.interaction_policy();
+    let pointer_changed = match &event {
+        UiInputEvent::PointerMove(point) | UiInputEvent::PointerUp(point) => {
+            document.pointer_position != Some(*point)
+        }
+        _ => true,
+    };
     let was_focused = document.focus.focused == Some(node);
-    let text_event = matches!(event, UiInputEvent::TextInput(_) | UiInputEvent::Key { .. });
+    let was_pressed = document.focus.pressed == Some(node);
+    // A composing field keeps candidate-selection keys. Outside composition,
+    // Tab belongs to document navigation, including when it enters this field.
+    let composition_key =
+        was_focused && state.composing.is_some() && matches!(event, UiInputEvent::Key { .. });
+    let text_event = matches!(
+        event,
+        UiInputEvent::TextInput(_) | UiInputEvent::Key { .. } | UiInputEvent::Composition { .. }
+    ) && (composition_key || event.focus_direction().is_none());
     let input = if text_event {
         UiInputResult {
             hovered: document.focus.hovered,
@@ -1816,6 +2241,7 @@ pub fn handle_text_input_event_with_metrics_and_options(
             pressed: document.focus.pressed,
             clicked: None,
             scrolled: None,
+            scrollbar_target: None,
             consumed: document.focus.focused.is_some(),
             consumed_by: document.focus.focused,
         }
@@ -1823,14 +2249,26 @@ pub fn handle_text_input_event_with_metrics_and_options(
         document.handle_input(event.clone())
     };
     let focused = document.focus.focused == Some(node);
+    if was_focused && !focused {
+        state.composing = None;
+    }
     let mut platform_requests = Vec::new();
     let mut state_changed = false;
     let mut edit = None;
+    let custom_metrics = layout_metrics.is_some();
+    let content = document
+        .nodes()
+        .get(node.0)
+        .and_then(UiNode::text_input_content);
+    let mask = content.and_then(|content| content.mask);
+    let style = content
+        .filter(|_| !custom_metrics)
+        .map(|content| &content.text_style)
+        .unwrap_or(&options.text_style);
     let layout_metrics =
-        layout_metrics.or_else(|| text_input_layout_metrics_from_document(document, node, options));
+        layout_metrics.or_else(|| text_input_layout_metrics_from_document(document, node, style));
 
     if focused && text_event {
-        let before_text = state.text.clone();
         let before_caret = state.caret;
         let before_selection = state.selection_anchor;
         let before_composing = state.composing.clone();
@@ -1842,31 +2280,52 @@ pub fn handle_text_input_event_with_metrics_and_options(
         if let Some(request) = outcome.clipboard_request() {
             platform_requests.push(PlatformRequest::Clipboard(request));
         }
-        state_changed = before_text != state.text
+        state_changed = outcome.changed
             || before_caret != state.caret
             || before_selection != state.selection_anchor
             || before_composing != state.composing;
         edit = Some(outcome);
-    } else if focused && policy.can_move_caret() {
+    } else if focused
+        && policy.can_move_caret()
+        && input.scrollbar_target.is_none()
+        && pointer_changed
+    {
         if let Some((point, selecting)) =
-            text_input_pointer_edit(&event, input.pressed == Some(node) && policy.can_select())
+            text_input_pointer_edit(&event, was_pressed && policy.can_select())
         {
             if let Some(metrics) = layout_metrics {
+                let point = if custom_metrics {
+                    Some(point)
+                } else {
+                    document
+                        .text_input_pointer_geometry(node, point)
+                        .map(|geometry| geometry.point)
+                };
+                let Some(point) = point else {
+                    return TextInputEventOutcome {
+                        input,
+                        edit,
+                        focused,
+                        platform_requests,
+                    };
+                };
                 let before_caret = state.caret;
                 let before_selection = state.selection_anchor;
-                state.normalize_selection();
-                let anchor = state.selection_anchor.unwrap_or(state.caret);
-                let measured = TextInputMeasuredLayout::measure(&state.text, &options.text_style);
-                state.caret = text_input_byte_index_at_point_with_layout(
-                    &state.text,
-                    state.multiline,
-                    metrics,
-                    point,
-                    measured.as_ref(),
-                );
-                state.selection_anchor = selecting.then_some(anchor);
-                state_changed =
-                    before_caret != state.caret || before_selection != state.selection_anchor;
+                let was_composing = state.composing.is_some();
+                let index = state.committed_pointer_index(|display| {
+                    text_input_byte_index_at_display_point(
+                        display,
+                        state.multiline,
+                        metrics,
+                        point,
+                        style,
+                        mask,
+                    )
+                });
+                state.move_pointer_caret(index, selecting);
+                state_changed = was_composing
+                    || before_caret != state.caret
+                    || before_selection != state.selection_anchor;
                 edit = Some(TextInputOutcome::new(EditPhase::Preview, false, None));
             }
         }
@@ -1874,23 +2333,37 @@ pub fn handle_text_input_event_with_metrics_and_options(
 
     let platform_context = platform_context.map(|context| {
         if let Some(metrics) = layout_metrics {
-            let measured = TextInputMeasuredLayout::measure(&state.text, &options.text_style);
-            context.with_caret_rect(text_input_caret_rect_with_layout(
-                &state.text,
-                state.caret,
-                metrics,
-                measured.as_ref(),
-            ))
+            let masked = mask.map(|mask| masked_display_state(state, mask));
+            let displayed = masked.as_ref().unwrap_or(state);
+            let display = displayed.display_text();
+            let caret = displayed
+                .display_selection()
+                .map_or(displayed.caret(), |selection| selection.end);
+            let measured = TextInputMeasuredLayout::measure(&display, style);
+            let mut caret =
+                text_input_caret_rect_with_layout(&display, caret, metrics, measured.as_ref());
+            if !custom_metrics {
+                caret.rect = document.text_input_cursor_rect(node, caret.rect);
+            }
+            context.with_caret_rect(caret)
         } else {
             context
         }
     });
 
+    let ime_session = |context| {
+        let mut session = state.ime_session(context);
+        if let Some(snapshot) = document.nodes().get(node.0).and_then(UiNode::text_input) {
+            session.multiline = snapshot.multiline;
+            session.sensitive = snapshot.sensitive;
+        }
+        session
+    };
     if !was_focused && focused && policy.can_edit() {
         if let Some(context) = platform_context.clone() {
-            platform_requests.push(PlatformRequest::TextIme(
-                state.activate_ime_request(context.clone()),
-            ));
+            platform_requests.push(PlatformRequest::TextIme(TextImeRequest::Activate(
+                ime_session(context.clone()),
+            )));
             platform_requests.push(PlatformRequest::TextIme(
                 TextInputState::show_keyboard_request(context.input),
             ));
@@ -1916,7 +2389,9 @@ pub fn handle_text_input_event_with_metrics_and_options(
                     TextInputState::deactivate_ime_request(context.input),
                 ));
             } else if state_changed {
-                platform_requests.push(PlatformRequest::TextIme(state.update_ime_request(context)));
+                platform_requests.push(PlatformRequest::TextIme(TextImeRequest::Update(
+                    ime_session(context),
+                )));
             }
         }
     }
@@ -2003,7 +2478,9 @@ pub fn push_text_input_outcome_actions<'a>(
 fn text_input_pointer_edit(event: &UiInputEvent, pressed: bool) -> Option<(UiPoint, bool)> {
     match event {
         UiInputEvent::PointerDown(point) => Some((*point, false)),
-        UiInputEvent::PointerMove(point) if pressed => Some((*point, true)),
+        UiInputEvent::PointerMove(point) | UiInputEvent::PointerUp(point) if pressed => {
+            Some((*point, true))
+        }
         _ => None,
     }
 }
@@ -2185,6 +2662,55 @@ fn next_char_boundary(text: &str, index: usize) -> usize {
         .unwrap_or(text.len())
 }
 
+// Keep scalar stepping above for protocol requests that count code points and
+// for backspace, which permits removing a combining component. User navigation
+// and forward deletion use complete extended grapheme clusters (UAX #29).
+// GraphemeCursor examines the neighborhood rather than scanning the whole
+// prefix or allocating a boundary list on every arrow-key event.
+fn previous_grapheme_boundary(text: &str, index: usize) -> usize {
+    GraphemeCursor::new(index, text.len(), true)
+        .prev_boundary(text, 0)
+        .expect("complete text provides all grapheme context")
+        .unwrap_or(0)
+}
+
+fn next_grapheme_boundary(text: &str, index: usize) -> usize {
+    GraphemeCursor::new(index, text.len(), true)
+        .next_boundary(text, 0)
+        .expect("complete text provides all grapheme context")
+        .unwrap_or(text.len())
+}
+
+fn grapheme_boundary_at_or_before(text: &str, index: usize) -> usize {
+    let mut cursor = GraphemeCursor::new(index, text.len(), true);
+    if cursor
+        .is_boundary(text, 0)
+        .expect("complete text provides all grapheme context")
+    {
+        index
+    } else {
+        cursor
+            .prev_boundary(text, 0)
+            .expect("complete text provides all grapheme context")
+            .unwrap_or(0)
+    }
+}
+
+fn grapheme_boundary_at_or_after(text: &str, index: usize) -> usize {
+    let mut cursor = GraphemeCursor::new(index, text.len(), true);
+    if cursor
+        .is_boundary(text, 0)
+        .expect("complete text provides all grapheme context")
+    {
+        index
+    } else {
+        cursor
+            .next_boundary(text, 0)
+            .expect("complete text provides all grapheme context")
+            .unwrap_or(text.len())
+    }
+}
+
 fn text_position_at(text: &str, index: usize) -> TextInputPosition {
     let index = clamp_to_char_boundary(text, index);
     let mut line = 0;
@@ -2198,7 +2724,7 @@ fn text_position_at(text: &str, index: usize) -> TextInputPosition {
             line_start = byte_index + character.len_utf8();
         }
     }
-    let column = text[line_start..index].chars().count();
+    let column = text[line_start..index].graphemes(true).count();
     TextInputPosition {
         byte_index: index,
         line,
@@ -2216,6 +2742,11 @@ fn line_range_at(text: &str, index: usize) -> Range<usize> {
         .find('\n')
         .map(|offset| index + offset)
         .unwrap_or(text.len());
+    let end = if end < text.len() && text[..end].ends_with('\r') {
+        end - 1
+    } else {
+        end
+    };
     start..end
 }
 
@@ -2235,12 +2766,12 @@ fn byte_index_for_line_column(text: &str, line: usize, column: usize) -> usize {
         return text.len();
     }
 
-    text[line_start..]
-        .char_indices()
-        .take_while(|(_, character)| *character != '\n')
+    let line_end = line_range_at(text, line_start).end;
+    text[line_start..line_end]
+        .grapheme_indices(true)
         .nth(column)
         .map(|(offset, _)| line_start + offset)
-        .unwrap_or_else(|| line_range_at(text, line_start).end)
+        .unwrap_or(line_end)
 }
 
 fn move_caret_vertically(text: &str, index: usize, line_delta: isize) -> usize {
@@ -2296,6 +2827,55 @@ fn text_input_byte_index_at_point(
     text_input_byte_index_at_point_with_layout(text, multiline, metrics, point, None)
 }
 
+fn text_input_byte_index_at_display_point(
+    text: &str,
+    multiline: bool,
+    metrics: TextInputLayoutMetrics,
+    point: UiPoint,
+    style: &TextStyle,
+    mask: Option<char>,
+) -> usize {
+    let masked = mask.map(|mask| mask.to_string().repeat(text.chars().count()));
+    let displayed = masked.as_deref().unwrap_or(text);
+    let measured = TextInputMeasuredLayout::measure(displayed, style);
+    let index = text_input_byte_index_at_point_with_layout(
+        displayed,
+        multiline && mask.is_none(),
+        metrics,
+        point,
+        measured.as_ref(),
+    );
+    let Some(mask) = mask else {
+        return index;
+    };
+    let index = text
+        .char_indices()
+        .nth(index / mask.len_utf8())
+        .map_or(text.len(), |(byte, _)| byte);
+    let start = grapheme_boundary_at_or_before(text, index);
+    if start == index {
+        return index;
+    }
+    let end = next_grapheme_boundary(text, index);
+    // Several mask glyphs can represent one grapheme. Pick its nearest outer
+    // edge rather than placing a caret inside an accent or emoji sequence.
+    let x_for_byte = |byte| {
+        text_input_caret_rect_with_layout(
+            displayed,
+            char_count_before_byte(text, byte) * mask.len_utf8(),
+            metrics,
+            measured.as_ref(),
+        )
+        .rect
+        .x
+    };
+    if (point.x - x_for_byte(start)).abs() <= (point.x - x_for_byte(end)).abs() {
+        start
+    } else {
+        end
+    }
+}
+
 fn text_input_byte_index_at_point_with_layout(
     text: &str,
     multiline: bool,
@@ -2318,11 +2898,29 @@ fn text_input_byte_index_at_point_with_layout(
     let line_end = line_ranges[line].1.end;
     let relative_x = point.x - metrics.text_rect.x + metrics.scroll_offset.x;
     if relative_x.is_finite() {
-        measured
-            .and_then(|layout| layout.byte_for_x(line, relative_x.max(0.0)))
+        let index = measured
+            .and_then(|layout| layout.byte_for_x(line, relative_x))
             .unwrap_or_else(|| {
                 byte_index_for_line_x(text, line_start..line_end, relative_x.max(0.0), metrics)
-            })
+            });
+        // Font fallback can split one grapheme across several shaped glyphs.
+        // Choose between its outer caret positions instead of exposing a stop
+        // between a base and its accent, emoji modifier, or joining character.
+        let start = grapheme_boundary_at_or_before(text, index);
+        if start == index {
+            return index;
+        }
+        let end = next_grapheme_boundary(text, index);
+        let x_for_byte = |byte| {
+            measured
+                .and_then(|layout| layout.x_for_byte(line, byte))
+                .unwrap_or_else(|| text_input_prefix_width(&text[line_start..byte], metrics))
+        };
+        if (relative_x - x_for_byte(start)).abs() <= (relative_x - x_for_byte(end)).abs() {
+            start
+        } else {
+            end
+        }
     } else {
         line_start
     }
@@ -2361,7 +2959,7 @@ fn text_input_selection_rects_with_layout(
             let position = TextInputPosition {
                 byte_index: start,
                 line,
-                column: text[line_range.start..start].chars().count(),
+                column: text[line_range.start..start].graphemes(true).count(),
             };
             let measured_span = measured.and_then(|layout| layout.span_between(line, start, end));
             let prefix_width = measured_span.map(|(x, _)| x).unwrap_or_else(|| {
@@ -2397,14 +2995,14 @@ fn byte_index_for_line_x(
 ) -> usize {
     let mut x = 0.0;
     let mut previous = line_range.start;
-    for (byte_offset, character) in text[line_range.clone()].char_indices() {
+    for (byte_offset, grapheme) in text[line_range.clone()].grapheme_indices(true) {
         let byte_index = line_range.start + byte_offset;
-        let advance = text_input_char_advance(character, metrics);
+        let advance = text_input_prefix_width(grapheme, metrics);
         if target_x < x + advance * 0.5 {
             return previous;
         }
         x += advance;
-        previous = byte_index + character.len_utf8();
+        previous = byte_index + grapheme.len();
     }
     line_range.end
 }
@@ -2445,7 +3043,12 @@ fn text_line_ranges(text: &str) -> Vec<(usize, Range<usize>)> {
     let mut start = 0;
     for (byte_index, character) in text.char_indices() {
         if character == '\n' {
-            ranges.push((line, start..byte_index));
+            let end = if text[..byte_index].ends_with('\r') {
+                byte_index - 1
+            } else {
+                byte_index
+            };
+            ranges.push((line, start..end));
             line += 1;
             start = byte_index + character.len_utf8();
         }
@@ -2537,6 +3140,7 @@ mod tests {
             &state,
             TextInputOptions {
                 focused: true,
+                caret_visible: false,
                 ..Default::default()
             },
         );
@@ -2643,33 +3247,6 @@ mod tests {
         assert!(
             selection[0].rect.width < text.rect.width,
             "selection highlight should not fill invisible trailing text rect space"
-        );
-    }
-
-    #[test]
-    fn text_input_publishes_intrinsic_width_for_its_text() {
-        let state = TextInputState::new("999999999999999999");
-        let mut document = UiDocument::new(root_style(360.0, 120.0));
-        let root = document.root;
-
-        let input = text_input(
-            &mut document,
-            root,
-            "wide",
-            &state,
-            TextInputOptions {
-                layout: LayoutStyle::new().with_width(40.0).with_height(30.0),
-                ..Default::default()
-            },
-        );
-        document
-            .compute_layout(UiSize::new(360.0, 120.0), &mut ApproxTextMeasurer)
-            .expect("layout");
-
-        let rect = document.node(input).layout().rect;
-        assert!(
-            rect.width > 40.0,
-            "text input should grow beyond an undersized explicit width when its text requires it: {rect:?}"
         );
     }
 

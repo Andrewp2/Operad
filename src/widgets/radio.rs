@@ -367,8 +367,7 @@ pub fn radio_button_actions_from_input_result(
     let mut queue = WidgetActionQueue::new();
     if result
         .clicked
-        .is_some_and(|target| document.node_is_descendant_or_self(radio, target))
-        && action_target_enabled(document, radio)
+        .is_some_and(|target| action_target_accepts_hit(document, radio, target))
     {
         if let Some(binding) = options.action.clone() {
             queue.select(radio, binding, true);

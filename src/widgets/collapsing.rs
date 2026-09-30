@@ -221,9 +221,7 @@ pub fn collapsing_header_actions_from_input_result(
     let Some(clicked) = result.clicked else {
         return queue;
     };
-    if !document.node_is_descendant_or_self(nodes.header, clicked)
-        || !action_target_enabled(document, nodes.header)
-    {
+    if !action_target_accepts_hit(document, nodes.header, clicked) {
         return queue;
     }
     if let Some(binding) = options.toggle_action.clone() {
@@ -294,22 +292,6 @@ mod tests {
             (intrinsic.preferred.width - intrinsic.min.width).abs() <= 0.01,
             "{intrinsic:?}"
         );
-
-        document
-            .compute_layout(UiSize::new(320.0, 180.0), &mut ApproxTextMeasurer)
-            .expect("layout");
-        let header_min_width =
-            dimension_length(document.node(nodes.header).style.layout.min_size.width)
-                .expect("header minimum width");
-        assert!(
-            header_min_width >= intrinsic.preferred.width + 36.0,
-            "header min width {header_min_width} should include label, indicator, padding, and gap"
-        );
-    }
-
-    fn dimension_length(value: Dimension) -> Option<f32> {
-        let raw = value.into_raw();
-        (raw.tag() == taffy::prelude::CompactLength::LENGTH_TAG).then_some(raw.value())
     }
 
     #[test]

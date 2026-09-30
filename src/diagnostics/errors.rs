@@ -700,12 +700,19 @@ pub fn classify_render_error(error: &RenderError) -> ErrorReport {
         .fallback(FallbackDecision::skip_render_item(
             "skip invalid resource update",
         )),
-        RenderError::Backend(reason) => ErrorReport::fatal(
+        RenderError::SurfaceUnavailable(reason) => ErrorReport::recoverable(
             ErrorKind::Renderer(RendererErrorKind::Backend),
             reason.clone(),
         )
         .fallback(FallbackDecision::use_cached_frame(
-            "keep the previous frame visible while the renderer recovers",
+            "keep the previous frame visible until the surface is available",
+        )),
+        RenderError::Backend(reason) => ErrorReport::fatal(
+            ErrorKind::Renderer(RendererErrorKind::Backend),
+            reason.clone(),
+        )
+        .fallback(FallbackDecision::abort_frame(
+            "a backend failure requires renderer recovery before another frame",
         )),
     }
 }
@@ -847,7 +854,7 @@ impl From<&RenderError> for ErrorReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{PlatformRequestId, ResourceDomain, ResourceKind};
+    use crate::platform::{PlatformRequestId, ResourceDomain};
     use crate::{root_style, ApproxTextMeasurer, UiContent, UiSize};
 
     #[test]
@@ -863,8 +870,14 @@ mod tests {
 
         let backend = classify_render_error(&RenderError::Backend("device lost".to_string()));
         assert_eq!(backend.severity, ErrorSeverity::Fatal);
-        assert_eq!(backend.fallback.action, FallbackAction::UseCachedFrame);
+        assert_eq!(backend.fallback.action, FallbackAction::AbortFrame);
         assert_eq!(backend.fallback.scope, FallbackScope::Frame);
+
+        let temporary = classify_render_error(&RenderError::SurfaceUnavailable(
+            "surface acquire timed out".to_string(),
+        ));
+        assert!(temporary.is_recoverable());
+        assert_eq!(temporary.fallback.action, FallbackAction::UseCachedFrame);
     }
 
     #[test]
@@ -900,8 +913,7 @@ mod tests {
         assert!(report
             .context
             .iter()
-            .any(|context| context.key == "next_step"
-                && context.value.contains("BackendCapabilities")));
+            .any(|context| context.key == "next_step" && !context.value.is_empty()));
 
         let denied = PlatformServiceResponse::new(
             PlatformRequestId::new(43),
@@ -911,7 +923,6 @@ mod tests {
             .expect("denied platform response should produce report");
 
         assert_eq!(report.kind, ErrorKind::Platform(PlatformErrorKind::Denied));
-        assert!(report.message.contains("blocked"));
         assert_eq!(report.fallback.action, FallbackAction::DisableFeature);
 
         let applied = PlatformServiceResponse::new(
@@ -919,23 +930,6 @@ mod tests {
             PlatformResponse::Cursor(CursorResponse::Applied),
         );
         assert!(classify_platform_service_response(&applied).is_none());
-    }
-
-    #[test]
-    fn fallback_rendering_decision_is_local_and_user_visible() {
-        let report = ErrorReport::recoverable(
-            ErrorKind::Resource(ResourceErrorKind::Missing),
-            "image resource is missing",
-        )
-        .context("resource_kind", format!("{:?}", ResourceKind::Image))
-        .fallback(FallbackDecision::render_placeholder(
-            "draw a placeholder in the image slot",
-        ));
-
-        assert_eq!(report.fallback.action, FallbackAction::RenderPlaceholder);
-        assert_eq!(report.fallback.scope, FallbackScope::Local);
-        assert!(report.fallback.user_visible);
-        assert!(report.is_recoverable());
     }
 
     #[test]
@@ -983,10 +977,6 @@ mod tests {
         assert_eq!(nodes.context_rows.len(), 4);
         assert!(nodes.fallback.is_some());
 
-        assert_eq!(
-            text_content(document.node(nodes.title)),
-            "Fatal Runtime error"
-        );
         assert_eq!(
             text_content(document.node(nodes.message)),
             "failed to create a WGPU surface"

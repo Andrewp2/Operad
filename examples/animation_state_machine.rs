@@ -17,7 +17,7 @@ fn main() -> NativeWindowResult {
         NativeWindowOptions::new("Animation state machine"),
         AnimationApp::default(),
         AnimationApp::update,
-        AnimationApp::view,
+        |state, viewport, _views| AnimationApp::view(state, viewport),
     )
 }
 

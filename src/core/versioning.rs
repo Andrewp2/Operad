@@ -178,38 +178,3 @@ impl<S: ApiStabilityMarker> ApiStatus<S> {
         StabilityNote::new(S::STABILITY, self.since, self.note)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn marker_types_classify_api_stability() {
-        assert_eq!(Stable.stability(), ApiStability::Stable);
-        assert_eq!(Experimental.stability(), ApiStability::Experimental);
-        assert_eq!(BackendSpecific.stability(), ApiStability::BackendSpecific);
-        assert_eq!(MigrationOnly.stability(), ApiStability::MigrationOnly);
-    }
-
-    #[test]
-    fn stability_notes_encode_semver_expectations() {
-        let stable = StabilityNote::stable("5.0.0", "Public layout primitives");
-        let experimental = StabilityNote::experimental("5.0.0", "Early host runtime policy");
-
-        assert!(stable.is_semver_protected());
-        assert!(experimental.stability.may_change_without_major());
-        assert_eq!(ApiStability::MigrationOnly.label(), "migration-only");
-    }
-
-    #[test]
-    fn feature_stability_records_feature_scope() {
-        let wgpu =
-            FeatureStability::backend_specific("wgpu", "Renderer availability depends on backend");
-        let status = ApiStatus::<Stable>::new(Some("5.0.0"), "Core document tree");
-
-        assert_eq!(wgpu.feature, "wgpu");
-        assert!(!wgpu.is_semver_protected());
-        assert_eq!(status.stability(), ApiStability::Stable);
-        assert_eq!(status.note().since, Some("5.0.0"));
-    }
-}

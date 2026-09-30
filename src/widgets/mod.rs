@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::actions::{action_target_enabled, keyboard_activation_key};
+use crate::actions::{action_target_accepts_hit, action_target_enabled, keyboard_activation_key};
 use crate::core::document::rect_is_finite;
 use crate::platform::{
     ClipboardRequest, LogicalRect, PlatformRequest, TextImeRequest, TextImeResponse,
@@ -100,8 +100,8 @@ pub use spinner::{spinner, SpinnerOptions};
 pub use table::{table_header, TableColumn};
 pub use text_input::{
     code_editor, multiline_text_input, password_input, search_input, selectable_text,
-    singleline_text_input, text_area, text_input, TextInputInteractionPolicy, TextInputOptions,
-    TextInputState,
+    singleline_text_input, text_area, text_input, TextInputComposition, TextInputInteractionPolicy,
+    TextInputOptions, TextInputState,
 };
 pub use theme_preference::{
     theme_preference_buttons, theme_preference_switch, ThemePreference, ThemePreferenceButtonNodes,

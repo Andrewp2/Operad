@@ -271,6 +271,8 @@ pub struct FormState {
     pub pending: bool,
     pub validating: bool,
     pub submitted: bool,
+    /// Form-wide generation clock for field and form validation requests.
+    /// Retained across resets and field replacement so obsolete results stay stale.
     pub validation_generation: ValidationGeneration,
     pub pending_generation: Option<ValidationGeneration>,
 }
@@ -299,6 +301,13 @@ impl FormState {
     pub fn add_field(&mut self, id: impl Into<FieldId>, value: impl Into<String>) {
         let field = FieldState::new(id, value);
         self.fields.insert(field.id.clone(), field);
+        if self.pending_generation.is_some() {
+            self.validation_generation = self.validation_generation.next();
+            self.pending_generation = None;
+        }
+        self.form_messages.clear();
+        self.submitted = false;
+        self.phase = FormPhase::Idle;
         self.refresh_flags();
     }
 
@@ -366,7 +375,6 @@ impl FormState {
         self.phase = FormPhase::Reset;
         self.form_messages.clear();
         self.submitted = false;
-        self.validation_generation = ValidationGeneration::ZERO;
         self.pending_generation = None;
         for field in self.fields.values_mut() {
             field.value.clear();
@@ -374,7 +382,6 @@ impl FormState {
             field.dirty = false;
             field.pending = false;
             field.validating = false;
-            field.validation_generation = ValidationGeneration::ZERO;
             field.pending_generation = None;
             field.messages.clear();
         }
@@ -387,7 +394,11 @@ impl FormState {
     ) -> Option<FieldValidationRequest> {
         let id = id.into();
         let field = self.fields.get_mut(&id)?;
-        field.validation_generation = field.validation_generation.next();
+        self.validation_generation = self
+            .validation_generation
+            .max(field.validation_generation)
+            .next();
+        field.validation_generation = self.validation_generation;
         field.pending_generation = Some(field.validation_generation);
         field.validating = true;
         let generation = field.validation_generation;
@@ -617,22 +628,102 @@ mod tests {
     }
 
     #[test]
-    fn updating_field_invalidates_in_flight_form_validation() {
-        let mut form = FormState::new("profile").with_field("email", "a@example.com");
-        let request = form.begin_form_validation();
-        form.update_field("email", "b@example.com").unwrap();
-
-        let stale = form.apply_form_validation(FormValidationResult::new(request.generation));
-
-        assert_eq!(
-            stale,
-            ValidationApplyDisposition::Stale {
-                expected: None,
-                received: request.generation
+    fn changing_fields_or_resetting_invalidates_form_validation() {
+        for change in ["update", "reset", "replace", "add", "cancel"] {
+            let mut form = FormState::new("profile").with_field("email", "old");
+            let old = form.begin_form_validation();
+            match change {
+                "update" => {
+                    form.update_field("email", "new").unwrap();
+                }
+                "reset" => form.reset(),
+                "replace" => form.add_field("email", "new"),
+                "add" => form.add_field("name", "new"),
+                _ => form.cancel(),
             }
-        );
-        assert!(form.form_messages.is_empty());
-        assert!(form.fields[&FieldId::from("email")].messages.is_empty());
+            let stale = || {
+                FormValidationResult::new(old.generation)
+                    .with_form_message(ValidationMessage::error("obsolete form"))
+                    .with_field_messages("email", vec![ValidationMessage::error("obsolete field")])
+            };
+            for stage in 0..3 {
+                let current = (stage == 1).then(|| form.begin_form_validation());
+                let before = form.clone();
+                assert!(
+                    matches!(
+                        form.apply_form_validation(stale()),
+                        ValidationApplyDisposition::Stale { .. }
+                    ),
+                    "{change}, stage={stage}"
+                );
+                assert_eq!(
+                    form, before,
+                    "stale result mutated form: {change}, stage={stage}"
+                );
+                if let Some(current) = current {
+                    let message = ValidationMessage::info("current validation");
+                    assert!(form
+                        .apply_form_validation(
+                            FormValidationResult::new(current.generation)
+                                .with_form_message(message.clone())
+                        )
+                        .applied());
+                    assert_eq!(form.form_messages, [message]);
+                    assert!(!form.validating);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reset_and_replaced_fields_reject_obsolete_validation() {
+        for change in ["reset", "replace", "remove and readd", "cancel"] {
+            let mut form = FormState::new("profile").with_field("email", "old");
+            let old = form.begin_field_validation("email").unwrap();
+            match change {
+                "reset" => form.reset(),
+                "replace" => form.add_field("email", "new"),
+                "remove and readd" => {
+                    form.fields.remove(&FieldId::from("email"));
+                    form.add_field("email", "new");
+                }
+                _ => form.cancel(),
+            }
+            let stale = || {
+                FieldValidationResult::new(
+                    "email",
+                    old.generation,
+                    vec![ValidationMessage::error("obsolete field")],
+                )
+            };
+            for stage in 0..3 {
+                let current = (stage == 1).then(|| form.begin_field_validation("email").unwrap());
+                let before = form.clone();
+                assert!(
+                    matches!(
+                        form.apply_field_validation(stale()),
+                        ValidationApplyDisposition::Stale { .. }
+                    ),
+                    "{change}, stage={stage}"
+                );
+                assert_eq!(
+                    form, before,
+                    "stale result mutated field: {change}, stage={stage}"
+                );
+                if let Some(current) = current {
+                    let message = ValidationMessage::warning("current validation");
+                    assert!(form
+                        .apply_field_validation(FieldValidationResult::new(
+                            "email",
+                            current.generation,
+                            vec![message.clone()]
+                        ))
+                        .applied());
+                    assert_eq!(form.fields[&FieldId::from("email")].messages, [message]);
+                    assert!(!form.validating);
+                }
+            }
+        }
     }
 
     #[test]
@@ -661,6 +752,49 @@ mod tests {
         assert!(applied.applied());
         assert!(!form.validating);
         assert!(form.fields[&FieldId::from("email")].has_errors());
+    }
+
+    #[test]
+    fn concurrent_validation_requests_keep_their_own_pending_generation() {
+        let mut form = FormState::new("profile")
+            .with_field("email", "a@example.com")
+            .with_field("name", "Ada");
+        let whole_form = form.begin_form_validation();
+        let email = form.begin_field_validation("email").unwrap();
+        let name = form.begin_field_validation("name").unwrap();
+
+        assert!(form
+            .apply_form_validation(FormValidationResult::new(whole_form.generation))
+            .applied());
+        assert!(form.validating);
+        assert!(form
+            .apply_field_validation(FieldValidationResult::new(
+                "name",
+                name.generation,
+                vec![ValidationMessage::info("name checked")],
+            ))
+            .applied());
+        assert!(form.validating);
+        assert_eq!(
+            form.fields[&FieldId::from("email")].pending_generation,
+            Some(email.generation)
+        );
+        assert!(form
+            .apply_field_validation(FieldValidationResult::new(
+                "email",
+                email.generation,
+                vec![ValidationMessage::warning("email checked")],
+            ))
+            .applied());
+        assert!(!form.validating);
+        assert_eq!(
+            form.fields[&FieldId::from("name")].messages,
+            [ValidationMessage::info("name checked")]
+        );
+        assert_eq!(
+            form.fields[&FieldId::from("email")].messages,
+            [ValidationMessage::warning("email checked")]
+        );
     }
 
     #[test]

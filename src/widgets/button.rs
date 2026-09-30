@@ -465,9 +465,7 @@ pub fn push_button_input_result_actions<'a>(
     let Some(clicked) = result.clicked else {
         return queue;
     };
-    if !document.node_is_descendant_or_self(button, clicked)
-        || !action_target_enabled(document, button)
-    {
+    if !action_target_accepts_hit(document, button, clicked) {
         return queue;
     }
     if let Some(binding) = options.action.clone() {
@@ -524,37 +522,25 @@ pub fn push_button_gesture_event_actions<'a>(
     options: &ButtonOptions,
     event: &GestureEvent,
 ) -> &'a mut WidgetActionQueue {
-    match event {
-        GestureEvent::Click(click) => {
-            if !document.node_is_descendant_or_self(button, click.target)
-                || !action_target_enabled(document, button)
-            {
-                return queue;
-            }
-            if let Some(binding) = options.action.clone() {
-                queue.push(WidgetAction::pointer_button_activate(
-                    button,
-                    binding,
-                    click.button,
-                    click.count,
-                    click.modifiers,
-                ));
-            }
-        }
-        GestureEvent::WheelTargeted {
-            target: Some(target),
-            event,
-        } => {
-            if !document.node_is_descendant_or_self(button, *target)
-                || !action_target_enabled(document, button)
-            {
-                return queue;
-            }
-            if let Some(binding) = options.action.clone() {
-                queue.push(WidgetAction::wheel_activate(button, binding, *event));
-            }
-        }
-        _ => {}
+    let GestureEvent::Click(click) = event else {
+        return queue;
+    };
+    if !action_target_accepts_hit(document, button, click.target)
+        || !document
+            .node(button)
+            .action_mode()
+            .accepts_pointer_click(click.button)
+    {
+        return queue;
+    }
+    if let Some(binding) = options.action.clone() {
+        queue.push(WidgetAction::pointer_button_activate(
+            button,
+            binding,
+            click.button,
+            click.count,
+            click.modifiers,
+        ));
     }
     queue
 }

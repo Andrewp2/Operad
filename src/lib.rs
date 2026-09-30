@@ -29,16 +29,21 @@ pub use core::document::{
     CanvasContextDescriptor, CanvasContextKind, CanvasInteractionPolicy, CanvasRenderMode,
     CanvasRenderProgram, CanvasShaderConstant, ClipBehavior, ClipScope, ColorRgba, ComputedLayout,
     EditPhase, ElementMaterial, ElementShape, FocusDirection, FontFamily, FontStretch, FontStyle,
-    FontWeight, GeometryEffect, ImageContent, InputBehavior, InteractionVisuals, IntrinsicSize,
-    KeyCode, KeyModifiers, KnownSize, LayoutSnapshot, LayoutStyle, PaintCompositorLayer, PaintItem,
-    PaintKind, PaintList, PaintTransform, ScenePrimitive, ScrollAxes, ScrollState, ShaderEffect,
-    ShaderUniform, StrokeStyle, TextContent, TextInteractionStyles, TextMeasurer, TextStyle,
-    TextWrap, UiContent, UiDocument, UiDocumentScale, UiFocusState, UiInputEvent, UiInputResult,
-    UiNode, UiNodeId, UiNodeLayoutConstraint, UiNodeStyle, UiPoint, UiPortalId, UiPortalTarget,
-    UiRect, UiSize, UiVisual, UiWheelEvent, ANIMATION_INPUT_ACTIVATED, ANIMATION_INPUT_ACTIVE,
+    FontWeight, GeometryEffect, HitTestBehavior, HitTestResult, ImageContent, InputBehavior,
+    InteractionVisuals, IntrinsicSize, KeyCode, KeyModifiers, KnownSize, LayoutSnapshot,
+    LayoutStyle, PaintCompositorLayer, PaintItem, PaintKind, PaintList, PaintTransform,
+    ScenePrimitive, ScrollAxes, ScrollState, ShaderEffect, ShaderUniform, StrokeStyle, TextContent,
+    TextInteractionStyles, TextMeasurer, TextStyle, TextWrap, UiContent, UiDocument,
+    UiDocumentScale, UiFocusState, UiInputEvent, UiInputResult, UiNode, UiNodeId,
+    UiNodeLayoutConstraint, UiNodeStyle, UiPoint, UiPortalId, UiPortalTarget, UiRect, UiSize,
+    UiVisual, UiWheelEvent, ANIMATION_INPUT_ACTIVATED, ANIMATION_INPUT_ACTIVE,
     ANIMATION_INPUT_FOCUSED, ANIMATION_INPUT_HOVER, ANIMATION_INPUT_POINTER_NORM_X,
     ANIMATION_INPUT_POINTER_NORM_Y, ANIMATION_INPUT_POINTER_X, ANIMATION_INPUT_POINTER_Y,
     ANIMATION_INPUT_PRESSED, APP_OVERLAY_PORTAL,
+};
+pub use core::text::{fit_text, FittedText};
+pub use core::text_input::{
+    TextCompositionEvent, TextInputContent, TextInputPointerGeometry, TextInputSnapshot,
 };
 #[cfg(any(test, feature = "diagnostics"))]
 pub use diagnostics::debug;

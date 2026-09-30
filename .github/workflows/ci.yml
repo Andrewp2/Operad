@@ -25,7 +25,7 @@ jobs:
       - name: Install headless graphics drivers
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers xvfb xdotool
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -39,17 +39,36 @@ jobs:
       - name: Check all features
         run: cargo check --locked --all-features --all-targets
 
-      - name: Enumerate all-feature tests
-        run: cargo test --locked --all-features -- --list
+      - name: Test all-feature library and rendering contracts
+        run: cargo test --locked --all-features --lib --test api_surface --test runtime_integration --test wgpu_snapshot_parity
 
       - name: Just Work showcase regressions
         run: cargo test --locked --all-features --test showcase_layout -- showcase_ --test-threads=1
 
       - name: Just Work performance smoke
-        run: cargo test --locked --no-default-features --features widgets,test-support --test perf_smoke -- --test-threads=1
+        run: cargo test --locked --no-default-features --features widgets,test-support --test perf_smoke --test text_input_allocations -- --test-threads=1
 
       - name: Check examples
         run: cargo check --locked --all-features --examples
+
+      - name: Native clipboard ownership regression
+        run: |
+          env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET OPERAD_CLIPBOARD_TEST_DISPLAY=1 xvfb-run -a cargo test --locked --all-features --lib native_clipboard_retains_text_between_requests -- --ignored --test-threads=1
+
+      - name: Native background completion regressions
+        run: |
+          cargo build --locked --all-features --example runtime_task
+          xvfb-run -a python3 scripts/check-native-task.py
+
+      - name: Native device-loss regression
+        run: |
+          cargo build --locked --all-features --example native_device_loss
+          xvfb-run -a python3 scripts/check-native-device-loss.py
+
+      - name: Native showcase pointer regressions
+        run: |
+          cargo build --locked --all-features --example native_pointer
+          python3 scripts/check-native-pointer.py
 
       - name: Build docs
         run: cargo doc --locked --all-features --no-deps
@@ -76,6 +95,14 @@ jobs:
         with:
           node-version: 22
 
+      - name: Test browser runner transport and cleanup
+        run: node --test scripts/*.test.mjs
+
+      - name: Install headless browser dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libvulkan1 mesa-vulkan-drivers
+
       - name: Install wasm-bindgen CLI
         run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
 
@@ -94,6 +121,13 @@ jobs:
           --no-default-features
           --features web-runtime
           --example minimal_web
+
+      - name: Package browser runtime
+        run: >
+          cargo package --locked
+          --target wasm32-unknown-unknown
+          --no-default-features
+          --features web-runtime
 
       - name: Assemble Pages artifact
         run: |
@@ -134,8 +168,77 @@ jobs:
             sleep 1
           done
           test "${ready}" -eq 1
-          OPERAD_WEB_SHOWCASE_UAT=1 node scripts/check-web-showcase.mjs http://127.0.0.1:8787/
-          OPERAD_WEB_SHOWCASE_UAT=1 node scripts/check-web-showcase.mjs http://127.0.0.1:8787/showcase/
+          OPERAD_WEB_SHOWCASE_UAT=1 xvfb-run -a node scripts/check-web-showcase.mjs http://127.0.0.1:8787/
+          OPERAD_WEB_SHOWCASE_UAT=1 xvfb-run -a node scripts/check-web-showcase.mjs http://127.0.0.1:8787/showcase/
+
+      - name: Browser runtime scheduling and failure regressions
+        run: |
+          cargo build --locked --release --target wasm32-unknown-unknown \
+            --no-default-features --features web-showcase --example runtime_scheduling
+          probe_dir=$(mktemp -d)
+          wasm-bindgen --target web --out-dir "$probe_dir/pkg" --out-name runtime_scheduling \
+            target/wasm32-unknown-unknown/release/examples/runtime_scheduling.wasm
+          cp tests/fixtures/runtime_scheduling.html "$probe_dir/index.html"
+          python3 -m http.server 8788 --bind 127.0.0.1 --directory "$probe_dir" > "${RUNNER_TEMP}/operad-scheduling.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2> /dev/null || true; rm -rf "$probe_dir"' EXIT
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8788/ > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+          OPERAD_WEB_SCHEDULING_PROBE=1 xvfb-run -a node scripts/check-web-showcase.mjs http://127.0.0.1:8788/
+          OPERAD_WEB_CLOCK_PROBE=1 xvfb-run -a node scripts/check-web-showcase.mjs http://127.0.0.1:8788/
+          OPERAD_WEB_DEVICE_LOSS_PROBE=1 xvfb-run -a node scripts/check-web-showcase.mjs http://127.0.0.1:8788/
+          OPERAD_WEB_RENDER_FAILURE_PROBE=1 xvfb-run -a node scripts/check-web-showcase.mjs http://127.0.0.1:8788/
+
+      - name: Browser editor integration regressions
+        run: |
+          cargo build --locked --release --target wasm32-unknown-unknown \
+            --no-default-features --features web-showcase --example runtime_editor
+          probe_dir=$(mktemp -d)
+          wasm-bindgen --target web --out-dir "$probe_dir/pkg" --out-name runtime_editor \
+            target/wasm32-unknown-unknown/release/examples/runtime_editor.wasm
+          cp tests/fixtures/runtime_editor.html "$probe_dir/index.html"
+          python3 -m http.server 8789 --bind 127.0.0.1 --directory "$probe_dir" > "${RUNNER_TEMP}/operad-editor.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2> /dev/null || true; rm -rf "$probe_dir"' EXIT
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8789/ > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+          OPERAD_WEB_EDITOR_PROBE=1 xvfb-run -a node scripts/check-web-showcase.mjs http://127.0.0.1:8789/
+
+      - name: Browser text composition regressions
+        run: |
+          cargo build --locked --release --target wasm32-unknown-unknown \
+            --no-default-features --features web-runtime,widgets --example runtime_ime
+          probe_dir=$(mktemp -d)
+          wasm-bindgen --target web --out-dir "$probe_dir/pkg" --out-name runtime_ime \
+            target/wasm32-unknown-unknown/release/examples/runtime_ime.wasm
+          cp tests/fixtures/runtime_ime.html "$probe_dir/index.html"
+          python3 -m http.server 8790 --bind 127.0.0.1 --directory "$probe_dir" > "${RUNNER_TEMP}/operad-ime.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2> /dev/null || true; rm -rf "$probe_dir"' EXIT
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8790/ > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "${ready}" -eq 1
+          OPERAD_WEB_IME_PROBE=1 xvfb-run -a node scripts/check-web-showcase.mjs http://127.0.0.1:8790/
 
       - name: Configure Pages
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'

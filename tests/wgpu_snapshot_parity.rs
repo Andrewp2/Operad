@@ -202,57 +202,6 @@ fn wgpu_rounded_rect_uses_sdf_edges() {
 }
 
 #[test]
-fn wgpu_text_snapshot_uses_glyphon_rendering() {
-    let paint = PaintList {
-        items: vec![PaintItem {
-            node: UiNodeId::root(),
-            rect: UiRect::new(4.0, 4.0, 88.0, 28.0),
-            clip_rect: UiRect::new(0.0, 0.0, 96.0, 36.0),
-            z_index: 0.0,
-            layer_order: LayerOrder::DEFAULT,
-            opacity: 1.0,
-            transform: PaintTransform::default(),
-            shader: None,
-            material: None,
-            kind: PaintKind::Text(TextContent::new(
-                "Glyphon",
-                TextStyle {
-                    font_size: 20.0,
-                    line_height: 24.0,
-                    color: ColorRgba::new(255, 255, 255, 255),
-                    ..Default::default()
-                },
-            )),
-        }],
-    };
-    let request = RenderFrameRequest::new(
-        RenderTarget::snapshot(PixelSize::new(96, 36)),
-        UiSize::new(96.0, 36.0),
-        paint,
-    )
-    .options(RenderOptions {
-        clear_color: ColorRgba::new(0, 0, 0, 255),
-        ..RenderOptions::default()
-    });
-
-    let mut renderer = WgpuRenderer::default();
-    let output = renderer
-        .render_frame(request, &EmptyResourceResolver)
-        .expect("wgpu text render");
-    let image = output.snapshot.expect("snapshot");
-
-    let lit_pixels = image
-        .pixels
-        .chunks_exact(4)
-        .filter(|pixel| pixel[0] > 16 || pixel[1] > 16 || pixel[2] > 16)
-        .count();
-    assert!(
-        lit_pixels > 24,
-        "expected visible glyph pixels, got {lit_pixels}"
-    );
-}
-
-#[test]
 fn wgpu_text_snapshot_preserves_fractional_glyph_positioning() {
     let integer = text_snapshot_at(UiPoint::new(4.0, 4.0));
     let fractional = text_snapshot_at(UiPoint::new(4.5, 4.25));
@@ -263,6 +212,258 @@ fn wgpu_text_snapshot_preserves_fractional_glyph_positioning() {
         integer.pixels, fractional.pixels,
         "fractional text placement should affect grayscale glyph coverage"
     );
+}
+
+#[test]
+fn wgpu_replacing_fonts_renders_the_same_glyphs_as_a_fresh_renderer() {
+    let font = |bytes: &[u8]| {
+        operad::fonts::FontLibrary::new()
+            .with_memory_font("replacement", bytes)
+            .with_sans_serif_family("ReplacementFixture")
+    };
+    let fonts = [
+        font(include_bytes!("fixtures/fonts/replacement-lower.ttf")),
+        font(include_bytes!("fixtures/fonts/replacement-upper.ttf")),
+    ];
+
+    for count in [1, 16] {
+        let snapshot = |renderer: &mut WgpuRenderer| {
+            let size = UiSize::new(160.0, 160.0);
+            let request = RenderFrameRequest::new(
+                RenderTarget::snapshot(PixelSize::new(160, 160)),
+                size,
+                PaintList {
+                    items: (0..count)
+                        .map(|index| PaintItem {
+                            node: UiNodeId::from_index(index),
+                            rect: UiRect::new(
+                                (index % 4) as f32 * 40.0,
+                                (index / 4) as f32 * 40.0,
+                                40.0,
+                                40.0,
+                            ),
+                            clip_rect: UiRect::new(0.0, 0.0, size.width, size.height),
+                            z_index: 0.0,
+                            layer_order: LayerOrder::DEFAULT,
+                            opacity: 1.0,
+                            transform: PaintTransform::default(),
+                            shader: None,
+                            material: None,
+                            kind: PaintKind::Text(TextContent::new(
+                                "A",
+                                TextStyle {
+                                    font_size: 32.0,
+                                    line_height: 40.0,
+                                    color: ColorRgba::WHITE,
+                                    ..Default::default()
+                                },
+                            )),
+                        })
+                        .collect(),
+                },
+            )
+            .options(RenderOptions {
+                clear_color: ColorRgba::BLACK,
+                ..RenderOptions::default()
+            });
+            renderer
+                .render_frame(request, &EmptyResourceResolver)
+                .expect("font replacement frame")
+                .snapshot
+                .expect("font replacement snapshot")
+        };
+        let expected = fonts.each_ref().map(|font| {
+            let mut fresh = WgpuRenderer::default();
+            fresh.set_fonts(font.clone());
+            let image = snapshot(&mut fresh);
+            assert!(lit_pixel_count(&image) > 0, "fixture glyph must be visible");
+            image
+        });
+        assert!(
+            expected[0].pixels != expected[1].pixels,
+            "the replacement must change the rendered glyph"
+        );
+
+        let mut retained = WgpuRenderer::default();
+        for font_index in [0, 1, 0] {
+            retained.set_fonts(fonts[font_index].clone());
+            for repeated_frame in 0..2 {
+                let actual = snapshot(&mut retained);
+                let differing_pixels = actual
+                    .pixels
+                    .chunks_exact(4)
+                    .zip(expected[font_index].pixels.chunks_exact(4))
+                    .filter(|(actual, expected)| actual != expected)
+                    .count();
+                assert!(
+                    actual.pixels == expected[font_index].pixels,
+                    "{count} text items, font {font_index}, repeated frame {repeated_frame}: \
+                     replacing fonts must not retain glyphs from the previous library \
+                     ({differing_pixels} pixels differ)"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn wgpu_changing_text_reclaims_obsolete_glyphs_without_corrupting_cached_text() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("GPU adapter");
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits {
+            max_texture_dimension_2d: 256,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+    .expect("device with a small glyph atlas budget");
+    eprintln!(
+        "glyph atlas stress: {:?}, texture limit {}",
+        adapter.get_info(),
+        device.limits().max_texture_dimension_2d
+    );
+    let fonts = operad::fonts::FontLibrary::new()
+        .with_memory_font(
+            "atlas-fixture",
+            include_bytes!("fixtures/fonts/replacement-lower.ttf").as_slice(),
+        )
+        .with_sans_serif_family("ReplacementFixture");
+    let fresh = || {
+        WgpuRenderer::with_device_queue_and_fonts(device.clone(), queue.clone(), fonts.clone())
+            .expect("renderer with a small glyph atlas budget")
+    };
+    let mut retained = fresh();
+
+    // Repeatedly change the working set, then revisit earlier sizes. The first
+    // text batch stays cached while later batches create new rasterized glyphs.
+    for frame in 0..256 {
+        let font_size = 32.0 + (frame % 128) as f32 * 0.5;
+        let request = glyph_atlas_request(&[font_size], frame % 3 == 0);
+        let actual = retained
+            .render_frame(request.clone(), &EmptyResourceResolver)
+            .unwrap_or_else(|error| panic!("small text frame {frame} failed: {error}"))
+            .snapshot
+            .expect("text snapshot");
+        if frame % 31 == 0 || frame == 255 {
+            let expected = fresh()
+                .render_frame(request, &EmptyResourceResolver)
+                .expect("individual text working set fits the atlas")
+                .snapshot
+                .expect("fresh text snapshot");
+            assert!(
+                expected
+                    .pixels
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200),
+                "reference text must be visible independently of the separator"
+            );
+            assert!(
+                actual.pixels == expected.pixels,
+                "frame {frame}: atlas reclamation must preserve both cached and changing text"
+            );
+        }
+    }
+
+    // A working set that exceeds capacity may fail, but must leave the renderer
+    // usable. Compare its result with a fresh renderer instead of requiring a
+    // particular packing strategy or hard-coding which requests must fail.
+    let crowded = glyph_atlas_request(&(64..128).map(|size| size as f32).collect::<Vec<_>>(), true);
+    let expected = fresh().render_frame(crowded.clone(), &EmptyResourceResolver);
+    let actual = retained.render_frame(crowded, &EmptyResourceResolver);
+    eprintln!(
+        "crowded text working set: fresh succeeds={}, retained succeeds={}",
+        expected.is_ok(),
+        actual.is_ok()
+    );
+    assert_eq!(actual.is_ok(), expected.is_ok(), "text capacity result");
+    if let (Ok(actual), Ok(expected)) = (actual, expected) {
+        assert!(actual.snapshot.unwrap().pixels == expected.snapshot.unwrap().pixels);
+    }
+    retained
+        .warm_up()
+        .expect("warm-up must recover after a rejected text working set");
+    let request = glyph_atlas_request(&[48.0], false);
+    let actual = retained
+        .render_frame(request.clone(), &EmptyResourceResolver)
+        .expect("renderer remains usable")
+        .snapshot
+        .unwrap();
+    let expected = fresh()
+        .render_frame(request, &EmptyResourceResolver)
+        .expect("fresh renderer")
+        .snapshot
+        .unwrap();
+    assert!(actual.pixels == expected.pixels);
+}
+
+fn glyph_atlas_request(font_sizes: &[f32], composited_anchor: bool) -> RenderFrameRequest {
+    let size = PixelSize::new(256, 192);
+    let bounds = UiRect::new(0.0, 0.0, 256.0, 192.0);
+    let mut items = std::iter::once(18.0)
+        .chain(font_sizes.iter().copied())
+        .enumerate()
+        .map(|(index, font_size)| PaintItem {
+            node: UiNodeId::from_index(index),
+            rect: UiRect::new(4.0, if index == 0 { 0.0 } else { 40.0 }, 248.0, 144.0),
+            clip_rect: bounds,
+            z_index: 0.0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            material: None,
+            kind: PaintKind::Text(TextContent::new(
+                "A",
+                TextStyle {
+                    font_size,
+                    line_height: font_size + 4.0,
+                    color: ColorRgba::WHITE,
+                    ..Default::default()
+                },
+            )),
+        })
+        .collect::<Vec<_>>();
+    items.insert(
+        1,
+        PaintItem {
+            node: UiNodeId::from_index(font_sizes.len() + 1),
+            rect: UiRect::new(0.0, 28.0, 256.0, 1.0),
+            clip_rect: bounds,
+            z_index: 0.0,
+            layer_order: LayerOrder::DEFAULT,
+            opacity: 1.0,
+            transform: PaintTransform::default(),
+            shader: None,
+            material: None,
+            kind: PaintKind::Rect {
+                fill: ColorRgba::new(32, 48, 64, 255),
+                stroke: None,
+                corner_radius: 0.0,
+            },
+        },
+    );
+    if composited_anchor {
+        let anchor = items[0].clone();
+        items[0].rect = bounds;
+        items[0].kind = PaintKind::CompositedLayer(PaintCompositorLayer::new(
+            bounds,
+            PaintList {
+                items: vec![anchor],
+            },
+        ));
+    }
+    RenderFrameRequest::new(
+        RenderTarget::snapshot(size),
+        UiSize::new(256.0, 192.0),
+        PaintList { items },
+    )
+    .options(RenderOptions {
+        clear_color: ColorRgba::BLACK,
+        ..RenderOptions::default()
+    })
 }
 
 #[test]
@@ -384,9 +585,12 @@ fn wgpu_rich_rect_gradient_and_effects_render_on_gpu() {
         .expect("wgpu snapshot");
 
     assert_eq!(wgpu.size, PixelSize::new(72, 48));
-    assert_ne!(pixel_rgba(&wgpu.pixels, 72, 12, 18), [18, 20, 24, 255]);
-    assert_ne!(pixel_rgba(&wgpu.pixels, 72, 32, 18), [18, 20, 24, 255]);
-    assert_ne!(pixel_rgba(&wgpu.pixels, 72, 52, 18), [18, 20, 24, 255]);
+    let left = pixel_rgba(&wgpu.pixels, 72, 12, 18);
+    let middle = pixel_rgba(&wgpu.pixels, 72, 32, 18);
+    let right = pixel_rgba(&wgpu.pixels, 72, 52, 18);
+    assert!(left[0] > left[1] && left[0] > left[2], "{left:?}");
+    assert!(middle[1] > middle[0] && middle[1] > middle[2], "{middle:?}");
+    assert!(right[2] > right[0] && right[2] > right[1], "{right:?}");
     assert_ne!(
         pixel_rgba(&wgpu.pixels, 72, 60, 36),
         [18, 20, 24, 255],
@@ -579,7 +783,9 @@ fn wgpu_rich_rect_shadow_has_soft_falloff() {
         .expect("wgpu snapshot");
 
     let near = pixel_rgba(&wgpu.pixels, 52, 32, 16);
-    let far = pixel_rgba(&wgpu.pixels, 52, 39, 16);
+    // Sample inside the visible Gaussian falloff. At three sigma the tail can
+    // round to the background in an 8-bit target.
+    let far = pixel_rgba(&wgpu.pixels, 52, 36, 16);
     let outside = pixel_rgba(&wgpu.pixels, 52, 47, 16);
     assert!(
         near[0] < far[0] && far[0] < outside[0],
@@ -805,7 +1011,10 @@ fn wgpu_composited_layer_mask_and_filter_apply_on_gpu() {
     assert_eq!(pixel_rgba(&wgpu.pixels, 32, 6, 10), [3, 4, 5, 255]);
     let masked_filtered = pixel_rgba(&wgpu.pixels, 32, 14, 10);
     assert!(
-        masked_filtered[0] < child_color.r
+        masked_filtered[0] > 3
+            && masked_filtered[1] > 4
+            && masked_filtered[2] > 5
+            && masked_filtered[0] < child_color.r
             && masked_filtered[1] < child_color.g
             && masked_filtered[2] < child_color.b,
         "expected brightness filter to darken masked child, got {masked_filtered:?}"

@@ -145,7 +145,9 @@ pub fn modal_dialog(
 ) -> ModalDialogNodes {
     let name = name.into();
     let title_text = title_text.into();
-    let mut accessibility = modal_dialog_descriptor(&name, &title_text, &options).accessibility();
+    let mut accessibility = modal_dialog_descriptor(&name, &title_text, &options)
+        .accessibility()
+        .restore_focus(options.focus_restore);
     if let Some(label) = options.accessibility_label.clone() {
         accessibility.label = Some(label);
     }
@@ -320,33 +322,36 @@ pub fn modal_dialog_open_event(
     }
 }
 
+/// Resolve close-button clicks and outside presses using the matching input event.
+/// The document must describe the layout in which that event was handled.
 pub fn modal_dialog_dismiss_event_from_input_result(
     document: &UiDocument,
     nodes: ModalDialogNodes,
     options: &ModalDialogOptions,
     result: &UiInputResult,
+    event: &UiInputEvent,
 ) -> Option<OverlayFrameEvent> {
-    let clicked = result.clicked?;
-    if nodes
-        .close_button
-        .is_some_and(|close| document.node_is_descendant_or_self(close, clicked))
-    {
-        return options
-            .dismissal
-            .allows(DialogDismissReason::CloseButton)
-            .then_some(OverlayFrameEvent::dismiss_dialog(
-                DialogDismissReason::CloseButton,
-            ));
+    if let Some(clicked) = result.clicked {
+        if !modal_dialog_accepts_input(document, nodes) {
+            return None;
+        }
+        if nodes
+            .close_button
+            .is_some_and(|close| action_target_accepts_hit(document, close, clicked))
+        {
+            return options
+                .dismissal
+                .allows(DialogDismissReason::CloseButton)
+                .then_some(OverlayFrameEvent::dismiss_dialog(
+                    DialogDismissReason::CloseButton,
+                ));
+        }
     }
-    (!document.node_is_descendant_or_self(nodes.dialog, clicked)
-        && options
-            .dismissal
-            .allows(DialogDismissReason::OutsidePointer))
-    .then_some(OverlayFrameEvent::dismiss_dialog(
-        DialogDismissReason::OutsidePointer,
-    ))
+    modal_dialog_dismiss_event_from_pointer_event(document, nodes, options, event)
 }
 
+/// Dismiss on an outside pointer press. Moves, releases, and cancellations do
+/// not dismiss, so releasing a drag outside cannot close the dialog.
 pub fn modal_dialog_dismiss_event_from_pointer_event(
     document: &UiDocument,
     nodes: ModalDialogNodes,
@@ -354,20 +359,38 @@ pub fn modal_dialog_dismiss_event_from_pointer_event(
     event: &UiInputEvent,
 ) -> Option<OverlayFrameEvent> {
     let point = match event {
-        UiInputEvent::PointerDown(point) | UiInputEvent::PointerUp(point) => *point,
+        UiInputEvent::PointerDown(point) => *point,
         _ => return None,
     };
     if !options
         .dismissal
         .allows(DialogDismissReason::OutsidePointer)
+        || !modal_dialog_accepts_input(document, nodes)
     {
         return None;
     }
-    let hit = document.hit_test(point);
-    hit.is_none_or(|node| !document.node_is_descendant_or_self(nodes.dialog, node))
-        .then_some(OverlayFrameEvent::dismiss_dialog(
-            DialogDismissReason::OutsidePointer,
-        ))
+    // An inert control is still inside the dialog. The modal barrier itself
+    // also reports the dialog as its blocker outside the dialog's geometry.
+    let inside = document.node_geometry_contains_point(nodes.dialog, point)
+        || document.hit_test_result(point).is_some_and(|hit| {
+            hit.node() != nodes.dialog
+                && document.node_is_logical_descendant_or_self(nodes.dialog, hit.node())
+        });
+    (!inside).then_some(OverlayFrameEvent::dismiss_dialog(
+        DialogDismissReason::OutsidePointer,
+    ))
+}
+
+fn modal_dialog_accepts_input(document: &UiDocument, nodes: ModalDialogNodes) -> bool {
+    document
+        .nodes()
+        .get(nodes.dialog.index())
+        .is_some_and(|node| {
+            node.layout.visible
+                && node.layout.rect.intersects(node.layout.clip_rect)
+                && document.node_is_enabled(nodes.dialog)
+                && document.node_in_modal_scope(nodes.dialog, document.accessibility_modal_scope())
+        })
 }
 
 pub fn modal_dialog_dismiss_event_from_key_event(
@@ -402,9 +425,7 @@ pub fn modal_dialog_close_actions_from_input_result(
     let Some(clicked) = result.clicked else {
         return queue;
     };
-    if !document.node_is_descendant_or_self(close_button, clicked)
-        || !action_target_enabled(document, close_button)
-    {
+    if !action_target_accepts_hit(document, close_button, clicked) {
         return queue;
     }
     if let Some(binding) = options.close_action.clone() {
@@ -416,6 +437,69 @@ pub fn modal_dialog_close_actions_from_input_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modal_close_helpers_follow_owned_portals_and_reject_disabled_hits() {
+        for (portal, owned) in [
+            (UiPortalTarget::Parent, true),
+            (UiPortalTarget::AppOverlay, true),
+            (UiPortalTarget::named("host"), true),
+            (UiPortalTarget::GlobalAppOverlay, false),
+            (UiPortalTarget::global_named("host"), false),
+        ] {
+            for disabled in ["none", "hit", "close"] {
+                let viewport = UiSize::new(640.0, 360.0);
+                let mut document = UiDocument::new(root_style(viewport.width, viewport.height));
+                let root = document.root();
+                document.register_portal_host("host", root);
+                let options = ModalDialogOptions::default().with_close_action("close");
+                let nodes = modal_dialog(&mut document, root, "dialog", "Dialog", options.clone());
+                let close = nodes.close_button.unwrap();
+                let hit = document.add_portal_child(
+                    close,
+                    portal.clone(),
+                    UiNode::container("close-hit", LayoutStyle::size(10.0, 10.0))
+                        .with_input(InputBehavior::BUTTON),
+                );
+                if disabled == "hit" {
+                    document.set_node_enabled(hit, false);
+                }
+                if disabled == "close" {
+                    document.set_node_enabled(close, false);
+                }
+                document
+                    .compute_layout(viewport, &mut ApproxTextMeasurer)
+                    .unwrap();
+                let rect = document.node(hit).layout().rect;
+                let input = UiInputResult {
+                    clicked: Some(hit),
+                    ..Default::default()
+                };
+                let event = UiInputEvent::PointerUp(UiPoint::new(rect.x + 5.0, rect.y + 5.0));
+                let actions = modal_dialog_close_actions_from_input_result(
+                    &document, nodes, &options, &input,
+                );
+                let expected = owned && disabled == "none";
+                assert_eq!(
+                    actions.len(),
+                    usize::from(expected),
+                    "portal={portal:?}, disabled={disabled}"
+                );
+                if let Some(action) = actions.as_slice().first() {
+                    assert_eq!(action.target, nodes.dialog);
+                    assert_eq!(action.kind, WidgetActionKind::Close);
+                }
+                assert_eq!(
+                    modal_dialog_dismiss_event_from_input_result(
+                        &document, nodes, &options, &input, &event
+                    )
+                    .is_some(),
+                    expected,
+                    "portal={portal:?}, disabled={disabled}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn modal_dialog_builds_layered_modal_surface() {
@@ -441,12 +525,10 @@ mod tests {
             .expect("app overlay portal");
         assert_eq!(document.node(nodes.overlay).parent, Some(portal));
         assert_eq!(document.node(nodes.overlay).clip_scope, ClipScope::Viewport);
-        assert_eq!(document.node(nodes.overlay).style.z_index, 200.0);
-        assert_eq!(document.node(nodes.scrim).style.z_index, 199.0);
-        assert_eq!(document.node(nodes.dialog).style.z_index, 200.0);
         let accessibility = document.node(nodes.dialog).accessibility.as_ref().unwrap();
         assert_eq!(accessibility.role, AccessibilityRole::Dialog);
         assert!(accessibility.modal);
+        assert_eq!(accessibility.modal_focus_restore, options.focus_restore);
         assert!(nodes.close_button.is_some());
         let descriptor = modal_dialog_descriptor("confirm", "Confirm delete", &options);
         assert!(descriptor.modal);
@@ -500,10 +582,8 @@ mod tests {
             close_rect.x + 2.0,
             close_rect.y + 2.0,
         )));
-        let result = document.handle_input(UiInputEvent::PointerUp(UiPoint::new(
-            close_rect.x + 2.0,
-            close_rect.y + 2.0,
-        )));
+        let event = UiInputEvent::PointerUp(UiPoint::new(close_rect.x + 2.0, close_rect.y + 2.0));
+        let result = document.handle_input(event.clone());
 
         let actions =
             modal_dialog_close_actions_from_input_result(&document, nodes, &options, &result);
@@ -512,7 +592,9 @@ mod tests {
             Some(WidgetActionKind::Close)
         ));
         assert_eq!(
-            modal_dialog_dismiss_event_from_input_result(&document, nodes, &options, &result),
+            modal_dialog_dismiss_event_from_input_result(
+                &document, nodes, &options, &result, &event
+            ),
             Some(OverlayFrameEvent::dismiss_dialog(
                 DialogDismissReason::CloseButton
             ))
@@ -547,7 +629,7 @@ mod tests {
                 &document,
                 modal_nodes,
                 &modal_options,
-                &UiInputEvent::PointerUp(UiPoint::new(4.0, 4.0)),
+                &UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0)),
             ),
             None
         );
@@ -570,11 +652,252 @@ mod tests {
                 &document,
                 modeless_nodes,
                 &modeless_options,
-                &UiInputEvent::PointerUp(UiPoint::new(4.0, 4.0)),
+                &UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0)),
+            ),
+            None,
+        );
+        document.node_mut(modal_nodes.overlay).style.layout.display = Display::None;
+        document
+            .compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        assert_eq!(
+            modal_dialog_dismiss_event_from_pointer_event(
+                &document,
+                modeless_nodes,
+                &modeless_options,
+                &UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0)),
             ),
             Some(OverlayFrameEvent::dismiss_dialog(
                 DialogDismissReason::OutsidePointer
             ))
+        );
+    }
+
+    #[test]
+    fn modal_pointer_dismissal_distinguishes_blocked_content_from_background() {
+        for modeless in [false, true] {
+            let mut document = UiDocument::new(root_style(640.0, 360.0));
+            let root = document.root();
+            let mut options = ModalDialogOptions::default()
+                .with_dismissal(DialogDismissal::STANDARD)
+                .without_close_button();
+            if modeless {
+                options = options.modeless();
+            }
+            let nodes = modal_dialog(&mut document, root, "dialog", "Dialog", options.clone());
+            let disabled = document.add_child(
+                nodes.body,
+                UiNode::container("disabled", LayoutStyle::size(80.0, 30.0))
+                    .with_input(InputBehavior::BUTTON)
+                    .with_accessibility(
+                        AccessibilityMeta::new(AccessibilityRole::Button).disabled(),
+                    ),
+            );
+            document
+                .compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+                .unwrap();
+            let rect = document.node(disabled).layout.rect;
+            let inside = UiPoint::new(rect.x + 5.0, rect.y + 5.0);
+            assert_eq!(
+                document.hit_test_result(inside),
+                Some(HitTestResult::Blocked(disabled))
+            );
+            for event in [
+                UiInputEvent::PointerDown(inside),
+                UiInputEvent::PointerUp(UiPoint::new(4.0, 4.0)),
+                UiInputEvent::PointerCancel,
+                UiInputEvent::wheel(UiPoint::new(4.0, 4.0), UiPoint::new(0.0, 10.0)),
+            ] {
+                assert_eq!(
+                    modal_dialog_dismiss_event_from_pointer_event(
+                        &document, nodes, &options, &event
+                    ),
+                    None,
+                    "modeless={modeless}, event={event:?}"
+                );
+            }
+            assert_eq!(
+                modal_dialog_dismiss_event_from_pointer_event(
+                    &document,
+                    nodes,
+                    &options,
+                    &UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0))
+                ),
+                Some(OverlayFrameEvent::dismiss_dialog(
+                    DialogDismissReason::OutsidePointer
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn modal_outside_dismissal_uses_each_events_position() {
+        let mut document = UiDocument::new(root_style(640.0, 360.0));
+        let root = document.root();
+        let options = ModalDialogOptions::default().with_dismissal(DialogDismissal::STANDARD);
+        let nodes = modal_dialog(&mut document, root, "dialog", "Dialog", options.clone());
+        document
+            .compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let rect = document.node(nodes.dialog).layout.rect;
+        let inside = UiPoint::new(rect.x + 10.0, rect.y + 10.0);
+        let outside = UiPoint::new(4.0, 4.0);
+        let events = [
+            UiInputEvent::PointerDown(outside),
+            UiInputEvent::PointerUp(outside),
+            UiInputEvent::PointerDown(inside),
+            UiInputEvent::PointerUp(outside),
+            UiInputEvent::PointerMove(inside),
+        ];
+        let results = events
+            .iter()
+            .cloned()
+            .map(|event| document.handle_input(event))
+            .collect::<Vec<_>>();
+        for (index, result) in results.iter().enumerate() {
+            assert_eq!(
+                modal_dialog_dismiss_event_from_input_result(
+                    &document,
+                    nodes,
+                    &options,
+                    result,
+                    &events[index]
+                ),
+                (index == 0).then_some(OverlayFrameEvent::dismiss_dialog(
+                    DialogDismissReason::OutsidePointer
+                )),
+                "event={:?}",
+                events[index]
+            );
+        }
+    }
+
+    #[test]
+    fn modal_dismissal_follows_transformed_dialog_and_portal_geometry() {
+        let mut document = UiDocument::new(root_style(640.0, 360.0));
+        let root = document.root();
+        let options = ModalDialogOptions::default()
+            .with_size(120.0, 100.0)
+            .with_dismissal(DialogDismissal::STANDARD)
+            .without_close_button();
+        let nodes = modal_dialog(&mut document, root, "dialog", "Dialog", options.clone());
+        // Let the moving surface paint outside its original layout rectangle.
+        document.node_mut(nodes.dialog).style.clip = ClipBehavior::None;
+        document.node_mut(nodes.dialog).animation = Some(
+            AnimationMachine::new(
+                vec![AnimationState::new(
+                    "shown",
+                    AnimatedValues::new(1.0, UiPoint::new(150.0, 0.0), 1.0),
+                )],
+                Vec::new(),
+                "shown",
+            )
+            .unwrap(),
+        );
+        document.register_portal_host("dialog.body", nodes.body);
+        let portal = document.add_portal_child(
+            nodes.body,
+            UiPortalTarget::Named("dialog.body".into()),
+            UiNode::container(
+                "portal",
+                LayoutStyle::absolute_rect(UiRect::new(-200.0, -100.0, 60.0, 30.0)),
+            )
+            .with_input(InputBehavior::BUTTON)
+            .with_clip_scope(ClipScope::Viewport)
+            .with_accessibility(AccessibilityMeta::new(AccessibilityRole::Button).disabled()),
+        );
+        document
+            .compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let rect = document.node(nodes.dialog).layout.rect;
+        let original = UiPoint::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        let translated = UiPoint::new(original.x + 150.0, original.y);
+        let portal_rect = document.node(portal).layout.rect;
+        let portal_point = UiPoint::new(portal_rect.x + 5.0, portal_rect.y + 5.0);
+        assert!(!rect.contains_point(translated));
+        assert!(!document.node_geometry_contains_point(nodes.dialog, portal_point));
+        assert_eq!(
+            document.hit_test_result(portal_point),
+            Some(HitTestResult::Blocked(portal))
+        );
+        for (point, outside) in [(translated, false), (original, true), (portal_point, false)] {
+            assert_eq!(
+                modal_dialog_dismiss_event_from_pointer_event(
+                    &document,
+                    nodes,
+                    &options,
+                    &UiInputEvent::PointerDown(point)
+                ),
+                outside.then_some(OverlayFrameEvent::dismiss_dialog(
+                    DialogDismissReason::OutsidePointer
+                )),
+                "point={point:?}",
+            );
+        }
+        // Once the original rectangle clips the translated surface, its hidden
+        // area must no longer count as inside the dialog.
+        document.node_mut(nodes.dialog).style.clip = ClipBehavior::Clip;
+        document
+            .compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        assert_eq!(
+            modal_dialog_dismiss_event_from_pointer_event(
+                &document,
+                nodes,
+                &options,
+                &UiInputEvent::PointerDown(translated)
+            ),
+            Some(OverlayFrameEvent::dismiss_dialog(
+                DialogDismissReason::OutsidePointer
+            ))
+        );
+    }
+
+    #[test]
+    fn modal_dismissal_ignores_dialogs_behind_the_active_modal() {
+        let mut document = UiDocument::new(root_style(640.0, 360.0));
+        let root = document.root();
+        let options = ModalDialogOptions::default().with_dismissal(DialogDismissal::STANDARD);
+        let back = modal_dialog(&mut document, root, "back", "Back", options.clone());
+        let front = modal_dialog(&mut document, root, "front", "Front", options.clone());
+        document
+            .compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        let event = UiInputEvent::PointerDown(UiPoint::new(4.0, 4.0));
+        let result = document.handle_input(event.clone());
+        for nodes in [back, front] {
+            let expected = (nodes.dialog == front.dialog).then_some(
+                OverlayFrameEvent::dismiss_dialog(DialogDismissReason::OutsidePointer),
+            );
+            assert_eq!(
+                modal_dialog_dismiss_event_from_pointer_event(&document, nodes, &options, &event),
+                expected
+            );
+            assert_eq!(
+                modal_dialog_dismiss_event_from_input_result(
+                    &document, nodes, &options, &result, &event
+                ),
+                expected
+            );
+        }
+        document.node_mut(front.overlay).style.layout.display = Display::None;
+        document
+            .compute_layout(UiSize::new(640.0, 360.0), &mut ApproxTextMeasurer)
+            .unwrap();
+        assert_eq!(
+            modal_dialog_dismiss_event_from_pointer_event(&document, front, &options, &event),
+            None
+        );
+        assert_eq!(
+            modal_dialog_dismiss_event_from_pointer_event(&document, back, &options, &event),
+            Some(OverlayFrameEvent::dismiss_dialog(
+                DialogDismissReason::OutsidePointer
+            ))
+        );
+        document.node_mut(back.dialog).enabled = false;
+        assert_eq!(
+            modal_dialog_dismiss_event_from_pointer_event(&document, back, &options, &event),
+            None
         );
     }
 
@@ -598,10 +921,8 @@ mod tests {
             close_rect.x + 2.0,
             close_rect.y + 2.0,
         )));
-        let result = document.handle_input(UiInputEvent::PointerUp(UiPoint::new(
-            close_rect.x + 2.0,
-            close_rect.y + 2.0,
-        )));
+        let event = UiInputEvent::PointerUp(UiPoint::new(close_rect.x + 2.0, close_rect.y + 2.0));
+        let result = document.handle_input(event.clone());
 
         assert!(
             modal_dialog_close_actions_from_input_result(&document, nodes, &options, &result)
@@ -609,7 +930,9 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            modal_dialog_dismiss_event_from_input_result(&document, nodes, &options, &result),
+            modal_dialog_dismiss_event_from_input_result(
+                &document, nodes, &options, &result, &event
+            ),
             None
         );
     }

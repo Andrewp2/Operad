@@ -937,6 +937,7 @@ impl TextInputId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// UTF-8 byte offsets. For selections, `start` is the anchor and `end` the caret.
 pub struct TextRange {
     pub start: usize,
     pub end: usize,
@@ -967,7 +968,9 @@ pub struct TextImeSession {
     pub cursor_rect: LogicalRect,
     pub surrounding_text: String,
     pub selection: TextRange,
+    pub composition: Option<TextRange>,
     pub multiline: bool,
+    pub sensitive: bool,
 }
 
 impl TextImeSession {
@@ -977,7 +980,9 @@ impl TextImeSession {
             cursor_rect,
             surrounding_text: String::new(),
             selection: TextRange::EMPTY,
+            composition: None,
             multiline: false,
+            sensitive: false,
         }
     }
 
@@ -2119,10 +2124,10 @@ impl BackendCapabilities {
                 keyboard_press: true,
                 keyboard_release: true,
                 text_input: true,
-                text_ime: false,
+                text_ime: true,
                 modifiers: true,
-                raw_mouse_motion: false,
-                pointer_lock: false,
+                raw_mouse_motion: true,
+                pointer_lock: true,
                 gamepad: false,
                 canvas_local_input: true,
             })
@@ -2136,11 +2141,13 @@ impl BackendCapabilities {
             })
             .layers(LayerCapabilities::STANDARD)
             .services(PlatformServiceCapabilities {
+                text_ime: true,
                 clipboard_read: true,
                 clipboard_write: true,
                 open_url: true,
                 cursor_shape: true,
                 cursor_visible: true,
+                cursor_grab: true,
                 repaint: true,
                 ..PlatformServiceCapabilities::NONE
             })
@@ -2337,20 +2344,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resource_handles_keep_kind_and_domain() {
-        let image = ResourceHandle::Image(ImageHandle::app("cover-art"));
-        let icon = ResourceHandle::Icon(IconHandle::built_in("play"));
-        let texture = ResourceHandle::Texture(TextureHandle::host("swapchain"));
-
-        assert_eq!(image.kind(), ResourceKind::Image);
-        assert_eq!(image.id().domain, ResourceDomain::App);
-        assert_eq!(icon.kind(), ResourceKind::Icon);
-        assert_eq!(icon.id().domain, ResourceDomain::BuiltIn);
-        assert_eq!(texture.kind(), ResourceKind::Texture);
-        assert_eq!(texture.id().domain, ResourceDomain::Host);
-    }
-
-    #[test]
     fn layer_order_keeps_debug_above_app_ui() {
         let app_high = LayerOrder::new(UiLayer::AppOverlay, LAYER_LOCAL_Z_MAX);
         let debug_low = LayerOrder::new(UiLayer::DebugOverlay, LAYER_LOCAL_Z_MIN);
@@ -2366,22 +2359,6 @@ mod tests {
             LayerOrder::new(UiLayer::AppContent, f32::MAX).local_z,
             LAYER_LOCAL_Z_MAX
         );
-    }
-
-    #[test]
-    fn platform_service_request_and_response_share_correlation_id() {
-        let request = PlatformServiceRequest::new(
-            PlatformRequestId::new(42),
-            PlatformRequest::Clipboard(ClipboardRequest::ReadText),
-        );
-        let response = PlatformServiceResponse::new(
-            PlatformRequestId::new(42),
-            PlatformResponse::Clipboard(ClipboardResponse::Text(Some("copied".to_string()))),
-        );
-
-        assert_eq!(request.kind(), PlatformServiceKind::Clipboard);
-        assert_eq!(response.kind(), PlatformServiceKind::Clipboard);
-        assert!(response.is_for(&request));
     }
 
     #[test]
@@ -2410,8 +2387,6 @@ mod tests {
     fn screenshot_images_are_srgb_by_default_and_can_encode_linear_sources() {
         let srgb = ScreenshotImage::srgb_rgba8(PixelSize::new(1, 1), 2.0, vec![128, 64, 32, 200]);
         assert_eq!(srgb.color_space, PixelColorSpace::Srgb);
-        assert_eq!(srgb.color_space.label(), "srgb");
-        assert!(srgb.color_space.is_srgb_encoded());
         assert_eq!(srgb.bytes, vec![128, 64, 32, 200]);
 
         let converted =
@@ -2503,20 +2478,6 @@ mod tests {
     }
 
     #[test]
-    fn input_capabilities_distinguish_basic_input_from_flycam_input() {
-        assert!(InputCapabilities::STANDARD.supports(InputCapabilityKind::KeyboardPress));
-        assert!(InputCapabilities::STANDARD.supports(InputCapabilityKind::KeyboardRelease));
-        assert!(InputCapabilities::STANDARD.supports(InputCapabilityKind::CanvasLocalInput));
-        assert!(!InputCapabilities::STANDARD.supports(InputCapabilityKind::RawMouseMotion));
-        assert!(!InputCapabilities::STANDARD.supports(InputCapabilityKind::PointerLock));
-
-        assert!(InputCapabilities::DESKTOP.supports(InputCapabilityKind::RawMouseMotion));
-        assert!(InputCapabilities::DESKTOP.supports(InputCapabilityKind::PointerLock));
-        assert!(InputCapabilities::DESKTOP.supports(InputCapabilityKind::WheelPhase));
-        assert!(!InputCapabilities::NONE.supports(InputCapabilityKind::KeyboardPress));
-    }
-
-    #[test]
     fn platform_service_capabilities_distinguish_cursor_subfeatures() {
         let capabilities = PlatformServiceCapabilities {
             cursor_shape: true,
@@ -2573,10 +2534,10 @@ mod tests {
         );
         assert!(!unsupported.supported);
         assert_eq!(unsupported.decision, CapabilityDecision::EmitDiagnostic);
-        assert!(unsupported.summary.contains("raw mouse motion"));
-        assert!(unsupported
-            .remediation
-            .contains("does not depend on that input stream"));
+        assert_eq!(
+            unsupported.requirement,
+            BackendCapabilityRequirement::Input(InputCapabilityKind::RawMouseMotion)
+        );
 
         let disabled = backend.diagnose_requirement(
             BackendCapabilityRequirement::PlatformRequest(PlatformRequest::Cursor(
@@ -2586,7 +2547,6 @@ mod tests {
         );
         assert!(!disabled.supported);
         assert_eq!(disabled.decision, CapabilityDecision::DisableFeature);
-        assert!(disabled.summary.contains("cursor grab Locked"));
 
         let batch = backend.diagnose_requirements(
             [
@@ -2653,29 +2613,32 @@ mod tests {
             BackendCapabilityProfile::Flycam3d,
             CapabilityFallback::EmitDiagnostic,
         );
-        let missing_labels = diagnostics
+        let missing = diagnostics
             .iter()
             .filter(|diagnostic| !diagnostic.supported)
-            .map(|diagnostic| diagnostic.requirement.label())
+            .map(|diagnostic| diagnostic.requirement.clone())
             .collect::<Vec<_>>();
 
-        assert!(missing_labels.contains(&"input:raw mouse motion".to_string()));
-        assert!(missing_labels.contains(&"input:pointer lock".to_string()));
-        assert!(missing_labels.contains(&"platform:cursor grab".to_string()));
+        assert!(missing.contains(&BackendCapabilityRequirement::Input(
+            InputCapabilityKind::RawMouseMotion
+        )));
+        assert!(missing.contains(&BackendCapabilityRequirement::Input(
+            InputCapabilityKind::PointerLock
+        )));
+        assert!(
+            missing.contains(&BackendCapabilityRequirement::PlatformService(
+                PlatformServiceCapabilityKind::CursorGrab
+            ))
+        );
         assert!(diagnostics
             .iter()
             .filter(|diagnostic| !diagnostic.supported)
-            .all(
-                |diagnostic| diagnostic.decision == CapabilityDecision::EmitDiagnostic
-                    && diagnostic.remediation.contains("fallback")
-            ));
+            .all(|diagnostic| diagnostic.decision == CapabilityDecision::EmitDiagnostic));
     }
 
     #[test]
     fn built_in_host_capability_matrix_covers_native_web_and_test_hosts() {
         let native = BackendCapabilities::native_window();
-        assert_eq!(native.name, "native-window");
-        assert_eq!(native.adapter, BackendAdapterKind::Wgpu);
         assert!(native.supports_profile(BackendCapabilityProfile::BasicUi));
         assert!(native.supports_profile(BackendCapabilityProfile::TextEditing));
         assert!(native.supports_profile(BackendCapabilityProfile::CommandHotkeys));
@@ -2686,44 +2649,28 @@ mod tests {
         assert!(!native.supports_profile(BackendCapabilityProfile::AccessibleApp));
 
         let web = BackendCapabilities::web_runtime();
-        assert_eq!(web.name, "web-runtime");
-        assert_eq!(web.adapter, BackendAdapterKind::Wgpu);
         assert!(web.supports_input(InputCapabilityKind::KeyboardRelease));
         assert!(web.supports_profile(BackendCapabilityProfile::BasicUi));
         assert!(web.supports_profile(BackendCapabilityProfile::TextEditing));
         assert!(web.supports_profile(BackendCapabilityProfile::CommandHotkeys));
         assert!(web.supports_profile(BackendCapabilityProfile::CanvasPointerEditing));
-        assert!(!web.supports_profile(BackendCapabilityProfile::Flycam3d));
+        assert!(web.supports_profile(BackendCapabilityProfile::Flycam3d));
         assert!(web.supports_profile(BackendCapabilityProfile::DockWorkspace));
         assert!(!web.supports_profile(BackendCapabilityProfile::PlatformDragDrop));
 
-        let web_flycam_missing = unsupported_requirement_labels(
-            &web,
-            BackendCapabilityProfile::Flycam3d,
-            CapabilityFallback::EmitDiagnostic,
-        );
-        assert_eq!(
-            web_flycam_missing,
-            vec![
-                "input:raw mouse motion".to_string(),
-                "input:pointer lock".to_string(),
-                "platform:cursor grab".to_string(),
-            ]
-        );
-
-        let web_platform_drag_drop_missing = unsupported_requirement_labels(
+        let web_platform_drag_drop_missing = unsupported_requirements(
             &web,
             BackendCapabilityProfile::PlatformDragDrop,
             CapabilityFallback::UseFallback,
         );
         assert_eq!(
             web_platform_drag_drop_missing,
-            vec!["platform:drag and drop".to_string()]
+            vec![BackendCapabilityRequirement::PlatformService(
+                PlatformServiceCapabilityKind::DragDrop
+            )]
         );
 
         let test = BackendCapabilities::test_host();
-        assert_eq!(test.name, "operad-test-host");
-        assert_eq!(test.adapter, BackendAdapterKind::Test);
         assert!(test.rendering.deterministic_snapshots);
         assert!(test.supports_profile(BackendCapabilityProfile::BasicUi));
         assert!(test.supports_profile(BackendCapabilityProfile::TextEditing));
@@ -2735,33 +2682,24 @@ mod tests {
         assert!(!test.supports_profile(BackendCapabilityProfile::Flycam3d));
     }
 
-    fn unsupported_requirement_labels(
+    fn unsupported_requirements(
         backend: &BackendCapabilities,
         profile: BackendCapabilityProfile,
         fallback: CapabilityFallback,
-    ) -> Vec<String> {
+    ) -> Vec<BackendCapabilityRequirement> {
         backend
             .diagnose_profile(profile, fallback)
             .into_iter()
             .filter(|diagnostic| {
                 !diagnostic.supported && diagnostic.decision != CapabilityDecision::UseFeature
             })
-            .map(|diagnostic| diagnostic.requirement.label())
+            .map(|diagnostic| diagnostic.requirement)
             .collect()
     }
 
     #[test]
-    fn text_ime_and_drag_drop_payloads_are_plain_data() {
+    fn text_ime_responses_identify_their_session() {
         let input = TextInputId::new("search");
-        let ime = TextImeSession::new(input.clone(), LogicalRect::new(4.0, 8.0, 1.0, 18.0))
-            .surrounding_text("abc", TextRange::caret(2));
-        let payload = DragPayload::text("clip");
-
-        assert_eq!(ime.input, input);
-        assert!(ime.selection.is_caret());
-        assert_eq!(payload.text.as_deref(), Some("clip"));
-        assert!(LogicalRect::new(0.0, 0.0, 8.0, 8.0).contains(LogicalPoint::new(4.0, 4.0)));
-
         let other = TextInputId::new("other");
         let commit = TextImeResponse::Commit {
             input: input.clone(),

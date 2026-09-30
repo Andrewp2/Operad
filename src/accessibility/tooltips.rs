@@ -6,6 +6,7 @@
 
 use crate::commands::{CommandId, CommandRegistry, CommandScope, Shortcut};
 use crate::input::{PointerButton, PointerEventKind, RawPointerEvent};
+pub use crate::layout::TooltipPlacement;
 use crate::{
     KeyCode, KeyModifiers, OverlayDismissPolicy, OverlayEntry, OverlayFocusRestoreTarget,
     OverlayId, OverlayKind, UiNodeId, UiPoint, UiRect,
@@ -305,21 +306,6 @@ pub enum ValidationHelpSeverity {
     Info,
     Warning,
     Error,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TooltipPlacement {
-    Above,
-    Below,
-    Left,
-    Right,
-    Cursor,
-}
-
-impl Default for TooltipPlacement {
-    fn default() -> Self {
-        Self::Above
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -947,28 +933,12 @@ mod tests {
         let request = CommandTooltipResolver::new(&registry)
             .formatter(ShortcutFormatter::new(ShortcutDisplayPlatform::Apple))
             .request_for(anchor, "save", &[CommandScope::Global])
-            .expect("tooltip request")
-            .placement(TooltipPlacement::Below)
-            .delay_ms(250);
+            .expect("tooltip request");
 
         assert_eq!(request.anchor, anchor);
-        assert_eq!(request.placement, TooltipPlacement::Below);
-        assert_eq!(request.delay_ms, 250);
         assert_eq!(
             request.text(),
             "Save Project (Control+S)\nWrites the project file to disk"
-        );
-    }
-
-    #[test]
-    fn tooltip_content_can_be_built_without_command_registry() {
-        let content = TooltipContent::new("Snap to grid")
-            .body("Constrains edits to the visible grid")
-            .shortcut_label("G");
-
-        assert_eq!(
-            content.text(),
-            "Snap to grid (G)\nConstrains edits to the visible grid"
         );
     }
 

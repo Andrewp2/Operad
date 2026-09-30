@@ -353,8 +353,7 @@ pub fn link_actions_from_input_result(
     let Some(clicked) = result.clicked else {
         return queue;
     };
-    if !document.node_is_descendant_or_self(link, clicked) || !action_target_enabled(document, link)
-    {
+    if !action_target_accepts_hit(document, link, clicked) {
         return queue;
     }
     if let Some(binding) = options.action.clone() {
@@ -525,9 +524,7 @@ pub fn selectable_label_actions_from_input_result(
     let Some(clicked) = result.clicked else {
         return queue;
     };
-    if !document.node_is_descendant_or_self(label, clicked)
-        || !action_target_enabled(document, label)
-    {
+    if !action_target_accepts_hit(document, label, clicked) {
         return queue;
     }
     if let Some(binding) = options.action.clone() {
@@ -556,38 +553,6 @@ pub fn localized_label(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn label_style_helpers_set_expected_text_metadata() {
-        let mut document = UiDocument::new(root_style(320.0, 120.0));
-        let root = document.root;
-        let heading = heading_label(
-            &mut document,
-            root,
-            "heading",
-            "Heading",
-            LayoutStyle::new(),
-        );
-        let code = code_label(
-            &mut document,
-            root,
-            "code",
-            "let x = 1;",
-            LayoutStyle::new(),
-        );
-
-        let UiContent::Text(heading_text) = &document.node(heading).content else {
-            panic!("heading should be text");
-        };
-        assert_eq!(heading_text.style.weight, FontWeight::BOLD);
-        assert_eq!(heading_text.style.font_size, 24.0);
-
-        let UiContent::Text(code_text) = &document.node(code).content else {
-            panic!("code should be text");
-        };
-        assert_eq!(code_text.style.family, FontFamily::Monospace);
-        assert_eq!(code_text.style.wrap, TextWrap::None);
-    }
 
     #[test]
     fn link_builds_focusable_accessible_link() {

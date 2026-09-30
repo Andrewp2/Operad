@@ -105,8 +105,10 @@ pub fn drag_value_input(
     options: DragValueOptions,
 ) -> UiNodeId {
     let name = name.into();
-    let value = options.range.map_or(value, |range| range.clamp(value));
-    let text = options.unit.format(options.precision.format(value));
+    let value = options.precision.normalize_in_range(value, options.range);
+    let text = options
+        .unit
+        .format(options.precision.format_in_range(value, options.range));
     let label_text = options
         .accessibility_label
         .clone()
@@ -233,7 +235,11 @@ fn drag_value_intrinsic_text(value: f64, options: &DragValueOptions) -> String {
     }
     candidates
         .into_iter()
-        .map(|value| options.unit.format(options.precision.format(value)))
+        .map(|value| {
+            options
+                .unit
+                .format(options.precision.format_in_range(value, options.range))
+        })
         .max_by(|left, right| {
             left.chars()
                 .count()
@@ -253,9 +259,7 @@ pub fn drag_value_input_actions_from_gesture_event(
     let GestureEvent::Drag(gesture) = event else {
         return queue;
     };
-    if !document.node_is_descendant_or_self(node, gesture.target)
-        || !action_target_enabled(document, node)
-    {
+    if !action_target_accepts_hit(document, node, gesture.target) {
         return queue;
     }
     let Some(binding) = options.action.clone() else {

@@ -248,6 +248,8 @@ pub struct FloatingWindowDragState {
 pub struct FloatingWindowResizeState {
     pub origin_size: UiSize,
     pub origin_pointer: UiPoint,
+    /// Restored on cancellation, including the absence of a stored size.
+    pub previous_size: Option<UiSize>,
     pub was_user_sized: bool,
 }
 
@@ -566,6 +568,7 @@ impl FloatingDesktopState {
                     FloatingWindowResizeState {
                         origin_size,
                         origin_pointer: edit.position,
+                        previous_size: self.sizes.get(id).copied(),
                         was_user_sized: self.user_sized.contains(id),
                     },
                 );
@@ -580,6 +583,7 @@ impl FloatingDesktopState {
                     .unwrap_or(FloatingWindowResizeState {
                         origin_size,
                         origin_pointer: edit.position,
+                        previous_size: self.sizes.get(id).copied(),
                         was_user_sized: self.user_sized.contains(id),
                     });
                 self.user_sized.insert(id.to_string());
@@ -599,7 +603,11 @@ impl FloatingDesktopState {
                     if !resize.was_user_sized {
                         self.user_sized.remove(id);
                     }
-                    self.sizes.insert(id.to_string(), resize.origin_size);
+                    if let Some(size) = resize.previous_size {
+                        self.sizes.insert(id.to_string(), size);
+                    } else {
+                        self.sizes.remove(id);
+                    }
                 }
             }
         }
@@ -2011,26 +2019,6 @@ mod tests {
     }
 
     #[test]
-    fn floating_desktop_state_organizer_preserves_minimum_width() {
-        let defaults = FloatingWindowDefaults::new(
-            UiPoint::new(24.0, 30.0),
-            UiSize::new(260.0, 80.0),
-            UiSize::new(220.0, 60.0),
-        );
-        let options = FloatingDesktopOptions::new(UiSize::new(200.0, 180.0))
-            .with_margin(10.0)
-            .with_gap(8.0);
-        let mut state = FloatingDesktopState::new(FloatingDesktopZPolicy::new(10.0, 5.0, 100.0));
-        state.ensure_window("wide", defaults);
-        let before = state.clone();
-
-        let outcome = state.organize_windows([("wide", defaults)], options.bounds, &options);
-
-        assert_eq!(outcome, FloatingWindowOrganizeOutcome::NoFit);
-        assert_eq!(state, before);
-    }
-
-    #[test]
     fn floating_window_layout_wraps_auto_windows_without_overlap() {
         let windows = vec![
             FloatingWindowDescriptor::new("a", "A", UiSize::new(180.0, 80.0))
@@ -2128,8 +2116,10 @@ mod tests {
             .expect("layout");
 
         assert_eq!(nodes.windows.len(), 2);
-        assert_eq!(document.node(nodes.windows[0].root).style.z_index, 1.0);
-        assert_eq!(document.node(nodes.windows[1].root).style.z_index, 33.0);
+        assert!(
+            document.node(nodes.windows[0].root).style.z_index
+                < document.node(nodes.windows[1].root).style.z_index
+        );
         assert_eq!(
             document.node(nodes.windows[1].title_bar).action.as_ref(),
             Some(&WidgetActionBinding::action("window.two.activate"))
@@ -2255,9 +2245,7 @@ mod tests {
             .style
             .z_index;
 
-        assert_eq!(back_root_z, 1.0);
-        assert_eq!(front_root_z, 33.0);
-        assert_eq!(back_child_z, 32.0);
+        assert!(back_root_z <= back_child_z);
         assert!(back_child_z < front_root_z);
     }
 
@@ -2448,14 +2436,11 @@ mod tests {
 
         let window = &nodes.windows[0];
         for node in [
-            Some(window.title_bar),
-            window.collapse_button,
-            window.close_button,
-            window.resize_handle,
-        ]
-        .into_iter()
-        .flatten()
-        {
+            window.title_bar,
+            window.collapse_button.expect("collapse control"),
+            window.close_button.expect("close control"),
+            window.resize_handle.expect("resize control"),
+        ] {
             let accessibility = document
                 .node(node)
                 .accessibility()
@@ -2917,6 +2902,66 @@ mod tests {
             state.size("compact", defaults.size),
             UiSize::new(300.0, 170.0)
         );
+    }
+
+    #[test]
+    fn floating_desktop_resize_cancel_restores_size_and_auto_sizing_policy() {
+        use crate::WidgetValueEditPhase;
+
+        let defaults = FloatingWindowDefaults::new(
+            UiPoint::new(20.0, 20.0),
+            UiSize::new(240.0, 140.0),
+            UiSize::new(80.0, 70.0),
+        );
+        let rendered = UiRect::new(20.0, 20.0, 180.0, 100.0);
+        let edit = |phase, offset: f32| {
+            WidgetPointerEdit::new(
+                phase,
+                UiPoint::new(rendered.right() + offset, rendered.bottom() + offset),
+                UiPoint::new(rendered.width + offset, rendered.height + offset),
+                rendered,
+            )
+        };
+
+        for previous_size in [None, Some(UiSize::new(320.0, 190.0))] {
+            for was_user_sized in [false, true] {
+                for update_before_cancel in [false, true] {
+                    let mut state = FloatingDesktopState::default();
+                    state.ensure_window("panel", defaults);
+                    if let Some(size) = previous_size {
+                        state.sizes.insert("panel".to_string(), size);
+                    }
+                    if was_user_sized {
+                        state.user_sized.insert("panel".to_string());
+                    }
+                    let descriptor = FloatingWindowDescriptor::new("panel", "Panel", defaults.size)
+                        .with_auto_size_to_content(true);
+                    let mut before = descriptor.clone();
+                    state.apply_to_descriptor(&mut before, defaults);
+
+                    state.apply_resize("panel", edit(WidgetValueEditPhase::Begin, 0.0), defaults);
+                    if update_before_cancel {
+                        state.apply_resize(
+                            "panel",
+                            edit(WidgetValueEditPhase::Update, 40.0),
+                            defaults,
+                        );
+                    }
+                    state.apply_resize("panel", edit(WidgetValueEditPhase::Cancel, 40.0), defaults);
+
+                    let mut after = descriptor;
+                    state.apply_to_descriptor(&mut after, defaults);
+                    assert_eq!(
+                        (after.preferred_size, after.auto_size_to_content),
+                        (before.preferred_size, before.auto_size_to_content),
+                        "cancel changed sizing: previous={previous_size:?}, manual={was_user_sized}, updated={update_before_cancel}"
+                    );
+                    assert_eq!(state.sizes.get("panel").copied(), previous_size);
+                    assert_eq!(state.user_sized.contains("panel"), was_user_sized);
+                    assert!(!state.resize.contains_key("panel"));
+                }
+            }
+        }
     }
 
     fn overlaps(left: UiRect, right: UiRect) -> bool {

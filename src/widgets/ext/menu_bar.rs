@@ -11,9 +11,9 @@ use crate::{
 };
 
 use super::menu::{
-    button_like_with_input, first_navigable_index, length_percentage, menu_selection_at_path,
-    next_navigable_index, set_active_descendant, AnchoredPopup, MenuItem, MenuSelection,
-    NavigationDirection, PopupAlign, PopupPlacement, PopupSide,
+    attach_popup_to_trigger, button_like_with_input, first_navigable_index, length_percentage,
+    menu_selection_at_path, next_navigable_index, set_active_descendant, AnchoredPopup, MenuItem,
+    MenuSelection, NavigationDirection, PopupAlign, PopupPlacement, PopupSide,
 };
 use super::menu_list::{menu_list_popup, MenuListNodes, MenuListOptions};
 
@@ -80,7 +80,10 @@ impl MenuBarState {
         menus: &[MenuBarMenu],
         direction: NavigationDirection,
     ) -> Option<usize> {
-        let menu = self.open_menu.and_then(|index| menus.get(index))?;
+        let menu = self
+            .open_menu
+            .and_then(|index| menus.get(index))
+            .filter(|menu| menu.enabled)?;
         let active = next_navigable_index(&menu.items, self.active_item, direction);
         self.active_item = active;
         active
@@ -89,7 +92,7 @@ impl MenuBarState {
     pub fn select_active(&self, menus: &[MenuBarMenu]) -> Option<MenuSelection> {
         let menu_index = self.open_menu?;
         let item_index = self.active_item?;
-        let menu = menus.get(menu_index)?;
+        let menu = menus.get(menu_index).filter(|menu| menu.enabled)?;
         let mut selection = menu_selection_at_path(&menu.items, &[item_index])?;
         selection.index_path.insert(0, menu_index);
         Some(selection)
@@ -97,7 +100,7 @@ impl MenuBarState {
 
     pub fn set_active_item_by_id(&mut self, menus: &[MenuBarMenu], id: &str) -> Option<usize> {
         let menu_index = self.open_menu?;
-        let menu = menus.get(menu_index)?;
+        let menu = menus.get(menu_index).filter(|menu| menu.enabled)?;
         let item_index = menu
             .items
             .iter()
@@ -193,7 +196,7 @@ pub fn menu_bar(
     );
     let mut buttons = Vec::with_capacity(menus.len());
     for (index, menu) in menus.iter().enumerate() {
-        let active = state.open_menu == Some(index);
+        let active = menu.enabled && state.open_menu == Some(index);
         let visual = if active {
             options.active_button_visual
         } else {
@@ -254,10 +257,12 @@ pub fn menu_bar(
     let popup = state
         .open_menu
         .and_then(|index| Some((index, menus.get(index)?)))
+        .filter(|(_, menu)| menu.enabled)
         .and_then(|(index, menu)| {
             let anchors = anchors?;
             let anchor = *anchors.anchors.get(index)?;
-            Some(menu_list_popup(
+            let portal = options.popup_menu.portal.clone();
+            let popup = menu_list_popup(
                 document,
                 parent,
                 format!("{name}.{}.popup", menu.id),
@@ -265,7 +270,9 @@ pub fn menu_bar(
                 &menu.items,
                 state.active_item,
                 options.popup_menu,
-            ))
+            );
+            attach_popup_to_trigger(document, popup.root, buttons[index], &portal);
+            Some(popup)
         });
 
     MenuBarNodes {

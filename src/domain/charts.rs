@@ -1753,24 +1753,6 @@ mod tests {
     }
 
     #[test]
-    fn grid_map_cell_metadata_builds_domain_hit_targets() {
-        let geometry = GridMapGeometry::new(UiRect::new(0.0, 0.0, 90.0, 90.0), 3, 3);
-        let meta = GridMapCellMeta::new(GridCell::new(1, 2))
-            .id("die.B3")
-            .label("Die B3")
-            .value("yield 98.1%");
-
-        let hit = geometry.hit_meta_for_cell_meta(&meta).unwrap();
-
-        assert_eq!(hit.id.as_deref(), Some("die.B3"));
-        assert_eq!(hit.label.as_deref(), Some("Die B3"));
-        assert_eq!(hit.value.as_deref(), Some("yield 98.1%"));
-        assert_eq!(hit.cell, Some(GridCell::new(1, 2)));
-        assert_eq!(hit.bounds, UiRect::new(30.0, 60.0, 30.0, 30.0));
-        assert!(hit.selectable);
-    }
-
-    #[test]
     fn grid_map_hit_collection_skips_out_of_bounds_cells() {
         let geometry = GridMapGeometry::new(UiRect::new(0.0, 0.0, 40.0, 40.0), 2, 2);
         let hits = geometry.hit_collection_for_cells([

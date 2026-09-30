@@ -5,13 +5,27 @@
 //! events into these contracts, while tests can drive the same lifecycle
 //! deterministically.
 
+pub mod tasks;
+mod views;
+pub use tasks::{task_channel, TaskReceiver, TaskSendError, TaskSender};
+pub use views::{ViewBuildStats, ViewContext};
+
+mod ime;
+pub mod integration;
+pub use integration::{
+    Application, CanvasInput, KeyboardInput, PointerInput, RawMouseMotion, RuntimeHookResult,
+    RuntimeHooks, RuntimeMetrics, RuntimeObservation,
+};
+pub use session::RuntimeInteractionCancellation;
 pub mod host;
 pub mod platform;
 pub mod windows;
 
 use std::time::Duration;
 
+pub mod repaint;
 pub mod session;
+pub use repaint::{coalesce_repaint_requests, RuntimeRepaintScheduler};
 
 #[cfg(feature = "native-window")]
 pub mod native;
@@ -595,99 +609,6 @@ impl Default for RuntimeIdleScheduler {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RuntimeRepaintScheduler {
-    next_frame: bool,
-    delay: Option<Duration>,
-    continuous: bool,
-    dirty_flags: DirtyFlags,
-    invalidations: Vec<RuntimeInvalidation>,
-    frames_without_idle: u32,
-    guard: RuntimeLoopGuard,
-}
-
-impl RuntimeRepaintScheduler {
-    pub fn new(guard: RuntimeLoopGuard) -> Self {
-        Self {
-            next_frame: false,
-            delay: None,
-            continuous: false,
-            dirty_flags: DirtyFlags::NONE,
-            invalidations: Vec::new(),
-            frames_without_idle: 0,
-            guard,
-        }
-    }
-
-    pub fn request(&mut self, request: RepaintRequest) {
-        match request {
-            RepaintRequest::NextFrame => self.next_frame = true,
-            RepaintRequest::After(delay) => {
-                self.delay = Some(self.delay.map_or(delay, |current| current.min(delay)));
-            }
-            RepaintRequest::Area(_) => self.next_frame = true,
-            RepaintRequest::Continuous { active } => {
-                self.continuous = active;
-                if active {
-                    self.next_frame = true;
-                }
-            }
-        }
-    }
-
-    pub fn invalidate(&mut self, invalidation: RuntimeInvalidation) {
-        self.dirty_flags = self.dirty_flags.union(invalidation.reason.dirty_flags());
-        self.invalidations.push(invalidation);
-        self.next_frame = true;
-    }
-
-    pub const fn dirty_flags(&self) -> DirtyFlags {
-        self.dirty_flags
-    }
-
-    pub fn invalidations(&self) -> &[RuntimeInvalidation] {
-        &self.invalidations
-    }
-
-    pub const fn continuous(&self) -> bool {
-        self.continuous
-    }
-
-    pub const fn delay(&self) -> Option<Duration> {
-        self.delay
-    }
-
-    pub const fn frame_due(&self) -> bool {
-        self.next_frame || self.continuous
-    }
-
-    pub fn finish_frame(&mut self, rendered: bool) {
-        if rendered {
-            self.next_frame = self.continuous;
-            self.delay = None;
-            self.dirty_flags = DirtyFlags::NONE;
-            self.invalidations.clear();
-            self.frames_without_idle = self.frames_without_idle.saturating_add(1);
-        } else {
-            self.frames_without_idle = 0;
-        }
-    }
-
-    pub fn mark_idle(&mut self) {
-        self.frames_without_idle = 0;
-    }
-
-    pub const fn tripped_guard(&self) -> bool {
-        self.frames_without_idle > self.guard.max_frames_without_idle
-    }
-}
-
-impl Default for RuntimeRepaintScheduler {
-    fn default() -> Self {
-        Self::new(RuntimeLoopGuard::default())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeWindowEvent {
     Resized {
         window: RuntimeWindowId,
@@ -800,6 +721,20 @@ impl RuntimeLoopState {
         &self.repaint
     }
 
+    /// Earliest wakeup for either repaint work or a still-live timer.
+    pub fn next_wake_delay(&self) -> Option<Duration> {
+        let timer = self
+            .timers
+            .deadlines
+            .first()
+            .map(|timer| timer.deadline.saturating_sub(self.clock.elapsed));
+        self.repaint
+            .next_frame_delay()
+            .into_iter()
+            .chain(timer)
+            .min()
+    }
+
     pub fn timer_deadlines(&self) -> &[RuntimeTimerDeadline] {
         &self.timers.deadlines
     }
@@ -816,7 +751,6 @@ impl RuntimeLoopState {
         let deadline = self
             .timers
             .schedule(self.clock.elapsed, delay, invalidation);
-        self.repaint.request(RepaintRequest::After(delay));
         deadline
     }
 
@@ -942,6 +876,20 @@ impl RuntimeLoopState {
 
     pub fn next_frame_plan(&mut self, delta: Duration) -> RuntimeFramePlan {
         self.clock = self.clock.next(delta);
+        self.repaint.advance_to(self.clock.elapsed);
+        let due = self
+            .timers
+            .deadlines
+            .iter()
+            .take_while(|timer| timer.deadline <= self.clock.elapsed)
+            .map(|timer| timer.id)
+            .collect::<Vec<_>>();
+        for id in due {
+            self.handle_event(RuntimeWindowEvent::TimerFired {
+                id,
+                fired_at: self.clock.elapsed,
+            });
+        }
         let mut loop_guard_tripped = self.repaint.tripped_guard();
         let should_render = self.repaint.frame_due() && !loop_guard_tripped;
         let mut trace = RuntimePhaseTrace::new();
@@ -994,34 +942,11 @@ impl RuntimeLoopState {
             should_render,
             loop_guard_tripped,
         };
-        self.repaint.finish_frame(should_render);
-        plan
-    }
-}
-
-pub fn coalesce_repaint_requests(
-    requests: impl IntoIterator<Item = RepaintRequest>,
-) -> Option<RepaintRequest> {
-    let mut next_frame = false;
-    let mut delay: Option<Duration> = None;
-    let mut continuous = None;
-
-    for request in requests {
-        match request {
-            RepaintRequest::NextFrame | RepaintRequest::Area(_) => next_frame = true,
-            RepaintRequest::After(next_delay) => {
-                delay = Some(delay.map_or(next_delay, |current| current.min(next_delay)));
-            }
-            RepaintRequest::Continuous { active } => continuous = Some(active),
+        if should_render {
+            self.repaint.begin_frame();
+            self.repaint.finish_frame(true);
         }
-    }
-
-    if let Some(active) = continuous {
-        Some(RepaintRequest::Continuous { active })
-    } else if next_frame {
-        Some(RepaintRequest::NextFrame)
-    } else {
-        delay.map(RepaintRequest::After)
+        plan
     }
 }
 
@@ -1049,7 +974,7 @@ mod tests {
     use super::*;
     use crate::input::{PointerEventKind, RawPointerEvent};
     use crate::platform::RepaintResponse;
-    use crate::{UiPoint, UiRect};
+    use crate::UiPoint;
 
     fn runtime() -> RuntimeLoopState {
         RuntimeLoopState::new(
@@ -1060,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_input_schedules_frame_and_preserves_phase_order() {
+    fn raw_input_schedules_frame() {
         let mut runtime = runtime();
         runtime.handle_event(RuntimeWindowEvent::RawInput(RawInputEvent::Pointer(
             RawPointerEvent::new(PointerEventKind::Move, UiPoint::new(12.0, 14.0), 1),
@@ -1071,44 +996,6 @@ mod tests {
         assert_eq!(plan.raw_input.len(), 1);
         assert!(plan.dirty_flags.input);
         assert!(plan.dirty_flags.paint);
-        assert_eq!(
-            plan.trace.phases(),
-            &[
-                RuntimeFramePhase::CollectPlatformEvents,
-                RuntimeFramePhase::ConvertInput,
-                RuntimeFramePhase::ProcessHostFrame,
-                RuntimeFramePhase::BuildDocumentFrame,
-                RuntimeFramePhase::Layout,
-                RuntimeFramePhase::BuildPaint,
-                RuntimeFramePhase::Render,
-                RuntimeFramePhase::Present,
-            ]
-        );
-    }
-
-    #[test]
-    fn repaint_requests_coalesce_to_strongest_schedule() {
-        assert_eq!(
-            coalesce_repaint_requests([
-                RepaintRequest::After(Duration::from_millis(40)),
-                RepaintRequest::After(Duration::from_millis(16)),
-            ]),
-            Some(RepaintRequest::After(Duration::from_millis(16)))
-        );
-        assert_eq!(
-            coalesce_repaint_requests([
-                RepaintRequest::After(Duration::from_millis(16)),
-                RepaintRequest::NextFrame,
-            ]),
-            Some(RepaintRequest::NextFrame)
-        );
-        assert_eq!(
-            coalesce_repaint_requests([
-                RepaintRequest::NextFrame,
-                RepaintRequest::Continuous { active: true },
-            ]),
-            Some(RepaintRequest::Continuous { active: true })
-        );
     }
 
     #[test]
@@ -1193,36 +1080,27 @@ mod tests {
         let plan = runtime.next_frame_plan(Duration::from_millis(16));
         assert!(!plan.should_render);
         assert_eq!(plan.raw_input, Vec::new());
-        assert_eq!(
-            plan.trace.phases(),
-            &[
-                RuntimeFramePhase::CollectPlatformEvents,
-                RuntimeFramePhase::Idle,
-            ]
-        );
+        assert!(plan.trace.phases().contains(&RuntimeFramePhase::Idle));
     }
 
     #[test]
     fn continuous_repaint_trips_loop_guard() {
-        let mut runtime = runtime().with_loop_guard(RuntimeLoopGuard::new(2));
-        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(
-            RepaintRequest::Continuous { active: true },
-        ));
+        for limit in [0, 2] {
+            let mut runtime = runtime().with_loop_guard(RuntimeLoopGuard::new(limit));
+            runtime.handle_event(RuntimeWindowEvent::RequestRepaint(
+                RepaintRequest::Continuous { active: true },
+            ));
 
-        let first = runtime.next_frame_plan(Duration::from_millis(1));
-        let second = runtime.next_frame_plan(Duration::from_millis(1));
-        let third = runtime.next_frame_plan(Duration::from_millis(1));
-        let guarded = runtime.next_frame_plan(Duration::from_millis(1));
-
-        assert!(first.should_render);
-        assert!(second.should_render);
-        assert!(third.should_render);
-        assert!(!first.loop_guard_tripped);
-        assert!(!second.loop_guard_tripped);
-        assert!(!third.loop_guard_tripped);
-        assert!(guarded.loop_guard_tripped);
-        assert!(!guarded.should_render);
-        assert!(guarded.trace.phases().contains(&RuntimeFramePhase::Idle));
+            for _ in 0..=limit {
+                let rendered = runtime.next_frame_plan(Duration::from_millis(1));
+                assert!(rendered.should_render, "guard limit {limit}");
+                assert!(!rendered.loop_guard_tripped);
+            }
+            let guarded = runtime.next_frame_plan(Duration::from_millis(1));
+            assert!(guarded.loop_guard_tripped, "guard limit {limit}");
+            assert!(!guarded.should_render);
+            assert!(guarded.trace.phases().contains(&RuntimeFramePhase::Idle));
+        }
     }
 
     #[test]
@@ -1240,6 +1118,55 @@ mod tests {
         assert!(plan.dirty_flags.input);
         assert_eq!(plan.invalidations.len(), 2);
         assert_eq!(plan.invalidations[0].detail.as_deref(), Some("atlas"));
+    }
+
+    #[test]
+    fn delayed_repaint_becomes_due_without_other_events() {
+        let mut runtime = runtime();
+        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(RepaintRequest::After(
+            Duration::from_millis(30),
+        )));
+        assert!(
+            !runtime
+                .next_frame_plan(Duration::from_millis(29))
+                .should_render
+        );
+        assert!(
+            runtime
+                .next_frame_plan(Duration::from_millis(1))
+                .should_render
+        );
+        assert!(
+            !runtime
+                .next_frame_plan(Duration::from_millis(1))
+                .should_render
+        );
+    }
+
+    #[test]
+    fn delayed_repaint_survives_an_earlier_input_frame() {
+        let mut runtime = runtime();
+        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(RepaintRequest::After(
+            Duration::from_millis(30),
+        )));
+        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(
+            RepaintRequest::NextFrame,
+        ));
+        assert!(
+            runtime
+                .next_frame_plan(Duration::from_millis(10))
+                .should_render
+        );
+        assert!(
+            !runtime
+                .next_frame_plan(Duration::from_millis(19))
+                .should_render
+        );
+        assert!(
+            runtime
+                .next_frame_plan(Duration::from_millis(1))
+                .should_render
+        );
     }
 
     #[test]
@@ -1269,13 +1196,6 @@ mod tests {
             1.0, 2.0, 3.0, 4.0,
         )));
         assert!(scheduler.frame_due());
-
-        let mut trace = RuntimePhaseTrace::new();
-        trace.push(RuntimeFramePhase::Render);
-        trace.push(RuntimeFramePhase::Render);
-        assert_eq!(trace.phases(), &[RuntimeFramePhase::Render]);
-
-        let _ = UiRect::new(0.0, 0.0, 1.0, 1.0);
     }
 
     #[test]
@@ -1289,10 +1209,7 @@ mod tests {
         assert_eq!(deadline.id, RuntimeTimerId::new(1));
         assert_eq!(deadline.deadline, Duration::from_millis(50));
         assert_eq!(runtime.timer_deadlines(), std::slice::from_ref(&deadline));
-        assert_eq!(
-            runtime.repaint_scheduler().delay(),
-            Some(Duration::from_millis(50))
-        );
+        assert_eq!(runtime.next_wake_delay(), Some(Duration::from_millis(50)));
 
         let idle_plan = runtime.next_frame_plan(Duration::from_millis(10));
         assert!(!idle_plan.should_render);
@@ -1346,6 +1263,35 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_one_timer_preserves_other_timers_and_repaint_deadlines() {
+        let mut runtime = runtime();
+        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(RepaintRequest::After(
+            Duration::from_millis(100),
+        )));
+        let first = runtime.schedule_timer(
+            Duration::from_millis(10),
+            RuntimeInvalidation::new(RuntimeInvalidationReason::Animation),
+        );
+        let second = runtime.schedule_timer(
+            Duration::from_millis(20),
+            RuntimeInvalidation::new(RuntimeInvalidationReason::Animation),
+        );
+        runtime.cancel_timer(first.id);
+        assert_eq!(runtime.next_wake_delay(), Some(Duration::from_millis(20)));
+        let plan = runtime.next_frame_plan(Duration::from_millis(20));
+        assert!(plan.should_render);
+        assert_eq!(plan.timer_completions.len(), 1);
+        assert_eq!(plan.timer_completions[0].id, second.id);
+        assert_eq!(runtime.next_wake_delay(), Some(Duration::from_millis(80)));
+        assert!(
+            runtime
+                .next_frame_plan(Duration::from_millis(80))
+                .should_render
+        );
+        assert_eq!(runtime.next_wake_delay(), None);
+    }
+
+    #[test]
     fn timer_deadlines_coalesce_with_existing_repaint_delay() {
         let mut runtime = runtime();
         runtime.handle_event(RuntimeWindowEvent::RequestRepaint(RepaintRequest::After(
@@ -1359,10 +1305,7 @@ mod tests {
             Duration::from_millis(10),
         )));
 
-        assert_eq!(
-            runtime.repaint_scheduler().delay(),
-            Some(Duration::from_millis(10))
-        );
+        assert_eq!(runtime.next_wake_delay(), Some(Duration::from_millis(10)));
         let plan = runtime.next_frame_plan(Duration::ZERO);
         assert_eq!(plan.timer_deadlines.len(), 1);
         assert_eq!(plan.timer_deadlines[0].deadline, Duration::from_millis(30));
@@ -1429,28 +1372,5 @@ mod tests {
         assert_eq!(plan.idle_completions.len(), 1);
         assert!(plan.idle_completions[0].stale);
         assert_eq!(plan.invalidations, Vec::new());
-    }
-
-    #[test]
-    fn loop_guard_prevents_unbounded_repaint_loops() {
-        let mut runtime = runtime().with_loop_guard(RuntimeLoopGuard::new(0));
-        runtime.handle_event(RuntimeWindowEvent::RequestRepaint(
-            RepaintRequest::Continuous { active: true },
-        ));
-
-        let rendered = runtime.next_frame_plan(Duration::from_millis(1));
-        let guarded = runtime.next_frame_plan(Duration::from_millis(1));
-
-        assert!(rendered.should_render);
-        assert!(!rendered.loop_guard_tripped);
-        assert!(!guarded.should_render);
-        assert!(guarded.loop_guard_tripped);
-        assert_eq!(
-            guarded.trace.phases(),
-            &[
-                RuntimeFramePhase::CollectPlatformEvents,
-                RuntimeFramePhase::Idle,
-            ]
-        );
     }
 }

@@ -17,8 +17,11 @@ include = [
     "LICENSE",
     "operad_icon.png",
     "README.md",
+    "docs/**",
     "examples/**",
-    "scripts/**",
+    "scripts/*.mjs",
+    "scripts/*.py",
+    "scripts/*.sh",
     "src/**",
     "tests/**",
     "web/**",
@@ -69,6 +72,31 @@ name = "minimal_web"
 required-features = ["web-runtime"]
 
 [[example]]
+name = "runtime_scheduling"
+path = "tests/fixtures/runtime_scheduling.rs"
+required-features = ["web-runtime", "widgets"]
+
+[[example]]
+name = "runtime_task"
+path = "tests/fixtures/runtime_task.rs"
+required-features = ["native-window"]
+
+[[example]]
+name = "native_device_loss"
+path = "tests/fixtures/native_device_loss.rs"
+required-features = ["native-window"]
+
+[[example]]
+name = "runtime_ime"
+path = "tests/fixtures/runtime_ime.rs"
+required-features = ["widgets"]
+
+[[example]]
+name = "native_pointer"
+path = "tests/fixtures/native_pointer.rs"
+required-features = ["native-window", "widgets", "image-decode", "inspector"]
+
+[[example]]
 name = "animation_state_machine"
 required-features = ["native-window", "widgets"]
 
@@ -86,7 +114,7 @@ required-features = ["web-showcase"]
 
 [[test]]
 name = "api_surface"
-required-features = ["widgets", "inspector", "test-support"]
+required-features = ["widgets"]
 
 [[test]]
 name = "showcase_layout"
@@ -100,6 +128,10 @@ required-features = ["widgets", "test-support"]
 name = "wgpu_snapshot_parity"
 required-features = ["wgpu", "test-support"]
 
+[[test]]
+name = "wgpu_encoder_lifetime"
+required-features = ["wgpu"]
+
 [profile.dev]
 opt-level = 1
 
@@ -107,6 +139,7 @@ opt-level = 1
 opt-level = 0
 
 [dependencies]
+unicode-segmentation = "1.13.2"
 accesskit = { version = "0.21.1", optional = true }
 accesskit_winit = { version = "0.29.2", optional = true, default-features = false, features = ["rwh_06", "accesskit_unix", "async-io"] }
 arboard = { version = "3.6.1", optional = true, features = ["wayland-data-control"] }
@@ -124,6 +157,7 @@ taffy = "0.10.1"
 wasm-bindgen = { version = "0.2.121", optional = true }
 wasm-bindgen-futures = { version = "0.4.71", optional = true }
 web-sys = { version = "0.3.98", optional = true, features = [
+    "BeforeUnloadEvent",
     "Clipboard",
     "console",
     "CssStyleDeclaration",
@@ -135,11 +169,13 @@ web-sys = { version = "0.3.98", optional = true, features = [
     "HtmlCanvasElement",
     "HtmlElement",
     "KeyboardEvent",
+    "MediaQueryList",
     "MouseEvent",
     "Navigator",
     "Node",
     "Performance",
     "PointerEvent",
+    "ResizeObserver",
     "WheelEvent",
     "Window",
 ] }

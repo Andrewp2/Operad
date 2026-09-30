@@ -1,5 +1,4 @@
-override CUBE_YAW: f32 = 0.82;
-override CUBE_PITCH: f32 = 0.52;
+@group(0) @binding(0) var<uniform> rotation: vec2<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -64,8 +63,8 @@ fn rotate_z(angle: f32) -> mat3x3<f32> {
 
 fn cube_space(point: vec3<f32>) -> vec3<f32> {
     var p = point;
-    p = rotate_y(-CUBE_YAW) * p;
-    p = rotate_x(CUBE_PITCH) * p;
+    p = rotate_y(-rotation.x) * p;
+    p = rotate_x(rotation.y) * p;
     p = rotate_z(-0.18) * p;
     return p;
 }

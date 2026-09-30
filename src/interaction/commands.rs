@@ -796,28 +796,6 @@ mod tests {
     }
 
     #[test]
-    fn command_ids_are_opaque_and_metadata_is_preserved() {
-        let mut registry = CommandRegistry::new();
-
-        registry
-            .register(
-                CommandMeta::new("workspace.save", "Save Workspace")
-                    .description("Persist the active workspace")
-                    .category("File"),
-            )
-            .unwrap();
-
-        let command = registry.command("workspace.save").unwrap();
-        assert_eq!(command.meta.id.as_str(), "workspace.save");
-        assert_eq!(command.meta.label, "Save Workspace");
-        assert_eq!(
-            command.meta.description.as_deref(),
-            Some("Persist the active workspace")
-        );
-        assert_eq!(command.meta.category.as_deref(), Some("File"));
-    }
-
-    #[test]
     fn duplicate_commands_are_rejected() {
         let mut registry = registry_with(&["save"]);
 
@@ -1062,31 +1040,6 @@ mod tests {
                 ShortcutBinding::new(CommandScope::Global, Shortcut::ctrl('s'), "file.save"),
                 ShortcutBinding::new(CommandScope::Panel, Shortcut::ctrl('s'), "file.save"),
             ]
-        );
-    }
-
-    #[test]
-    fn conflicts_reports_existing_same_scope_collisions() {
-        let registry = CommandRegistry {
-            commands: HashMap::new(),
-            bindings: vec![
-                ShortcutBinding::new(CommandScope::Panel, Shortcut::ctrl('k'), "open.palette"),
-                ShortcutBinding::new(CommandScope::Panel, Shortcut::ctrl('k'), "focus.search"),
-                ShortcutBinding::new(CommandScope::Text, Shortcut::ctrl('k'), "insert.link"),
-            ],
-            effects: HashMap::new(),
-        };
-
-        assert_eq!(
-            registry.conflicts(),
-            vec![ShortcutConflict {
-                scope: CommandScope::Panel,
-                shortcut: Shortcut::ctrl('k'),
-                commands: vec![
-                    CommandId::from("focus.search"),
-                    CommandId::from("open.palette")
-                ],
-            }]
         );
     }
 

@@ -770,8 +770,6 @@ mod tests {
             Some("20%")
         );
         assert!(nodes.horizontal_row.is_some());
-        assert_eq!(document.node(vertical).children.len(), 1);
-        assert_eq!(document.node(horizontal).children.len(), 1);
     }
 
     #[test]

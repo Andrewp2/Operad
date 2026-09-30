@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Arrangement editor</title><link rel="icon" href="data:,">
+<style>
+body { margin: 0; background: #101923; color: white; font: 14px system-ui; }
+#operad-canvas { display: block; width: 700px; height: 420px; }
+#probe-status { display: block; padding: 16px 24px; }
+</style>
+<canvas id="operad-canvas"></canvas><output id="probe-status">Loading…</output>
+<script type="module">
+window.__OPERAD_ENABLE_UAT__ = true;
+import init, { start } from './pkg/runtime_editor.js';
+try { await init(); await start(); }
+catch (error) { document.querySelector('#probe-status').textContent = String(error); console.error(error); }
+</script></html>

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Runtime scheduling probe</title><link rel="icon" href="data:,">
+<style>
+body { margin: 0; background: #0d1117; color: white; font: 16px system-ui; }
+#canvas-host { width: 100vw; height: 100vh; }
+#operad-canvas { display: block; width: 100%; height: 100%; }
+#resize-host { position: fixed; right: 24px; bottom: 24px; }
+#probe-status { position: fixed; bottom: 20px; left: 24px; padding: 12px; background: #203040; }
+</style>
+<div id="canvas-host"><canvas id="operad-canvas"></canvas></div>
+<button id="resize-host" onclick="document.querySelector('#canvas-host').style.width = '600px'">Resize embedded canvas</button>
+<output id="probe-status">Loading…</output>
+<script type="module">
+window.__OPERAD_ENABLE_UAT__ = true;
+import init, { start } from './pkg/runtime_scheduling.js';
+try { await init(); await start(); }
+catch (error) { document.querySelector('#probe-status').textContent = String(error); console.error(error); }
+</script></html>

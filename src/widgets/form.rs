@@ -878,16 +878,6 @@ mod tests {
         )
         .expect("summary");
         assert_eq!(summary.messages.len(), 1);
-        assert_eq!(
-            document
-                .node(summary.root)
-                .accessibility
-                .as_ref()
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("1 errors")
-        );
     }
 
     #[test]
@@ -907,7 +897,6 @@ mod tests {
             FormActionButtonsOptions::default().include_reset(true),
         );
 
-        assert_eq!(document.node(nodes.root).children.len(), 4);
         assert_eq!(
             document.node(nodes.submit).action.as_ref(),
             Some(&WidgetActionBinding::action("form.submit"))

@@ -3,8 +3,13 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+mod clipboard;
+mod ime;
+
+use clipboard::NativeClipboard;
 
 use crate::input::{
     text_input_for_key_event_text, PointerButton, PointerButtons, PointerEventKind, RawInputEvent,
@@ -12,30 +17,39 @@ use crate::input::{
     WheelPhase,
 };
 use crate::platform::{
-    BackendCapabilities, ClipboardRequest, ClipboardResponse, CursorGrabMode, CursorRequest,
-    CursorResponse, CursorShape, LogicalRect, OpenUrlResponse, PixelSize, PlatformErrorCode,
-    PlatformRequest, PlatformRequestIdAllocator, PlatformResponse, PlatformServiceError,
-    PlatformServiceRequest, PlatformServiceResponse, RepaintRequest, RepaintResponse,
-    TextImeRequest, TextImeResponse,
+    BackendCapabilities, CursorGrabMode, CursorRequest, CursorResponse, CursorShape, LogicalRect,
+    OpenUrlResponse, PixelSize, PlatformErrorCode, PlatformRequest, PlatformRequestIdAllocator,
+    PlatformResponse, PlatformServiceError, PlatformServiceRequest, PlatformServiceResponse,
+    RepaintRequest, RepaintResponse, TextImeRequest, TextImeResponse,
 };
 use crate::renderer::EmptyResourceResolver;
 use crate::renderer::{
-    CanvasHostCaptureId, CanvasHostCapturePlan, CanvasRenderOutcome, CanvasRenderOutput,
-    CanvasRenderReport, CanvasRenderRequest, DirtyRegionSet, RenderError, RenderFrameRequest,
-    RenderTarget, RendererAdapter,
+    CanvasRenderOutcome, CanvasRenderOutput, CanvasRenderReport, CanvasRenderRequest,
+    DirtyRegionSet, RenderError, RenderFrameRequest, RenderTarget, RendererAdapter,
 };
 use crate::wgpu_renderer::{WgpuCanvasContext, WgpuSurfaceRenderer};
 use crate::{
     errors::{
         classify_render_error, ErrorKind, ErrorReport, FallbackAction, FallbackDecision,
-        RuntimeErrorKind,
+        RendererErrorKind, RuntimeErrorKind,
     },
-    host::{HostDocumentFrameOutput, HostFrameOutput, HostInteractionState, HostNodeInteraction},
+    host::{HostDocumentFrameOutput, HostFrameOutput, HostNodeInteraction},
 };
 use crate::{
-    CanvasContent, CosmicTextMeasurer, KeyCode, KeyModifiers, UiContent, UiDocument, UiNodeId,
-    UiPoint, UiRect, UiSize, WidgetAction, WidgetActionBinding,
+    CosmicTextMeasurer, KeyCode, KeyModifiers, UiDocument, UiNodeId, UiPoint, UiSize, WidgetAction,
+    WidgetActionBinding,
 };
+
+#[cfg(test)]
+use super::integration::input::canvas_input_for_raw_event;
+use super::integration::input::captured_raw_mouse_canvas;
+use super::{RawMouseMotion, RuntimeHooks, RuntimeMetrics, RuntimeObservation};
+#[cfg(test)]
+use crate::host::HostInteractionState;
+#[cfg(test)]
+use crate::renderer::{CanvasHostCaptureId, CanvasHostCapturePlan};
+#[cfg(test)]
+use crate::{CanvasContent, UiContent};
 
 pub type NativeWindowResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -121,7 +135,11 @@ impl fmt::Display for NativeWindowRunError {
     }
 }
 
-impl Error for NativeWindowRunError {}
+impl Error for NativeWindowRunError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.report.as_ref().map(|report| report as &dyn Error)
+    }
+}
 
 #[derive(Debug, Clone)]
 struct NativeRuntimeFailure {
@@ -193,189 +211,6 @@ impl fmt::Display for NativeFrameTimingReport {
             ", canvas_render={:?}, surface_render={:?}, total={:?}",
             self.canvas_render, self.surface_render, self.total
         )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NativeWindowMetrics {
-    pub physical_size: PixelSize,
-    pub viewport: UiSize,
-    pub scale_factor: f32,
-    pub dpi_scale: f32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NativeKeyboardInput {
-    pub logical_key: winit::keyboard::Key,
-    pub physical_key: winit::keyboard::PhysicalKey,
-    pub key_code: Option<KeyCode>,
-    pub modifiers: winit::keyboard::ModifiersState,
-    pub state: winit::event::ElementState,
-    pub pressed: bool,
-    pub repeat: bool,
-    pub text: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct NativeRawMouseMotion {
-    pub device_id: winit::event::DeviceId,
-    pub delta: (f64, f64),
-    pub timestamp_millis: u64,
-    pub captured_canvas: Option<CanvasHostCaptureId>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NativeCanvasInput {
-    pub node: UiNodeId,
-    pub key: String,
-    pub rect: UiRect,
-    pub local_position: Option<UiPoint>,
-    pub input: RawInputEvent,
-}
-
-type InitialSizeHook = Box<dyn Fn(&winit::event_loop::ActiveEventLoop) -> UiSize>;
-type TitleHook<State> = Box<dyn Fn(&State) -> String>;
-type ScaleFactorHook<State> = Box<dyn Fn(&State, NativeWindowMetrics) -> f32>;
-type CloseHook<State> = Box<dyn FnMut(&mut State) -> bool>;
-type KeyboardHook<State> = Box<dyn FnMut(&mut State, NativeKeyboardInput) -> bool>;
-type RawMouseMotionHook<State> = Box<dyn FnMut(&mut State, NativeRawMouseMotion) -> bool>;
-type CanvasInputHook<State> = Box<dyn FnMut(&mut State, NativeCanvasInput) -> bool>;
-type PlatformRequestsHook<State> =
-    Box<dyn FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformRequest>>;
-type PlatformServiceRequestsHook<State> =
-    Box<dyn FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformServiceRequest>>;
-type PlatformResponsesHook<State> = Box<dyn FnMut(&mut State, &[PlatformServiceResponse])>;
-type BeforeRenderHook<State> = Box<dyn FnMut(&mut State, NativeWindowMetrics)>;
-type IdleRedrawHook<State> = Box<dyn Fn(&State) -> bool>;
-
-pub struct NativeWindowHooks<State> {
-    pub initial_size: Option<InitialSizeHook>,
-    pub title: Option<TitleHook<State>>,
-    pub scale_factor: Option<ScaleFactorHook<State>>,
-    pub close_requested: Option<CloseHook<State>>,
-    pub keyboard_input: Option<KeyboardHook<State>>,
-    pub raw_mouse_motion: Option<RawMouseMotionHook<State>>,
-    pub canvas_input: Option<CanvasInputHook<State>>,
-    pub platform_requests: Option<PlatformRequestsHook<State>>,
-    pub platform_service_requests: Option<PlatformServiceRequestsHook<State>>,
-    pub platform_responses: Option<PlatformResponsesHook<State>>,
-    pub before_render: Option<BeforeRenderHook<State>>,
-    pub idle_redraw: Option<IdleRedrawHook<State>>,
-}
-
-impl<State> NativeWindowHooks<State> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_initial_size(
-        mut self,
-        initial_size: impl Fn(&winit::event_loop::ActiveEventLoop) -> UiSize + 'static,
-    ) -> Self {
-        self.initial_size = Some(Box::new(initial_size));
-        self
-    }
-
-    pub fn with_title(mut self, title: impl Fn(&State) -> String + 'static) -> Self {
-        self.title = Some(Box::new(title));
-        self
-    }
-
-    pub fn with_scale_factor(
-        mut self,
-        scale_factor: impl Fn(&State, NativeWindowMetrics) -> f32 + 'static,
-    ) -> Self {
-        self.scale_factor = Some(Box::new(scale_factor));
-        self
-    }
-
-    pub fn with_close_requested(
-        mut self,
-        close_requested: impl FnMut(&mut State) -> bool + 'static,
-    ) -> Self {
-        self.close_requested = Some(Box::new(close_requested));
-        self
-    }
-
-    pub fn with_keyboard_input(
-        mut self,
-        keyboard_input: impl FnMut(&mut State, NativeKeyboardInput) -> bool + 'static,
-    ) -> Self {
-        self.keyboard_input = Some(Box::new(keyboard_input));
-        self
-    }
-
-    pub fn with_raw_mouse_motion(
-        mut self,
-        raw_mouse_motion: impl FnMut(&mut State, NativeRawMouseMotion) -> bool + 'static,
-    ) -> Self {
-        self.raw_mouse_motion = Some(Box::new(raw_mouse_motion));
-        self
-    }
-
-    pub fn with_canvas_input(
-        mut self,
-        canvas_input: impl FnMut(&mut State, NativeCanvasInput) -> bool + 'static,
-    ) -> Self {
-        self.canvas_input = Some(Box::new(canvas_input));
-        self
-    }
-
-    pub fn with_platform_requests(
-        mut self,
-        platform_requests: impl FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformRequest> + 'static,
-    ) -> Self {
-        self.platform_requests = Some(Box::new(platform_requests));
-        self
-    }
-
-    pub fn with_platform_service_requests(
-        mut self,
-        platform_service_requests: impl FnMut(&mut State, NativeWindowMetrics) -> Vec<PlatformServiceRequest>
-            + 'static,
-    ) -> Self {
-        self.platform_service_requests = Some(Box::new(platform_service_requests));
-        self
-    }
-
-    pub fn with_platform_responses(
-        mut self,
-        platform_responses: impl FnMut(&mut State, &[PlatformServiceResponse]) + 'static,
-    ) -> Self {
-        self.platform_responses = Some(Box::new(platform_responses));
-        self
-    }
-
-    pub fn with_before_render(
-        mut self,
-        before_render: impl FnMut(&mut State, NativeWindowMetrics) + 'static,
-    ) -> Self {
-        self.before_render = Some(Box::new(before_render));
-        self
-    }
-
-    pub fn with_idle_redraw(mut self, idle_redraw: impl Fn(&State) -> bool + 'static) -> Self {
-        self.idle_redraw = Some(Box::new(idle_redraw));
-        self
-    }
-}
-
-impl<State> Default for NativeWindowHooks<State> {
-    fn default() -> Self {
-        Self {
-            initial_size: None,
-            title: None,
-            scale_factor: None,
-            close_requested: None,
-            keyboard_input: None,
-            raw_mouse_motion: None,
-            canvas_input: None,
-            platform_requests: None,
-            platform_service_requests: None,
-            platform_responses: None,
-            before_render: None,
-            idle_redraw: None,
-        }
     }
 }
 
@@ -466,10 +301,14 @@ impl<State> NativeWgpuCanvasRenderRegistry<State> {
         request: &RenderFrameRequest,
     ) -> CanvasRenderReport {
         let mut report = CanvasRenderReport::default();
-        for canvas_request in request.canvas_requests() {
-            let Some(handler) = self.handlers.get_mut(&canvas_request.canvas.key) else {
+        if self.handlers.is_empty() {
+            return report;
+        }
+        for (item, canvas) in request.canvas_items() {
+            let Some(handler) = self.handlers.get_mut(&canvas.key) else {
                 continue;
             };
+            let canvas_request = CanvasRenderRequest::from_canvas(item, canvas);
             let Some(size) = canvas_pixel_size(
                 canvas_request.rect.width,
                 canvas_request.rect.height,
@@ -518,8 +357,10 @@ impl<State> Default for NativeWgpuCanvasRenderRegistry<State> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NativeWindowOptions {
+    /// Compute initial size using native monitor information when the event loop starts.
+    pub initial_size: Option<Arc<dyn Fn(&winit::event_loop::ActiveEventLoop) -> UiSize>>,
     pub title: String,
     pub size: UiSize,
     pub min_size: Option<UiSize>,
@@ -528,7 +369,31 @@ pub struct NativeWindowOptions {
     pub tick_interval: Duration,
 }
 
+impl fmt::Debug for NativeWindowOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeWindowOptions")
+            .field("title", &self.title)
+            .field("size", &self.size)
+            .field("min_size", &self.min_size)
+            .field("ui_scale", &self.ui_scale)
+            .field("tick_action", &self.tick_action)
+            .field("tick_interval", &self.tick_interval)
+            .field(
+                "initial_size",
+                &self.initial_size.as_ref().map(|_| "callback"),
+            )
+            .finish()
+    }
+}
+
 impl NativeWindowOptions {
+    pub fn with_initial_size(
+        mut self,
+        hook: impl Fn(&winit::event_loop::ActiveEventLoop) -> UiSize + 'static,
+    ) -> Self {
+        self.initial_size = Some(Arc::new(hook));
+        self
+    }
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
@@ -575,6 +440,7 @@ impl Default for NativeWindowOptions {
     fn default() -> Self {
         Self {
             title: "operad".to_string(),
+            initial_size: None,
             size: UiSize::new(1024.0, 720.0),
             min_size: Some(UiSize::new(480.0, 320.0)),
             ui_scale: 1.0,
@@ -649,7 +515,7 @@ pub fn run_ui_document_with(
         options,
         (),
         |_state: &mut (), _action: WidgetAction| {},
-        move |_state: &(), viewport| view(viewport),
+        move |_state: &(), viewport, _views| view(viewport),
     )
 }
 
@@ -662,7 +528,7 @@ pub fn run_ui_document_with_canvas_renderers(
         options,
         (),
         |_state: &mut (), _action: WidgetAction| {},
-        move |_state: &(), viewport| view(viewport),
+        move |_state: &(), viewport, _views| view(viewport),
         canvas_renderers,
     )
 }
@@ -671,7 +537,7 @@ pub fn run_app<State>(
     title: impl Into<String>,
     state: State,
     update: impl FnMut(&mut State, WidgetAction) + 'static,
-    view: impl FnMut(&State, UiSize) -> UiDocument + 'static,
+    view: impl FnMut(&State, UiSize, &mut super::ViewContext<'_>) -> UiDocument + 'static,
 ) -> NativeWindowResult
 where
     State: 'static,
@@ -683,7 +549,7 @@ pub fn run_app_with<State>(
     options: NativeWindowOptions,
     state: State,
     update: impl FnMut(&mut State, WidgetAction) + 'static,
-    view: impl FnMut(&State, UiSize) -> UiDocument + 'static,
+    view: impl FnMut(&State, UiSize, &mut super::ViewContext<'_>) -> UiDocument + 'static,
 ) -> NativeWindowResult
 where
     State: 'static,
@@ -701,7 +567,7 @@ pub fn run_app_with_canvas_renderers<State>(
     options: NativeWindowOptions,
     state: State,
     update: impl FnMut(&mut State, WidgetAction) + 'static,
-    view: impl FnMut(&State, UiSize) -> UiDocument + 'static,
+    view: impl FnMut(&State, UiSize, &mut super::ViewContext<'_>) -> UiDocument + 'static,
     canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
 ) -> NativeWindowResult
 where
@@ -713,7 +579,7 @@ where
         update,
         view,
         canvas_renderers,
-        NativeWindowHooks::default(),
+        RuntimeHooks::default(),
     )
 }
 
@@ -721,9 +587,9 @@ pub fn run_app_with_canvas_renderers_and_hooks<State>(
     options: NativeWindowOptions,
     state: State,
     update: impl FnMut(&mut State, WidgetAction) + 'static,
-    view: impl FnMut(&State, UiSize) -> UiDocument + 'static,
+    view: impl FnMut(&State, UiSize, &mut super::ViewContext<'_>) -> UiDocument + 'static,
     canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
-    hooks: NativeWindowHooks<State>,
+    hooks: RuntimeHooks<State>,
 ) -> NativeWindowResult
 where
     State: 'static,
@@ -738,7 +604,14 @@ where
             None,
         )
     })?;
-    let mut app = NativeWindowApp::new(options, state, update, view, canvas_renderers, hooks);
+    let proxy = event_loop.create_proxy();
+    let task_proxy = proxy.clone();
+    let mut hooks = hooks;
+    hooks.set_task_waker(move || {
+        let _ = task_proxy.send_event(());
+    });
+    let mut app =
+        NativeWindowApp::new(options, state, update, view, canvas_renderers, hooks, proxy);
     if let Err(error) = event_loop.run_app(&mut app) {
         return Err(NativeWindowRunError::new(
             app.options.title.clone(),
@@ -769,18 +642,20 @@ struct NativeWindowApp<State, Update, View> {
     window: Option<Arc<winit::window::Window>>,
     window_id: Option<winit::window::WindowId>,
     renderer: Option<WgpuSurfaceRenderer<'static>>,
+    event_loop_proxy: winit::event_loop::EventLoopProxy<()>,
+    device_loss: Arc<Mutex<Option<ErrorReport>>>,
     canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
-    hooks: NativeWindowHooks<State>,
+    hooks: RuntimeHooks<State>,
     session: super::session::RuntimeSession,
     platform_request_ids: PlatformRequestIdAllocator,
+    clipboard: NativeClipboard,
     pending_platform_responses: Vec<PlatformServiceResponse>,
     text_measurer: CosmicTextMeasurer,
     pending_input: Vec<RawInputEvent>,
+    text_input: ime::NativeTextInput,
     cursor: Option<UiPoint>,
     modifiers: KeyModifiers,
     buttons: PointerButtons,
-    scheduled_redraw_at: Option<Instant>,
-    continuous_redraw: bool,
     start: Instant,
     last_tick: Instant,
     last_animation_tick: Instant,
@@ -795,7 +670,8 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         update: Update,
         view: View,
         canvas_renderers: NativeWgpuCanvasRenderRegistry<State>,
-        hooks: NativeWindowHooks<State>,
+        hooks: RuntimeHooks<State>,
+        event_loop_proxy: winit::event_loop::EventLoopProxy<()>,
     ) -> Self {
         Self {
             options,
@@ -805,18 +681,20 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             window: None,
             window_id: None,
             renderer: None,
+            event_loop_proxy,
+            device_loss: Arc::new(Mutex::new(None)),
             canvas_renderers,
             hooks,
             session: super::session::RuntimeSession::new(),
             platform_request_ids: PlatformRequestIdAllocator::default(),
+            clipboard: NativeClipboard::default(),
             pending_platform_responses: Vec::new(),
             text_measurer: CosmicTextMeasurer::new(),
             pending_input: Vec::new(),
+            text_input: ime::NativeTextInput::default(),
             cursor: None,
             modifiers: KeyModifiers::NONE,
             buttons: PointerButtons::NONE,
-            scheduled_redraw_at: None,
-            continuous_redraw: false,
             start: Instant::now(),
             last_tick: Instant::now(),
             last_animation_tick: Instant::now(),
@@ -833,7 +711,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             .with_title(self.options.title.clone())
             .with_visible(true);
         let initial_size = self
-            .hooks
+            .options
             .initial_size
             .as_ref()
             .map(|initial_size| initial_size(event_loop))
@@ -894,6 +772,30 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
                 "Lower required WGPU features/limits or update the GPU driver.",
             )
         })?;
+        let device_loss = self.device_loss.clone();
+        let proxy = self.event_loop_proxy.clone();
+        let title = self.options.title.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            *device_loss
+                .lock()
+                .expect("native device loss notification poisoned") = Some(
+                ErrorReport::fatal(
+                    ErrorKind::Renderer(RendererErrorKind::DeviceLost),
+                    format!("graphics device lost ({reason:?}): {message}"),
+                )
+                .context("backend", "native-window")
+                .context("target", title.clone())
+                .context(
+                    "next_step",
+                    "Restart the application to recreate its graphics device.",
+                )
+                .fallback(FallbackDecision::abort_frame(
+                    "the lost graphics device cannot present another frame",
+                )),
+            );
+            // Device callbacks may run on another thread, even while the UI is idle.
+            let _ = proxy.send_event(());
+        });
         let surface_config = surface
             .get_default_config(&adapter, size.width, size.height)
             .ok_or_else(|| {
@@ -916,6 +818,13 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     }
 
     fn request_redraw(&self) {
+        if self
+            .session
+            .frame_retry_delay(self.start.elapsed())
+            .is_some()
+        {
+            return;
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -955,11 +864,12 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             size.width.max(1) as f32 / dpi_scale,
             size.height.max(1) as f32 / dpi_scale,
         );
-        let metrics = NativeWindowMetrics {
+        let metrics = RuntimeMetrics {
             physical_size: PixelSize::new(size.width.max(1), size.height.max(1)),
             viewport: dpi_viewport,
             scale_factor: dpi_scale,
             dpi_scale,
+            elapsed: self.start.elapsed(),
         };
         self.hooks
             .scale_factor
@@ -968,17 +878,18 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             .unwrap_or(dpi_scale)
     }
 
-    fn metrics_for_viewport(&self, viewport: UiSize) -> NativeWindowMetrics {
+    fn metrics_for_viewport(&self, viewport: UiSize) -> RuntimeMetrics {
         let size = self
             .window
             .as_ref()
             .map(|window| window.inner_size())
             .unwrap_or_else(|| winit::dpi::PhysicalSize::new(1, 1));
-        NativeWindowMetrics {
+        RuntimeMetrics {
             physical_size: PixelSize::new(size.width.max(1), size.height.max(1)),
             viewport,
             scale_factor: self.scale_factor_for_size(size),
             dpi_scale: self.dpi_scale(),
+            elapsed: self.start.elapsed(),
         }
     }
 
@@ -993,37 +904,6 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     fn push_input(&mut self, event: RawInputEvent) {
         self.pending_input.push(event);
         self.request_redraw();
-    }
-
-    fn dispatch_canvas_input_hooks(
-        &mut self,
-        document: &UiDocument,
-        raw_input: Vec<RawInputEvent>,
-    ) -> Vec<RawInputEvent> {
-        if self.hooks.canvas_input.is_none() {
-            return raw_input;
-        }
-
-        if !raw_input.is_empty() {
-            self.session.invalidate_view();
-        }
-        let mut remaining = Vec::with_capacity(raw_input.len());
-        for event in raw_input {
-            let handled =
-                native_canvas_input_for_raw_event(document, self.session.interaction(), &event)
-                    .is_some_and(|canvas_input| {
-                        self.hooks
-                            .canvas_input
-                            .as_mut()
-                            .is_some_and(|hook| hook(&mut self.state, canvas_input))
-                    });
-            if handled {
-                self.request_redraw();
-            } else {
-                remaining.push(event);
-            }
-        }
-        remaining
     }
 
     fn apply_platform_service_requests(&mut self, frame: &HostDocumentFrameOutput) {
@@ -1051,7 +931,7 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     fn apply_platform_request(&mut self, request: PlatformRequest) -> PlatformResponse {
         match request {
             PlatformRequest::Clipboard(request) => {
-                PlatformResponse::Clipboard(apply_native_clipboard_request(request))
+                PlatformResponse::Clipboard(self.clipboard.apply(request))
             }
             PlatformRequest::OpenUrl(request) => {
                 PlatformResponse::OpenUrl(open_native_url(&request.url))
@@ -1069,24 +949,13 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         }
     }
 
-    fn apply_hook_platform_requests(&mut self, metrics: NativeWindowMetrics) {
-        if self.hooks.platform_requests.is_none() && self.hooks.platform_service_requests.is_none()
-        {
-            return;
-        }
-
-        let mut requests = Vec::new();
-        if let Some(platform_requests) = self.hooks.platform_requests.as_mut() {
-            self.session.invalidate_view();
-            requests.extend(
-                self.platform_request_ids
-                    .allocate_all(platform_requests(&mut self.state, metrics)),
-            );
-        }
-        if let Some(platform_service_requests) = self.hooks.platform_service_requests.as_mut() {
-            self.session.invalidate_view();
-            requests.extend(platform_service_requests(&mut self.state, metrics));
-        }
+    fn apply_hook_platform_requests(&mut self, metrics: RuntimeMetrics) {
+        let requests = self.session.take_platform_requests(
+            &mut self.hooks,
+            &mut self.state,
+            metrics,
+            &mut self.platform_request_ids,
+        );
         let responses = requests
             .into_iter()
             .map(|request| self.apply_platform_service_request(request))
@@ -1096,13 +965,8 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     }
 
     fn dispatch_platform_responses(&mut self, responses: &[PlatformServiceResponse]) {
-        if responses.is_empty() {
-            return;
-        }
-        if let Some(platform_responses) = self.hooks.platform_responses.as_mut() {
-            self.session.invalidate_view();
-            platform_responses(&mut self.state, responses);
-        }
+        self.session
+            .apply_platform_responses(&mut self.hooks, &mut self.state, responses);
     }
 
     fn apply_cursor_request(&self, request: CursorRequest) -> CursorResponse {
@@ -1141,54 +1005,50 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     }
 
     fn apply_repaint_request(&mut self, request: RepaintRequest) -> RepaintResponse {
-        match request {
-            RepaintRequest::NextFrame | RepaintRequest::Area(_) => {
-                self.request_redraw();
-                RepaintResponse::Scheduled {
-                    delay: Duration::ZERO,
-                }
-            }
-            RepaintRequest::After(delay) => {
-                let wake_at = Instant::now() + delay;
-                self.scheduled_redraw_at = Some(
-                    self.scheduled_redraw_at
-                        .map(|scheduled| scheduled.min(wake_at))
-                        .unwrap_or(wake_at),
-                );
-                RepaintResponse::Scheduled { delay }
-            }
-            RepaintRequest::Continuous { active } => {
-                self.continuous_redraw = active;
-                if active {
-                    self.request_redraw();
-                    RepaintResponse::Scheduled {
-                        delay: Duration::ZERO,
-                    }
-                } else {
-                    RepaintResponse::Coalesced
-                }
-            }
+        let now = self.start.elapsed();
+        let response = self.session.request_repaint(now, request);
+        if self.session.next_frame_delay(now) == Some(Duration::ZERO) {
+            self.request_redraw();
         }
+        response
     }
 
-    fn apply_text_ime_request(&self, request: TextImeRequest) -> TextImeResponse {
+    fn apply_text_ime_request(&mut self, request: TextImeRequest) -> TextImeResponse {
         let Some(window) = self.window.as_ref() else {
             return TextImeResponse::Unsupported;
         };
+        self.session.apply_text_ime_request(&request);
         match request {
             TextImeRequest::Activate(session) | TextImeRequest::Update(session) => {
-                window.set_ime_allowed(true);
-                set_native_ime_cursor_area(window, session.cursor_rect);
+                if self.text_input.configure(session.clone()) {
+                    window.set_ime_allowed(false);
+                    window.set_ime_allowed(true);
+                }
+                window.set_ime_purpose(if session.sensitive {
+                    winit::window::ImePurpose::Password
+                } else {
+                    winit::window::ImePurpose::Normal
+                });
+                set_native_ime_cursor_area(window, session.cursor_rect, self.scale_factor());
                 TextImeResponse::Activated {
                     input: session.input,
                 }
             }
             TextImeRequest::Deactivate { input } | TextImeRequest::HideKeyboard { input } => {
-                window.set_ime_allowed(false);
+                if self.text_input.deactivate(&input) {
+                    window.set_ime_allowed(false);
+                }
                 TextImeResponse::Deactivated { input }
             }
             TextImeRequest::ShowKeyboard { input } => {
-                window.set_ime_allowed(true);
+                if self
+                    .text_input
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.input == input)
+                {
+                    window.set_ime_allowed(true);
+                }
                 TextImeResponse::Activated { input }
             }
         }
@@ -1197,22 +1057,39 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
     fn render(&mut self) -> NativeWindowResult
     where
         Update: FnMut(&mut State, WidgetAction),
-        View: FnMut(&State, UiSize) -> UiDocument,
+        View: FnMut(&State, UiSize, &mut super::ViewContext<'_>) -> UiDocument,
     {
+        if let Some(error) = self
+            .device_loss
+            .lock()
+            .expect("native device loss notification poisoned")
+            .take()
+        {
+            return Err(error.into());
+        }
+        // OS redraws can already be queued when presentation fails.
+        if self
+            .session
+            .frame_retry_delay(self.start.elapsed())
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.session
+            .apply_task_completions(&mut self.hooks, &mut self.state);
         let Some(viewport) = self.viewport() else {
             return Ok(());
         };
         let frame_started = Instant::now();
+        self.session.begin_frame(self.start.elapsed());
         let metrics = self.metrics_for_viewport(viewport);
-        if let Some(before_render) = self.hooks.before_render.as_mut() {
-            self.session.invalidate_view();
-            before_render(&mut self.state, metrics);
-        }
+        self.session
+            .apply_before_render(&mut self.hooks, &mut self.state, metrics);
         if let (Some(window), Some(title)) = (self.window.as_ref(), self.hooks.title.as_ref()) {
             window.set_title(&title(&self.state));
         }
-        self.apply_hook_platform_requests(metrics);
         self.dispatch_tick_if_due();
+        self.apply_hook_platform_requests(metrics);
         let raw_input = std::mem::take(&mut self.pending_input);
         let animation_dt = self.animation_delta_seconds();
 
@@ -1221,14 +1098,16 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let mut build_document = build_started.elapsed();
         let mut nodes = document.node_count();
         document.tick_animations(animation_dt);
-        let raw_input = self.dispatch_canvas_input_hooks(&document, raw_input);
         let host_input_started = Instant::now();
-        let host_output = self.session.process_input(
-            &document,
+        let host_output = self.session.process_input_with_hooks(
+            &mut document,
             viewport,
-            raw_input,
-            std::mem::take(&mut self.pending_platform_responses),
-        );
+            &raw_input,
+            &std::mem::take(&mut self.pending_platform_responses),
+            &mut self.hooks,
+            &mut self.state,
+            &mut self.text_measurer,
+        )?;
         let host_input = host_input_started.elapsed();
         let document_frame_started = Instant::now();
         let frame = self.session.finish_frame(
@@ -1240,15 +1119,12 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
             &mut self.platform_request_ids,
         )?;
         let mut document_frame = document_frame_started.elapsed();
-        if document.animations_active() {
-            self.request_redraw();
-        }
-        let actions = crate::host::collect_document_widget_actions(&document, &frame);
+        let actions = crate::host::collect_document_widget_actions(&frame);
         let actions_count = actions.len();
         self.apply_platform_service_requests(&frame);
 
         let mut action_rebuild = None;
-        let frame = if actions.is_empty() {
+        let frame = if actions.is_empty() && !self.session.view_needs_rebuild() {
             frame
         } else {
             let action_started = Instant::now();
@@ -1256,7 +1132,9 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
                 (self.update)(&mut self.state, action);
                 self.session.invalidate_view();
             }
+            self.apply_hook_platform_requests(metrics);
             let rebuild_started = Instant::now();
+            self.session.retain_document(document);
             document = self.build_document(viewport)?;
             build_document += rebuild_started.elapsed();
             nodes = document.node_count();
@@ -1270,16 +1148,26 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
                 &mut self.platform_request_ids,
             )?;
             document_frame += document_frame_started.elapsed();
-            if document.animations_active() {
-                self.request_redraw();
-            }
             self.apply_platform_service_requests(&frame);
             action_rebuild = Some(action_started.elapsed());
             frame
         };
 
+        self.session
+            .reconcile_input_hooks(&document, &mut self.hooks, &mut self.state);
+        if self.session.view_needs_rebuild() {
+            // A response to the second document pass may update application
+            // state again. Defer that work without losing the wakeup.
+            let now = self.start.elapsed();
+            self.session.request_repaint(now, RepaintRequest::NextFrame);
+        }
+        self.hooks.observe(
+            &self.state,
+            RuntimeObservation::new(metrics, &document, &frame, self.session.view_build_stats()),
+        );
         self.session.retain_document(document);
         let Some(renderer) = self.renderer.as_mut() else {
+            self.session.frame_failed(self.start.elapsed());
             self.last_frame_report = Some(NativeFrameTimingReport {
                 viewport,
                 nodes,
@@ -1297,15 +1185,25 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         };
         let paint_items = frame.render_request.paint.items.len();
         let canvas_started = Instant::now();
-        if !self.canvas_renderers.is_empty() {
-            self.session.invalidate_view();
-        }
         let canvas_report = self.canvas_renderers.render_frame_canvases(
             &mut self.state,
             renderer,
             &frame.render_request,
         );
+        // Unmatched registrations cannot change application state. A matching
+        // callback may mutate it even when that callback returns an error.
+        if !canvas_report.outcomes.is_empty() {
+            self.session.invalidate_view();
+        }
         let canvas_render = canvas_started.elapsed();
+        if let Some(error) = self
+            .device_loss
+            .lock()
+            .expect("native device loss notification poisoned")
+            .take()
+        {
+            return Err(error.into());
+        }
         if let Some(error) = canvas_report.first_failure().cloned() {
             return Err(error.into());
         }
@@ -1313,8 +1211,17 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
         let surface_started = Instant::now();
         let render_result = renderer.render_frame(frame.render_request, &EmptyResourceResolver);
         let surface_render = surface_started.elapsed();
+        if let Some(error) = self
+            .device_loss
+            .lock()
+            .expect("native device loss notification poisoned")
+            .take()
+        {
+            return Err(error.into());
+        }
         if let Err(error) = render_result {
             if render_error_uses_cached_frame(&error) {
+                self.session.frame_failed(self.start.elapsed());
                 self.last_frame_report = Some(NativeFrameTimingReport {
                     viewport,
                     nodes,
@@ -1371,16 +1278,33 @@ impl<State, Update, View> NativeWindowApp<State, Update, View> {
 
     fn build_document(&mut self, viewport: UiSize) -> Result<UiDocument, taffy::TaffyError>
     where
-        View: FnMut(&State, UiSize) -> UiDocument,
+        View: FnMut(&State, UiSize, &mut super::ViewContext<'_>) -> UiDocument,
     {
         let scale = crate::UiDocumentScale::new(self.options.ui_scale, self.scale_factor());
-        self.session.build_document(
+        let mut document = self.session.build_document(
             viewport,
             scale,
             self.cursor,
             &mut self.text_measurer,
-            |viewport| (self.view)(&self.state, viewport),
-        )
+            |viewport, views| (self.view)(&self.state, viewport, views),
+        )?;
+        self.session
+            .reconcile_input_hooks(&document, &mut self.hooks, &mut self.state);
+        if self.session.view_needs_rebuild() {
+            // Owner removal can cancel an application edit. Include that cleanup
+            // in this frame's view before producing its final paint and observation.
+            self.session.retain_document(document);
+            document = self.session.build_document(
+                viewport,
+                scale,
+                self.cursor,
+                &mut self.text_measurer,
+                |viewport, views| (self.view)(&self.state, viewport, views),
+            )?;
+            self.session
+                .reconcile_input_hooks(&document, &mut self.hooks, &mut self.state);
+        }
+        Ok(document)
     }
 
     fn animation_delta_seconds(&mut self) -> f32 {
@@ -1408,8 +1332,31 @@ impl<State, Update, View> winit::application::ApplicationHandler
 where
     State: 'static,
     Update: FnMut(&mut State, WidgetAction) + 'static,
-    View: FnMut(&State, UiSize) -> UiDocument + 'static,
+    View: FnMut(&State, UiSize, &mut super::ViewContext<'_>) -> UiDocument + 'static,
 {
+    fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.clipboard = NativeClipboard::default();
+    }
+
+    fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, (): ()) {
+        let device_loss = self
+            .device_loss
+            .lock()
+            .expect("native device loss notification poisoned")
+            .take();
+        if let Some(error) = device_loss {
+            self.fail_and_exit(event_loop, "handling graphics device loss", error.into());
+            return;
+        }
+        if self
+            .session
+            .apply_task_completions(&mut self.hooks, &mut self.state)
+            > 0
+        {
+            self.request_redraw();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -1446,6 +1393,28 @@ where
                     event_loop.exit();
                 } else {
                     self.request_redraw();
+                }
+            }
+            winit::event::WindowEvent::Focused(false) => {
+                if let Some(input) = self.text_input.window_unfocused(self.timestamp_millis()) {
+                    self.push_input(input);
+                }
+                if let Some(window) = &self.window {
+                    window.set_ime_allowed(false);
+                }
+                self.buttons = PointerButtons::NONE;
+                self.modifiers = KeyModifiers::NONE;
+                self.push_input(RawInputEvent::Pointer(RawPointerEvent::new(
+                    PointerEventKind::Cancel,
+                    self.cursor.unwrap_or(UiPoint::new(0.0, 0.0)),
+                    self.timestamp_millis(),
+                )));
+            }
+            winit::event::WindowEvent::Focused(true) => {
+                if self.text_input.session.is_some() {
+                    if let Some(window) = &self.window {
+                        window.set_ime_allowed(true);
+                    }
                 }
             }
             winit::event::WindowEvent::Destroyed => {
@@ -1511,49 +1480,29 @@ where
                 self.modifiers = key_modifiers(modifiers.state());
             }
             winit::event::WindowEvent::KeyboardInput { event, .. } => {
-                let key = key_code(&event, self.modifiers);
-                if self.hooks.keyboard_input.is_some() {
-                    self.session.invalidate_view();
-                }
-                let handled = self
-                    .hooks
-                    .keyboard_input
-                    .as_mut()
-                    .is_some_and(|keyboard_input| {
-                        keyboard_input(
-                            &mut self.state,
-                            NativeKeyboardInput {
-                                logical_key: event.logical_key.clone(),
-                                physical_key: event.physical_key,
-                                key_code: key,
-                                modifiers: winit_modifiers(self.modifiers),
-                                state: event.state,
-                                pressed: matches!(event.state, winit::event::ElementState::Pressed),
-                                repeat: event.repeat,
-                                text: event.text.as_ref().map(|text| text.to_string()),
-                            },
-                        )
-                    });
-                if handled {
-                    self.request_redraw();
+                if self
+                    .text_input
+                    .owns_key(event.physical_key, event.state.is_pressed())
+                {
                     return;
                 }
+                let key = key_code(&event, self.modifiers);
+                let timestamp_millis = self.timestamp_millis();
                 if let Some(key) = key {
-                    let event = match event.state {
+                    let mut raw = match event.state {
                         winit::event::ElementState::Pressed => {
-                            RawKeyboardEvent::press(key, self.modifiers, self.timestamp_millis())
+                            RawKeyboardEvent::press(key, self.modifiers, timestamp_millis)
                                 .repeat(event.repeat)
                         }
                         winit::event::ElementState::Released => {
-                            RawKeyboardEvent::release(key, self.modifiers, self.timestamp_millis())
+                            RawKeyboardEvent::release(key, self.modifiers, timestamp_millis)
                         }
                     };
-                    self.push_input(RawInputEvent::Keyboard(event));
-                }
-                if event.state == winit::event::ElementState::Pressed
-                    && !self.modifiers.ctrl
-                    && !self.modifiers.meta
-                {
+                    if event.state.is_pressed() {
+                        raw.text = event.text.as_ref().map(|text| text.to_string());
+                    }
+                    self.push_input(RawInputEvent::Keyboard(raw));
+                } else if event.state.is_pressed() && !self.modifiers.ctrl && !self.modifiers.meta {
                     if let Some(text) = event
                         .text
                         .as_ref()
@@ -1561,22 +1510,24 @@ where
                     {
                         self.push_input(RawInputEvent::Text(RawTextInputEvent::new(
                             text,
-                            self.timestamp_millis(),
+                            timestamp_millis,
                         )));
                     }
                 }
             }
             winit::event::WindowEvent::Ime(ime) => {
-                if let Some(input) = native_text_input_for_ime_event(&ime, self.timestamp_millis())
-                {
+                if let Some(input) = self.text_input.event(&ime, self.timestamp_millis()) {
                     self.push_input(input);
-                } else if matches!(
-                    ime,
-                    winit::event::Ime::Preedit(_, _)
-                        | winit::event::Ime::Enabled
-                        | winit::event::Ime::Disabled
-                ) {
-                    self.request_redraw();
+                }
+                if matches!(ime, winit::event::Ime::Enabled) {
+                    if let (Some(window), Some(session)) = (&self.window, &self.text_input.session)
+                    {
+                        set_native_ime_cursor_area(
+                            window,
+                            session.cursor_rect,
+                            self.scale_factor(),
+                        );
+                    }
                 }
             }
             winit::event::WindowEvent::RedrawRequested => {
@@ -1594,37 +1545,46 @@ where
     fn device_event(
         &mut self,
         _event_loop: &winit::event_loop::ActiveEventLoop,
-        device_id: winit::event::DeviceId,
+        _device_id: winit::event::DeviceId,
         event: winit::event::DeviceEvent,
     ) {
         let winit::event::DeviceEvent::MouseMotion { delta } = event else {
             return;
         };
         let timestamp_millis = self.timestamp_millis();
-        if self.hooks.raw_mouse_motion.is_some() {
+        if let Some(raw_mouse_motion) = self.hooks.raw_mouse_motion.as_mut() {
             self.session.invalidate_view();
-        }
-        let handled = self
-            .hooks
-            .raw_mouse_motion
-            .as_mut()
-            .is_some_and(|raw_mouse_motion| {
-                raw_mouse_motion(
-                    &mut self.state,
-                    NativeRawMouseMotion {
-                        device_id,
-                        delta,
-                        timestamp_millis,
-                        captured_canvas: captured_raw_mouse_canvas(self.session.interaction()),
-                    },
-                )
-            });
-        if handled {
+            raw_mouse_motion(
+                &mut self.state,
+                RawMouseMotion {
+                    delta,
+                    timestamp_millis,
+                    captured_canvas: captured_raw_mouse_canvas(self.session.interaction()),
+                },
+            );
+            // Returning false permits further input handling; it does not mean
+            // the callback left application state unchanged.
             self.request_redraw();
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        // A past WaitUntil remains installed until explicitly replaced. Reset
+        // it even after a deadline was consumed or the window was minimized.
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+        if self.viewport().is_none() {
+            return;
+        }
+        let now = Instant::now();
+        if let Some(delay) = self
+            .session
+            .frame_retry_delay(now.duration_since(self.start))
+        {
+            if let Some(deadline) = now.checked_add(delay) {
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(deadline));
+            }
+            return;
+        }
         if self
             .hooks
             .idle_redraw
@@ -1636,124 +1596,24 @@ where
             return;
         }
 
-        if self.continuous_redraw {
-            self.request_redraw();
-            return;
-        }
-
-        let now = Instant::now();
-        if self
-            .scheduled_redraw_at
-            .is_some_and(|scheduled| now >= scheduled)
-        {
-            self.scheduled_redraw_at = None;
-            self.request_redraw();
-            return;
-        }
-
-        let mut wake_at = self.scheduled_redraw_at;
+        let mut delay = self
+            .session
+            .next_frame_delay(now.duration_since(self.start));
         if self.options.tick_action.is_some() {
-            let next_tick = self.last_tick + self.options.tick_interval;
-            if now >= next_tick {
-                self.request_redraw();
-                return;
+            let interval = self.options.tick_interval.max(Duration::from_millis(1));
+            let tick_delay = interval.saturating_sub(now.duration_since(self.last_tick));
+            delay = Some(delay.map_or(tick_delay, |delay| delay.min(tick_delay)));
+        }
+        match delay {
+            Some(Duration::ZERO) => self.request_redraw(),
+            Some(delay) => {
+                if let Some(deadline) = now.checked_add(delay) {
+                    event_loop
+                        .set_control_flow(winit::event_loop::ControlFlow::WaitUntil(deadline));
+                }
             }
-            wake_at = Some(
-                wake_at
-                    .map(|wake_at| wake_at.min(next_tick))
-                    .unwrap_or(next_tick),
-            );
+            None => {}
         }
-
-        if let Some(wake_at) = wake_at {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(wake_at));
-        }
-    }
-}
-
-fn native_canvas_input_for_raw_event(
-    document: &UiDocument,
-    state: &HostInteractionState,
-    event: &RawInputEvent,
-) -> Option<NativeCanvasInput> {
-    match event {
-        RawInputEvent::Pointer(pointer) => {
-            let target = super::session::resolve_target(event, state, document)?;
-            let (node, canvas, rect) = canvas_target(document, target)?;
-            (canvas.interaction.pointer_capture || canvas.interaction.pointer_lock).then(|| {
-                native_canvas_input(node, canvas, rect, Some(pointer.position), event.clone())
-            })
-        }
-        RawInputEvent::Wheel(wheel) => super::session::resolve_target(event, state, document)
-            .and_then(|target| canvas_target(document, target))
-            .filter(|(_, canvas, _)| canvas.interaction.wheel_capture)
-            .or_else(|| active_canvas_capture(document, state, |plan| plan.wheel_capture))
-            .map(|(node, canvas, rect)| {
-                native_canvas_input(node, canvas, rect, Some(wheel.position), event.clone())
-            }),
-        RawInputEvent::Keyboard(_) | RawInputEvent::Text(_) => state
-            .focused
-            .and_then(|focused| canvas_target(document, focused))
-            .filter(|(_, canvas, _)| canvas.interaction.keyboard_capture)
-            .or_else(|| active_canvas_capture(document, state, |plan| plan.keyboard_capture))
-            .map(|(node, canvas, rect)| {
-                native_canvas_input(node, canvas, rect, None, event.clone())
-            }),
-        RawInputEvent::Focus(_) => None,
-    }
-}
-
-fn canvas_target(
-    document: &UiDocument,
-    target: UiNodeId,
-) -> Option<(UiNodeId, &CanvasContent, UiRect)> {
-    let mut current = Some(target);
-    while let Some(id) = current {
-        let node = document.nodes().get(id.0)?;
-        if let UiContent::Canvas(canvas) = &node.content {
-            return Some((id, canvas, node.layout.rect));
-        }
-        current = node.parent;
-    }
-    None
-}
-
-fn active_canvas_capture<'a>(
-    document: &'a UiDocument,
-    state: &HostInteractionState,
-    accepts: impl Fn(&CanvasHostCapturePlan) -> bool,
-) -> Option<(UiNodeId, &'a CanvasContent, UiRect)> {
-    state
-        .canvas_host_capture
-        .active_plans()
-        .iter()
-        .find(|plan| accepts(plan))
-        .and_then(|plan| canvas_target(document, plan.node))
-}
-
-fn captured_raw_mouse_canvas(state: &HostInteractionState) -> Option<CanvasHostCaptureId> {
-    state
-        .canvas_host_capture
-        .active_plans()
-        .iter()
-        .find(|plan| plan.pointer_lock)
-        .map(CanvasHostCaptureId::from_plan)
-}
-
-fn native_canvas_input(
-    node: UiNodeId,
-    canvas: &CanvasContent,
-    rect: UiRect,
-    position: Option<UiPoint>,
-    input: RawInputEvent,
-) -> NativeCanvasInput {
-    NativeCanvasInput {
-        node,
-        key: canvas.key.clone(),
-        rect,
-        local_position: position
-            .map(|position| UiPoint::new(position.x - rect.x, position.y - rect.y)),
-        input,
     }
 }
 
@@ -1806,62 +1666,24 @@ fn cursor_error(error: impl ToString) -> CursorResponse {
     ))
 }
 
-fn set_native_ime_cursor_area(window: &winit::window::Window, rect: LogicalRect) {
+fn set_native_ime_cursor_area(window: &winit::window::Window, rect: LogicalRect, scale: f32) {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    // XIM accepts a baseline spot and winit's X11 backend ignores the area
+    // height. Passing the top would place candidates over the draft itself.
+    let x11 = window.window_handle().is_ok_and(|handle| {
+        matches!(
+            handle.as_raw(),
+            RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_)
+        )
+    });
+    let y = rect.origin.y + if x11 { rect.size.height } else { 0.0 };
     window.set_ime_cursor_area(
-        winit::dpi::LogicalPosition::new(rect.origin.x as f64, rect.origin.y as f64),
-        winit::dpi::LogicalSize::new(rect.size.width as f64, rect.size.height as f64),
+        winit::dpi::PhysicalPosition::new((rect.origin.x * scale) as f64, (y * scale) as f64),
+        winit::dpi::PhysicalSize::new(
+            (rect.size.width * scale) as f64,
+            (rect.size.height * scale) as f64,
+        ),
     );
-}
-
-fn native_text_input_for_ime_event(
-    event: &winit::event::Ime,
-    timestamp_millis: u64,
-) -> Option<RawInputEvent> {
-    match event {
-        winit::event::Ime::Commit(text) if !text.is_empty() => Some(RawInputEvent::Text(
-            RawTextInputEvent::new(text.as_str(), timestamp_millis),
-        )),
-        _ => None,
-    }
-}
-
-fn apply_native_clipboard_request(request: ClipboardRequest) -> ClipboardResponse {
-    match request {
-        ClipboardRequest::ReadText => with_native_clipboard(|clipboard| {
-            clipboard
-                .get_text()
-                .map(|text| ClipboardResponse::Text(Some(text)))
-        }),
-        ClipboardRequest::WriteText(text) => with_native_clipboard(|clipboard| {
-            clipboard
-                .set_text(text)
-                .map(|_| ClipboardResponse::Completed)
-        }),
-        ClipboardRequest::Clear => with_native_clipboard(|clipboard| {
-            clipboard
-                .set_text(String::new())
-                .map(|_| ClipboardResponse::Completed)
-        }),
-        ClipboardRequest::ReadFiles | ClipboardRequest::WriteFiles(_) => {
-            ClipboardResponse::Unsupported
-        }
-    }
-}
-
-fn with_native_clipboard(
-    operation: impl FnOnce(&mut arboard::Clipboard) -> Result<ClipboardResponse, arboard::Error>,
-) -> ClipboardResponse {
-    match arboard::Clipboard::new() {
-        Ok(mut clipboard) => operation(&mut clipboard).unwrap_or_else(native_clipboard_error),
-        Err(error) => native_clipboard_error(error),
-    }
-}
-
-fn native_clipboard_error(error: arboard::Error) -> ClipboardResponse {
-    ClipboardResponse::Error(PlatformServiceError::new(
-        PlatformErrorCode::Failed,
-        error.to_string(),
-    ))
 }
 
 fn open_native_url(url: &str) -> OpenUrlResponse {
@@ -1978,23 +1800,6 @@ fn key_modifiers(modifiers: winit::keyboard::ModifiersState) -> KeyModifiers {
         alt: modifiers.alt_key(),
         meta: modifiers.super_key(),
     }
-}
-
-fn winit_modifiers(modifiers: KeyModifiers) -> winit::keyboard::ModifiersState {
-    let mut state = winit::keyboard::ModifiersState::empty();
-    if modifiers.shift {
-        state |= winit::keyboard::ModifiersState::SHIFT;
-    }
-    if modifiers.ctrl {
-        state |= winit::keyboard::ModifiersState::CONTROL;
-    }
-    if modifiers.alt {
-        state |= winit::keyboard::ModifiersState::ALT;
-    }
-    if modifiers.meta {
-        state |= winit::keyboard::ModifiersState::SUPER;
-    }
-    state
 }
 
 fn key_code(event: &winit::event::KeyEvent, modifiers: KeyModifiers) -> Option<KeyCode> {
@@ -2131,18 +1936,6 @@ mod tests {
     }
 
     #[test]
-    fn native_runtime_rejects_unsupported_clipboard_file_requests_without_host_glue() {
-        assert_eq!(
-            apply_native_clipboard_request(ClipboardRequest::ReadFiles),
-            ClipboardResponse::Unsupported
-        );
-        assert_eq!(
-            apply_native_clipboard_request(ClipboardRequest::WriteFiles(vec![])),
-            ClipboardResponse::Unsupported
-        );
-    }
-
-    #[test]
     fn native_open_url_uses_platform_launcher_and_validates_empty_url() {
         assert!(matches!(
             open_native_url(""),
@@ -2192,22 +1985,6 @@ mod tests {
     }
 
     #[test]
-    fn native_ime_commit_events_become_text_input_events() {
-        let input = native_text_input_for_ime_event(&winit::event::Ime::Commit("é".into()), 42)
-            .expect("IME commit should produce text input");
-        assert_eq!(input, RawInputEvent::Text(RawTextInputEvent::new("é", 42)));
-        assert!(
-            native_text_input_for_ime_event(&winit::event::Ime::Commit(String::new()), 42)
-                .is_none()
-        );
-        assert!(native_text_input_for_ime_event(
-            &winit::event::Ime::Preedit("e".into(), Some((0, 1))),
-            42
-        )
-        .is_none());
-    }
-
-    #[test]
     fn native_canvas_input_resolves_local_pointer_wheel_and_keyboard_events() {
         let mut document = UiDocument::new(crate::LayoutStyle::size(200.0, 160.0));
         let root = document.root;
@@ -2232,8 +2009,8 @@ mod tests {
             UiPoint::new(20.0, 12.0),
             1,
         ));
-        let pointer_input = native_canvas_input_for_raw_event(&document, &state, &pointer).unwrap();
-        assert_eq!(pointer_input.node, canvas_id);
+        let pointer_input = canvas_input_for_raw_event(&document, &state, &pointer).unwrap();
+        assert_eq!(pointer_input.node, Some(canvas_id));
         assert_eq!(pointer_input.key, "viewport");
         assert_eq!(pointer_input.local_position, Some(UiPoint::new(20.0, 12.0)));
         assert_eq!(pointer_input.input, pointer);
@@ -2243,8 +2020,8 @@ mod tests {
             UiPoint::new(0.0, 10.0),
             2,
         ));
-        let wheel_input = native_canvas_input_for_raw_event(&document, &state, &wheel).unwrap();
-        assert_eq!(wheel_input.node, canvas_id);
+        let wheel_input = canvas_input_for_raw_event(&document, &state, &wheel).unwrap();
+        assert_eq!(wheel_input.node, Some(canvas_id));
         assert_eq!(wheel_input.local_position, Some(UiPoint::new(24.0, 18.0)));
 
         let keyboard = RawInputEvent::Keyboard(RawKeyboardEvent::press(
@@ -2252,15 +2029,14 @@ mod tests {
             KeyModifiers::NONE,
             3,
         ));
-        assert!(native_canvas_input_for_raw_event(&document, &state, &keyboard).is_none());
+        assert!(canvas_input_for_raw_event(&document, &state, &keyboard).is_none());
 
         let mut state = HostInteractionState {
             focused: Some(canvas_id),
             ..Default::default()
         };
-        let keyboard_input =
-            native_canvas_input_for_raw_event(&document, &state, &keyboard).unwrap();
-        assert_eq!(keyboard_input.node, canvas_id);
+        let keyboard_input = canvas_input_for_raw_event(&document, &state, &keyboard).unwrap();
+        assert_eq!(keyboard_input.node, Some(canvas_id));
         assert_eq!(keyboard_input.local_position, None);
 
         state.focused = None;
@@ -2274,9 +2050,8 @@ mod tests {
             pointer_lock: false,
             domain_hit_testing: true,
         }]);
-        let keyboard_input =
-            native_canvas_input_for_raw_event(&document, &state, &keyboard).unwrap();
-        assert_eq!(keyboard_input.node, canvas_id);
+        let keyboard_input = canvas_input_for_raw_event(&document, &state, &keyboard).unwrap();
+        assert_eq!(keyboard_input.node, Some(canvas_id));
 
         let mut capture_state = HostInteractionState::default();
         capture_state
@@ -2359,8 +2134,11 @@ mod tests {
 
     #[test]
     fn native_runtime_keeps_running_when_renderer_can_use_cached_frame() {
-        assert!(render_error_uses_cached_frame(&RenderError::Backend(
-            "surface acquire timed out".to_string()
+        assert!(render_error_uses_cached_frame(
+            &RenderError::SurfaceUnavailable("surface acquire timed out".to_string())
+        ));
+        assert!(!render_error_uses_cached_frame(&RenderError::Backend(
+            "device lost".to_string()
         )));
         assert!(!render_error_uses_cached_frame(
             &RenderError::UnsupportedTarget(crate::renderer::RenderTargetKind::Snapshot)

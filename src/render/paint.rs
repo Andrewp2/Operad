@@ -363,6 +363,8 @@ pub struct PaintEffect {
     pub kind: PaintEffectKind,
     pub color: ColorRgba,
     pub offset: UiPoint,
+    /// Visual blur extent in logical pixels. WGPU shadows use a Gaussian with
+    /// standard deviation `blur_radius / 3`; paint bounds include this extent.
     pub blur_radius: f32,
     pub spread: f32,
 }
@@ -484,6 +486,8 @@ pub enum TextVerticalAlign {
 pub enum TextOverflow {
     #[default]
     Clip,
+    /// Fit one line to the content width, appending a measured ellipsis when
+    /// necessary. This takes precedence over wrapping or `PaintText::multiline`.
     Ellipsis,
 }
 
@@ -500,13 +504,14 @@ pub struct PaintText {
 
 impl PaintText {
     pub fn new(text: impl Into<String>, rect: UiRect, style: TextStyle) -> Self {
+        let overflow = style.overflow;
         Self {
             text: text.into(),
             rect,
             style,
             horizontal_align: TextHorizontalAlign::Start,
             vertical_align: TextVerticalAlign::Top,
-            overflow: TextOverflow::Clip,
+            overflow,
             multiline: true,
         }
     }
@@ -1552,22 +1557,20 @@ mod tests {
     }
 
     #[test]
-    fn paint_path_preserves_contours_and_stroke_options() {
+    fn paint_path_preserves_separate_contours() {
         let path = PaintPath::new()
             .move_to(UiPoint::new(0.0, 0.0))
             .line_to(UiPoint::new(8.0, 0.0))
             .move_to(UiPoint::new(0.0, 8.0))
-            .line_to(UiPoint::new(8.0, 8.0))
-            .stroke(StrokeStyle::new(ColorRgba::WHITE, 2.0))
-            .line_cap(StrokeLineCap::Butt)
-            .line_join(StrokeLineJoin::Miter)
-            .miter_limit(2.0);
+            .line_to(UiPoint::new(8.0, 8.0));
 
-        let contours = path.flattened_contours(1.0);
-        assert_eq!(contours.len(), 2);
-        assert_eq!(path.stroke_options.line_cap, StrokeLineCap::Butt);
-        assert_eq!(path.stroke_options.line_join, StrokeLineJoin::Miter);
-        assert_eq!(path.stroke_options.miter_limit, 2.0);
+        assert_eq!(
+            path.flattened_contours(1.0),
+            vec![
+                vec![UiPoint::new(0.0, 0.0), UiPoint::new(8.0, 0.0)],
+                vec![UiPoint::new(0.0, 8.0), UiPoint::new(8.0, 8.0)],
+            ]
+        );
     }
 
     #[test]

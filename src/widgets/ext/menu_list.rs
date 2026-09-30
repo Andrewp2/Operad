@@ -12,8 +12,8 @@ use crate::{
 };
 
 use super::menu::{
-    label, leading_image, length_percentage, menu_accessibility_label, place_popup, popup_panel,
-    row_style, set_active_descendant, AnchoredPopup, MenuItem, MenuItemKind, PopupOptions,
+    label, leading_image, length_percentage, menu_accessibility_label, popup_panel, row_style,
+    set_active_descendant, AnchoredPopup, MenuItem, MenuItemKind, PopupOptions,
 };
 
 #[derive(Debug, Clone)]
@@ -127,26 +127,25 @@ pub fn menu_list_popup(
 ) -> MenuListNodes {
     let name = name.into();
     let height = visible_menu_height(items, &options);
-    let layout = place_popup(
-        popup.anchor,
-        UiSize::new(options.width.max(0.0), height.max(0.0)),
-        popup.viewport,
-        popup.placement,
-    );
+    let size = UiSize::new(options.width.max(0.0), height.max(0.0));
+    let rect = popup.layout_rect(document.ui_scale(), size);
+    let scroll_axes = if menu_row_count_for_scroll(items) > options.max_visible_rows {
+        ScrollAxes::VERTICAL
+    } else {
+        ScrollAxes::NONE
+    };
     let root = popup_panel(
         document,
         parent,
         name.clone(),
-        layout.rect,
+        rect,
         PopupOptions {
             visual: options.menu_visual,
             z_index: options.z_index,
             portal: options.portal.clone(),
-            scroll_axes: if menu_row_count_for_scroll(items) > options.max_visible_rows {
-                ScrollAxes::VERTICAL
-            } else {
-                ScrollAxes::NONE
-            },
+            // Keep scroll state available for host restoration before the
+            // layout constraint decides whether the current viewport needs it.
+            scroll_axes: ScrollAxes::VERTICAL,
             accessibility: Some(AccessibilityMeta::new(AccessibilityRole::Menu).label(
                 menu_accessibility_label(&name, options.accessibility_label.as_ref()),
             )),
@@ -155,6 +154,12 @@ pub fn menu_list_popup(
             ..Default::default()
         },
     );
+    document.node_mut(root).layout_constraint =
+        Some(crate::UiNodeLayoutConstraint::AnchoredPopup {
+            popup,
+            size,
+            scroll_axes: Some(scroll_axes),
+        });
     {
         let layout = &mut document.node_mut(root).style.layout;
         layout.display = Display::Flex;
@@ -228,7 +233,7 @@ fn populate_menu_list(
             menu_item_row_node(
                 format!("{name}.item.{index}"),
                 item,
-                active == Some(index),
+                active == Some(index) && item.is_navigable(),
                 options,
             ),
         );

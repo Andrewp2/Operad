@@ -325,7 +325,7 @@ mod tests {
     use crate::{root_style, ApproxTextMeasurer, CommandMeta, KeyModifiers, Shortcut, UiSize};
 
     #[test]
-    fn command_diagnostics_panel_lists_commands_shortcuts_and_empty_conflicts() {
+    fn command_diagnostics_panel_wires_registered_commands_and_shortcuts() {
         let mut registry = CommandRegistry::new();
         registry
             .register(
@@ -369,15 +369,19 @@ mod tests {
             .expect("layout");
 
         assert_eq!(doc.node(nodes.command_grid).children.len(), 2);
-        assert_eq!(doc.node(nodes.conflict_grid).children.len(), 1);
-        let open_row = doc.node(doc.node(nodes.command_grid).children[1]);
-        assert_eq!(
-            open_row
-                .action
-                .as_ref()
-                .and_then(|action| action.action_id())
-                .map(|id| id.as_str()),
-            Some("commands.inspect.command.row.file_open")
-        );
+        for command in ["file_open", "file_close"] {
+            let expected = format!("commands.inspect.command.row.{command}");
+            assert!(doc.node(nodes.command_grid).children.iter().any(|row| {
+                doc.node(*row)
+                    .action
+                    .as_ref()
+                    .and_then(|action| action.action_id())
+                    .is_some_and(|id| id.as_str() == expected)
+            }));
+        }
+        assert!(doc.nodes().iter().any(|node| matches!(
+            node.content(),
+            crate::UiContent::Text(text) if text.text.contains("Ctrl+O")
+        )));
     }
 }

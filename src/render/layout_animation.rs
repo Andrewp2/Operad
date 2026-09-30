@@ -171,8 +171,8 @@ fn layout_transition(
         progress,
         transform: PaintTransform {
             translation: UiPoint::new(
-                visual_rect.x - current.rect.x,
-                visual_rect.y - current.rect.y,
+                visual_rect.x - current.rect.x * scale,
+                visual_rect.y - current.rect.y * scale,
             ),
             scale,
         },
@@ -279,6 +279,52 @@ mod tests {
         assert_eq!(transitions[0].visual_rect.height, 50.0);
         assert_eq!(transitions[0].to_rect.width, 160.0);
         assert!(transitions[0].transform.scale < 1.0);
+    }
+
+    #[test]
+    fn layout_animation_transform_reaches_interpolated_rect_away_from_origin() {
+        let snapshot = |rect: UiRect| {
+            let mut document = UiDocument::new(root_style(400.0, 300.0));
+            document.add_child(
+                document.root,
+                UiNode::container(
+                    "panel",
+                    crate::layout::absolute(rect.x, rect.y, rect.width, rect.height),
+                ),
+            );
+            document
+                .compute_layout(UiSize::new(400.0, 300.0), &mut ApproxTextMeasurer)
+                .expect("layout");
+            document.layout_snapshot()
+        };
+        let previous = snapshot(UiRect::new(40.0, 60.0, 80.0, 40.0));
+        let current = snapshot(UiRect::new(100.0, 120.0, 160.0, 80.0));
+
+        // Both axes resize by the same ratio, within PaintTransform's uniform-scale contract.
+        for (progress, expected) in [
+            (0.0, UiRect::new(40.0, 60.0, 80.0, 40.0)),
+            (0.25, UiRect::new(55.0, 75.0, 100.0, 50.0)),
+            (0.5, UiRect::new(70.0, 90.0, 120.0, 60.0)),
+            (0.75, UiRect::new(85.0, 105.0, 140.0, 70.0)),
+            (1.0, UiRect::new(100.0, 120.0, 160.0, 80.0)),
+        ] {
+            let transitions = layout_animation_transitions(
+                &previous,
+                &current,
+                LayoutAnimationOptions {
+                    progress,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(transitions.len(), 1);
+            let transition = &transitions[0];
+            assert_eq!(transition.visual_rect, expected);
+            assert_eq!(
+                transition.transform.transform_rect(transition.to_rect),
+                expected,
+                "paint must reach the interpolated rectangle at progress {progress}"
+            );
+        }
     }
 
     #[test]
